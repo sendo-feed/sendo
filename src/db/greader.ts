@@ -14,13 +14,11 @@ import {
   max,
   or,
   type SQL,
-  sql,
 } from "drizzle-orm";
 import type { Database } from ".";
 import { chunked } from "./chunk";
 import { type InboxArticle, inFolder } from "./inbox";
 import { articles, feeds, userArticles } from "./schema";
-import { nextSeq } from "./seq";
 
 /*
  * Google Reader API 向けの読み書き（docs/decisions/greader.md）。記事をアイテムの ID
@@ -144,57 +142,6 @@ export async function getItemsByItemIds(
     items.push(...rows);
   }
   return items;
-}
-
-/**
- * アイテムの ID で指定した記事の既読とスターを、まとめて変える。指定しなかったほうは変えない。
- * inbox.ts の setArticleState と同じく、すでにその状態なら時刻を変えず、既読・未読が変わったときだけ
- * read_seq を進める。どれも、変える前の行の値で同じ文の中で判定する。
- * @returns 変えた記事の数（その人の受信箱にない ID は数えない）
- */
-export async function setItemsState(
-  db: Database,
-  input: {
-    userId: string;
-    itemIds: readonly number[];
-    read?: boolean | undefined;
-    starred?: boolean | undefined;
-    now: Date;
-  },
-): Promise<number> {
-  if (input.read === undefined && input.starred === undefined) return 0;
-  const now = input.now.getTime();
-  const set: { readAt?: SQL | null; starredAt?: SQL | null; seq: SQL; readSeq?: SQL } = {
-    seq: nextSeq(ua),
-  };
-  if (input.read !== undefined) {
-    set.readAt = input.read ? sql`coalesce(${ua.readAt}, ${now})` : null;
-    const changes = input.read ? isNull(ua.readAt) : isNotNull(ua.readAt);
-    set.readSeq = sql`case when ${changes} then ${nextSeq(ua)} else ${ua.readSeq} end`;
-  }
-  if (input.starred !== undefined) {
-    set.starredAt = input.starred ? sql`coalesce(${ua.starredAt}, ${now})` : null;
-  }
-
-  let updated = 0;
-  for (const chunk of chunked(input.itemIds, null)) {
-    const rows = await db
-      .update(ua)
-      .set(set)
-      .where(
-        and(
-          eq(ua.userId, input.userId),
-          inArray(
-            ua.articleId,
-            db.select({ id: articles.id }).from(articles).where(inArray(articles.itemId, chunk)),
-          ),
-        ),
-      )
-      .returning({ articleId: ua.articleId })
-      .all();
-    updated += rows.length;
-  }
-  return updated;
 }
 
 /** フィードごとの未読の数と、未読のうちいちばん新しく受信箱に入った時刻。未読のないフィードは含まない */

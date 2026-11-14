@@ -81,7 +81,7 @@ export function authenticate(
       const auth =
         token === undefined
           ? undefined
-          : await authenticateToken(platform.db, { token, now: platform.now() });
+          : await authenticateToken(platform.db, { token, now: platform.now(), purpose: "reader" });
       if (!auth) return unauthorized(c);
       c.set("user", auth.user);
       c.set("auth", { kind: "token", tokenId: auth.tokenId });

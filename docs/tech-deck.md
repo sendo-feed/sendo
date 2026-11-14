@@ -191,7 +191,7 @@ sendo-reader/
 1. UI：Svelte 5 か React か（ネイティブの方針しだい）
 2. ネイティブ：Capacitor か Expo か
 3. Cloudflare 以外（Docker・Postgres）をどこまで支えるか
-4. MCP の書き込み権限（OAuth スコープ）と、記事本文のインジェクション対策
+4. ~~MCP の書き込み権限（OAuth スコープ）と、記事本文のインジェクション対策~~ → [decisions/mcp.md](decisions/mcp.md) で決めた（範囲は read と write、記事は構造化した JSON で信頼できないデータとして返す）
 5. ライセンス：[ MIT ／ Apache-2.0 ／ AGPL-3.0 ]
 6. sendo-reader のツール：Void（Cloudflare）と Vite+ を使うか。Void の UI のアダプタは React と Vue なので、1 と一緒に決める
 7. 差分同期の目印：記事の公開日時（publishedAt）や作成時刻ではなく、サーバーが書き込み順に振る番号（D1 は書き込みを1つずつ順に処理するので、自動で増える番号が書き込み順になる）を目印にする案。公開日時が古い記事が後から入っても取りこぼさない。reader の同期を作るときに決める

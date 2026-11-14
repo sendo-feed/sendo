@@ -386,6 +386,62 @@ export async function markArticlesRead(
   return updated.length;
 }
 
+/** まとめて状態を変える記事の指し方。REST API と MCP は記事の ID、Google Reader API はアイテムの ID */
+export type ArticleTarget = { articleIds: readonly string[] } | { itemIds: readonly number[] };
+
+/**
+ * 指定した記事の既読とスターを、まとめて変える。指定しなかったほうは変えない。
+ * setArticleState と同じく、すでにその状態なら時刻を変えず、既読・未読が変わったときだけ
+ * read_seq を進める。どれも、変える前の行の値で同じ文の中で判定する。
+ * @returns 変えた記事の数（その人の受信箱にないものは数えない）
+ */
+export async function setArticlesState(
+  db: Database,
+  input: {
+    userId: string;
+    target: ArticleTarget;
+    read?: boolean | undefined;
+    starred?: boolean | undefined;
+    now: Date;
+  },
+): Promise<number> {
+  if (input.read === undefined && input.starred === undefined) return 0;
+  const now = input.now.getTime();
+  const set: { readAt?: SQL | null; starredAt?: SQL | null; seq: SQL; readSeq?: SQL } = {
+    seq: nextSeq(ua),
+  };
+  if (input.read !== undefined) {
+    set.readAt = input.read ? sql`coalesce(${ua.readAt}, ${now})` : null;
+    const changes = input.read ? isNull(ua.readAt) : isNotNull(ua.readAt);
+    set.readSeq = sql`case when ${changes} then ${nextSeq(ua)} else ${ua.readSeq} end`;
+  }
+  if (input.starred !== undefined) {
+    set.starredAt = input.starred ? sql`coalesce(${ua.starredAt}, ${now})` : null;
+  }
+
+  const { target } = input;
+  const chunks: SQL[] =
+    "articleIds" in target
+      ? chunked(target.articleIds, null).map((chunk) => inArray(ua.articleId, [...chunk]))
+      : chunked(target.itemIds, null).map((chunk) =>
+          inArray(
+            ua.articleId,
+            db.select({ id: articles.id }).from(articles).where(inArray(articles.itemId, chunk)),
+          ),
+        );
+  let updated = 0;
+  for (const match of chunks) {
+    const rows = await db
+      .update(ua)
+      .set(set)
+      .where(and(eq(ua.userId, input.userId), match))
+      .returning({ articleId: ua.articleId })
+      .all();
+    updated += rows.length;
+  }
+  return updated;
+}
+
 /** フィードごとの未読の数。未読のないフィードは含まない */
 export async function countUnreadByFeed(
   db: Database,

@@ -30,6 +30,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
     "@cloudflare/vitest-plugin": "1.4.11",
+    "@modelcontextprotocol/client": "2.4.0",
     "@types/node": "24.19.2",
     "drizzle-kit": "0.31.11",
     "tsx": "4.23.15",
@@ -39,6 +40,7 @@
   },
   "dependencies": {
     "@hono/zod-openapi": "1.6.3",
+    "@modelcontextprotocol/server": "2.4.0",
     "drizzle-orm": "0.45.4",
     "entities": "7.0.1",
     "feedsmith": "3.0.1",

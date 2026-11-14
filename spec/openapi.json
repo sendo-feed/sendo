@@ -617,13 +617,34 @@
             ],
             "format": "date-time",
             "description": "最後に使った時刻（1 時間ごとにしか更新しない）。使っていなければ null"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "reader",
+              "mcp"
+            ],
+            "description": "用途。reader はリーダーアプリ（Google Reader API）と REST API 用、mcp は /mcp（MCP サーバー）用。用途の違う入口では使えない"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "read",
+                "write"
+              ]
+            },
+            "description": "mcp の範囲。read は読むだけ、write は購読や既読などの変更も。reader は空"
           }
         },
         "required": [
           "id",
           "name",
           "createdAt",
-          "lastUsedAt"
+          "lastUsedAt",
+          "purpose",
+          "scopes"
         ]
       },
       "AccessTokenRequest": {
@@ -634,6 +655,27 @@
             "maxLength": 200,
             "description": "用途の名前（前後の空白を除いて 1〜100 文字）",
             "example": "Reeder"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "reader",
+              "mcp"
+            ],
+            "description": "用途。既定は reader（リーダーアプリと REST API 用）。mcp なら /mcp でだけ使える"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "read",
+                "write"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 2,
+            "description": "mcp の範囲。既定は read（読むだけ）。write を含めると、購読や既読などの変更もできる（read も付く）。reader には付けられない"
           }
         },
         "required": [
@@ -1695,7 +1737,7 @@
             }
           },
           "400": {
-            "description": "名前が空か、長すぎる",
+            "description": "名前が空か長すぎる、reader に範囲を付けた",
             "content": {
               "application/json": {
                 "schema": {

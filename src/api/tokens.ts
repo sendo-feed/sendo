@@ -7,6 +7,7 @@ import {
   listAccessTokens,
   MAX_TOKEN_NAME_LENGTH,
   normalizeTokenName,
+  parseScopes,
 } from "../db/tokens";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
@@ -31,6 +32,13 @@ const AccessTokenSchema = z
     lastUsedAt: dateTime.nullable().openapi({
       description: "最後に使った時刻（1 時間ごとにしか更新しない）。使っていなければ null",
     }),
+    purpose: z.enum(["reader", "mcp"]).openapi({
+      description:
+        "用途。reader はリーダーアプリ（Google Reader API）と REST API 用、mcp は /mcp（MCP サーバー）用。用途の違う入口では使えない",
+    }),
+    scopes: z.array(z.enum(["read", "write"])).openapi({
+      description: "mcp の範囲。read は読むだけ、write は購読や既読などの変更も。reader は空",
+    }),
   })
   .openapi("AccessToken");
 
@@ -40,6 +48,8 @@ function toAccessTokenResponse(token: AccessToken): z.infer<typeof AccessTokenSc
     name: token.name,
     createdAt: token.createdAt.toISOString(),
     lastUsedAt: token.lastUsedAt?.toISOString() ?? null,
+    purpose: token.purpose,
+    scopes: parseScopes(token.scopes),
   };
 }
 
@@ -88,6 +98,19 @@ const createTokenRoute = createRoute({
                   description: `用途の名前（前後の空白を除いて 1〜${MAX_TOKEN_NAME_LENGTH} 文字）`,
                   example: "Reeder",
                 }),
+              purpose: z.enum(["reader", "mcp"]).optional().openapi({
+                description:
+                  "用途。既定は reader（リーダーアプリと REST API 用）。mcp なら /mcp でだけ使える",
+              }),
+              scopes: z
+                .array(z.enum(["read", "write"]))
+                .min(1)
+                .max(2)
+                .optional()
+                .openapi({
+                  description:
+                    "mcp の範囲。既定は read（読むだけ）。write を含めると、購読や既読などの変更もできる（read も付く）。reader には付けられない",
+                }),
             })
             .openapi("AccessTokenRequest"),
         },
@@ -109,7 +132,7 @@ const createTokenRoute = createRoute({
         },
       },
     },
-    400: error("名前が空か、長すぎる"),
+    400: error("名前が空か長すぎる、reader に範囲を付けた"),
     403: sessionRequired,
   },
 });
@@ -156,17 +179,24 @@ export function tokensApi(platform: Platform) {
     .openapi(createTokenRoute, async (c) => {
       const denied = requireSession(c);
       if (denied) return denied;
-      const name = normalizeTokenName(c.req.valid("json").name);
+      const body = c.req.valid("json");
+      const name = normalizeTokenName(body.name);
       if (name === null) {
         return c.json(
           errorBody("invalid_request", `name: 1-${MAX_TOKEN_NAME_LENGTH} characters`),
           400,
         );
       }
+      const purpose = body.purpose ?? "reader";
+      if (purpose === "reader" && body.scopes !== undefined) {
+        return c.json(errorBody("invalid_request", "scopes: only for purpose mcp"), 400);
+      }
       const { token, record } = await createAccessToken(db, {
         userId: c.get("user").id,
         name,
         now: platform.now(),
+        purpose,
+        scopes: body.scopes,
       });
       return c.json({ token, accessToken: toAccessTokenResponse(record) }, 201);
     })

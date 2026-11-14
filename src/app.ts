@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { createApi } from "./api";
 import { errorBody } from "./api/schemas";
 import { greaderApp } from "./greader";
+import { mcpApp } from "./mcp";
 import type { Platform } from "./platform";
 
 /**
@@ -16,6 +17,8 @@ export function createApp(platform: Platform) {
   app.route("/api/v1", createApi(platform));
   // Google Reader API 互換（/accounts/ClientLogin と /reader/api/0。docs/decisions/greader.md）
   app.route("/", greaderApp(platform));
+  // リモート MCP サーバー（/mcp。docs/decisions/mcp.md）
+  app.route("/", mcpApp(platform));
 
   app.notFound((c) => c.json(errorBody("not_found", "Not Found"), 404));
 
