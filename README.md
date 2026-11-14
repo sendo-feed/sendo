@@ -42,10 +42,10 @@ pnpm dev
 ```sh
 TOKEN=dev-token-change-me   # .dev.vars の API_TOKEN
 
-# フィードを購読する。取得はキューで数秒後に行われる
+# フィードを購読する。サイトの URL でもよい（ページからフィードを見つける）
 curl -X POST http://localhost:8787/api/v1/feeds \
   -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
-  -d '{"url":"https://blog.cloudflare.com/rss/"}'
+  -d '{"url":"https://blog.cloudflare.com/"}'
 
 # 記事を新しい順に読む
 curl -H "authorization: Bearer $TOKEN" "http://localhost:8787/api/v1/articles?limit=10"

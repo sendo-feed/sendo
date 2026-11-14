@@ -219,7 +219,9 @@ describe("htmlToText", () => {
   });
 
   it("文字参照をもとに戻す", () => {
-    expect(htmlToText("1 &lt; 2 &amp;&amp; &#x3042;&#12354;", 100)).toBe("1 < 2 && ああ");
+    expect(htmlToText("1 &lt; 2 &amp;&amp; &#x3042;&#12354; &raquo; &hellip;", 100)).toBe(
+      "1 < 2 && ああ » …",
+    );
   });
 
   it("長すぎれば切り詰める（サロゲートペアを分断しない）", () => {
@@ -243,6 +245,10 @@ describe("stripTags", () => {
     expect(htmlToText("a<script>alert(1)</script>b<style>p{}</STYLE >c<scriptx>d", 100)).toBe(
       "a b c d",
     );
+  });
+
+  it("属性の値の中の「>」で、タグを途中で切らない", () => {
+    expect(htmlToText('<p><a title="x > y" href="/">link</a> text</p>', 100)).toBe("link text");
   });
 
   it("閉じていないタグ、コメント、script に当たったら、そこで打ち切る", () => {

@@ -36,6 +36,7 @@
   "dependencies": {
     "@hono/zod-openapi": "1.6.3",
     "drizzle-orm": "0.45.4",
+    "entities": "7.0.1",
     "feedsmith": "3.0.1",
     "hono": "4.13.14",
     "zod": "4.6.7"

@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  MAX_FOLDER_NAME_LENGTH,
-  MAX_OPML_FEEDS,
-  MAX_URL_LENGTH,
-  OpmlError,
-  readOpml,
-  truncateUtf16,
-  writeOpml,
-} from "../../src/opml";
+import { MAX_FOLDER_NAME_LENGTH } from "../../src/db/folders";
+import { truncateUtf16 } from "../../src/lib/text";
+import { MAX_OPML_FEEDS, MAX_URL_LENGTH, OpmlError, readOpml, writeOpml } from "../../src/opml";
 import { FEEDLY_OPML } from "../fixtures/opml";
 
 describe("readOpml", () => {
