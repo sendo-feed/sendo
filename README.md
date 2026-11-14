@@ -49,6 +49,14 @@ curl -X POST http://localhost:8787/api/v1/feeds \
 
 # 記事を新しい順に読む
 curl -H "authorization: Bearer $TOKEN" "http://localhost:8787/api/v1/articles?limit=10"
+
+# Feedly などから書き出した OPML をインポートする（フォルダも取り込む）
+curl -X POST http://localhost:8787/api/v1/opml \
+  -H "authorization: Bearer $TOKEN" -H "content-type: text/x-opml" \
+  --data-binary @subscriptions.opml
+
+# 購読を OPML で書き出す
+curl -H "authorization: Bearer $TOKEN" -o sendo.opml http://localhost:8787/api/v1/opml
 ```
 
 API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読めます。定期的な取得（Cron）は、`pnpm dev --test-scheduled` で起動して `http://localhost:8787/__scheduled` を開くと、すぐに試せます。
@@ -80,6 +88,7 @@ sendo/
 │   ├── db/             # スキーマとデータの読み書き（Drizzle）
 │   ├── fetcher/        # フィードの取得と解析、SSRF 対策
 │   ├── jobs/           # キューと定期実行で動く処理
+│   ├── opml/           # OPML の読み書き
 │   └── platform/       # 実行環境の緩衝層
 │       └── cloudflare/ # D1・Queues などの実装
 ├── migrations/         # D1 のマイグレーション（pnpm db:generate で作る）
