@@ -130,6 +130,7 @@ sendo/
 │   ├── api/                   # REST API
 │   ├── auth/                  # ログイン（OpenID Connect の提供元）
 │   ├── greader/               # Google Reader API 互換
+│   ├── feeds/                 # 購読の手続き（REST API・Google Reader API・MCP で共通）
 │   ├── mcp/                   # ツール・リソース
 │   ├── jobs/                  # Cron・Queues
 │   ├── fetcher/               # 取得・解析・全文抽出

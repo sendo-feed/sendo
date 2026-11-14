@@ -110,3 +110,19 @@ export function parseAttributes(source: string): Map<string, string> {
   }
   return attributes;
 }
+
+const HTML_ESCAPES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+/**
+ * プレーンテキストを、HTML の中に置いてもマークアップとして解釈されない形にする。
+ * 外から来た文字列（記事のタイトルや要約）を、HTML として表示する相手に渡すときに使う。
+ */
+export function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char] ?? char);
+}

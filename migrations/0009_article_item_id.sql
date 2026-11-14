@@ -1,0 +1,1 @@
+ALTER TABLE `articles` ADD `item_id` integer DEFAULT 0 NOT NULL;
