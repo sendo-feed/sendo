@@ -162,6 +162,42 @@ describe("GET /api/v1/articles", () => {
     expect(seen).toEqual(["b1", "a4", "a3", "a2", "b0", "a1", "a0"]);
   });
 
+  it("1970 年より前の記事をまたいでも、ページを送れる", async () => {
+    await env.DB.exec("DELETE FROM feeds");
+    const { platform } = createTestPlatform();
+    const { feed } = await insertFeed(platform.db, {
+      id: crypto.randomUUID(),
+      url: uniqueUrl(),
+      now: new Date(),
+    });
+    await insertArticles(
+      platform.db,
+      ["1965-01-01", "1960-01-01", "1955-01-01"].map((date, i) => ({
+        id: `old${i}`,
+        feedId: feed.id,
+        guid: `old${i}`,
+        url: null,
+        title: null,
+        summary: null,
+        author: null,
+        publishedAt: new Date(`${date}T00:00:00Z`),
+        createdAt: new Date(),
+      })),
+    );
+
+    const first = (await json(await requestApp(platform, "/api/v1/articles?limit=1"))) as {
+      nextCursor: string;
+    };
+    const second = await requestApp(
+      platform,
+      `/api/v1/articles?limit=2&cursor=${first.nextCursor}`,
+    );
+
+    expect(second.status).toBe(200);
+    const body = (await json(second)) as { items: { id: string }[] };
+    expect(body.items.map((item) => item.id)).toEqual(["old1", "old2"]);
+  });
+
   it("フィードで絞り込める", async () => {
     const { platform, ids } = await seed();
     const res = await requestApp(platform, `/api/v1/articles?feedId=${ids.b}`);

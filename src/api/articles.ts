@@ -56,7 +56,8 @@ export function articlesApi(platform: Platform) {
   });
 }
 
-const CursorSchema = z.object({ p: z.int().nonnegative(), i: z.string().min(1) });
+// 公開日時は 1970 年より前（負の値）もありうるので、符号は問わない
+const CursorSchema = z.object({ p: z.int(), i: z.string().min(1) });
 
 /** ページ送りの位置を、URL にそのまま載せられる文字列にする（中身に意味を持たせない） */
 function encodeCursor(cursor: ArticleCursor): string {

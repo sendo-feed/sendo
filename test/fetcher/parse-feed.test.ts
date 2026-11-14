@@ -5,6 +5,7 @@ import {
   normalizeText,
   ParseFeedError,
   parseFeed,
+  stripTags,
 } from "../../src/fetcher/parse-feed";
 
 const BASE = "https://example.com/feed.xml";
@@ -230,5 +231,35 @@ describe("htmlToText", () => {
   it("中身がなければ null", () => {
     expect(htmlToText("  <br/> ", 100)).toBeNull();
     expect(htmlToText(undefined, 100)).toBeNull();
+  });
+});
+
+describe("stripTags", () => {
+  it("タグとみなすのは「<」の次が英字などのときだけ", () => {
+    expect(htmlToText("<p>x < y && 1<2</p>", 100)).toBe("x < y && 1<2");
+  });
+
+  it("script と style は中身ごと除き、似た名前のタグは普通のタグとして扱う", () => {
+    expect(htmlToText("a<script>alert(1)</script>b<style>p{}</STYLE >c<scriptx>d", 100)).toBe(
+      "a b c d",
+    );
+  });
+
+  it("閉じていないタグ、コメント、script に当たったら、そこで打ち切る", () => {
+    expect(htmlToText("a <b c", 100)).toBe("a");
+    expect(htmlToText("a <!-- b", 100)).toBe("a");
+    expect(htmlToText("a <script> b", 100)).toBe("a");
+  });
+
+  // 二乗の時間がかかる実装だと、どれもテストの制限時間（5 秒）を大きく超える
+  it.each([
+    ["閉じていない「<a」の繰り返し", "<a".repeat(300_000)],
+    ["閉じていないコメントの繰り返し", "<!--".repeat(300_000)],
+    ["閉じていない script の繰り返し", "<script>".repeat(300_000)],
+    ["閉じていないタグと「>」の組み合わせ", `${"<a".repeat(150_000)}>`],
+    ["文字参照に見える長い英字", `&${"a".repeat(1_000_000)}`],
+  ])("悪意のある入力でも長さに比例する時間で終わる：%s", (_label, input) => {
+    expect(() => htmlToText(input, 500)).not.toThrow();
+    expect(typeof stripTags(input)).toBe("string");
   });
 });

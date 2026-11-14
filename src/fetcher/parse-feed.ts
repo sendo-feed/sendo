@@ -161,26 +161,79 @@ const NAMED_ENTITIES: Record<string, string> = {
  *
  * 結果は「表示する側でエスケープする文字列」として扱う。ここでタグを除くのは
  * 読みやすさと大きさのためで、安全のためのサニタイズではない。
+ *
+ * 外部から来る入力なので、どんな入力でも長さに比例する時間で終わるようにする。
+ * 正規表現でタグを除くと、閉じていない「<」が大量にあるときに時間が二乗で増える。
  */
 export function htmlToText(value: string | undefined, maxLength: number): string | null {
   if (value === undefined) return null;
-  const text = value
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<[^>]*>/g, " ")
-    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, code: string) => {
-      if (code.startsWith("#")) {
-        const point =
-          code[1] === "x" || code[1] === "X"
-            ? Number.parseInt(code.slice(2), 16)
-            : Number.parseInt(code.slice(1), 10);
-        return Number.isInteger(point) && point > 0 && point <= 0x10ffff
-          ? String.fromCodePoint(point)
-          : entity;
-      }
-      return NAMED_ENTITIES[code.toLowerCase()] ?? entity;
-    });
-  return normalizeText(text, maxLength);
+  return normalizeText(decodeEntities(stripTags(value)), maxLength);
+}
+
+/** script ／ style の中身ごと除く要素 */
+const RAW_TEXT_CLOSE = /<\/(script|style)\s*>/gi;
+const RAW_TEXT_OPEN = /^<(script|style)\b/i;
+
+/**
+ * タグとコメントを空白に置き換える。先頭から1回なめるだけで終わる。
+ *
+ * - 「<」の次が英字・「/」・「!」・「?」のときだけタグとみなす（「x < y」は文字のまま残す）
+ * - 閉じていないタグやコメントに当たったら、そこで打ち切る
+ */
+export function stripTags(html: string): string {
+  let out = "";
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) {
+      out += html.slice(i);
+      break;
+    }
+    out += html.slice(i, lt);
+
+    if (!/[a-zA-Z/!?]/.test(html[lt + 1] ?? "")) {
+      out += "<";
+      i = lt + 1;
+      continue;
+    }
+
+    if (html.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      if (end === -1) break;
+      out += " ";
+      i = end + 3;
+      continue;
+    }
+
+    const gt = html.indexOf(">", lt + 1);
+    if (gt === -1) break;
+    out += " ";
+    i = gt + 1;
+
+    // script と style は、閉じタグまで中身ごと飛ばす
+    if (RAW_TEXT_OPEN.test(html.slice(lt, Math.min(gt + 1, lt + 8)))) {
+      RAW_TEXT_CLOSE.lastIndex = i;
+      const close = RAW_TEXT_CLOSE.exec(html);
+      if (close === null) break;
+      i = close.index + close[0].length;
+    }
+  }
+  return out;
+}
+
+function decodeEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z]{1,10});/gi, (entity, code: string) => {
+    if (code.startsWith("#")) {
+      const point =
+        code[1] === "x" || code[1] === "X"
+          ? Number.parseInt(code.slice(2), 16)
+          : Number.parseInt(code.slice(1), 10);
+      return Number.isInteger(point) && point > 0 && point <= 0x10ffff
+        ? String.fromCodePoint(point)
+        : entity;
+    }
+    return NAMED_ENTITIES[code.toLowerCase()] ?? entity;
+  });
 }
 
 /** プレーンテキストの空白をまとめ、長すぎれば切り詰める。中身には手を加えない */
