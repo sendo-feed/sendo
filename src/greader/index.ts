@@ -2,7 +2,7 @@ import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import { getFeed } from "../db/feeds";
 import {
-  deleteFolder,
+  deleteFolderByName,
   ensureFolders,
   FolderNameTakenError,
   listFolders,
@@ -575,11 +575,12 @@ export function greaderApp(platform: Platform) {
     const params = await readParams(c);
     const stream = parseStreamId(params.get("s") ?? "");
     if (stream?.kind !== "label") return badRequest(c, "UnknownStream");
-    const userId = c.get("user").id;
-    const folderId = await findFolderId(userId, stream.name);
-    if (folderId !== undefined) {
-      await deleteFolder(db, { userId, id: folderId, now: platform.now() });
-    }
+    // 名前で消す。前に消しかけて落ちていても、やり直しで後片付けまで済む
+    await deleteFolderByName(db, {
+      userId: c.get("user").id,
+      name: stream.name,
+      now: platform.now(),
+    });
     return c.text("OK");
   });
 

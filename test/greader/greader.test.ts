@@ -129,6 +129,45 @@ async function setup() {
   return { user, platform, feed, folder, send: reader(platform, user.token) };
 }
 
+/**
+ * 正規表現に合う文を実行する直前に、一度だけ before を実行する D1。ほかのリクエストが間に入る場合や、
+ * 途中で落ちる場合（before で投げる）をまねる
+ */
+function d1BeforeStatement(pattern: RegExp, before: () => Promise<void>) {
+  let armed = true;
+  const intercept = <T extends object>(target: T): T =>
+    new Proxy(target, {
+      get(t, key) {
+        const value = Reflect.get(t, key, t);
+        if (typeof value !== "function") return value;
+        if (key === "bind") return (...args: unknown[]) => intercept(value.apply(t, args));
+        if (key === "all" || key === "first" || key === "run" || key === "raw") {
+          return async (...args: unknown[]) => {
+            if (armed) {
+              armed = false;
+              await before();
+            }
+            return value.apply(t, args);
+          };
+        }
+        return value.bind(t);
+      },
+    });
+  const db = new Proxy(env.DB, {
+    get(target, prop) {
+      if (prop === "prepare") {
+        return (query: string) => {
+          const statement = target.prepare(query);
+          return pattern.test(query) ? intercept(statement) : statement;
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { db, fired: () => !armed };
+}
+
 beforeEach(async () => {
   await env.DB.exec("DELETE FROM feeds");
 });
@@ -660,49 +699,14 @@ describe("購読を変える", () => {
       now: new Date(),
     });
     // 購読のフォルダを書き換える文の直前に、ほかのリクエストが News へ移す
-    let armed = true;
-    const hooked = new Proxy(env.DB, {
-      get(target, prop) {
-        if (prop !== "prepare") {
-          const value = Reflect.get(target, prop, target);
-          return typeof value === "function" ? value.bind(target) : value;
-        }
-        return (query: string) => {
-          const statement = target.prepare(query);
-          if (!armed || !/^\s*update\s+"subscriptions"/i.test(query)) return statement;
-          armed = false;
-          return new Proxy(statement, {
-            get(stmt, key) {
-              const value = Reflect.get(stmt, key, stmt);
-              if (key === "bind") {
-                return (...args: unknown[]) => {
-                  const bound = value.apply(stmt, args) as D1PreparedStatement;
-                  const run =
-                    (method: "all" | "first" | "run" | "raw") =>
-                    async (...rest: unknown[]) => {
-                      await env.DB.prepare(
-                        "UPDATE subscriptions SET folder_id = ? WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
-                      )
-                        .bind(news.id, user.id, feed.id)
-                        .run();
-                      return (bound[method] as (...a: unknown[]) => unknown).apply(bound, rest);
-                    };
-                  return new Proxy(bound, {
-                    get(b, k) {
-                      if (k === "all" || k === "first" || k === "run" || k === "raw") return run(k);
-                      const v = Reflect.get(b, k, b);
-                      return typeof v === "function" ? v.bind(b) : v;
-                    },
-                  });
-                };
-              }
-              return typeof value === "function" ? value.bind(stmt) : value;
-            },
-          });
-        };
-      },
+    const hooked = d1BeforeStatement(/^\s*update\s+"subscriptions"/i, async () => {
+      await env.DB.prepare(
+        "UPDATE subscriptions SET folder_id = ? WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
+      )
+        .bind(news.id, user.id, feed.id)
+        .run();
     });
-    const { platform } = createTestPlatform({ db: drizzle(hooked, { schema }) });
+    const { platform } = createTestPlatform({ db: drizzle(hooked.db, { schema }) });
 
     const res = await reader(platform, user.token)("/reader/api/0/subscription/edit", {
       form: [
@@ -713,13 +717,44 @@ describe("購読を変える", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(armed).toBe(false);
+    expect(hooked.fired()).toBe(true);
     const row = await env.DB.prepare(
       "SELECT folder_id FROM subscriptions WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
     )
       .bind(user.id, feed.id)
       .first<{ folder_id: string | null }>();
     expect(row?.folder_id).toBe(news.id);
+  });
+
+  it("disable-tag がフォルダに消した印を付けたあとで落ちても、送り直せば購読をフォルダから外す（#38 のレビュー）", async () => {
+    const { user, feed } = await setup();
+    const failing = d1BeforeStatement(/^\s*update\s+"subscriptions"/i, async () => {
+      throw new Error("injected failure");
+    });
+    const broken = createTestPlatform({ db: drizzle(failing.db, { schema }) }).platform;
+
+    const first = await reader(broken, user.token)("/reader/api/0/disable-tag", {
+      form: [["s", "user/-/label/Tech"]],
+    });
+    expect(first.status).toBe(500);
+    expect(failing.fired()).toBe(true);
+
+    const { platform } = createTestPlatform();
+    const send = reader(platform, user.token);
+    expect(
+      (await send("/reader/api/0/disable-tag", { form: [["s", "user/-/label/Tech"]] })).status,
+    ).toBe(200);
+
+    const list = (await (await send("/reader/api/0/subscription/list")).json()) as {
+      subscriptions: { id: string; categories: unknown[] }[];
+    };
+    expect(list.subscriptions.find((s) => s.id === `feed/${feed.id}`)?.categories).toEqual([]);
+    const row = await env.DB.prepare(
+      "SELECT folder_id FROM subscriptions WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
+    )
+      .bind(user.id, feed.id)
+      .first<{ folder_id: string | null }>();
+    expect(row?.folder_id).toBeNull();
   });
 
   it("rename-tag でフォルダの名前を変え、disable-tag で消す", async () => {
