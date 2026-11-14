@@ -3,22 +3,39 @@ import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqli
 
 /**
  * ユーザー。パスワードは持たない（docs/decisions/accounts.md）。
- *
- * 外部の提供元でのログイン（OpenID Connect）では、issuer と subject で見分ける。
- * 管理者がコマンドで先に作ったユーザーは、issuer と subject が空のまま始まり、
- * そのメールで初めてログインしたときに結び付く。
+ * 外部の提供元でのログインは identities に置き、1 人が複数の提供元を持てる。
  */
-export const users = sqliteTable(
-  "users",
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  /** 小文字にそろえる。許可の判定、提供元のログインとの結び付け、表示に使う */
+  email: text("email").notNull().unique(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+/**
+ * 外部の提供元（Google、GitHub など）でのログイン。issuer と subject で見分ける。
+ *
+ * 初めてその提供元でログインしたとき、確認済みのメールが一致するユーザーに結び付ける。
+ * 結び付けたあとは issuer と subject で見分けるので、提供元の側でメールが変わっても
+ * 同じユーザーのまま。
+ */
+export const identities = sqliteTable(
+  "identities",
   {
     id: text("id").primaryKey(),
-    /** 小文字にそろえる。許可の判定と表示に使う */
-    email: text("email").notNull().unique(),
-    issuer: text("issuer"),
-    subject: text("subject"),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    issuer: text("issuer").notNull(),
+    subject: text("subject").notNull(),
+    /** 最後にログインしたときに、提供元が確認済みとしたメール */
+    email: text("email").notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   },
-  (t) => [uniqueIndex("users_issuer_subject_idx").on(t.issuer, t.subject)],
+  (t) => [
+    uniqueIndex("identities_issuer_subject_idx").on(t.issuer, t.subject),
+    index("identities_user_id_idx").on(t.userId),
+  ],
 );
 
 /**
@@ -117,6 +134,7 @@ export const articles = sqliteTable(
 );
 
 export type User = typeof users.$inferSelect;
+export type Identity = typeof identities.$inferSelect;
 export type AccessToken = typeof accessTokens.$inferSelect;
 export type Folder = typeof folders.$inferSelect;
 export type Feed = typeof feeds.$inferSelect;
