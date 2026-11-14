@@ -24,7 +24,9 @@
     "consumers": [
       {
         "queue": "sendo-jobs",
-        "max_batch_size": 10,
+        // D1 は 1 回の実行で 50 クエリまで（無料プラン）。まとめて受け取るとジョブの分が足し合わさる
+        // ので、1 件ずつ処理する。各ジョブは、それだけで上限に収まるように作る（src/db/chunk.ts）
+        "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_retries": 3
       }

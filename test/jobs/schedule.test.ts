@@ -36,6 +36,7 @@ describe("enqueueDueFeeds", () => {
     }
 
     expect(await enqueueDueFeeds(platform)).toBe(count);
-    expect(new Set(enqueued.map((job) => job.feedId)).size).toBe(count);
+    const ids = enqueued.flatMap((job) => (job.type === "fetch-feed" ? [job.feedId] : []));
+    expect(new Set(ids).size).toBe(count);
   });
 });

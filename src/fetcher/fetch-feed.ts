@@ -1,3 +1,4 @@
+import { readLimited, TooLargeError } from "../lib/read-limited";
 import { toFetchableUrl, UrlNotAllowedError } from "./url-guard";
 
 export type FetchFeedOptions = {
@@ -89,7 +90,7 @@ export async function fetchFeed(url: string, options: FetchFeedOptions): Promise
         throw new FetchFeedError("http_status", `unexpected status ${res.status}`, res.status);
       }
 
-      const bytes = await readLimited(res, maxBytes);
+      const bytes = await readLimited(res.body, res.headers.get("content-length"), maxBytes);
       return {
         status: "ok",
         url: current.href,
@@ -100,6 +101,7 @@ export async function fetchFeed(url: string, options: FetchFeedOptions): Promise
     }
   } catch (error) {
     if (error instanceof FetchFeedError) throw error;
+    if (error instanceof TooLargeError) throw new FetchFeedError("too_large", error.message);
     if (signal.aborted) throw new FetchFeedError("timeout", `timed out after ${timeoutMs}ms`);
     throw new FetchFeedError("network", error instanceof Error ? error.message : String(error));
   }
@@ -118,37 +120,6 @@ function guard(url: string | URL): URL {
 
 function isRedirect(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
-}
-
-async function readLimited(res: Response, maxBytes: number): Promise<Uint8Array> {
-  const declared = Number(res.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    await res.body?.cancel();
-    throw new FetchFeedError("too_large", `content-length ${declared} exceeds ${maxBytes}`);
-  }
-  if (!res.body) return new Uint8Array();
-
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new FetchFeedError("too_large", `body exceeds ${maxBytes} bytes`);
-    }
-    chunks.push(value);
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
 }
 
 /**

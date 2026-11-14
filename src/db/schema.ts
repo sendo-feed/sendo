@@ -1,5 +1,12 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+/** フィードをまとめるフォルダ（Feedly のカテゴリ、OPML の入れ子の outline）。1 つのフィードは 1 つのフォルダに入る */
+export const folders = sqliteTable("folders", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 /** 購読しているフィード */
 export const feeds = sqliteTable(
   "feeds",
@@ -9,6 +16,11 @@ export const feeds = sqliteTable(
     url: text("url").notNull().unique(),
     title: text("title"),
     siteUrl: text("site_url"),
+    /**
+     * 入っているフォルダ。フォルダを消すときは、先にこの列を null に戻す。
+     * drizzle-kit は既存の表に列を足すときに ON DELETE を付けないので、DB には頼らない
+     */
+    folderId: text("folder_id").references(() => folders.id),
     /** 条件付き GET に使う。前回の応答の ETag ／ Last-Modified */
     etag: text("etag"),
     lastModified: text("last_modified"),
@@ -20,7 +32,10 @@ export const feeds = sqliteTable(
     lastError: text("last_error"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   },
-  (t) => [index("feeds_next_fetch_at_idx").on(t.nextFetchAt)],
+  (t) => [
+    index("feeds_next_fetch_at_idx").on(t.nextFetchAt),
+    index("feeds_folder_id_idx").on(t.folderId),
+  ],
 );
 
 /** フィードから取り込んだ記事 */
@@ -50,6 +65,8 @@ export const articles = sqliteTable(
   ],
 );
 
+export type Folder = typeof folders.$inferSelect;
 export type Feed = typeof feeds.$inferSelect;
+export type NewFeed = typeof feeds.$inferInsert;
 export type Article = typeof articles.$inferSelect;
 export type NewArticle = typeof articles.$inferInsert;

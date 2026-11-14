@@ -8,6 +8,13 @@
       "when": 1794628557828,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1794630663870,
+      "tag": "0001_folders",
+      "breakpoints": true
     }
   ]
 }

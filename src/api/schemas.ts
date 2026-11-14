@@ -1,5 +1,5 @@
 import { z } from "@hono/zod-openapi";
-import type { Article, Feed } from "../db/schema";
+import type { Article, Feed, Folder } from "../db/schema";
 
 export const ErrorSchema = z
   .object({
@@ -22,6 +22,7 @@ export const FeedSchema = z
     url: z.string().openapi({ example: "https://example.com/feed.xml" }),
     title: z.string().nullable(),
     siteUrl: z.string().nullable(),
+    folderId: z.string().nullable(),
     lastFetchedAt: dateTime.nullable(),
     nextFetchAt: dateTime,
     errorCount: z.int().nonnegative(),
@@ -29,6 +30,14 @@ export const FeedSchema = z
     createdAt: dateTime,
   })
   .openapi("Feed");
+
+export const FolderSchema = z
+  .object({ id: z.string(), name: z.string(), createdAt: dateTime })
+  .openapi("Folder");
+
+export function toFolderResponse(folder: Folder): z.infer<typeof FolderSchema> {
+  return { id: folder.id, name: folder.name, createdAt: folder.createdAt.toISOString() };
+}
 
 export const ArticleSchema = z
   .object({
@@ -54,6 +63,7 @@ export function toFeedResponse(feed: Feed): z.infer<typeof FeedSchema> {
     url: feed.url,
     title: feed.title,
     siteUrl: feed.siteUrl,
+    folderId: feed.folderId,
     lastFetchedAt: feed.lastFetchedAt?.toISOString() ?? null,
     nextFetchAt: feed.nextFetchAt.toISOString(),
     errorCount: feed.errorCount,

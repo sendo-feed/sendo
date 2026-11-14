@@ -42,6 +42,7 @@ describe("handleQueueBatch", () => {
     const ran: string[] = [];
 
     await handleQueueBatch(batch, async (job) => {
+      if (job.type !== "fetch-feed") throw new Error(`unexpected job: ${job.type}`);
       ran.push(job.feedId);
       if (job.feedId === "f2") throw new Error("boom");
     });

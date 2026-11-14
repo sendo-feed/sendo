@@ -14,16 +14,33 @@ export function createCloudflarePlatform(env: Env): Platform {
   };
 }
 
-/** Queues の sendBatch は、1 回に 100 件まで */
-const SEND_BATCH_LIMIT = 100;
+/**
+ * Queues の sendBatch は、1 回に 100 件、合わせて 256KB まで
+ * （https://developers.cloudflare.com/queues/platform/limits/）。余裕を持って分ける。
+ */
+const SEND_BATCH_MAX_MESSAGES = 100;
+const SEND_BATCH_MAX_BYTES = 200 * 1024;
 
 export function createQueueJobQueue(queue: Queue): JobQueue {
   return {
     async enqueue(jobs) {
-      for (let i = 0; i < jobs.length; i += SEND_BATCH_LIMIT) {
-        const chunk = jobs.slice(i, i + SEND_BATCH_LIMIT);
-        await queue.sendBatch(chunk.map((body) => ({ body, contentType: "json" })));
+      let batch: Job[] = [];
+      let bytes = 0;
+      const flush = async () => {
+        if (batch.length === 0) return;
+        await queue.sendBatch(batch.map((body) => ({ body, contentType: "json" })));
+        batch = [];
+        bytes = 0;
+      };
+      for (const job of jobs) {
+        const size = new TextEncoder().encode(JSON.stringify(job)).byteLength;
+        if (batch.length >= SEND_BATCH_MAX_MESSAGES || bytes + size > SEND_BATCH_MAX_BYTES) {
+          await flush();
+        }
+        batch.push(job);
+        bytes += size;
       }
+      await flush();
     },
   };
 }
