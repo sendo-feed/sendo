@@ -118,7 +118,7 @@ const MarkReadBodySchema = z
     }),
     cursor: z.string().max(1024).optional().openapi({
       description:
-        "同期で手元に届いた記事だけを既読にする。hasMore が false になるまで同期した、最後の応答の cursor を渡す（ローカルファーストのクライアント向け）。途中の応答の cursor は 400（sync_incomplete）",
+        "同期で未読のまま手元に届いた記事だけを既読にする。hasMore が false になるまで同期した、最後の応答の cursor を渡す（ローカルファーストのクライアント向け）。途中の応答の cursor は 400（sync_incomplete）。その同期のあとに未読に戻した記事は、どの端末で戻したかによらず入らない（既読にするなら ids で送る）",
     }),
   })
   .superRefine((body, ctx) => {
@@ -210,8 +210,8 @@ export function articlesApi(platform: Platform) {
       } else if (body.cursor !== undefined) {
         const cursor = decodeSyncCursor(body.cursor);
         if (cursor === null) return c.json(errorBody("invalid_cursor", "cursor is invalid"), 400);
-        // 送り切っていない位置では、受信箱に入ったときの番号が境界より前でも、番号が後ろへ動いて
-        // まだ届いていない記事がありうる（docs/decisions/sync.md の 6、#25 のレビュー）
+        // 送り切っていない位置では、既読・未読が境界より前に変わった記事でも、番号が後ろへ動いて
+        // まだ届いていないことがある（docs/decisions/sync.md の 6、#25 のレビュー）
         if (!cursor.articles.done) {
           return c.json(
             errorBody("sync_incomplete", "sync until hasMore is false, then pass that cursor"),

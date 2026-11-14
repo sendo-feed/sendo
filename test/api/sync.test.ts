@@ -652,6 +652,73 @@ describe("まとめて既読の境界にカーソルを使う", () => {
     expect(await res.json()).toEqual({ updated: 2 });
   });
 
+  it("最初の同期で送らなかった古い既読の記事を、ほかの端末で未読に戻しても、既読にしない（#25 のレビュー）", async () => {
+    const { platform } = createTestPlatform();
+    const feed = await subscribeFeed(platform, {});
+    await seedArticles(platform, feed.id, [
+      { id: "old", receivedAt: new Date(Date.now() - 90 * DAY), read: true },
+      { id: "new", receivedAt: new Date(Date.now() - 1000) },
+    ]);
+    const client = createClient(platform);
+    await client.sync();
+    expect(client.state.articles.has("old")).toBe(false);
+
+    // ほかの端末で未読に戻した。この端末はまだ同期していない
+    await requestApp(platform, "/api/v1/articles/old", { method: "PATCH", json: { read: false } });
+    const res = await requestApp(platform, "/api/v1/articles/mark-read", {
+      method: "POST",
+      json: { all: true, cursor: client.cursor() },
+    });
+
+    expect(await res.json()).toEqual({ updated: 1 });
+    await client.sync();
+    expect(client.state.articles.get("old")?.read).toBe(false);
+    expect(client.state.articles.get("new")?.read).toBe(true);
+  });
+
+  it("既読として手元に届いた記事を、ほかの端末で未読に戻しても、既読にしない", async () => {
+    const { platform } = createTestPlatform();
+    const feed = await subscribeFeed(platform, {});
+    const recent = new Date(Date.now() - 1000);
+    await seedArticles(platform, feed.id, [
+      { id: "was-read", receivedAt: recent, read: true },
+      { id: "unread", receivedAt: recent },
+    ]);
+    const client = createClient(platform);
+    await client.sync();
+    expect(client.state.articles.get("was-read")?.read).toBe(true);
+
+    await requestApp(platform, "/api/v1/articles/was-read", {
+      method: "PATCH",
+      json: { read: false },
+    });
+    const res = await requestApp(platform, "/api/v1/articles/mark-read", {
+      method: "POST",
+      json: { all: true, cursor: client.cursor() },
+    });
+
+    expect(await res.json()).toEqual({ updated: 1 });
+    await client.sync();
+    expect(client.state.articles.get("was-read")?.read).toBe(false);
+  });
+
+  it("未読のまま手元に届いた記事は、未読の操作が送り直されても既読にする", async () => {
+    const { platform } = createTestPlatform();
+    const feed = await subscribeFeed(platform, {});
+    await seedArticles(platform, feed.id, [{ id: "u", receivedAt: new Date(Date.now() - 1000) }]);
+    const client = createClient(platform);
+    await client.sync();
+
+    // すでに未読なので、既読・未読は変わらない（操作キューの送り直しなど）
+    await requestApp(platform, "/api/v1/articles/u", { method: "PATCH", json: { read: false } });
+    const res = await requestApp(platform, "/api/v1/articles/mark-read", {
+      method: "POST",
+      json: { all: true, cursor: client.cursor() },
+    });
+
+    expect(await res.json()).toEqual({ updated: 1 });
+  });
+
   it("送り切っていない（hasMore が true の）応答のカーソルは 400。送り切れば使える（#25 のレビュー）", async () => {
     const { platform } = createTestPlatform();
     const feed = await subscribeFeed(platform, {});

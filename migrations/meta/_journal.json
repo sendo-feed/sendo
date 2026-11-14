@@ -43,6 +43,20 @@
       "when": 1794653259640,
       "tag": "0005_user_article_removals_trigger",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794656276588,
+      "tag": "0006_read_seq",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1794656280471,
+      "tag": "0007_read_seq_fill",
+      "breakpoints": true
     }
   ]
 }

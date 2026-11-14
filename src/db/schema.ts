@@ -215,10 +215,12 @@ export const userArticles = sqliteTable(
     starredAt: integer("starred_at", { mode: "timestamp_ms" }),
     seq: seq(),
     /**
-     * 受信箱に入ったときの変更番号。seq と違って、既読やスターを変えても変わらない。
-     * 「同期で手元に届いた記事だけを既読にする」の境界に使う（docs/decisions/sync.md の 6）
+     * 既読・未読が最後に変わったときの変更番号（受信箱に入ったときを含む）。seq と違って、
+     * スターを変えても変わらない。「同期で手元に届いた記事だけを既読にする」の境界に使う
+     * （docs/decisions/sync.md の 6）。送り切った位置までにこの番号があり、今も未読の記事は、
+     * 未読の状態で手元に届いている
      */
-    receivedSeq: integer("received_seq").notNull().default(0),
+    readSeq: integer("read_seq").notNull().default(0),
   },
   (t) => [
     primaryKey({ columns: [t.userId, t.articleId] }),

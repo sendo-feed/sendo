@@ -52,7 +52,7 @@ const INBOX_COLUMNS = columns(
   "published_at",
   "created_at",
   "seq",
-  "received_seq",
+  "read_seq",
 );
 
 /**
@@ -276,6 +276,10 @@ export async function getInboxArticle(
  *
  * すでにその状態なら時刻を変えない。先に読んでから書くと、同時に届いた 2 つの「既読」が
  * どちらも未読を見て後の時刻で上書きするので、UPDATE の中で coalesce して残す。
+ *
+ * 既読・未読が変わったときは、read_seq も進める（まとめて既読の境界。markArticlesRead）。
+ * 変わったかどうかも同じ文の中で、変える前の値で判定する。すでにその状態なら進めないので、
+ * 同じ操作が送り直されても、手元に届いている記事がまとめて既読から外れない。
  * @returns 変えたあとの記事。その人の受信箱になければ undefined
  */
 export async function setArticleState(
@@ -289,9 +293,12 @@ export async function setArticleState(
   },
 ): Promise<InboxArticle | undefined> {
   const now = input.now.getTime();
-  const set: { readAt?: SQL | null; starredAt?: SQL | null; seq?: SQL } = {};
+  const set: { readAt?: SQL | null; starredAt?: SQL | null; seq?: SQL; readSeq?: SQL } = {};
   if (input.read !== undefined) {
     set.readAt = input.read ? sql`coalesce(${ua.readAt}, ${now})` : null;
+    // SET の式は、どれも変える前の行の値で計算される
+    const changes = input.read ? isNull(ua.readAt) : isNotNull(ua.readAt);
+    set.readSeq = sql`case when ${changes} then ${nextSeq(ua)} else ${ua.readSeq} end`;
   }
   if (input.starred !== undefined) {
     set.starredAt = input.starred ? sql`coalesce(${ua.starredAt}, ${now})` : null;
@@ -312,9 +319,10 @@ export async function setArticleState(
 /**
  * まとめて既読にするときの境界。
  * - until：その時刻より前に受信箱に入った記事（記事の一覧の asOf を渡す）
- * - synced：同期で手元に届いた記事（同期のカーソルの記事の位置を渡す。docs/decisions/sync.md）。
- *   記事を送り切った位置（SyncPosition の done）に限る。送り切っていない位置では、境界より前に
- *   受信箱に入った記事でも、番号が後ろへ動いてまだ届いていないことがある
+ * - synced：同期で未読のまま手元に届いた記事（同期のカーソルの記事の位置を渡す。
+ *   docs/decisions/sync.md の 6）。記事を送り切った位置（SyncPosition の done）に限る。送り切って
+ *   いない位置では、既読・未読が境界より前に変わった記事でも、番号が後ろへ動いてまだ届いていない
+ *   ことがある
  */
 export type MarkReadBoundary = { until: Date } | { synced: { seq: number; id: string | null } };
 
@@ -351,13 +359,17 @@ export async function markArticlesRead(
     // 境界と同じミリ秒の記事は、未読のまま残す側に倒す
     conditions.push(lt(ua.createdAt, scope.until));
   } else {
-    // 同期で届いた位置までに受信箱に入った記事。境界には、受信箱に入ったときの番号（received_seq）を
-    // 使う。今の番号（seq）はスターを付けるなどで進むので、手元に届いている記事まで外れてしまう
+    // 同期で未読のまま手元に届いた記事。境界には、既読・未読が最後に変わったときの番号（read_seq）を
+    // 使う。送り切った位置までにこの番号があり、今も未読なら、未読の状態で手元に届いている。
+    // - 今の番号（seq）はスターを付けるなどで進むので、手元に届いている記事まで外れてしまう
+    // - 受信箱に入ったときの番号は、未読に戻しても変わらないので、手元に既読として届いた記事や、
+    //   既読だったので最初の同期で送らなかった記事を、ほかの端末で未読に戻したものまで既読にしてしまう
+    // ほかの端末か自分かは区別しないので、同期のあとに自分で未読に戻した記事も外れる（未読のまま残る）
     const { seq, id } = scope.synced;
     const upTo =
       id === null
-        ? lte(ua.receivedSeq, seq)
-        : or(lt(ua.receivedSeq, seq), and(eq(ua.receivedSeq, seq), lte(ua.articleId, id)));
+        ? lte(ua.readSeq, seq)
+        : or(lt(ua.readSeq, seq), and(eq(ua.readSeq, seq), lte(ua.articleId, id)));
     if (upTo) conditions.push(upTo);
   }
   if (!("ids" in scope)) {
@@ -367,7 +379,7 @@ export async function markArticlesRead(
 
   const updated = await db
     .update(ua)
-    .set({ readAt: input.now, seq: nextSeq(ua) })
+    .set({ readAt: input.now, seq: nextSeq(ua), readSeq: nextSeq(ua) })
     .where(and(...conditions))
     .returning({ id: ua.articleId })
     .all();

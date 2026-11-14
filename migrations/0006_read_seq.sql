@@ -1,0 +1,1 @@
+ALTER TABLE `user_articles` RENAME COLUMN "received_seq" TO "read_seq";
