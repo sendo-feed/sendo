@@ -47,20 +47,28 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
   }
 
   const base = (url: string | undefined) => toHttpUrl(url, baseUrl);
-  const text = (value: string | undefined, max: number) => toPlainText(value, max);
+  // 欄によって中身が HTML かプレーンテキストかが決まっている。HTML の欄だけタグを除く。
+  // プレーンテキストの欄にタグの除去をかけると、「x < y」のような本文が壊れる
+  const html = (value: string | undefined, max: number) => htmlToText(value, max);
+  const plain = (value: string | undefined, max: number) => normalizeText(value, max);
+  // Atom の text 要素は、type 属性で HTML かどうかが分かる
+  const atomText = (value: { value?: string; type?: string } | undefined, max: number) =>
+    value?.type === "html" || value?.type === "xhtml"
+      ? html(value.value, max)
+      : plain(value?.value, max);
 
   switch (parsed.format) {
     case "rss": {
       const { feed } = parsed;
       return {
-        title: text(feed.title, MAX_TITLE_LENGTH),
+        title: plain(feed.title, MAX_TITLE_LENGTH),
         siteUrl: base(feed.link),
         items: (feed.items ?? []).map((item) => ({
           id: nonEmpty(item.guid?.value),
           url: base(item.link),
-          title: text(item.title, MAX_TITLE_LENGTH),
-          summary: text(item.description ?? item.content?.encoded, MAX_SUMMARY_LENGTH),
-          author: text(item.authors?.[0]?.name ?? item.dc?.creators?.[0], MAX_TITLE_LENGTH),
+          title: plain(item.title, MAX_TITLE_LENGTH),
+          summary: html(item.description ?? item.content?.encoded, MAX_SUMMARY_LENGTH),
+          author: plain(item.authors?.[0]?.name ?? item.dc?.creators?.[0], MAX_TITLE_LENGTH),
           publishedAt: toDate(item.pubDate ?? item.dc?.dates?.[0]),
         })),
       };
@@ -68,14 +76,14 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
     case "atom": {
       const { feed } = parsed;
       return {
-        title: text(feed.title?.value, MAX_TITLE_LENGTH),
+        title: atomText(feed.title, MAX_TITLE_LENGTH),
         siteUrl: base(alternateLink(feed.links)),
         items: (feed.entries ?? []).map((entry) => ({
           id: nonEmpty(entry.id),
           url: base(alternateLink(entry.links)),
-          title: text(entry.title?.value, MAX_TITLE_LENGTH),
-          summary: text(entry.summary?.value ?? entry.content?.value, MAX_SUMMARY_LENGTH),
-          author: text(entry.authors?.[0]?.name, MAX_TITLE_LENGTH),
+          title: atomText(entry.title, MAX_TITLE_LENGTH),
+          summary: atomText(entry.summary ?? entry.content, MAX_SUMMARY_LENGTH),
+          author: plain(entry.authors?.[0]?.name, MAX_TITLE_LENGTH),
           publishedAt: toDate(entry.published ?? entry.updated ?? entry.dc?.dates?.[0]),
         })),
       };
@@ -83,14 +91,14 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
     case "rdf": {
       const { feed } = parsed;
       return {
-        title: text(feed.title, MAX_TITLE_LENGTH),
+        title: plain(feed.title, MAX_TITLE_LENGTH),
         siteUrl: base(feed.link),
         items: (feed.items ?? []).map((item) => ({
           id: null,
           url: base(item.link),
-          title: text(item.title, MAX_TITLE_LENGTH),
-          summary: text(item.description ?? item.content?.encoded, MAX_SUMMARY_LENGTH),
-          author: text(item.dc?.creators?.[0], MAX_TITLE_LENGTH),
+          title: plain(item.title, MAX_TITLE_LENGTH),
+          summary: html(item.description ?? item.content?.encoded, MAX_SUMMARY_LENGTH),
+          author: plain(item.dc?.creators?.[0], MAX_TITLE_LENGTH),
           publishedAt: toDate(item.dc?.dates?.[0]),
         })),
       };
@@ -98,14 +106,17 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
     case "json": {
       const { feed } = parsed;
       return {
-        title: text(feed.title, MAX_TITLE_LENGTH),
+        title: plain(feed.title, MAX_TITLE_LENGTH),
         siteUrl: base(feed.home_page_url),
         items: (feed.items ?? []).map((item) => ({
           id: nonEmpty(item.id),
           url: base(item.url),
-          title: text(item.title, MAX_TITLE_LENGTH),
-          summary: text(item.summary ?? item.content_text ?? item.content_html, MAX_SUMMARY_LENGTH),
-          author: text(item.authors?.[0]?.name, MAX_TITLE_LENGTH),
+          title: plain(item.title, MAX_TITLE_LENGTH),
+          // summary と content_text はプレーンテキスト、content_html だけが HTML
+          summary:
+            plain(item.summary ?? item.content_text, MAX_SUMMARY_LENGTH) ??
+            html(item.content_html, MAX_SUMMARY_LENGTH),
+          author: plain(item.authors?.[0]?.name, MAX_TITLE_LENGTH),
           publishedAt: toDate(item.date_published ?? item.date_modified),
         })),
       };
@@ -151,7 +162,7 @@ const NAMED_ENTITIES: Record<string, string> = {
  * 結果は「表示する側でエスケープする文字列」として扱う。ここでタグを除くのは
  * 読みやすさと大きさのためで、安全のためのサニタイズではない。
  */
-export function toPlainText(value: string | undefined, maxLength: number): string | null {
+export function htmlToText(value: string | undefined, maxLength: number): string | null {
   if (value === undefined) return null;
   const text = value
     .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
@@ -168,11 +179,17 @@ export function toPlainText(value: string | undefined, maxLength: number): strin
           : entity;
       }
       return NAMED_ENTITIES[code.toLowerCase()] ?? entity;
-    })
-    .replace(/\s+/g, " ")
-    .trim();
+    });
+  return normalizeText(text, maxLength);
+}
+
+/** プレーンテキストの空白をまとめ、長すぎれば切り詰める。中身には手を加えない */
+export function normalizeText(value: string | undefined, maxLength: number): string | null {
+  if (value === undefined) return null;
+  const text = value.replace(/\s+/g, " ").trim();
   if (text === "") return null;
-  return [...text].length > maxLength ? `${[...text].slice(0, maxLength - 1).join("")}…` : text;
+  const chars = [...text];
+  return chars.length > maxLength ? `${chars.slice(0, maxLength - 1).join("")}…` : text;
 }
 
 function toDate(value: string | undefined): Date | null {

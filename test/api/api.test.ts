@@ -33,7 +33,11 @@ describe("認証", () => {
 
     expect(res.status).toBe(200);
     const doc = await json(res);
-    expect(doc).toMatchObject({ openapi: "3.1.0", info: { title: "Sendo API" } });
+    expect(doc).toMatchObject({
+      openapi: "3.1.0",
+      info: { title: "Sendo API" },
+      servers: [{ url: "/api/v1" }],
+    });
     expect(Object.keys(doc.paths as Json)).toEqual(expect.arrayContaining(["/feeds", "/articles"]));
   });
 });

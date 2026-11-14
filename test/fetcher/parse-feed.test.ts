@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  htmlToText,
   MAX_SUMMARY_LENGTH,
+  normalizeText,
   ParseFeedError,
   parseFeed,
-  toPlainText,
 } from "../../src/fetcher/parse-feed";
 
 const BASE = "https://example.com/feed.xml";
@@ -154,25 +155,80 @@ describe("parseFeed", () => {
   });
 });
 
-describe("toPlainText", () => {
+describe("parseFeed のプレーンテキストの欄", () => {
+  it("JSON Feed の summary と content_text は、タグに見える文字も残す", () => {
+    const feed = parseFeed(
+      JSON.stringify({
+        version: "https://jsonfeed.org/version/1.1",
+        title: "A <B> &amp; C",
+        items: [
+          { id: "1", title: "Use <vector> in C++", content_text: "x < y && y > z" },
+          { id: "2", summary: "a &lt; b" },
+          { id: "3", content_html: "<p>x &lt; y</p>" },
+        ],
+      }),
+      BASE,
+    );
+
+    expect(feed.title).toBe("A <B> &amp; C");
+    expect(feed.items.map(({ title, summary }) => ({ title, summary }))).toEqual([
+      { title: "Use <vector> in C++", summary: "x < y && y > z" },
+      { title: null, summary: "a &lt; b" },
+      { title: null, summary: "x < y" },
+    ]);
+  });
+
+  it("RSS のタイトルはプレーンテキストとして扱い、description だけ HTML として扱う", () => {
+    const feed = parseFeed(
+      `<rss version="2.0"><channel><title>t</title>
+        <item><title>x &lt; y &amp;&amp; y &gt; z</title>
+          <description>&lt;p&gt;x &amp;lt; y&lt;/p&gt;</description></item>
+      </channel></rss>`,
+      BASE,
+    );
+
+    expect(feed.items[0]).toMatchObject({ title: "x < y && y > z", summary: "x < y" });
+  });
+
+  it("Atom は type 属性で HTML かどうかを決める", () => {
+    const feed = parseFeed(
+      `<feed xmlns="http://www.w3.org/2005/Atom"><title>f</title><id>f</id>
+        <updated>2026-11-01T00:00:00Z</updated>
+        <entry><id>1</id><updated>2026-11-01T00:00:00Z</updated>
+          <title type="text">a &lt;b&gt; c</title><summary type="html">&lt;i&gt;s&lt;/i&gt;</summary></entry>
+      </feed>`,
+      BASE,
+    );
+
+    expect(feed.items[0]).toMatchObject({ title: "a <b> c", summary: "s" });
+  });
+});
+
+describe("normalizeText", () => {
+  it("空白をまとめるだけで、中身には手を加えない", () => {
+    expect(normalizeText("  a <b>\n\n &amp; c ", 100)).toBe("a <b> &amp; c");
+  });
+});
+
+describe("htmlToText", () => {
   it("タグ、script、コメントを除き、空白をまとめる", () => {
-    expect(toPlainText("<p>a <script>alert(1)</script><!-- c --><b>b</b>\n\n c</p>", 100)).toBe(
+    expect(htmlToText("<p>a <script>alert(1)</script><!-- c --><b>b</b>\n\n c</p>", 100)).toBe(
       "a b c",
     );
   });
 
   it("文字参照をもとに戻す", () => {
-    expect(toPlainText("1 &lt; 2 &amp;&amp; &#x3042;&#12354;", 100)).toBe("1 < 2 && ああ");
+    expect(htmlToText("1 &lt; 2 &amp;&amp; &#x3042;&#12354;", 100)).toBe("1 < 2 && ああ");
   });
 
   it("長すぎれば切り詰める（サロゲートペアを分断しない）", () => {
-    const text = toPlainText("😀".repeat(MAX_SUMMARY_LENGTH + 10), MAX_SUMMARY_LENGTH);
+    const text = htmlToText("😀".repeat(MAX_SUMMARY_LENGTH + 10), MAX_SUMMARY_LENGTH);
     expect([...(text ?? "")]).toHaveLength(MAX_SUMMARY_LENGTH);
     expect(text?.endsWith("…")).toBe(true);
   });
 
   it("中身がなければ null", () => {
-    expect(toPlainText("  <br/> ", 100)).toBeNull();
-    expect(toPlainText(undefined, 100)).toBeNull();
+    expect(htmlToText("  <br/> ", 100)).toBeNull();
+    expect(htmlToText(undefined, 100)).toBeNull();
   });
 });

@@ -16,6 +16,8 @@ export function createApi(platform: Platform) {
   api.doc31("/openapi.json", {
     openapi: "3.1.0",
     info: { title: "Sendo API", version: "0.0.0" },
+    // paths は /api/v1 からの相対で書かれる。クライアントが正しい URL を組み立てられるように示す
+    servers: [{ url: "/api/v1" }],
     security: [{ bearerAuth: [] }],
   });
   api.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
