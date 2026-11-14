@@ -89,12 +89,15 @@ async function fetchOrFail(url: string, options: { fetch: typeof fetch }) {
  * コメントや script の中の <link> は読まない。外部から来る入力なので、長さに比例する
  * 時間で読むトークナイザー（lib/html.ts）を使う。
  */
-export function findFeedLinks(html: string, baseUrl: string): FeedCandidate[] {
-  const candidates: FeedCandidate[] = [];
-  const seen = new Set<string>();
+export function findFeedLinks(html: string, pageUrl: string): FeedCandidate[] {
+  const links: { href: string | undefined; title: string | null }[] = [];
+  // 相対 URL の基準は、最初の <base href>（ページの URL に対して解決したもの）。
+  // HTML の決まりでは、<link> より後に書かれていても文書全体に効くので、最後まで読んでから解決する
+  let base: string | null = null;
 
   for (const token of tokenizeHtml(html.slice(0, MAX_SCAN_LENGTH))) {
-    if (token.type !== "tag" || token.name !== "link" || token.closing) continue;
+    if (token.type !== "tag" || token.closing) continue;
+    if (token.name !== "link" && token.name !== "base") continue;
     if (token.attributes.length > MAX_TAG_LENGTH) continue;
 
     const attributes = parseAttributes(token.attributes);
@@ -102,14 +105,25 @@ export function findFeedLinks(html: string, baseUrl: string): FeedCandidate[] {
       const raw = attributes.get(name);
       return raw === undefined ? undefined : decodeEntities(raw);
     };
+
+    if (token.name === "base") {
+      if (base === null && attributes.has("href")) base = toHttpUrl(value("href"), pageUrl);
+      continue;
+    }
+
     const rel = value("rel")?.toLowerCase().split(/\s+/) ?? [];
     const type = value("type")?.toLowerCase().split(";")[0]?.trim() ?? "";
     if (!rel.includes("alternate") || !FEED_TYPES.has(type)) continue;
+    links.push({ href: value("href"), title: value("title")?.trim() || null });
+  }
 
-    const url = toHttpUrl(value("href"), baseUrl);
+  const candidates: FeedCandidate[] = [];
+  const seen = new Set<string>();
+  for (const link of links) {
+    const url = toHttpUrl(link.href, base ?? pageUrl);
     if (url === null || seen.has(url)) continue;
     seen.add(url);
-    candidates.push({ url, title: value("title")?.trim() || null });
+    candidates.push({ url, title: link.title });
   }
   return candidates;
 }

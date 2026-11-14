@@ -33,6 +33,22 @@ describe("findFeedLinks", () => {
     ]);
   });
 
+  it("相対 URL は、最初の <base href> を基準に解決する（<link> より後にあっても効く）", () => {
+    const page = "https://example.com/";
+    const link = '<link rel="alternate" type="application/rss+xml" href="feed.xml">';
+
+    expect(findFeedLinks(`<base href="/blog/">${link}`, page)).toEqual([
+      { url: "https://example.com/blog/feed.xml", title: null },
+    ]);
+    expect(findFeedLinks(`${link}<base href="/blog/"><base href="/other/">`, page)).toEqual([
+      { url: "https://example.com/blog/feed.xml", title: null },
+    ]);
+    // http ／ https 以外の base は使わない
+    expect(findFeedLinks(`<base href="javascript:x">${link}`, page)).toEqual([
+      { url: "https://example.com/feed.xml", title: null },
+    ]);
+  });
+
   it("属性の値の中に「>」があっても、href まで読む", () => {
     expect(
       findFeedLinks(
