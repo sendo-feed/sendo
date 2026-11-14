@@ -1,8 +1,10 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
+import { insertFeeds } from "../../src/db/feeds";
 import { createFolder } from "../../src/db/folders";
-import { deliverNewArticles } from "../../src/db/inbox";
+import { backfillInbox, deliverNewArticles } from "../../src/db/inbox";
+import { assignFolderIfMissing, subscribeMany } from "../../src/db/subscriptions";
 import { SYNC_LIMITS } from "../../src/db/sync";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import {
@@ -20,13 +22,17 @@ type SyncResponse = {
   hasMore: boolean;
   folders: { id: string; name: string; deleted: boolean }[];
   feeds: { id: string; title: string | null; folderId: string | null; deleted: boolean }[];
-  articles: {
-    id: string;
-    feedId: string;
-    title: string | null;
-    readAt: string | null;
-    starredAt: string | null;
-  }[];
+  articles: (
+    | {
+        id: string;
+        feedId: string;
+        title: string | null;
+        readAt: string | null;
+        starredAt: string | null;
+        deleted: false;
+      }
+    | { id: string; deleted: true }
+  )[];
 };
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -49,18 +55,17 @@ function createClient(platform: Parameters<typeof requestApp>[0], token?: string
       if (folder.deleted) state.folders.delete(folder.id);
       else state.folders.set(folder.id, { name: folder.name });
     }
+    // 手元の行を消すのは、その行の deleted が届いたときだけ（docs/decisions/sync.md の 3）。
+    // 購読をやめても、そのフィードの記事は消さない
     for (const feed of body.feeds) {
-      if (feed.deleted) {
-        state.feeds.delete(feed.id);
-        // 購読をやめたフィードの記事は、スターの付いたものを除いて消す
-        for (const [id, article] of state.articles) {
-          if (article.feedId === feed.id && !article.starred) state.articles.delete(id);
-        }
-      } else {
-        state.feeds.set(feed.id, { title: feed.title, folderId: feed.folderId });
-      }
+      if (feed.deleted) state.feeds.delete(feed.id);
+      else state.feeds.set(feed.id, { title: feed.title, folderId: feed.folderId });
     }
     for (const article of body.articles) {
+      if (article.deleted) {
+        state.articles.delete(article.id);
+        continue;
+      }
       state.articles.set(article.id, {
         feedId: article.feedId,
         title: article.title,
@@ -336,6 +341,115 @@ describe("差分", () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({ error: { code: "invalid_cursor" } });
     }
+  });
+});
+
+describe("受信箱から消えた記事", () => {
+  it("スターを外してから購読をやめても、消えた記録が届いて手元から消える（#25 のレビュー）", async () => {
+    const { platform } = createTestPlatform();
+    const feed = await subscribeFeed(platform, {});
+    const recent = new Date(Date.now() - 1000);
+    await seedArticles(platform, feed.id, [{ id: "s", receivedAt: recent, starred: true }]);
+    const client = createClient(platform);
+    await client.sync();
+    expect(client.state.articles.get("s")?.starred).toBe(true);
+
+    // 次の同期までに、スターを外して購読をやめる（受信箱の行が消え、スターを外した変更は届かない）
+    await requestApp(platform, "/api/v1/articles/s", { method: "PATCH", json: { starred: false } });
+    await requestApp(platform, `/api/v1/feeds/${feed.id}`, { method: "DELETE" });
+    const delta = await client.sync();
+
+    expect(delta.articles).toEqual([{ id: "s", deleted: true }]);
+    expect(client.state.articles.has("s")).toBe(false);
+    expect(client.state.feeds.has(feed.id)).toBe(false);
+  });
+
+  it("購読の変更が 1 ページに収まらないときに購読し直しても、入れ直した記事は手元に残る", async () => {
+    const { platform } = createTestPlatform();
+    const now = new Date();
+    const feed = await subscribeFeed(platform, { feedId: "f" });
+    await seedArticles(platform, feed.id, [
+      { id: "x", receivedAt: new Date(now.getTime() - 1000) },
+    ]);
+    const others = Array.from({ length: SYNC_LIMITS.subscriptions }, (_, i) => `o${i}`);
+    await insertFeeds(
+      platform.db,
+      others.map((id) => ({
+        id,
+        url: `https://${id}.example/feed`,
+        nextFetchAt: now,
+        createdAt: now,
+      })),
+    );
+    await subscribeMany(platform.db, {
+      userId: TEST_USER.id,
+      rows: others.map((feedId) => ({ feedId, folderId: null })),
+      now,
+    });
+    const client = createClient(platform);
+    await client.sync();
+
+    // 別の端末で：1 ページに収まらない数の購読をフォルダに入れ、f をやめて、もう一度購読する。
+    // 入れ直した x は記事のほうで先に届き、「f をやめた」は購読のほうで次のページに届く
+    const folder = await createFolder(platform.db, {
+      userId: TEST_USER.id,
+      id: "imported",
+      name: "Imported",
+      now,
+    });
+    await assignFolderIfMissing(platform.db, {
+      userId: TEST_USER.id,
+      folderId: folder.id,
+      feedIds: others,
+    });
+    await requestApp(platform, `/api/v1/feeds/${feed.id}`, { method: "DELETE" });
+    await subscribeMany(platform.db, {
+      userId: TEST_USER.id,
+      rows: [{ feedId: feed.id, folderId: null }],
+      now,
+    });
+    await backfillInbox(platform.db, { userId: TEST_USER.id, feedIds: [feed.id], now });
+    await client.sync();
+
+    expect(client.state.feeds.has(feed.id)).toBe(true);
+    expect(client.state.articles.has("x")).toBe(true);
+  });
+
+  it("最初の同期では、消えた記録を送らない", async () => {
+    const { platform } = createTestPlatform();
+    const gone = await subscribeFeed(platform, {});
+    const kept = await subscribeFeed(platform, {});
+    const recent = new Date(Date.now() - 1000);
+    await seedArticles(platform, gone.id, [{ id: "g1", receivedAt: recent }]);
+    await seedArticles(platform, kept.id, [{ id: "k1", receivedAt: recent }]);
+    await requestApp(platform, `/api/v1/feeds/${gone.id}`, { method: "DELETE" });
+
+    const first = (await (await requestApp(platform, "/api/v1/sync")).json()) as SyncResponse;
+
+    expect(first.articles.map((article) => [article.id, article.deleted])).toEqual([["k1", false]]);
+  });
+
+  it("最初の同期の途中で消えた記事も、最後には手元から消える", async () => {
+    const { platform } = createTestPlatform();
+    const feed = await subscribeFeed(platform, {});
+    const recent = new Date(Date.now() - 1000);
+    await seedArticles(
+      platform,
+      feed.id,
+      Array.from({ length: SYNC_LIMITS.articles + 20 }, (_, i) => ({
+        id: `p${String(i).padStart(4, "0")}`,
+        receivedAt: recent,
+      })),
+    );
+    const client = createClient(platform);
+
+    // 1 ページ目だけ取ったところで、購読をやめる（1 ページ目で届いた記事も受信箱から消える）
+    expect((await client.step()).hasMore).toBe(true);
+    await requestApp(platform, `/api/v1/feeds/${feed.id}`, { method: "DELETE" });
+    await client.sync();
+
+    expect(client.state.articles.size).toBe(0);
+    expect(client.state.feeds.size).toBe(0);
   });
 });
 

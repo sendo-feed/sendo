@@ -81,10 +81,24 @@ const SyncFeedSchema = z
     createdAt: z.iso.datetime().openapi({ description: "購読した時刻" }),
     deleted: deleted.openapi({
       description:
-        "購読をやめた印。true なら、そのフィードの記事をスターの付いたものを除いて手元から消す",
+        "購読をやめた印。true なら、手元の購読を消す。記事は消さない（受信箱から消えた記事は、articles に deleted: true で届く）",
     }),
   })
   .openapi("SyncFeed");
+
+const SyncArticleSchema = z
+  .union([
+    ArticleSchema.extend({
+      deleted: z.literal(false).openapi({ description: "受信箱にある記事" }),
+    }).openapi("SyncInboxArticle"),
+    z
+      .object({
+        id: z.string().openapi({ description: "記事の ID" }),
+        deleted: z.literal(true).openapi({ description: "受信箱から消えた記事。手元から消す" }),
+      })
+      .openapi("SyncRemovedArticle"),
+  ])
+  .openapi("SyncArticle");
 
 const syncRoute = createRoute({
   method: "get",
@@ -94,6 +108,7 @@ const syncRoute = createRoute({
     "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダと購読、未読・スター・直近 30 日の記事）。",
     "応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。",
     "配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。",
+    "deleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。",
     "cursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
   ].join("\n"),
   request: {
@@ -112,7 +127,7 @@ const syncRoute = createRoute({
               hasMore: z.boolean(),
               folders: z.array(SyncFolderSchema),
               feeds: z.array(SyncFeedSchema),
-              articles: z.array(ArticleSchema),
+              articles: z.array(SyncArticleSchema),
             })
             .openapi("SyncChanges"),
         },
@@ -159,7 +174,11 @@ export function syncApi(platform: Platform) {
             createdAt: subscription.createdAt.toISOString(),
             deleted: subscription.deletedAt !== null,
           })),
-          articles: changes.articles.map(toArticleResponse),
+          articles: changes.articles.map((item) =>
+            item.deleted
+              ? { id: item.id, deleted: true as const }
+              : { ...toArticleResponse(item.article), deleted: false as const },
+          ),
         },
         200,
       );
