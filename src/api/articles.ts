@@ -5,6 +5,7 @@ import {
   countUnreadByFeed,
   listInbox,
   MAX_MARK_READ_IDS,
+  type MarkReadBoundary,
   type MarkReadScope,
   markArticlesRead,
   setArticleState,
@@ -14,6 +15,7 @@ import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
 import { ArticleSchema, ErrorSchema, errorBody, toArticleResponse } from "./schemas";
+import { decodeSyncCursor } from "./sync";
 
 const ListQuerySchema = z.object({
   feedId: z.string().min(1).optional().openapi({ description: "このフィードの記事だけにする" }),
@@ -112,7 +114,11 @@ const MarkReadBodySchema = z
     all: z.literal(true).optional(),
     until: z.iso.datetime().optional().openapi({
       description:
-        "この時刻より前に取り込んだ記事だけを既読にする（ids 以外では必須）。記事の一覧の最初のページの asOf を渡す。クライアントの時計の時刻は使わない（サーバーとずれていると、一覧に出ていなかった記事まで既読になる）",
+        "この時刻より前に受信箱に入った記事だけを既読にする。記事の一覧の最初のページの asOf を渡す。クライアントの時計の時刻は使わない（サーバーとずれていると、一覧に出ていなかった記事まで既読になる）",
+    }),
+    cursor: z.string().max(1024).optional().openapi({
+      description:
+        "同期で手元に届いた記事だけを既読にする。最後の同期の応答の cursor を渡す（ローカルファーストのクライアント向け）",
     }),
   })
   .superRefine((body, ctx) => {
@@ -123,8 +129,13 @@ const MarkReadBodySchema = z
         message: "ids ／ feedId ／ folderId ／ all のどれか 1 つを指定する",
       });
     }
-    if (body.ids === undefined && body.until === undefined) {
-      ctx.addIssue({ code: "custom", path: ["until"], message: "ids 以外では until が必須" });
+    const boundaries = [body.until, body.cursor].filter((v) => v !== undefined);
+    if (body.ids === undefined && boundaries.length !== 1) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["until"],
+        message: "ids 以外では、until か cursor のどちらか 1 つが必須",
+      });
     }
   })
   .openapi("MarkReadRequest");
@@ -193,19 +204,28 @@ export function articlesApi(platform: Platform) {
     })
     .openapi(markReadRoute, async (c) => {
       const body = c.req.valid("json");
-      const until = body.until === undefined ? undefined : new Date(body.until);
+      let boundary: MarkReadBoundary | undefined;
+      if (body.until !== undefined) {
+        boundary = { until: new Date(body.until) };
+      } else if (body.cursor !== undefined) {
+        const cursor = decodeSyncCursor(body.cursor);
+        if (cursor === null) return c.json(errorBody("invalid_cursor", "cursor is invalid"), 400);
+        boundary = { synced: { seq: cursor.articles.seq, id: cursor.articles.id } };
+      }
       const scope: MarkReadScope | undefined =
         body.ids !== undefined
           ? { ids: body.ids }
-          : until === undefined
+          : boundary === undefined
             ? undefined
             : body.feedId !== undefined
-              ? { feedId: body.feedId, until }
+              ? { feedId: body.feedId, ...boundary }
               : body.folderId !== undefined
-                ? { folderId: body.folderId, until }
-                : { all: true, until };
+                ? { folderId: body.folderId, ...boundary }
+                : { all: true, ...boundary };
       // 本文の検証（superRefine）を通っていれば、ここには来ない
-      if (scope === undefined) return c.json(errorBody("invalid_request", "until: required"), 400);
+      if (scope === undefined) {
+        return c.json(errorBody("invalid_request", "until or cursor: required"), 400);
+      }
       const updated = await markArticlesRead(db, {
         userId: c.get("user").id,
         scope,

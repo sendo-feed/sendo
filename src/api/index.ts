@@ -6,6 +6,7 @@ import { feedsApi } from "./feeds";
 import { foldersApi } from "./folders";
 import { defaultHook } from "./hook";
 import { opmlApi } from "./opml";
+import { syncApi } from "./sync";
 
 /**
  * REST API（/api/v1）。機能はすべてここから使えるようにする（API ファースト）。
@@ -33,6 +34,7 @@ export function createApi(platform: Platform) {
   protectedApi.route("/", articlesApi(platform));
   protectedApi.route("/", foldersApi(platform));
   protectedApi.route("/", opmlApi(platform));
+  protectedApi.route("/", syncApi(platform));
 
   api.route("/", protectedApi);
   return api;

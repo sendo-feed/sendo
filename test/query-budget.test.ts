@@ -122,4 +122,18 @@ describe("D1 のクエリの上限", () => {
       expect(jobSchema.safeParse(job).success).toBe(true);
     }
   });
+
+  it("同期の API：最初の同期でも差分でも、上限に収まる", async () => {
+    const { platform, queryCount, resetQueryCount } = createTestPlatform();
+    await subscribeFeed(platform, {});
+    resetQueryCount();
+
+    const first = await requestApp(platform, "/api/v1/sync");
+    expect(queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
+    const { cursor } = (await first.json()) as { cursor: string };
+
+    resetQueryCount();
+    await requestApp(platform, `/api/v1/sync?cursor=${cursor}`);
+    expect(queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
+  });
 });
