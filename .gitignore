@@ -30,5 +30,10 @@ Thumbs.db
 !.vscode/extensions.json
 !.vscode/settings.json
 
-# Claude Code の個人設定
+# 作業用のディレクトリ（別のブランチの git worktree、一時ファイル）。リポジトリの直下だけ。中身はコミットしない
+/.worktrees/
+/tmp/
+
+# Claude Code の個人設定と、Claude Code が作る git worktree
 .claude/settings.local.json
+.claude/worktrees/
