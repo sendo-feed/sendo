@@ -188,3 +188,15 @@ export function activeFolderId(userId: string, folderId: string | null): SQL | n
       and ${folders.userId} = ${userId}
       and ${folders.deletedAt} is null)`;
 }
+
+/**
+ * フィード（共有）の名前やサイトの URL が変わったときに、そのフィードの購読の変更番号を進める。
+ * フィードの情報は共有の表にあって番号を持たないので、こうしないと同期でクライアントに伝わらない。
+ */
+export async function touchSubscriptionsOfFeed(db: Database, feedId: string): Promise<void> {
+  await db
+    .update(subscriptions)
+    .set({ seq: nextSeq(subscriptions) })
+    .where(and(eq(subscriptions.feedId, feedId), isNull(subscriptions.deletedAt)))
+    .run();
+}

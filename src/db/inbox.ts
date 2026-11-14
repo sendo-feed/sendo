@@ -8,6 +8,7 @@ import {
   isNotNull,
   isNull,
   lt,
+  lte,
   or,
   type SQL,
   sql,
@@ -307,12 +308,19 @@ export async function setArticleState(
   return getInboxArticle(db, { userId: input.userId, articleId: input.articleId });
 }
 
+/**
+ * まとめて既読にするときの境界。
+ * - until：その時刻より前に受信箱に入った記事（記事の一覧の asOf を渡す）
+ * - synced：同期で手元に届いた記事（同期のカーソルの記事の位置を渡す。docs/decisions/sync.md）
+ */
+export type MarkReadBoundary = { until: Date } | { synced: { seq: number; id: string | null } };
+
 /** まとめて既読にする範囲 */
 export type MarkReadScope =
   | { ids: readonly string[] }
-  | { feedId: string; until: Date }
-  | { folderId: string; until: Date }
-  | { all: true; until: Date };
+  | ({ feedId: string } & MarkReadBoundary)
+  | ({ folderId: string } & MarkReadBoundary)
+  | ({ all: true } & MarkReadBoundary);
 
 /** IN 句に並べられる記事の ID の数。D1 の変数の上限（100）から、ほかの条件の分を残す */
 export const MAX_MARK_READ_IDS = 90;
@@ -336,9 +344,19 @@ export async function markArticlesRead(
       throw new RangeError(`at most ${MAX_MARK_READ_IDS} ids`);
     }
     conditions.push(inArray(ua.articleId, [...scope.ids]));
-  } else {
+  } else if ("until" in scope) {
     // 境界と同じミリ秒の記事は、未読のまま残す側に倒す
     conditions.push(lt(ua.createdAt, scope.until));
+  } else {
+    // 同期で届いた位置まで。そのあとに変わった行（新しく入った記事など）は番号が大きくなるので含まない
+    const { seq, id } = scope.synced;
+    const upTo =
+      id === null
+        ? lte(ua.seq, seq)
+        : or(lt(ua.seq, seq), and(eq(ua.seq, seq), lte(ua.articleId, id)));
+    if (upTo) conditions.push(upTo);
+  }
+  if (!("ids" in scope)) {
     if ("feedId" in scope) conditions.push(eq(ua.feedId, scope.feedId));
     if ("folderId" in scope) conditions.push(inFolder(input.userId, scope.folderId));
   }
