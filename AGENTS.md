@@ -9,6 +9,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `docs/decisions/`：今の決定。ほかの文書と食い違ったら、こちらが正しい
 - `docs/inception-deck.md`：プロダクトの目的と進め方
 - `docs/tech-deck.md`：技術構成の全体像
+- `docs/features.md`：作る機能の一覧（Phase 1〜3、MCP のツール）
 
 ## 言語
 
