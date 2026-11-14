@@ -192,5 +192,6 @@ sendo-reader/
 4. MCP の書き込み権限（OAuth スコープ）と、記事本文のインジェクション対策
 5. ライセンス：[ MIT ／ Apache-2.0 ／ AGPL-3.0 ]
 6. sendo-reader のツール：Void（Cloudflare）と Vite+ を使うか。Void の UI のアダプタは React と Vue なので、1 と一緒に決める
+7. 差分同期の目印：記事の公開日時（publishedAt）や作成時刻ではなく、サーバーが書き込み順に振る番号（D1 は書き込みを1つずつ順に処理するので、自動で増える番号が書き込み順になる）を目印にする案。公開日時が古い記事が後から入っても取りこぼさない。reader の同期を作るときに決める
 
 > 決まったものから docs/decisions/ に書く。テックスタックは sendo の tech-stack.md、リーダーのローカルファースト方針は sendo-reader の local-first.md。
