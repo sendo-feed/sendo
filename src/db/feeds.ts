@@ -21,11 +21,18 @@ export async function listFeeds(db: Database): Promise<Feed[]> {
  */
 export async function insertFeed(
   db: Database,
-  input: { id: string; url: string; now: Date },
+  input: { id: string; url: string; now: Date; folderId?: string | null; title?: string | null },
 ): Promise<{ feed: Feed; created: boolean }> {
   const inserted = await db
     .insert(feeds)
-    .values({ id: input.id, url: input.url, nextFetchAt: input.now, createdAt: input.now })
+    .values({
+      id: input.id,
+      url: input.url,
+      folderId: input.folderId ?? null,
+      title: input.title ?? null,
+      nextFetchAt: input.now,
+      createdAt: input.now,
+    })
     .onConflictDoNothing({ target: feeds.url })
     .returning()
     .get();
@@ -34,6 +41,29 @@ export async function insertFeed(
   const existing = await findFeedByUrl(db, input.url);
   if (!existing) throw new Error(`feed disappeared while inserting: ${input.url}`);
   return { feed: existing, created: false };
+}
+
+/**
+ * フィードを消す。記事は DB の ON DELETE CASCADE で一緒に消える
+ * （articles の表は最初のマイグレーションで外部キーごと作っている）。
+ * @returns 消したら true、なければ false
+ */
+export async function deleteFeed(db: Database, id: string): Promise<boolean> {
+  const deleted = await db.delete(feeds).where(eq(feeds.id, id)).returning({ id: feeds.id }).get();
+  return deleted !== undefined;
+}
+
+/** フィードのフォルダを変える。null ならフォルダなしにする。なければ undefined */
+export async function setFeedFolder(
+  db: Database,
+  input: { id: string; folderId: string | null },
+): Promise<Feed | undefined> {
+  return db
+    .update(feeds)
+    .set({ folderId: input.folderId })
+    .where(eq(feeds.id, input.id))
+    .returning()
+    .get();
 }
 
 /**

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { MAX_FOLDER_NAME_LENGTH, MAX_URL_LENGTH } from "../opml";
+import { MAX_FOLDER_NAME_LENGTH } from "../db/folders";
+import { MAX_URL_LENGTH } from "../opml";
 
 /**
  * インポートを 1 つのジョブで処理する件数。

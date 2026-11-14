@@ -1,4 +1,5 @@
 import { generateOpml, type Opml, parseOpml } from "feedsmith";
+import { normalizeFolderName } from "../db/folders";
 import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
 
 /** OPML から取り出した、購読する 1 件 */
@@ -15,7 +16,6 @@ export class OpmlError extends Error {
 
 /** 1 回のインポートで受け付けるフィードの上限 */
 export const MAX_OPML_FEEDS = 5000;
-export const MAX_FOLDER_NAME_LENGTH = 200;
 export const MAX_URL_LENGTH = 2048;
 /** 入れ子の深さの上限。これより深い outline は読まない */
 const MAX_DEPTH = 32;
@@ -83,7 +83,7 @@ export function readOpml(xml: string): { entries: OpmlEntry[]; skipped: OpmlSkip
     }
 
     if (outline.outlines && depth < MAX_DEPTH) {
-      const name = folderName(outline.title ?? outline.text) ?? folder;
+      const name = normalizeFolderName(outline.title ?? outline.text) ?? folder;
       for (const child of [...outline.outlines].reverse()) {
         stack.push({ outline: child, folder: name, depth: depth + 1 });
       }
@@ -91,25 +91,6 @@ export function readOpml(xml: string): { entries: OpmlEntry[]; skipped: OpmlSkip
   }
 
   return { entries, skipped };
-}
-
-function folderName(value: string | undefined): string | null {
-  const name = value?.replace(/\s+/g, " ").trim();
-  if (!name) return null;
-  return truncateUtf16(name, MAX_FOLDER_NAME_LENGTH);
-}
-
-/**
- * JavaScript の文字列の長さ（UTF-16 の単位。zod の max もこれで数える）で切り詰める。
- * 絵文字などのサロゲートペアは途中で切らない。
- */
-export function truncateUtf16(value: string, maxLength: number): string {
-  let out = "";
-  for (const char of value) {
-    if (out.length + char.length > maxLength) break;
-    out += char;
-  }
-  return out;
 }
 
 /** OPML に書き出す 1 件 */
