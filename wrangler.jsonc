@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sendo",
+  "main": "src/index.ts",
+  // 日付を上げるときは、Workers の互換性の変更点を確かめてから上げる
+  "compatibility_date": "2026-10-29",
+  // nodejs_compat は付けない。Web 標準の API だけで書く（docs/decisions/tech-stack.md）
+  "observability": {
+    "enabled": true
+  }
+}
