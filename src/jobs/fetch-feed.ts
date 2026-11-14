@@ -1,5 +1,6 @@
 import { type ArticleInput, insertArticles } from "../db/articles";
 import { getFeed, recordFetchFailure, recordFetchSuccess } from "../db/feeds";
+import { deliverNewArticles } from "../db/inbox";
 import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
 import { type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import type { Platform } from "../platform";
@@ -39,6 +40,8 @@ export async function runFetchFeed(
     });
 
     if (result.status === "not-modified") {
+      // 前回の取得が、受信箱に配る途中で落ちていた場合に備えて、配り直しを試みる
+      await deliverNewArticles(db, { feedId: feed.id });
       await recordFetchSuccess(db, feed.id, {
         now: startedAt,
         nextFetchAt: new Date(startedAt.getTime() + FETCH_INTERVAL_MS),
@@ -51,6 +54,8 @@ export async function runFetchFeed(
     const parsed = parseFeed(result.body, result.url);
     const rows = await Promise.all(parsed.items.map((item) => toArticle(feed.id, item, startedAt)));
     const inserted = await insertArticles(db, rows);
+    // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
+    await deliverNewArticles(db, { feedId: feed.id });
 
     // 記事を入れ終えてから、取得済みとして記録する。途中で落ちても、次の取得でやり直せる
     await recordFetchSuccess(db, feed.id, {

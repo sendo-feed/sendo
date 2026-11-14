@@ -1,13 +1,21 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { QUERY_BUDGET } from "../src/db/chunk";
-import { insertFeed, insertFeeds, MAX_LEASE } from "../src/db/feeds";
+import { insertFeeds, MAX_LEASE } from "../src/db/feeds";
+import { subscribeMany } from "../src/db/subscriptions";
 import { MAX_ITEMS } from "../src/fetcher/parse-feed";
 import { runFetchFeed } from "../src/jobs/fetch-feed";
 import { runImportFeeds } from "../src/jobs/import-feeds";
 import { IMPORT_CHUNK_SIZE, jobSchema } from "../src/jobs/job";
 import { enqueueDueFeeds, MAX_LEASE_ROUNDS } from "../src/jobs/schedule";
-import { createTestPlatform, fakeFetch, requestApp } from "./helpers";
+import {
+  createTestPlatform,
+  createUser,
+  fakeFetch,
+  requestApp,
+  subscribeFeed,
+  TEST_USER,
+} from "./helpers";
 
 /**
  * D1 は Worker の 1 回の実行で 50 クエリまで（無料プラン）。
@@ -27,13 +35,13 @@ describe("D1 のクエリの上限", () => {
       url: `https://f${i}.example/feed`,
       folder: `Folder ${i}`,
     }));
-    await runImportFeeds(
-      platform,
-      entries.map(({ url }) => ({ url, folder: null })),
-    );
+    await runImportFeeds(platform, {
+      userId: TEST_USER.id,
+      entries: entries.map(({ url }) => ({ url, folder: null })),
+    });
     resetQueryCount();
 
-    await runImportFeeds(platform, entries);
+    await runImportFeeds(platform, { userId: TEST_USER.id, entries });
 
     expect(queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
   });
@@ -50,11 +58,10 @@ describe("D1 のクエリの上限", () => {
       fetch,
       now: () => NOW,
     });
-    const { feed } = await insertFeed(platform.db, {
-      id: crypto.randomUUID(),
-      url: "https://blog.example/feed",
-      now: NOW,
-    });
+    // 購読している人が 2 人いても、受信箱に配るクエリの数は変わらない
+    const feed = await subscribeFeed(platform, { url: "https://blog.example/feed", now: NOW });
+    const other = await createUser();
+    await subscribeFeed(platform, { url: feed.url, userId: other.id, now: NOW });
     resetQueryCount();
 
     expect(await runFetchFeed(platform, feed.id)).toEqual({
@@ -69,15 +76,21 @@ describe("D1 のクエリの上限", () => {
       now: () => NOW,
     });
     const capacity = MAX_LEASE * MAX_LEASE_ROUNDS;
+    const ids = Array.from({ length: capacity + 5 }, (_, i) => `f${i}`);
     await insertFeeds(
       platform.db,
-      Array.from({ length: capacity + 5 }, (_, i) => ({
-        id: `f${i}`,
-        url: `https://f${i}.example/feed`,
+      ids.map((id) => ({
+        id,
+        url: `https://${id}.example/feed`,
         nextFetchAt: NOW,
         createdAt: NOW,
       })),
     );
+    await subscribeMany(platform.db, {
+      userId: TEST_USER.id,
+      rows: ids.map((feedId) => ({ feedId, folderId: null })),
+      now: NOW,
+    });
     resetQueryCount();
 
     expect(await enqueueDueFeeds(platform)).toBe(capacity);

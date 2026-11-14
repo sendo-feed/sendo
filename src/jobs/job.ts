@@ -19,6 +19,8 @@ export const jobSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("fetch-feed"), feedId: z.string().min(1) }),
   z.object({
     type: z.literal("import-feeds"),
+    /** 誰の購読としてインポートするか */
+    userId: z.string().min(1),
     feeds: z
       .array(
         z.object({

@@ -1,11 +1,21 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { deleteFeed, findFeedByUrl, insertFeed, listFeeds, setFeedFolder } from "../db/feeds";
+import { findFeedByUrl, insertFeed } from "../db/feeds";
 import { getFolder } from "../db/folders";
+import { backfillInbox } from "../db/inbox";
+import type { Feed } from "../db/schema";
+import {
+  getSubscription,
+  listSubscriptions,
+  setSubscriptionFolder,
+  subscribeMany,
+  unsubscribe,
+} from "../db/subscriptions";
 import { DiscoverError, discoverFeed, findFeedLinks } from "../fetcher/discover";
 import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
 import { ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
 import type { Platform } from "../platform";
+import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
 import { ErrorSchema, errorBody, FeedSchema, toFeedResponse } from "./schemas";
 
@@ -134,7 +144,8 @@ const deleteRoute = createRoute({
   method: "delete",
   path: "/feeds/{id}",
   summary: "購読をやめる",
-  description: "フィードと、その記事をすべて消す。",
+  description:
+    "フィードの記事は、スターを付けたものを除いて受信箱から消える。フィードと記事そのものは、ほかの人のために残る。",
   request: { params: IdParamSchema },
   responses: {
     204: { description: "消した" },
@@ -154,21 +165,63 @@ export function feedsApi(platform: Platform) {
     }
   };
 
-  return new OpenAPIHono({ defaultHook })
+  /**
+   * フィード（共有）をユーザーが購読する。新しく購読したら、すでに取り込んである最近の記事を
+   * 受信箱に入れ、しばらく取得していないフィードなら取得を積む。
+   */
+  const subscribe = async (input: {
+    userId: string;
+    feed: Feed;
+    feedCreated: boolean;
+    folderId: string | null;
+  }) => {
+    const now = platform.now();
+    const created =
+      (
+        await subscribeMany(db, {
+          userId: input.userId,
+          rows: [{ feedId: input.feed.id, folderId: input.folderId }],
+          now,
+        })
+      ).length > 0;
+    if (created && !input.feedCreated) {
+      await backfillInbox(db, { userId: input.userId, feedIds: [input.feed.id], now });
+    }
+    if (input.feedCreated || (created && input.feed.nextFetchAt <= now)) {
+      await platform.jobs.enqueue([{ type: "fetch-feed", feedId: input.feed.id }]);
+    }
+    const subscription = await getSubscription(db, {
+      userId: input.userId,
+      feedId: input.feed.id,
+    });
+    if (!subscription) throw new Error(`subscription disappeared: ${input.feed.id}`);
+    return { subscription, created };
+  };
+
+  return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook })
     .openapi(subscribeRoute, async (c) => {
+      const user = c.get("user");
       const body = c.req.valid("json");
       const url = parseUrl(body.url);
       if (url instanceof UrlNotAllowedError) {
         return c.json(errorBody("url_not_allowed", url.message), 400);
       }
       const folderId = body.folderId ?? null;
-      if (folderId !== null && !(await getFolder(db, folderId))) {
+      if (folderId !== null && !(await getFolder(db, { userId: user.id, id: folderId }))) {
         return c.json(errorBody("folder_not_found", "folder does not exist"), 400);
       }
 
-      // すでに購読していれば、取得せずに返す
+      // フィード（共有）がすでにあれば、取得せずに購読する
       const existing = await findFeedByUrl(db, url.href);
-      if (existing) return c.json({ feed: toFeedResponse(existing) }, 200);
+      if (existing) {
+        const { subscription, created } = await subscribe({
+          userId: user.id,
+          feed: existing,
+          feedCreated: false,
+          folderId,
+        });
+        return c.json({ feed: toFeedResponse(subscription) }, created ? 201 : 200);
+      }
 
       let discovered: Awaited<ReturnType<typeof discoverFeed>>;
       try {
@@ -178,19 +231,21 @@ export function feedsApi(platform: Platform) {
         throw e;
       }
 
-      const { feed, created } = await insertFeed(db, {
+      const { feed, created: feedCreated } = await insertFeed(db, {
         id: crypto.randomUUID(),
         url: discovered.url,
         // 確かめるときに読んだタイトルを先に入れておく。取得のジョブが終わるまで、名前のない
         // フィードが一覧に並ばないように
         title: discovered.title,
-        folderId,
         now: platform.now(),
       });
-      if (!created) return c.json({ feed: toFeedResponse(feed) }, 200);
-
-      await platform.jobs.enqueue([{ type: "fetch-feed", feedId: feed.id }]);
-      return c.json({ feed: toFeedResponse(feed) }, 201);
+      const { subscription, created } = await subscribe({
+        userId: user.id,
+        feed,
+        feedCreated,
+        folderId,
+      });
+      return c.json({ feed: toFeedResponse(subscription) }, created ? 201 : 200);
     })
     .openapi(discoverRoute, async (c) => {
       const url = parseUrl(c.req.valid("query").url);
@@ -219,23 +274,25 @@ export function feedsApi(platform: Platform) {
       return c.json({ candidates }, 200);
     })
     .openapi(listRoute, async (c) => {
-      const feeds = await listFeeds(db);
-      return c.json({ items: feeds.map(toFeedResponse) }, 200);
+      const subscriptions = await listSubscriptions(db, c.get("user").id);
+      return c.json({ items: subscriptions.map(toFeedResponse) }, 200);
     })
     .openapi(updateRoute, async (c) => {
+      const user = c.get("user");
       const { id } = c.req.valid("param");
       const { folderId } = c.req.valid("json");
-      if (folderId !== null && !(await getFolder(db, folderId))) {
+      if (folderId !== null && !(await getFolder(db, { userId: user.id, id: folderId }))) {
         return c.json(errorBody("folder_not_found", "folder does not exist"), 400);
       }
-      const feed = await setFeedFolder(db, { id, folderId });
-      if (!feed) return c.json(errorBody("not_found", "feed does not exist"), 404);
-      return c.json({ feed: toFeedResponse(feed) }, 200);
+      const updated = await setSubscriptionFolder(db, { userId: user.id, feedId: id, folderId });
+      const subscription = updated && (await getSubscription(db, { userId: user.id, feedId: id }));
+      if (!subscription) return c.json(errorBody("not_found", "feed is not subscribed"), 404);
+      return c.json({ feed: toFeedResponse(subscription) }, 200);
     })
     .openapi(deleteRoute, async (c) => {
       const { id } = c.req.valid("param");
-      if (!(await deleteFeed(db, id))) {
-        return c.json(errorBody("not_found", "feed does not exist"), 404);
+      if (!(await unsubscribe(db, { userId: c.get("user").id, feedId: id, now: platform.now() }))) {
+        return c.json(errorBody("not_found", "feed is not subscribed"), 404);
       }
       return c.body(null, 204);
     });

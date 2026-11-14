@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
-import { insertFeed } from "../../src/db/feeds";
-import { createTestPlatform, requestApp, uniqueUrl } from "../helpers";
+import { deliverNewArticles } from "../../src/db/inbox";
+import { createTestPlatform, requestApp, subscribeFeed } from "../helpers";
 
 type Json = Record<string, unknown>;
 const json = async (res: Response) => (await res.json()) as Json;
@@ -42,11 +42,7 @@ describe("GET /api/v1/articles", () => {
     const base = new Date("2026-11-01T00:00:00Z").getTime();
     const ids: Record<string, string> = {};
     for (const name of ["a", "b"]) {
-      const { feed } = await insertFeed(platform.db, {
-        id: crypto.randomUUID(),
-        url: uniqueUrl(),
-        now: new Date(base),
-      });
+      const feed = await subscribeFeed(platform, { now: new Date(base) });
       ids[name] = feed.id;
     }
     // フィード a に 5 件、b に 2 件。同じ時刻の記事も混ぜる
@@ -65,6 +61,7 @@ describe("GET /api/v1/articles", () => {
       createdAt: new Date(base),
     }));
     await insertArticles(platform.db, rows);
+    for (const feedId of Object.values(ids)) await deliverNewArticles(platform.db, { feedId });
     return { platform, ids };
   }
 
@@ -89,11 +86,7 @@ describe("GET /api/v1/articles", () => {
   it("1970 年より前の記事をまたいでも、ページを送れる", async () => {
     await env.DB.exec("DELETE FROM feeds");
     const { platform } = createTestPlatform();
-    const { feed } = await insertFeed(platform.db, {
-      id: crypto.randomUUID(),
-      url: uniqueUrl(),
-      now: new Date(),
-    });
+    const feed = await subscribeFeed(platform, {});
     await insertArticles(
       platform.db,
       ["1965-01-01", "1960-01-01", "1955-01-01"].map((date, i) => ({
@@ -105,9 +98,10 @@ describe("GET /api/v1/articles", () => {
         summary: null,
         author: null,
         publishedAt: new Date(`${date}T00:00:00Z`),
-        createdAt: new Date(),
+        createdAt: new Date(Date.now() - 1000),
       })),
     );
+    await deliverNewArticles(platform.db, { feedId: feed.id });
 
     const first = (await json(await requestApp(platform, "/api/v1/articles?limit=1"))) as {
       nextCursor: string;

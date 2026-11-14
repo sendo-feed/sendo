@@ -99,7 +99,7 @@ sendo/
 │   ├── index.ts        # Worker の入口（fetch ／ scheduled ／ queue）
 │   ├── app.ts          # HTTP のルーティング
 │   ├── api/            # REST API（/api/v1）
-│   ├── db/             # スキーマとデータの読み書き（Drizzle）
+│   ├── db/             # スキーマとデータの読み書き（Drizzle）。共有のフィード・記事と、人ごとの購読・受信箱
 │   ├── fetcher/        # フィードの取得と解析、SSRF 対策
 │   ├── jobs/           # キューと定期実行で動く処理
 │   ├── opml/           # OPML の読み書き

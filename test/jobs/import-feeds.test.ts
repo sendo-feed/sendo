@@ -1,11 +1,21 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { listFeeds } from "../../src/db/feeds";
+import { insertArticles } from "../../src/db/articles";
 import { listFolders } from "../../src/db/folders";
+import { listSubscriptions } from "../../src/db/subscriptions";
 import { runImportFeeds } from "../../src/jobs/import-feeds";
-import { createTestPlatform } from "../helpers";
+import { createTestPlatform, createUser, subscribeFeed, TEST_USER } from "../helpers";
 
 const NOW = new Date("2026-11-14T00:00:00Z");
+const userId = TEST_USER.id;
+
+/** ユーザーの購読を、URL とフォルダ名の組で返す（URL の順） */
+async function subscriptionsOf(id: string) {
+  const { platform } = createTestPlatform();
+  return (await listSubscriptions(platform.db, id))
+    .map((s) => [s.feed.url, s.folderName] as const)
+    .sort(([a], [b]) => a.localeCompare(b));
+}
 
 describe("runImportFeeds", () => {
   beforeEach(async () => {
@@ -13,27 +23,24 @@ describe("runImportFeeds", () => {
     await env.DB.exec("DELETE FROM folders");
   });
 
-  it("フォルダとフィードを作り、新しいフィードの取得を積む", async () => {
+  it("フォルダとフィードと購読を作り、新しいフィードの取得を積む", async () => {
     const { platform, enqueued } = createTestPlatform({ now: () => NOW });
 
-    const result = await runImportFeeds(platform, [
-      { url: "https://a.example/feed", folder: "Tech" },
-      { url: "https://b.example/feed", folder: "Tech" },
-      { url: "https://c.example/feed", folder: null },
-    ]);
+    const result = await runImportFeeds(platform, {
+      userId,
+      entries: [
+        { url: "https://a.example/feed", folder: "Tech" },
+        { url: "https://b.example/feed", folder: "Tech" },
+        { url: "https://c.example/feed", folder: null },
+      ],
+    });
 
-    expect(result).toEqual({ created: 3 });
-    const folders = await listFolders(platform.db);
-    expect(folders.map((folder) => folder.name)).toEqual(["Tech"]);
-    const feeds = await listFeeds(platform.db);
-    // 同じ時刻に登録したフィードの並びは決まっていないので、URL の順に並べて比べる
-    const rows = feeds
-      .map((feed) => [feed.url, feed.folderId, feed.nextFetchAt] as const)
-      .sort(([a], [b]) => a.localeCompare(b));
-    expect(rows).toEqual([
-      ["https://a.example/feed", folders[0]?.id, NOW],
-      ["https://b.example/feed", folders[0]?.id, NOW],
-      ["https://c.example/feed", null, NOW],
+    expect(result).toEqual({ subscribed: 3 });
+    expect((await listFolders(platform.db, userId)).map((f) => f.name)).toEqual(["Tech"]);
+    expect(await subscriptionsOf(userId)).toEqual([
+      ["https://a.example/feed", "Tech"],
+      ["https://b.example/feed", "Tech"],
+      ["https://c.example/feed", null],
     ]);
     expect(enqueued.map((job) => job.type)).toEqual(["fetch-feed", "fetch-feed", "fetch-feed"]);
   });
@@ -41,32 +48,70 @@ describe("runImportFeeds", () => {
   it("もう一度実行しても増えず、取得も積まない", async () => {
     const { platform, enqueued } = createTestPlatform({ now: () => NOW });
     const entries = [{ url: "https://a.example/feed", folder: "Tech" }];
-    await runImportFeeds(platform, entries);
+    await runImportFeeds(platform, { userId, entries });
     enqueued.length = 0;
 
-    expect(await runImportFeeds(platform, entries)).toEqual({ created: 0 });
+    expect(await runImportFeeds(platform, { userId, entries })).toEqual({ subscribed: 0 });
     expect(enqueued).toEqual([]);
-    expect(await listFeeds(platform.db)).toHaveLength(1);
+    expect(await subscriptionsOf(userId)).toHaveLength(1);
   });
 
-  it("既存のフィードは、フォルダに入っていなければ入れ、入っていれば変えない", async () => {
+  it("既存の購読は、フォルダに入っていなければ入れ、入っていれば変えない", async () => {
     const { platform } = createTestPlatform({ now: () => NOW });
-    await runImportFeeds(platform, [
-      { url: "https://loose.example/feed", folder: null },
-      { url: "https://sorted.example/feed", folder: "Mine" },
-    ]);
+    await runImportFeeds(platform, {
+      userId,
+      entries: [
+        { url: "https://loose.example/feed", folder: null },
+        { url: "https://sorted.example/feed", folder: "Mine" },
+      ],
+    });
 
-    await runImportFeeds(platform, [
-      { url: "https://loose.example/feed", folder: "Tech" },
-      { url: "https://sorted.example/feed", folder: "Tech" },
-    ]);
+    await runImportFeeds(platform, {
+      userId,
+      entries: [
+        { url: "https://loose.example/feed", folder: "Tech" },
+        { url: "https://sorted.example/feed", folder: "Tech" },
+      ],
+    });
 
-    const folders = new Map((await listFolders(platform.db)).map((f) => [f.id, f.name]));
-    const byUrl = new Map(
-      (await listFeeds(platform.db)).map((feed) => [feed.url, folders.get(feed.folderId ?? "")]),
-    );
-    expect(byUrl.get("https://loose.example/feed")).toBe("Tech");
-    expect(byUrl.get("https://sorted.example/feed")).toBe("Mine");
+    expect(await subscriptionsOf(userId)).toEqual([
+      ["https://loose.example/feed", "Tech"],
+      ["https://sorted.example/feed", "Mine"],
+    ]);
+  });
+
+  it("ほかの人が購読しているフィードは作らずに共有し、最近の記事を受信箱に入れる", async () => {
+    const { platform, enqueued } = createTestPlatform({ now: () => new Date() });
+    const feed = await subscribeFeed(platform, { url: "https://shared.example/feed" });
+    const past = new Date(Date.now() - 60_000);
+    await insertArticles(platform.db, [
+      {
+        id: "shared-1",
+        feedId: feed.id,
+        guid: "1",
+        url: null,
+        title: "1",
+        summary: null,
+        author: null,
+        publishedAt: past,
+        createdAt: past,
+      },
+    ]);
+    const other = await createUser();
+
+    await runImportFeeds(platform, {
+      userId: other.id,
+      entries: [{ url: "https://shared.example/feed", folder: "Shared" }],
+    });
+
+    expect(await subscriptionsOf(other.id)).toEqual([["https://shared.example/feed", "Shared"]]);
+    expect(enqueued).toEqual([]);
+    const inbox = await env.DB.prepare("SELECT article_id FROM user_articles WHERE user_id = ?")
+      .bind(other.id)
+      .all<{ article_id: string }>();
+    expect(inbox.results.map((row) => row.article_id)).toEqual(["shared-1"]);
+    // もとの購読者のフォルダには影響しない
+    expect(await subscriptionsOf(userId)).toEqual([["https://shared.example/feed", null]]);
   });
 
   it("D1 の変数の上限を超える件数でも、分けて書き込む", async () => {
@@ -76,21 +121,22 @@ describe("runImportFeeds", () => {
       folder: `Folder ${i % 60}`,
     }));
 
-    expect(await runImportFeeds(platform, entries)).toEqual({ created: 120 });
-    expect(await listFolders(platform.db)).toHaveLength(60);
+    expect(await runImportFeeds(platform, { userId, entries })).toEqual({ subscribed: 120 });
+    expect(await listFolders(platform.db, userId)).toHaveLength(60);
   });
 
   it("キューの中身が書き換えられていても、内部の URL は登録しない", async () => {
     const { platform } = createTestPlatform({ now: () => NOW });
 
-    const result = await runImportFeeds(platform, [
-      { url: "http://localhost/feed", folder: null },
-      { url: "https://ok.example/feed", folder: null },
-    ]);
+    const result = await runImportFeeds(platform, {
+      userId,
+      entries: [
+        { url: "http://localhost/feed", folder: null },
+        { url: "https://ok.example/feed", folder: null },
+      ],
+    });
 
-    expect(result).toEqual({ created: 1 });
-    expect((await listFeeds(platform.db)).map((feed) => feed.url)).toEqual([
-      "https://ok.example/feed",
-    ]);
+    expect(result).toEqual({ subscribed: 1 });
+    expect(await subscriptionsOf(userId)).toEqual([["https://ok.example/feed", null]]);
   });
 });

@@ -1,16 +1,17 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { dbNow } from "../db/clock";
 import {
   type ArticleCursor,
   countUnreadByFeed,
-  listArticles,
+  listInbox,
   MAX_MARK_READ_IDS,
   type MarkReadScope,
   markArticlesRead,
   setArticleState,
-} from "../db/articles";
-import { dbNow } from "../db/clock";
-import { listFeeds } from "../db/feeds";
+} from "../db/inbox";
+import { listSubscriptions } from "../db/subscriptions";
 import type { Platform } from "../platform";
+import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
 import { ArticleSchema, ErrorSchema, errorBody, toArticleResponse } from "./schemas";
 
@@ -176,12 +177,13 @@ const unreadCountsRoute = createRoute({
 
 export function articlesApi(platform: Platform) {
   const { db } = platform;
-  return new OpenAPIHono({ defaultHook })
+  return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook })
     .openapi(updateRoute, async (c) => {
       const { id } = c.req.valid("param");
       const body = c.req.valid("json");
       const article = await setArticleState(db, {
-        id,
+        userId: c.get("user").id,
+        articleId: id,
         read: body.read,
         starred: body.starred,
         now: platform.now(),
@@ -204,16 +206,24 @@ export function articlesApi(platform: Platform) {
                 : { all: true, until };
       // 本文の検証（superRefine）を通っていれば、ここには来ない
       if (scope === undefined) return c.json(errorBody("invalid_request", "until: required"), 400);
-      const updated = await markArticlesRead(db, { scope, now: platform.now() });
+      const updated = await markArticlesRead(db, {
+        userId: c.get("user").id,
+        scope,
+        now: platform.now(),
+      });
       return c.json({ updated }, 200);
     })
     .openapi(unreadCountsRoute, async (c) => {
-      const [byFeed, feeds] = [await countUnreadByFeed(db), await listFeeds(db)];
+      const userId = c.get("user").id;
+      const [byFeed, subscriptions] = [
+        await countUnreadByFeed(db, userId),
+        await listSubscriptions(db, userId),
+      ];
       const byFolder = new Map<string, number>();
-      for (const feed of feeds) {
-        const unread = byFeed.get(feed.id);
-        if (unread === undefined || feed.folderId === null) continue;
-        byFolder.set(feed.folderId, (byFolder.get(feed.folderId) ?? 0) + unread);
+      for (const subscription of subscriptions) {
+        const unread = byFeed.get(subscription.feedId);
+        if (unread === undefined || subscription.folderId === null) continue;
+        byFolder.set(subscription.folderId, (byFolder.get(subscription.folderId) ?? 0) + unread);
       }
       return c.json(
         {
@@ -232,7 +242,8 @@ export function articlesApi(platform: Platform) {
       // 一覧を読む前に取る。読んだあとに取ると、読んだあとに届いた記事が asOf より前になり、
       // まとめて既読で、一覧に出ていなかったのに既読になる
       const asOf = await dbNow(platform.db);
-      const { items, next } = await listArticles(platform.db, {
+      const { items, next } = await listInbox(platform.db, {
+        userId: c.get("user").id,
         feedId: query.feedId,
         folderId: query.folderId,
         state: query.state,

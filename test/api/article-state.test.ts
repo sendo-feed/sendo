@@ -1,9 +1,9 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { insertArticles, MAX_MARK_READ_IDS } from "../../src/db/articles";
-import { insertFeed } from "../../src/db/feeds";
+import { insertArticles } from "../../src/db/articles";
 import { createFolder } from "../../src/db/folders";
-import { createTestPlatform, requestApp } from "../helpers";
+import { deliverNewArticles, MAX_MARK_READ_IDS } from "../../src/db/inbox";
+import { addToInbox, createTestPlatform, requestApp, subscribeFeed, TEST_USER } from "../helpers";
 
 type ArticleJson = { id: string; readAt: string | null; starredAt: string | null };
 
@@ -13,37 +13,49 @@ const T2 = new Date("2026-11-14T02:00:00Z");
 const NOW = new Date("2026-11-14T03:00:00Z");
 
 /**
- * フォルダ「Tech」に入ったフィード a と、フォルダなしのフィード b。
- * a3 だけ、あとから（T2 に）取り込んだ記事。
+ * テスト用のユーザーが、フォルダ「Tech」に入れたフィード a と、フォルダなしのフィード b を
+ * 購読している。a3 だけ、あとから（T2 に）受信箱に入った記事。
  */
 async function seed() {
   await env.DB.exec("DELETE FROM feeds");
   await env.DB.exec("DELETE FROM folders");
   const { platform } = createTestPlatform({ now: () => NOW });
-  const folder = await createFolder(platform.db, { id: "tech", name: "Tech", now: T0 });
-  await insertFeed(platform.db, {
-    id: "a",
-    url: "https://a.example/feed",
+  const folder = await createFolder(platform.db, {
+    userId: TEST_USER.id,
+    id: "tech",
+    name: "Tech",
     now: T0,
-    folderId: folder.id,
   });
-  await insertFeed(platform.db, { id: "b", url: "https://b.example/feed", now: T0 });
+  await subscribeFeed(platform, {
+    feedId: "a",
+    url: "https://a.example/feed",
+    folderId: folder.id,
+    now: T0,
+  });
+  await subscribeFeed(platform, { feedId: "b", url: "https://b.example/feed", now: T0 });
+  const rows = [
+    { id: "a1", feedId: "a", receivedAt: T0 },
+    { id: "a2", feedId: "a", receivedAt: T0 },
+    { id: "a3", feedId: "a", receivedAt: T2 },
+    { id: "b1", feedId: "b", receivedAt: T0 },
+  ].map((row, i) => ({ ...row, publishedAt: new Date(T0.getTime() + i * 60_000) }));
   await insertArticles(
     platform.db,
-    [
-      { id: "a1", feedId: "a", createdAt: T0 },
-      { id: "a2", feedId: "a", createdAt: T0 },
-      { id: "a3", feedId: "a", createdAt: T2 },
-      { id: "b1", feedId: "b", createdAt: T0 },
-    ].map((row, i) => ({
-      ...row,
+    rows.map((row) => ({
+      id: row.id,
+      feedId: row.feedId,
       guid: row.id,
       url: null,
       title: row.id,
       summary: null,
       author: null,
-      publishedAt: new Date(T0.getTime() + i * 60_000),
+      publishedAt: row.publishedAt,
+      createdAt: T0,
     })),
+  );
+  await addToInbox(
+    platform,
+    rows.map((row) => ({ ...row, articleId: row.id })),
   );
   return platform;
 }
@@ -175,7 +187,7 @@ describe("一覧を読んだあとに届いた記事", () => {
     };
     expect(list.items).toHaveLength(4);
 
-    // 一覧を読んだあとに、取得のジョブが記事を入れる（createdAt は DB の時計で決まる）
+    // 一覧を読んだあとに、取得のジョブが記事を入れて受信箱に配る（受信箱に入った時刻は DB の時計）
     await insertArticles(platform.db, [
       {
         id: "late",
@@ -188,6 +200,7 @@ describe("一覧を読んだあとに届いた記事", () => {
         publishedAt: T0,
       },
     ]);
+    await deliverNewArticles(platform.db, { feedId: "a" });
 
     await markRead(platform, { all: true, until: list.asOf });
 

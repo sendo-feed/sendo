@@ -1,25 +1,33 @@
-import { assignFolderIfMissing, insertFeeds } from "../db/feeds";
+import { findFeedIdsByUrls, insertFeeds } from "../db/feeds";
 import { ensureFolders } from "../db/folders";
+import { backfillInbox } from "../db/inbox";
+import { assignFolderIfMissing, subscribeMany } from "../db/subscriptions";
 import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
 import type { OpmlEntry } from "../opml";
 import type { Platform } from "../platform";
 
 /**
- * インポートしたフィードを登録し、新しく入ったものの取得をキューに積む。
+ * インポートしたフィードを、そのユーザーの購読にする。
  *
- * すでに購読しているフィードは、フォルダに入っていなければ OPML のフォルダに入れる。
- * フォルダに入っていれば変えない（ユーザーが自分で整理した結果を上書きしない）。何度実行しても
- * 同じ結果になるので、途中で落ちたらキューのやり直しに任せる。登録だけ済んで取得を
- * 積めなかったフィードも、次の取得の時刻が「今」なので、次の定期実行で拾われる。
+ * 1. フィード（共有）がなければ作る。新しく作ったフィードは取得を積む
+ * 2. ユーザーの購読を作る。すでに購読していれば、フォルダに入っていないときだけ OPML の
+ *    フォルダに入れる（ユーザーが自分で整理した結果を上書きしない）
+ * 3. すでにあったフィードを新しく購読したら、最近の記事を受信箱に入れる
+ *
+ * 何度実行しても同じ結果になるので、途中で落ちたらキューのやり直しに任せる。フィードだけ
+ * 作って取得を積めなかったものも、次の取得の時刻が「今」なので、次の定期実行で拾われる。
+ * @returns 新しく購読したフィードの数
  */
 export async function runImportFeeds(
   platform: Pick<Platform, "db" | "jobs" | "now">,
-  entries: readonly OpmlEntry[],
-): Promise<{ created: number }> {
+  input: { userId: string; entries: readonly OpmlEntry[] },
+): Promise<{ subscribed: number }> {
+  const { db } = platform;
+  const { userId } = input;
   const now = platform.now();
 
   // キューの中身は外から書き換えられうるので、URL はここでも確かめる
-  const valid = entries.flatMap((entry) => {
+  const valid = input.entries.flatMap((entry) => {
     try {
       return [{ ...entry, url: toFetchableUrl(entry.url).href }];
     } catch (error) {
@@ -27,34 +35,55 @@ export async function runImportFeeds(
       throw error;
     }
   });
-  if (valid.length === 0) return { created: 0 };
+  if (valid.length === 0) return { subscribed: 0 };
 
-  const folderIds = await ensureFolders(platform.db, {
+  const folderIds = await ensureFolders(db, {
+    userId,
     names: valid.flatMap((entry) => (entry.folder === null ? [] : [entry.folder])),
     now,
   });
-  const rows = valid.map((entry) => ({
-    id: crypto.randomUUID(),
-    url: entry.url,
-    folderId: entry.folder === null ? null : (folderIds.get(entry.folder) ?? null),
-    nextFetchAt: now,
-    createdAt: now,
-  }));
-  const created = await insertFeeds(platform.db, rows);
+  const createdFeeds = new Set(
+    await insertFeeds(
+      db,
+      valid.map((entry) => ({
+        id: crypto.randomUUID(),
+        url: entry.url,
+        nextFetchAt: now,
+        createdAt: now,
+      })),
+    ),
+  );
+  const feedIds = await findFeedIdsByUrls(
+    db,
+    valid.map((entry) => entry.url),
+  );
 
-  // すでにあったフィードのうち、フォルダに入っていないものを OPML のフォルダに入れる
-  const createdIds = new Set(created);
+  const rows = valid.flatMap((entry) => {
+    const feedId = feedIds.get(entry.url);
+    if (feedId === undefined) return [];
+    const folderId = entry.folder === null ? null : (folderIds.get(entry.folder) ?? null);
+    return [{ feedId, folderId }];
+  });
+  const subscribed = new Set(await subscribeMany(db, { userId, rows, now }));
+
+  // すでに購読していたフィードのうち、フォルダに入っていないものを OPML のフォルダに入れる
   const existingByFolder = new Map<string, string[]>();
   for (const row of rows) {
-    if (row.folderId === null || createdIds.has(row.id)) continue;
-    existingByFolder.set(row.folderId, [...(existingByFolder.get(row.folderId) ?? []), row.url]);
+    if (row.folderId === null || subscribed.has(row.feedId)) continue;
+    existingByFolder.set(row.folderId, [...(existingByFolder.get(row.folderId) ?? []), row.feedId]);
   }
-  for (const [folderId, urls] of existingByFolder) {
-    await assignFolderIfMissing(platform.db, { folderId, urls });
+  for (const [folderId, ids] of existingByFolder) {
+    await assignFolderIfMissing(db, { userId, folderId, feedIds: ids });
   }
 
-  if (created.length > 0) {
-    await platform.jobs.enqueue(created.map((feedId) => ({ type: "fetch-feed", feedId })));
+  // すでにあったフィード（ほかの人が購読している）を新しく購読したら、最近の記事を受信箱に入れる
+  const backfill = [...subscribed].filter((feedId) => !createdFeeds.has(feedId));
+  if (backfill.length > 0) await backfillInbox(db, { userId, feedIds: backfill, now });
+
+  if (createdFeeds.size > 0) {
+    await platform.jobs.enqueue(
+      [...createdFeeds].map((feedId) => ({ type: "fetch-feed", feedId })),
+    );
   }
-  return { created: created.length };
+  return { subscribed: subscribed.size };
 }
