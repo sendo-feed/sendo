@@ -203,9 +203,16 @@ export const articles = sqliteTable(
     publishedAt: integer("published_at", { mode: "timestamp_ms" }).notNull(),
     /** 取り込んだ時刻（DB の時計）。受信箱に配る範囲を決めるのに使う */
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * Google Reader API のアイテムの ID（docs/decisions/greader.md の 3）。1 以上 2^53 未満の乱数で、
+     * 取り込むときに db/articles.ts の insertArticles が振る。順に振らないのは、ID の飛びから
+     * ほかの人が購読しているフィードの記事の数が分からないようにするため
+     */
+    itemId: integer("item_id").notNull().default(0),
   },
   (t) => [
     uniqueIndex("articles_feed_id_guid_idx").on(t.feedId, t.guid),
+    uniqueIndex("articles_item_id_idx").on(t.itemId),
     index("articles_feed_id_created_at_idx").on(t.feedId, t.createdAt),
     index("articles_feed_id_published_at_idx").on(t.feedId, t.publishedAt),
   ],

@@ -89,6 +89,18 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 
 ログインしたら、アクセストークン（リーダーアプリのアプリ用パスワード）を `/api/v1/tokens` で発行・一覧・取り消しできます。これはブラウザのセッションでだけ使え、アクセストークンでは使えません（漏れたトークンで新しいトークンを発行させないため）。定期的な取得（Cron）は、`pnpm dev --test-scheduled` で起動して `http://localhost:8787/__scheduled` を開くと、すぐに試せます。
 
+### リーダーアプリで読む（Google Reader API）
+
+Reeder、NetNewsWire など、Google Reader API（FreshRSS 互換）に対応したリーダーアプリから読めます。アカウントの種類は「FreshRSS」か「Google Reader API」を選び、次のように入れます。
+
+| 項目 | 値 |
+|---|---|
+| サーバー（URL） | Sendo の URL（手元なら `http://localhost:8787`） |
+| ユーザー名 | ユーザーのメールアドレス |
+| パスワード | アクセストークン（`sendo_` で始まるもの）。ブラウザでログインして `/api/v1/tokens` で発行するか、`pnpm token:create` で発行する。アプリごとに発行すると、あとで個別に取り消せる |
+
+既読・スター・購読・フォルダの変更は、REST API や sendo-reader と同じデータに反映されます。
+
 ## コマンド
 
 | コマンド | すること |
@@ -117,7 +129,9 @@ sendo/
 │   ├── api/            # REST API（/api/v1）
 │   ├── auth/           # ログイン（OpenID Connect の提供元、ID トークンの確認）
 │   ├── db/             # スキーマとデータの読み書き（Drizzle）。共有のフィード・記事と、人ごとの購読・受信箱
+│   ├── feeds/          # 購読の手続き（REST API、Google Reader API で共通）
 │   ├── fetcher/        # フィードの取得と解析、SSRF 対策
+│   ├── greader/        # Google Reader API 互換（/accounts/ClientLogin、/reader/api/0）
 │   ├── jobs/           # キューと定期実行で動く処理
 │   ├── opml/           # OPML の読み書き
 │   └── platform/       # 実行環境の緩衝層

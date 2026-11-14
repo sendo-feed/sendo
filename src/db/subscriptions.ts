@@ -86,6 +86,31 @@ export async function subscribeMany(
   return created;
 }
 
+/**
+ * 購読を、そのフォルダから外す（フォルダなしにする）。そのフォルダに入っていなければ何もしない。
+ * 入っているかは UPDATE と同じ文の中で確かめる。先に読んでから外すと、その間に別のフォルダへ
+ * 移された購読まで外してしまう（#38 のレビュー）。
+ * @returns 外したか
+ */
+export async function removeSubscriptionFromFolder(
+  db: Database,
+  input: { userId: string; feedId: string; folderId: string },
+): Promise<boolean> {
+  const updated = await db
+    .update(subscriptions)
+    .set({ folderId: null, seq: nextSeq(subscriptions) })
+    .where(
+      and(
+        active(input.userId),
+        eq(subscriptions.feedId, input.feedId),
+        eq(subscriptions.folderId, input.folderId),
+      ),
+    )
+    .returning({ id: subscriptions.id })
+    .get();
+  return updated !== undefined;
+}
+
 /** 購読のフォルダを変える。null ならフォルダなし。購読していなければ undefined */
 export async function setSubscriptionFolder(
   db: Database,

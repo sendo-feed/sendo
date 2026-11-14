@@ -1,16 +1,13 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { findFeedByUrl, insertFeed } from "../db/feeds";
 import { getFolder } from "../db/folders";
-import { backfillInbox } from "../db/inbox";
-import type { Feed } from "../db/schema";
 import {
   getSubscription,
   listSubscriptions,
   setSubscriptionFolder,
-  subscribeMany,
   unsubscribe,
 } from "../db/subscriptions";
-import { DiscoverError, discoverFeed, findFeedLinks } from "../fetcher/discover";
+import { subscribeToUrl } from "../feeds/subscribe";
+import { DiscoverError, findFeedLinks } from "../fetcher/discover";
 import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
 import { ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
@@ -165,38 +162,6 @@ export function feedsApi(platform: Platform) {
     }
   };
 
-  /**
-   * フィード（共有）をユーザーが購読する。新しく購読したら、すでに取り込んである最近の記事を
-   * 受信箱に入れ、しばらく取得していないフィードなら取得を積む。
-   */
-  const subscribe = async (input: {
-    userId: string;
-    feed: Feed;
-    feedCreated: boolean;
-    folderId: string | null;
-  }) => {
-    const now = platform.now();
-    const created =
-      (
-        await subscribeMany(db, {
-          userId: input.userId,
-          rows: [{ feedId: input.feed.id, folderId: input.folderId }],
-          now,
-        })
-      ).length > 0;
-    // 新しく購読したときだけでなく、前回の補充が途中で落ちていた場合も、ここで入れ直す
-    await backfillInbox(db, { userId: input.userId, feedIds: [input.feed.id], now });
-    if (input.feedCreated || (created && input.feed.nextFetchAt <= now)) {
-      await platform.jobs.enqueue([{ type: "fetch-feed", feedId: input.feed.id }]);
-    }
-    const subscription = await getSubscription(db, {
-      userId: input.userId,
-      feedId: input.feed.id,
-    });
-    if (!subscription) throw new Error(`subscription disappeared: ${input.feed.id}`);
-    return { subscription, created };
-  };
-
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook })
     .openapi(subscribeRoute, async (c) => {
       const user = c.get("user");
@@ -210,41 +175,17 @@ export function feedsApi(platform: Platform) {
         return c.json(errorBody("folder_not_found", "folder does not exist"), 400);
       }
 
-      // フィード（共有）がすでにあれば、取得せずに購読する
-      const existing = await findFeedByUrl(db, url.href);
-      if (existing) {
-        const { subscription, created } = await subscribe({
+      try {
+        const { subscription, created } = await subscribeToUrl(platform, {
           userId: user.id,
-          feed: existing,
-          feedCreated: false,
+          url: url.href,
           folderId,
         });
         return c.json({ feed: toFeedResponse(subscription) }, created ? 201 : 200);
-      }
-
-      let discovered: Awaited<ReturnType<typeof discoverFeed>>;
-      try {
-        discovered = await discoverFeed(url, { fetch: platform.fetch });
       } catch (e) {
         if (e instanceof DiscoverError) return c.json(errorBody(e.code, e.message), 422);
         throw e;
       }
-
-      const { feed, created: feedCreated } = await insertFeed(db, {
-        id: crypto.randomUUID(),
-        url: discovered.url,
-        // 確かめるときに読んだタイトルを先に入れておく。取得のジョブが終わるまで、名前のない
-        // フィードが一覧に並ばないように
-        title: discovered.title,
-        now: platform.now(),
-      });
-      const { subscription, created } = await subscribe({
-        userId: user.id,
-        feed,
-        feedCreated,
-        folderId,
-      });
-      return c.json({ feed: toFeedResponse(subscription) }, created ? 201 : 200);
     })
     .openapi(discoverRoute, async (c) => {
       const url = parseUrl(c.req.valid("query").url);

@@ -193,7 +193,7 @@ export type ArticleState = "all" | "unread" | "starred";
 export type ArticleCursor = { publishedAt: number; id: string };
 
 /** そのユーザーの、フォルダに入っている購読のフィードの記事 */
-function inFolder(userId: string, folderId: string): SQL {
+export function inFolder(userId: string, folderId: string): SQL {
   return sql`${ua.feedId} in (
     select ${subscriptions.feedId} from ${subscriptions}
     where ${subscriptions.userId} = ${userId}
