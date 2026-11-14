@@ -3,7 +3,9 @@ import type { Platform } from "../platform";
 import { articlesApi } from "./articles";
 import { bearerAuth } from "./auth";
 import { feedsApi } from "./feeds";
+import { foldersApi } from "./folders";
 import { defaultHook } from "./hook";
+import { opmlApi } from "./opml";
 
 /**
  * REST API（/api/v1）。機能はすべてここから使えるようにする（API ファースト）。
@@ -29,6 +31,8 @@ export function createApi(platform: Platform) {
   protectedApi.use("*", bearerAuth(platform.apiToken));
   protectedApi.route("/", feedsApi(platform));
   protectedApi.route("/", articlesApi(platform));
+  protectedApi.route("/", foldersApi(platform));
+  protectedApi.route("/", opmlApi(platform));
 
   api.route("/", protectedApi);
   return api;

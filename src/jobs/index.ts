@@ -1,5 +1,6 @@
 import type { Platform } from "../platform";
 import { runFetchFeed } from "./fetch-feed";
+import { runImportFeeds } from "./import-feeds";
 import type { Job } from "./job";
 
 /** キューから受け取った仕事を1つ実行する。例外を投げたら、キューがやり直す */
@@ -10,6 +11,10 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
       if (outcome.status === "failed") {
         console.warn("feed fetch failed", { feedId: job.feedId, error: outcome.error });
       }
+      return;
+    }
+    case "import-feeds": {
+      await runImportFeeds(platform, job.feeds);
       return;
     }
   }
