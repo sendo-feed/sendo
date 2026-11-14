@@ -56,6 +56,8 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 
 ## 守る規約
 
+ここの規約は、Workers で動くアプリ本体（`src/`）に適用する。手元の Node で動かす道具（`scripts/`、`*.config.ts` などの設定ファイル）は対象外で、`node:*` を使ってよい（docs/decisions/tech-stack.md）。
+
 - Cloudflare のバインディング（`env.DB` など）や `cloudflare:*` からの import に触れてよいのは、`src/index.ts` と `src/platform/cloudflare/` だけ。それ以外は `src/platform/` のインターフェース越しに使う
 - Web 標準の API だけを使い、`node:*` のモジュールには頼らない
 - D1 は対話的なトランザクションが使えない。複数の書き込みはまとめて実行する（batch）
@@ -82,7 +84,7 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 レビューは日本語で書く。いまは2人で試作を繰り返している段階なので、捨てる前提の試作の完成度や、書き方の好みは指摘しなくてよい（整形と lint は Biome に任せる）。次の観点を優先する。
 
 1. **決定との食い違い**：`docs/decisions/` と食い違う変更がないか。決定を変えるなら、決定ファイルの更新が同じ PR に入っているか
-2. **緩衝層の破れ**：`src/index.ts` と `src/platform/cloudflare/` 以外で、Cloudflare のバインディング、`cloudflare:*`、`node:*` を使っていないか
+2. **緩衝層の破れ**：`src/` のうち、`src/index.ts` と `src/platform/cloudflare/` 以外で Cloudflare のバインディングや `cloudflare:*` を使っていないか。`src/` で `node:*` を使っていないか（`scripts/` と設定ファイルは対象外）
 3. **セキュリティ**
    - 外部 URL の取得で SSRF が起きないか（プライベート IP、リダイレクト先、URL スキームの制限）
    - 記事本文の HTML がサニタイズされているか。LLM や MCP への入力で、本文がプロンプトインジェクションの経路になっていないか
