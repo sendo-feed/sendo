@@ -2,7 +2,12 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../src/db/articles";
 import { deleteFolder } from "../src/db/folders";
-import { backfillInbox, deliverNewArticles, insertRecentArticles } from "../src/db/inbox";
+import {
+  backfillInbox,
+  deliverNewArticles,
+  insertRecentArticles,
+  markBackfilled,
+} from "../src/db/inbox";
 import {
   clearUnsubscribedInbox,
   setSubscriptionFolder,
@@ -427,5 +432,40 @@ describe("並行して動いたとき（#21 のレビュー）", () => {
       items: { folderId: string | null }[];
     };
     expect(feeds.items.map((item) => item.folderId)).toEqual([null]);
+  });
+
+  it("補充の途中で購読をやめてもう一度購読しても、新しい購読に補充済みの印は付かない", async () => {
+    const { platform, me, otherId } = await setup();
+    const { feed } = (await json(
+      await me.send("POST", "/api/v1/feeds", { url: "https://shared.example/feed" }),
+    )) as { feed: { id: string } };
+    await runFetchFeed(platform, feed.id);
+    await subscribeMany(platform.db, {
+      userId: otherId,
+      rows: [{ feedId: feed.id, folderId: null }],
+      now: new Date(),
+    });
+    const old = await env.DB.prepare(
+      "SELECT id FROM subscriptions WHERE user_id = ? AND deleted_at IS NULL",
+    )
+      .bind(otherId)
+      .first<{ id: string }>();
+    // 古い購読の補充の途中で、購読をやめてもう一度購読した
+    await unsubscribe(platform.db, { userId: otherId, feedId: feed.id, now: new Date() });
+    await subscribeMany(platform.db, {
+      userId: otherId,
+      rows: [{ feedId: feed.id, folderId: null }],
+      now: new Date(),
+    });
+
+    // 遅れて、古い補充の完了の印が付く
+    await markBackfilled(platform.db, { subscriptionIds: [old?.id ?? ""], now: new Date() });
+
+    // 新しい購読は補充済みになっておらず、補充すれば記事が入る
+    await backfillInbox(platform.db, { userId: otherId, feedIds: [feed.id], now: new Date() });
+    const inbox = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+      .bind(otherId)
+      .first<{ n: number }>();
+    expect(inbox?.n).toBe(2);
   });
 });

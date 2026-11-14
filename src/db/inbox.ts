@@ -100,7 +100,7 @@ export async function backfillInbox(
   const since = input.now.getTime() - BACKFILL_DAYS * 24 * 60 * 60 * 1000;
   for (const chunk of chunked(input.feedIds, null)) {
     const pending = await db
-      .select({ feedId: subscriptions.feedId })
+      .select({ id: subscriptions.id, feedId: subscriptions.feedId })
       .from(subscriptions)
       .where(
         and(
@@ -118,19 +118,27 @@ export async function backfillInbox(
       feedIds: pending.map((row) => row.feedId),
       since,
     });
+    await markBackfilled(db, {
+      subscriptionIds: pending.map((row) => row.id),
+      now: input.now,
+    });
+  }
+}
+
+/**
+ * 補充済みの印を、補充の対象にした購読（ID）にだけ付ける。ユーザーとフィードで付けると、
+ * 補充の途中で購読をやめてもう一度購読した場合に、補充していない新しい購読に印が付き、
+ * 二度と補充されなくなる。
+ */
+export async function markBackfilled(
+  db: Database,
+  input: { subscriptionIds: readonly string[]; now: Date },
+): Promise<void> {
+  for (const chunk of chunked(input.subscriptionIds, null)) {
     await db
       .update(subscriptions)
       .set({ backfilledAt: input.now })
-      .where(
-        and(
-          eq(subscriptions.userId, input.userId),
-          inArray(
-            subscriptions.feedId,
-            pending.map((row) => row.feedId),
-          ),
-          isNull(subscriptions.deletedAt),
-        ),
-      )
+      .where(inArray(subscriptions.id, chunk))
       .run();
   }
 }
