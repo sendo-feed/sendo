@@ -9,6 +9,7 @@ import { loginApi } from "./login";
 import { meApi } from "./me";
 import { opmlApi } from "./opml";
 import { syncApi } from "./sync";
+import { tokensApi } from "./tokens";
 
 /** OpenAPI の定義の、paths 以外の部分。/api/v1/openapi.json と spec/openapi.json で同じものを使う */
 export const OPENAPI_CONFIG = {
@@ -55,6 +56,7 @@ export function createApi(platform: Platform) {
   protectedApi.route("/", foldersApi(platform));
   protectedApi.route("/", opmlApi(platform));
   protectedApi.route("/", syncApi(platform));
+  protectedApi.route("/", tokensApi(platform));
 
   api.route("/", protectedApi);
   return api;

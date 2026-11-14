@@ -4,6 +4,7 @@ import { createApp } from "../src/app";
 import { insertFeed } from "../src/db/feeds";
 import * as schema from "../src/db/schema";
 import { nextSeq } from "../src/db/seq";
+import { createSession } from "../src/db/sessions";
 import { subscribeMany } from "../src/db/subscriptions";
 import { createAccessToken } from "../src/db/tokens";
 import type { Job } from "../src/jobs/job";
@@ -155,4 +156,14 @@ export async function addToInbox(
       })
       .run();
   }
+}
+
+/**
+ * ユーザーのセッションを作り、ブラウザが送るのと同じヘッダー（クッキーと、同じオリジンの印）を返す。
+ * Google のログインを通さずに、セッションで認証した API を試すのに使う
+ */
+export async function createSessionHeaders(userId: string) {
+  const { platform } = createTestPlatform();
+  const { token } = await createSession(platform.db, { userId, now: new Date() });
+  return { cookie: `__Host-sendo_session=${token}`, "sec-fetch-site": "same-origin" };
 }
