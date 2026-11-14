@@ -101,6 +101,21 @@ Reeder、NetNewsWire など、Google Reader API（FreshRSS 互換）に対応し
 
 既読・スター・購読・フォルダの変更は、REST API や sendo-reader と同じデータに反映されます。
 
+### AI エージェントからつなぐ（MCP）
+
+`/mcp` にリモート MCP サーバーがあります（[決定](docs/decisions/mcp.md)）。ツールは `list_feeds`、`get_unread`、`get_article`（読む）と、`subscribe`、`unsubscribe`、`mark_read`、`star`（変える）です。
+
+いまは MCP 用のアクセストークンでつなぎます（OAuth でつなぐ Claude.ai や ChatGPT には、まだ対応していません）。MCP 用のトークンは `/mcp` でしか使えず、リーダーアプリ用のトークンは `/mcp` では使えません。
+
+```sh
+# MCP 用のトークンを発行する。--write を付けると、状態を変えるツールも使える（付けなければ読むだけ）
+pnpm token:create --email you@example.com --name "Claude Code" --mcp --write
+# ブラウザでログインしているなら、POST /api/v1/tokens に {"name":"Claude Code","purpose":"mcp","scopes":["read","write"]} でもよい
+
+# Claude Code に足す
+claude mcp add --transport http sendo http://localhost:8787/mcp --header "Authorization: Bearer <トークン>"
+```
+
 ## コマンド
 
 | コマンド | すること |
@@ -117,7 +132,7 @@ Reeder、NetNewsWire など、Google Reader API（FreshRSS 互換）に対応し
 | `pnpm db:generate` | `src/db/schema.ts` からマイグレーションの SQL を作る |
 | `pnpm db:migrate:local` | 手元の D1 にマイグレーションを当てる |
 | `pnpm db:migrate` | デプロイ先の D1 にマイグレーションを当てる |
-| `pnpm token:create --email <メール>` | ユーザーとアクセストークンを作る（`--remote` でデプロイ先） |
+| `pnpm token:create --email <メール>` | ユーザーとアクセストークンを作る（`--mcp` で MCP 用、`--remote` でデプロイ先） |
 
 ## ディレクトリ構成
 
@@ -132,6 +147,7 @@ sendo/
 │   ├── feeds/          # 購読の手続き（REST API、Google Reader API で共通）
 │   ├── fetcher/        # フィードの取得と解析、SSRF 対策
 │   ├── greader/        # Google Reader API 互換（/accounts/ClientLogin、/reader/api/0）
+│   ├── mcp/            # リモート MCP サーバー（/mcp）
 │   ├── jobs/           # キューと定期実行で動く処理
 │   ├── opml/           # OPML の読み書き
 │   └── platform/       # 実行環境の緩衝層

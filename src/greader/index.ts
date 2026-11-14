@@ -15,9 +15,8 @@ import {
   listStreamItems,
   type StreamFilter,
   type StreamPosition,
-  setItemsState,
 } from "../db/greader";
-import { type MarkReadScope, markArticlesRead } from "../db/inbox";
+import { type MarkReadScope, markArticlesRead, setArticlesState } from "../db/inbox";
 import type { User } from "../db/schema";
 import {
   listSubscriptions,
@@ -142,7 +141,7 @@ function readerAuth(platform: Platform): MiddlewareHandler<{ Variables: Variable
     const auth =
       token === undefined
         ? undefined
-        : await authenticateToken(platform.db, { token, now: platform.now() });
+        : await authenticateToken(platform.db, { token, now: platform.now(), purpose: "reader" });
     if (!auth || token === undefined) return c.text("Unauthorized\n", 401);
     c.set("user", auth.user);
     c.set("token", token);
@@ -166,7 +165,7 @@ export function greaderApp(platform: Platform) {
     const password = params.get("Passwd");
     const auth =
       email && password
-        ? await authenticateToken(db, { token: password, now: platform.now() })
+        ? await authenticateToken(db, { token: password, now: platform.now(), purpose: "reader" })
         : undefined;
     // メールも合わなければ受けない。ほかの人のトークンで、別の人としてログインさせない
     if (!auth || !password || auth.user.email !== email) {
@@ -421,9 +420,9 @@ export function greaderApp(platform: Platform) {
       if (kind === "read") read = false;
       if (kind === "starred") starred = false;
     }
-    await setItemsState(db, {
+    await setArticlesState(db, {
       userId: c.get("user").id,
-      itemIds,
+      target: { itemIds },
       read,
       starred,
       now: platform.now(),

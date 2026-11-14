@@ -29,12 +29,40 @@ export function hashToken(token: string): Promise<string> {
   return sha256Hex(token);
 }
 
+/**
+ * トークンの用途（docs/decisions/mcp.md の 2）。reader はリーダーアプリと REST API 用
+ * （アプリ用パスワード）、mcp は /mcp 用。用途の違う入口では使えない
+ */
+export type TokenPurpose = AccessToken["purpose"];
+
+/** MCP 用のトークンの範囲。write は read を含む */
+export type McpScope = "read" | "write";
+
+/** 範囲を、DB に置く形（空白で区切る、決まった順）にする。write があれば read も付ける */
+export function formatScopes(scopes: readonly McpScope[]): string {
+  return scopes.includes("write") ? "read write" : scopes.includes("read") ? "read" : "";
+}
+
+/** DB に置いた範囲を読む */
+export function parseScopes(value: string): McpScope[] {
+  return value
+    .split(" ")
+    .filter((scope): scope is McpScope => scope === "read" || scope === "write");
+}
+
 /** トークンを発行する。中身は戻り値でだけ返し、DB にはハッシュを置く */
 export async function createAccessToken(
   db: Database,
-  input: { userId: string; name: string; now: Date },
+  input: {
+    userId: string;
+    name: string;
+    now: Date;
+    purpose?: TokenPurpose | undefined;
+    scopes?: readonly McpScope[] | undefined;
+  },
 ): Promise<{ token: string; record: AccessToken }> {
   const token = generateToken();
+  const purpose = input.purpose ?? "reader";
   const record = await db
     .insert(accessTokens)
     .values({
@@ -43,6 +71,9 @@ export async function createAccessToken(
       name: input.name,
       tokenHash: await hashToken(token),
       createdAt: input.now,
+      purpose,
+      // 範囲は MCP 用だけが持つ
+      scopes: purpose === "mcp" ? formatScopes(input.scopes ?? ["read"]) : "",
     })
     .returning()
     .get();
@@ -50,19 +81,25 @@ export async function createAccessToken(
 }
 
 /**
- * トークンから、その持ち主のユーザーを引く。なければ undefined。
+ * トークンから、その持ち主のユーザーを引く。ない ／ 用途が違えば undefined。
+ * 用途も同じ文の中で絞る（MCP 用のトークンで REST API を使わせない、その逆も）。
  * 最後に使った時刻は、1 時間以上たっていれば書き直す。
  */
 export async function authenticateToken(
   db: Database,
-  input: { token: string; now: Date },
-): Promise<{ user: User; tokenId: string } | undefined> {
+  input: { token: string; now: Date; purpose: TokenPurpose },
+): Promise<{ user: User; tokenId: string; scopes: McpScope[] } | undefined> {
   if (!input.token.startsWith(TOKEN_PREFIX)) return undefined;
   const row = await db
     .select({ user: users, token: accessTokens })
     .from(accessTokens)
     .innerJoin(users, eq(accessTokens.userId, users.id))
-    .where(eq(accessTokens.tokenHash, await hashToken(input.token)))
+    .where(
+      and(
+        eq(accessTokens.tokenHash, await hashToken(input.token)),
+        eq(accessTokens.purpose, input.purpose),
+      ),
+    )
     .get();
   if (!row) return undefined;
 
@@ -74,7 +111,7 @@ export async function authenticateToken(
       .where(eq(accessTokens.id, row.token.id))
       .run();
   }
-  return { user: row.user, tokenId: row.token.id };
+  return { user: row.user, tokenId: row.token.id, scopes: parseScopes(row.token.scopes) };
 }
 
 /** トークンの用途の名前の長さの上限 */

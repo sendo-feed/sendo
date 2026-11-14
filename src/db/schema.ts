@@ -62,6 +62,15 @@ export const accessTokens = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     /** 最後に使った時刻。書き込みを減らすため、1 時間に 1 回だけ更新する */
     lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
+    /**
+     * 用途（docs/decisions/mcp.md の 2）。reader はリーダーアプリと REST API 用（アプリ用パスワード）、
+     * mcp は /mcp 用。用途の違う入口では使えない
+     */
+    purpose: text("purpose", { enum: ["reader", "mcp"] })
+      .notNull()
+      .default("reader"),
+    /** 範囲（空白で区切る）。mcp なら "read" か "read write"。reader は持たない（空） */
+    scopes: text("scopes").notNull().default(""),
   },
   (t) => [index("access_tokens_user_id_idx").on(t.userId)],
 );
