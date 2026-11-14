@@ -82,7 +82,7 @@ flowchart LR
 
 | 領域 | 選定（案） | メモ |
 |---|---|---|
-| UI | Svelte 5 | ネイティブとの共有を優先するなら React を再検討 |
+| UI | Svelte 5 | ネイティブとの共有や Void（React ／ Vue のアダプタ）を優先するなら React を再検討 |
 | ビルド・配信 | Vite ＋ Workers Static Assets | Pages は使わない |
 | サーバー接続 | reader Worker → Service binding | 同一オリジンで CORS 不要。外部の sendo にも直結可 |
 | PWA | vite-plugin-pwa（Workbox） | アプリの外枠をキャッシュして即起動 |
@@ -191,5 +191,6 @@ sendo-reader/
 3. Cloudflare 以外（Docker・Postgres）をどこまで支えるか
 4. MCP の書き込み権限（OAuth スコープ）と、記事本文のインジェクション対策
 5. ライセンス：[ MIT ／ Apache-2.0 ／ AGPL-3.0 ]
+6. sendo-reader のツール：Void（Cloudflare）と Vite+ を使うか。Void の UI のアダプタは React と Vue なので、1 と一緒に決める
 
 > 決まったものから docs/decisions/ に書く。テックスタックは sendo の tech-stack.md、リーダーのローカルファースト方針は sendo-reader の local-first.md。
