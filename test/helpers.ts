@@ -49,6 +49,7 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
       throw new Error("network access is not allowed in tests; pass a fake fetch");
     },
     now: () => new Date(),
+    auth: { allowedEmails: new Set(), google: undefined },
     ...overrides,
   };
   return {

@@ -38,8 +38,9 @@
     "crons": ["*/10 * * * *"]
   },
 
-  // 秘密情報は、手元では .dev.vars に書く（.dev.vars.example を参照）。本番は wrangler secret put で入れる
+  // 秘密情報は、手元では .dev.vars に書く（.dev.vars.example を参照）。本番は wrangler secret put で入れる。
+  // ここに挙げたものは、ないとデプロイが止まる（手元では警告だけ）。.dev.vars も、ここに挙げたものしか読まれない
   "secrets": {
-    "required": []
+    "required": ["ALLOWED_EMAILS", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]
   }
 }

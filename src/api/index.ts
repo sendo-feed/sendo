@@ -1,10 +1,12 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
 import type { Platform } from "../platform";
 import { articlesApi } from "./articles";
-import { tokenAuth } from "./auth";
+import { authenticate, SESSION_COOKIE } from "./auth";
 import { feedsApi } from "./feeds";
 import { foldersApi } from "./folders";
 import { defaultHook } from "./hook";
+import { loginApi } from "./login";
+import { meApi } from "./me";
 import { opmlApi } from "./opml";
 import { syncApi } from "./sync";
 
@@ -14,7 +16,8 @@ export const OPENAPI_CONFIG = {
   info: { title: "Sendo API", version: "0.0.0" },
   // paths は /api/v1 からの相対で書かれる。クライアントが正しい URL を組み立てられるように示す
   servers: [{ url: "/api/v1" }],
-  security: [{ bearerAuth: [] }],
+  // アクセストークンか、ブラウザのセッションのクッキーのどちらか
+  security: [{ bearerAuth: [] }, { sessionCookie: [] }],
 };
 
 /**
@@ -30,10 +33,23 @@ export function createApi(platform: Platform) {
   api.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
     type: "http",
     scheme: "bearer",
+    description: "アクセストークン（sendo_ で始まる）",
+  });
+  api.openAPIRegistry.registerComponent("securitySchemes", "sessionCookie", {
+    type: "apiKey",
+    in: "cookie",
+    name: `__Host-${SESSION_COOKIE}`,
+    description:
+      "ブラウザのセッション（/auth/{provider}/login でログインすると置かれる）。状態を変えるリクエストは、同じオリジンのページからだけ受ける",
   });
 
+  // 認証の要らない入口は、認証のミドルウェアより先に登録する（あとに登録したものには、
+  // protectedApi の use("*") がかかる）
+  api.route("/", loginApi(platform));
+
   const protectedApi = new OpenAPIHono({ defaultHook });
-  protectedApi.use("*", tokenAuth(platform));
+  protectedApi.use("*", authenticate(platform));
+  protectedApi.route("/", meApi());
   protectedApi.route("/", feedsApi(platform));
   protectedApi.route("/", articlesApi(platform));
   protectedApi.route("/", foldersApi(platform));

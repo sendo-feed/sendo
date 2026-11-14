@@ -21,7 +21,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `wrangler.jsonc` を変えたら `pnpm cf-typegen` で型を作り直す
 - API（`src/api/`）を変えたら `pnpm openapi:generate` で `spec/openapi.json` を書き出し、一緒にコミットする。sendo-reader はこのファイルから型を作る（CI で食い違いを検査している）
 - `src/db/schema.ts` を変えたら `pnpm db:generate` でマイグレーションを作り、一緒にコミットする。作ったマイグレーションは手で直さない（CI で食い違いを検査している）
-- 手元で動かすときは `pnpm db:migrate:local` と `pnpm token:create --email <メール>` のあとに `pnpm dev`。発行したトークンを `Authorization: Bearer` に付ける
+- 手元で動かすときは `pnpm db:migrate:local` と `pnpm token:create --email <メール>` のあとに `pnpm dev`。発行したトークンを `Authorization: Bearer` に付ける。ブラウザのログイン（Google）を試すときは、`.dev.vars.example` を `.dev.vars` に写して設定を書く
 
 ## ディレクトリ
 
@@ -30,6 +30,9 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/platform/`：実行環境の緩衝層のインターフェース。`src/platform/cloudflare/` にその実装を置く
 - 機能のディレクトリ（`api/`、`fetcher/`、`jobs/` など）は `docs/tech-deck.md` の「6. ディレクトリ構成」に従う
 - `src/api/`：REST API。入力は zod のスキーマで検証し、OpenAPI の定義も同じスキーマから作る
+  - 認証は `auth.ts` のミドルウェア（アクセストークンか、ブラウザのセッションのクッキー）。クッキーで認証した、状態を変えるリクエストは、同じオリジンのページからだけ受ける（CSRF 対策）
+  - 認証の要らない入口（ログインなど）は、`index.ts` で認証のミドルウェアより先に登録する
+- `src/auth/`：ログイン（OpenID Connect）の提供元と、ID トークンの確認（docs/decisions/accounts.md）
 - `src/db/`：スキーマとデータの読み書き。D1 に固有の型ではなく `Database`（SQLite の非同期ドライバに共通の型）で受ける
   - 共有のデータ：`feeds.ts`（フィード）、`articles.ts`（記事。取り込んだあとは変えない）
   - 人ごとのデータ：`folders.ts`、`subscriptions.ts`（購読）、`inbox.ts`（受信箱。既読・スター・一覧・未読の数）。人ごとのデータを読み書きするときは、必ずユーザーで絞る

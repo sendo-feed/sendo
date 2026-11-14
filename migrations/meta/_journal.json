@@ -57,6 +57,13 @@
       "when": 1794656280471,
       "tag": "0007_read_seq_fill",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1794657712667,
+      "tag": "0008_sessions",
+      "breakpoints": true
     }
   ]
 }

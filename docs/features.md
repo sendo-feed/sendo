@@ -86,4 +86,4 @@
 | 全文検索 | D1 の FTS5 | SQLite の FTS5 ／ Postgres の全文検索 |
 | 意味検索 | Vectorize | sqlite-vec ／ pgvector |
 | メールマガジンの受信 | Email Workers（Email Routing） | SMTP の受信サーバー |
-| 認証 | API トークン、個人利用は Cloudflare Access も | API トークン ／ OAuth |
+| 認証 | 自前の OpenID Connect（Google など）とセッション、アクセストークン（[decisions/accounts.md](decisions/accounts.md)） | 同じ（実行環境に依存しない） |

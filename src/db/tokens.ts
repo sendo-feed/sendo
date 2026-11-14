@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { randomBase64Url, sha256Hex } from "../lib/crypto";
 import type { Database } from ".";
 import { type AccessToken, accessTokens, type User, users } from "./schema";
 
@@ -16,18 +17,16 @@ const TOUCH_INTERVAL_MS = 60 * 60 * 1000;
 
 /** 新しいトークン（sendo_ と 32 バイトの乱数を base64url にしたもの） */
 export function generateToken(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(TOKEN_BYTES));
-  const base64 = btoa(String.fromCharCode(...bytes));
-  return TOKEN_PREFIX + base64.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return TOKEN_PREFIX + randomBase64Url(TOKEN_BYTES);
 }
 
 /**
  * トークンのハッシュ（SHA-256 の 16 進）。DB にはこれだけを置く。
  * ユーザーが決める文字列ではなく 32 バイトの乱数なので、遅いハッシュは要らない。
+ * セッションのクッキーの中身も、同じ理由でこれでハッシュにする（db/sessions.ts）。
  */
-export async function hashToken(token: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+export function hashToken(token: string): Promise<string> {
+  return sha256Hex(token);
 }
 
 /** トークンを発行する。中身は戻り値でだけ返し、DB にはハッシュを置く */

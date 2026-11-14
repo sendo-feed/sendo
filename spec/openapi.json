@@ -12,16 +12,66 @@
   "security": [
     {
       "bearerAuth": []
+    },
+    {
+      "sessionCookie": []
     }
   ],
   "components": {
     "securitySchemes": {
       "bearerAuth": {
         "type": "http",
-        "scheme": "bearer"
+        "scheme": "bearer",
+        "description": "アクセストークン（sendo_ で始まる）"
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-sendo_session",
+        "description": "ブラウザのセッション（/auth/{provider}/login でログインすると置かれる）。状態を変えるリクエストは、同じオリジンのページからだけ受ける"
       }
     },
     "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "example": "invalid_request"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "example": "you@example.com"
+          }
+        },
+        "required": [
+          "id",
+          "email"
+        ]
+      },
       "Feed": {
         "type": "object",
         "properties": {
@@ -88,30 +138,6 @@
           "errorCount",
           "lastError",
           "createdAt"
-        ]
-      },
-      "Error": {
-        "type": "object",
-        "properties": {
-          "error": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string",
-                "example": "invalid_request"
-              },
-              "message": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "code",
-              "message"
-            ]
-          }
-        },
-        "required": [
-          "error"
         ]
       },
       "SubscribeRequest": {
@@ -574,6 +600,152 @@
     "parameters": {}
   },
   "paths": {
+    "/auth/{provider}/login": {
+      "get": {
+        "summary": "提供元でログインする（ブラウザで開く）",
+        "description": "ブラウザをこの URL に移すと、提供元のログインの画面へ送る。ログインできたら、セッションのクッキーを置いて returnTo に戻る。",
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "google"
+              ]
+            },
+            "required": true,
+            "name": "provider",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "ログインのあとに戻るパス（同じオリジンの / で始まるもの）。既定は /",
+              "example": "/"
+            },
+            "required": false,
+            "description": "ログインのあとに戻るパス（同じオリジンの / で始まるもの）。既定は /",
+            "name": "returnTo",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "提供元のログインの画面へ"
+          },
+          "404": {
+            "description": "その提供元のログインを設定していない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/{provider}/callback": {
+      "get": {
+        "summary": "提供元から戻る先（提供元に登録するリダイレクト先）",
+        "description": "ログインできたら、セッションのクッキーを置いて、始めたときの returnTo に戻る。できなければ /?login_error=<理由> に戻る。理由：invalid_request（始めたブラウザと違う、時間がたったなど）、access_denied（提供元の画面でやめた）、provider_error（提供元とのやり取りに失敗した）、invalid_id_token（提供元の ID トークンが正しくない）、email_not_verified（提供元がメールを確認済みとしていない）、not_allowed（許可したメールではない）",
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "google"
+              ]
+            },
+            "required": true,
+            "name": "provider",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "required": false,
+            "name": "code",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "required": false,
+            "name": "state",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "required": false,
+            "name": "error",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "returnTo か、/?login_error=<理由> へ"
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "summary": "ログアウトする（セッションを消す）",
+        "description": "セッションがなくても 204 を返す。",
+        "security": [],
+        "responses": {
+          "204": {
+            "description": "ログアウトした"
+          },
+          "403": {
+            "description": "ほかのオリジンから送られた",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "summary": "認証しているユーザー",
+        "description": "ブラウザでは、ログインしているかを確かめるのに使う（していなければ 401）。",
+        "responses": {
+          "200": {
+            "description": "ユーザー",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  },
+                  "required": [
+                    "user"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/feeds": {
       "post": {
         "summary": "フィードを購読する",

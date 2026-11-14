@@ -35,7 +35,7 @@ flowchart LR
   end
 
   subgraph CF["Cloudflare"]
-    RW["reader Worker（sendo-reader）<br/>静的アセット / /api の中継 / Access 認証"]
+    RW["reader Worker（sendo-reader）<br/>静的アセット / /api の中継"]
     SW["sendo Worker<br/>REST API / Google Reader API / MCP<br/>Cron Triggers / Queues / D1 / Vectorize<br/>R2（任意）/ AI Gateway（任意）"]
   end
 
@@ -72,7 +72,7 @@ flowchart LR
 | 検索 | FTS5（D1）／ Vectorize | 意味検索は Phase 3 |
 | エージェント連携 | リモート MCP ＋ CLI・Skill | MCP は仕様 2026-07-28 準拠で /mcp に直接載せる |
 | LLM | OpenAI 互換で差し替え | Claude・OpenAI・Workers AI・Ollama |
-| 認証 | Cloudflare Access ／ API トークン | 個人利用は Access で済ませる |
+| 認証 | 自前の OpenID Connect ／ アクセストークン | ブラウザはセッションのクッキー、それ以外は Bearer（[decisions/accounts.md](decisions/accounts.md)） |
 
 > テストは Vitest と Workers 用のテストプール。Rust は本体には使わず、ボトルネックが見えたら解析や抽出だけ Wasm にする選択肢を残す。
 
@@ -128,6 +128,7 @@ sendo/
 ├── src/
 │   ├── index.ts               # fetch / scheduled / queue
 │   ├── api/                   # REST API
+│   ├── auth/                  # ログイン（OpenID Connect の提供元）
 │   ├── greader/               # Google Reader API 互換
 │   ├── mcp/                   # ツール・リソース
 │   ├── jobs/                  # Cron・Queues

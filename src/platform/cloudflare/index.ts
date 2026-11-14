@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../../db/schema";
 import { type Job, jobSchema } from "../../jobs/job";
-import type { JobQueue, Platform } from "..";
+import { type AuthConfig, type JobQueue, type Platform, parseEmailList } from "..";
 
 /** Cloudflare の env から、アプリが使う Platform を組み立てる */
 export function createCloudflarePlatform(env: Env): Platform {
@@ -10,6 +10,22 @@ export function createCloudflarePlatform(env: Env): Platform {
     jobs: createQueueJobQueue(env.JOBS),
     fetch: (input, init) => fetch(input, init),
     now: () => new Date(),
+    auth: readAuthConfig(env),
+  };
+}
+
+/**
+ * ログインの設定を env（手元では .dev.vars、本番は wrangler secret put）から読む。
+ * 設定していなければ、ブラウザのログインは使えない（アクセストークンだけで使う）。
+ */
+export function readAuthConfig(
+  env: Partial<Pick<Env, "ALLOWED_EMAILS" | "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET">>,
+): AuthConfig {
+  const clientId = env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = env.GOOGLE_CLIENT_SECRET?.trim();
+  return {
+    allowedEmails: parseEmailList(env.ALLOWED_EMAILS),
+    google: clientId && clientSecret ? { clientId, clientSecret } : undefined,
   };
 }
 
