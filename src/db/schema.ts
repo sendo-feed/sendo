@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /** フィードをまとめるフォルダ（Feedly のカテゴリ、OPML の入れ子の outline）。1 つのフィードは 1 つのフォルダに入る */
@@ -56,10 +57,19 @@ export const articles = sqliteTable(
     author: text("author"),
     /** フィードに日付がなければ、取り込んだ時刻を入れる */
     publishedAt: integer("published_at", { mode: "timestamp_ms" }).notNull(),
+    /** 取り込んだ時刻。「ここまでを既読にする」の基準に使う */
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    /** 既読にした時刻。未読なら null。真偽値でなく時刻で持ち、同期や並べ替えに使えるようにする */
+    readAt: integer("read_at", { mode: "timestamp_ms" }),
+    /** スターを付けた時刻。付いていなければ null */
+    starredAt: integer("starred_at", { mode: "timestamp_ms" }),
   },
   (t) => [
     uniqueIndex("articles_feed_id_guid_idx").on(t.feedId, t.guid),
+    // 未読数はその都度数える（集計を別の列に持たない。docs/decisions/tech-stack.md）ので、
+    // 未読の記事だけを載せた部分インデックスで速くする
+    index("articles_unread_feed_id_idx").on(t.feedId).where(sql`${t.readAt} is null`),
+    index("articles_starred_at_idx").on(t.starredAt).where(sql`${t.starredAt} is not null`),
     index("articles_published_at_id_idx").on(t.publishedAt, t.id),
     index("articles_feed_id_published_at_id_idx").on(t.feedId, t.publishedAt, t.id),
   ],

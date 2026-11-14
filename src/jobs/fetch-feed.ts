@@ -1,6 +1,5 @@
-import { insertArticles } from "../db/articles";
+import { type ArticleInput, insertArticles } from "../db/articles";
 import { getFeed, recordFetchFailure, recordFetchSuccess } from "../db/feeds";
-import type { NewArticle } from "../db/schema";
 import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
 import { type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import type { Platform } from "../platform";
@@ -79,7 +78,12 @@ export async function runFetchFeed(
   }
 }
 
-async function toArticle(feedId: string, item: ParsedItem, fetchedAt: Date): Promise<NewArticle> {
+/**
+ * 取り込む記事にする。createdAt は入れず、INSERT するときに DB の時計で決める
+ * （取得を始めた時刻を入れると、取得中に開いた一覧の「まとめて既読」で、一覧に
+ * 出ていなかった記事まで既読になる）。
+ */
+async function toArticle(feedId: string, item: ParsedItem, fetchedAt: Date): Promise<ArticleInput> {
   return {
     id: crypto.randomUUID(),
     feedId,
@@ -89,7 +93,6 @@ async function toArticle(feedId: string, item: ParsedItem, fetchedAt: Date): Pro
     summary: item.summary,
     author: item.author,
     publishedAt: item.publishedAt ?? fetchedAt,
-    createdAt: fetchedAt,
   };
 }
 

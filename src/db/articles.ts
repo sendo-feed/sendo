@@ -1,7 +1,23 @@
-import { and, desc, eq, lt, or, type SQL } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { Database } from ".";
 import { chunked } from "./chunk";
-import { type Article, articles, type NewArticle } from "./schema";
+import { DB_NOW_MS } from "./clock";
+import { type Article, articles, feeds, type NewArticle } from "./schema";
+
+/** 記事を入れるときの値。createdAt を省くと、DB の時計で INSERT した時刻になる */
+export type ArticleInput = Omit<NewArticle, "createdAt"> & { createdAt?: Date };
 
 /**
  * 記事をまとめて入れる。同じフィードの同じ guid はすでにあれば飛ばす。
@@ -11,18 +27,26 @@ import { type Article, articles, type NewArticle } from "./schema";
  *
  * @returns 新しく入った記事の数
  */
-export async function insertArticles(db: Database, rows: readonly NewArticle[]): Promise<number> {
+export async function insertArticles(db: Database, rows: readonly ArticleInput[]): Promise<number> {
   let inserted = 0;
   for (const chunk of chunked(rows, articles)) {
     const result = await db
       .insert(articles)
-      .values(chunk)
+      .values(chunk.map((row) => ({ ...row, createdAt: row.createdAt ?? DB_NOW_MS })))
       .onConflictDoNothing({ target: [articles.feedId, articles.guid] })
       .returning({ id: articles.id })
       .all();
     inserted += result.length;
   }
   return inserted;
+}
+
+/** 一覧で絞り込む記事の状態。all ならすべて */
+export type ArticleState = "all" | "unread" | "starred";
+
+/** フォルダに入っているフィードの記事 */
+function inFolder(folderId: string): SQL {
+  return sql`${articles.feedId} in (select ${feeds.id} from ${feeds} where ${feeds.folderId} = ${folderId})`;
 }
 
 /** 一覧のページ送りの位置。直前のページの最後の記事 */
@@ -36,10 +60,19 @@ export type ArticleCursor = { publishedAt: number; id: string };
  */
 export async function listArticles(
   db: Database,
-  input: { feedId?: string | undefined; limit: number; cursor?: ArticleCursor | undefined },
+  input: {
+    feedId?: string | undefined;
+    folderId?: string | undefined;
+    state?: ArticleState | undefined;
+    limit: number;
+    cursor?: ArticleCursor | undefined;
+  },
 ): Promise<{ items: Article[]; next: ArticleCursor | null }> {
   const conditions: SQL[] = [];
   if (input.feedId !== undefined) conditions.push(eq(articles.feedId, input.feedId));
+  if (input.folderId !== undefined) conditions.push(inFolder(input.folderId));
+  if (input.state === "unread") conditions.push(isNull(articles.readAt));
+  if (input.state === "starred") conditions.push(isNotNull(articles.starredAt));
   if (input.cursor !== undefined) {
     const at = new Date(input.cursor.publishedAt);
     const after = or(
@@ -64,4 +97,89 @@ export async function listArticles(
       ? { publishedAt: last.publishedAt.getTime(), id: last.id }
       : null;
   return { items, next };
+}
+
+/** 既読やスターを変えたい記事 */
+export async function getArticle(db: Database, id: string): Promise<Article | undefined> {
+  return db.select().from(articles).where(eq(articles.id, id)).get();
+}
+
+/**
+ * 記事の既読とスターを変える。指定しなかったほうは変えない。
+ *
+ * すでにその状態なら時刻を変えない。先に読んでから書くと、同時に届いた 2 つの「既読」が
+ * どちらも未読を見て後の時刻で上書きするので、UPDATE の中で coalesce して残す。
+ * @returns 変えたあとの記事。なければ undefined
+ */
+export async function setArticleState(
+  db: Database,
+  input: { id: string; read?: boolean | undefined; starred?: boolean | undefined; now: Date },
+): Promise<Article | undefined> {
+  const now = input.now.getTime();
+  const set: { readAt?: SQL | null; starredAt?: SQL | null } = {};
+  if (input.read !== undefined) {
+    set.readAt = input.read ? sql`coalesce(${articles.readAt}, ${now})` : null;
+  }
+  if (input.starred !== undefined) {
+    set.starredAt = input.starred ? sql`coalesce(${articles.starredAt}, ${now})` : null;
+  }
+  if (Object.keys(set).length === 0) return getArticle(db, input.id);
+
+  return db.update(articles).set(set).where(eq(articles.id, input.id)).returning().get();
+}
+
+/** まとめて既読にする範囲 */
+export type MarkReadScope =
+  | { ids: readonly string[] }
+  | { feedId: string; until: Date }
+  | { folderId: string; until: Date }
+  | { all: true; until: Date };
+
+/** IN 句に並べられる記事の ID の数。D1 の変数の上限（100）から、ほかの条件の分を残す */
+export const MAX_MARK_READ_IDS = 90;
+
+/**
+ * 未読の記事をまとめて既読にする。1 つの UPDATE 文なので、途中までで止まることはない。
+ *
+ * ID 以外で指定するときは、until より前に取り込んだ記事だけを既読にする。一覧の応答の
+ * asOf（DB の時計）を渡せば、一覧に出ていなかった記事は未読のまま残る。
+ * @returns 既読にした記事の数
+ */
+export async function markArticlesRead(
+  db: Database,
+  input: { scope: MarkReadScope; now: Date },
+): Promise<number> {
+  const { scope } = input;
+  const conditions: SQL[] = [isNull(articles.readAt)];
+  if ("ids" in scope) {
+    if (scope.ids.length === 0) return 0;
+    if (scope.ids.length > MAX_MARK_READ_IDS) {
+      throw new RangeError(`at most ${MAX_MARK_READ_IDS} ids`);
+    }
+    conditions.push(inArray(articles.id, [...scope.ids]));
+  } else {
+    // 境界と同じミリ秒の記事は、未読のまま残す側に倒す
+    conditions.push(lt(articles.createdAt, scope.until));
+    if ("feedId" in scope) conditions.push(eq(articles.feedId, scope.feedId));
+    if ("folderId" in scope) conditions.push(inFolder(scope.folderId));
+  }
+
+  const updated = await db
+    .update(articles)
+    .set({ readAt: input.now })
+    .where(and(...conditions))
+    .returning({ id: articles.id })
+    .all();
+  return updated.length;
+}
+
+/** フィードごとの未読の数。未読のないフィードは含まない */
+export async function countUnreadByFeed(db: Database): Promise<Map<string, number>> {
+  const rows = await db
+    .select({ feedId: articles.feedId, unread: count() })
+    .from(articles)
+    .where(isNull(articles.readAt))
+    .groupBy(articles.feedId)
+    .all();
+  return new Map(rows.map((row) => [row.feedId, row.unread]));
 }

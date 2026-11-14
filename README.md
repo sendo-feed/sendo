@@ -47,8 +47,19 @@ curl -X POST http://localhost:8787/api/v1/feeds \
   -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
   -d '{"url":"https://blog.cloudflare.com/"}'
 
-# 記事を新しい順に読む
-curl -H "authorization: Bearer $TOKEN" "http://localhost:8787/api/v1/articles?limit=10"
+# 未読の記事を新しい順に読む（state=starred ならスター付き、folderId ／ feedId で絞り込める）
+curl -H "authorization: Bearer $TOKEN" "http://localhost:8787/api/v1/articles?state=unread&limit=10"
+
+# 記事を既読にして、スターを付ける
+curl -X PATCH http://localhost:8787/api/v1/articles/<記事の ID> \
+  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"read":true,"starred":true}'
+
+# すべて既読にする。until には、記事の一覧の最初のページの asOf を渡す
+# （一覧に出ていなかった記事は未読のまま残る）
+curl -X POST http://localhost:8787/api/v1/articles/mark-read \
+  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"all":true,"until":"<一覧の asOf>"}'
 
 # Feedly などから書き出した OPML をインポートする（フォルダも取り込む）
 curl -X POST http://localhost:8787/api/v1/opml \

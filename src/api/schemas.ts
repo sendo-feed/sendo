@@ -54,6 +54,8 @@ export const ArticleSchema = z
     author: z.string().nullable(),
     publishedAt: dateTime,
     createdAt: dateTime,
+    readAt: dateTime.nullable().openapi({ description: "既読にした時刻。未読なら null" }),
+    starredAt: dateTime.nullable().openapi({ description: "スターを付けた時刻。なければ null" }),
   })
   .openapi("Article");
 
@@ -82,5 +84,7 @@ export function toArticleResponse(article: Article): z.infer<typeof ArticleSchem
     author: article.author,
     publishedAt: article.publishedAt.toISOString(),
     createdAt: article.createdAt.toISOString(),
+    readAt: article.readAt?.toISOString() ?? null,
+    starredAt: article.starredAt?.toISOString() ?? null,
   };
 }
