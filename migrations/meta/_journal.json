@@ -15,6 +15,13 @@
       "when": 1794630663870,
       "tag": "0001_folders",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794632880934,
+      "tag": "0002_read_star",
+      "breakpoints": true
     }
   ]
 }
