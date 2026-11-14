@@ -11,6 +11,7 @@ import {
   max,
   or,
   type SQL,
+  sql,
 } from "drizzle-orm";
 import type { Database } from ".";
 import type { InboxArticle } from "./inbox";
@@ -39,8 +40,11 @@ import {
  * - upTo：最初の同期の途中なら、始めたときのその表の最大の番号。最初の同期では、この番号までの
  *   範囲内の行（消した印の付いていない行、未読・スター・直近の記事）だけを送る。ページを送る間に
  *   変わった行はこれより大きい番号になり、差分として届く。null なら差分のモード
+ * - done：この位置を返したページで、この表の変更を送り切ったか（続く行がなかった）。まとめて既読の
+ *   境界に使えるのは、送り切った位置だけ（docs/decisions/sync.md の 6）。送り切っていない位置では、
+ *   受信箱に入ったときの番号が境界より前でも、番号が後ろへ動いてまだ届いていない記事がありうる
  */
-export type SyncPosition = { seq: number; id: string | null; upTo: number | null };
+export type SyncPosition = { seq: number; id: string | null; upTo: number | null; done: boolean };
 
 export type SyncCursor = {
   folders: SyncPosition;
@@ -49,7 +53,7 @@ export type SyncCursor = {
 };
 
 /** 最初の同期の始まり。upTo は、最初のページで決める（-1 は「まだ決めていない」） */
-const START: SyncPosition = { seq: 0, id: null, upTo: -1 };
+const START: SyncPosition = { seq: 0, id: null, upTo: -1, done: false };
 
 /** カーソルなしで来たとき（最初の同期の始まり） */
 export const INITIAL_CURSOR: SyncCursor = {
@@ -118,15 +122,6 @@ function singleTable<T>(spec: {
 }
 
 /**
- * (seq, id) の順に比べる。ID は UUID（ASCII）なので、JS の文字列の比べ方が SQLite の比べ方
- * （BINARY）と一致し、SQL の after と同じ順になる
- */
-function byPosition(a: { seq: number; id: string }, b: { seq: number; id: string }): number {
-  if (a.seq !== b.seq) return a.seq - b.seq;
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
-
-/**
  * 1 つの表の、位置より後の行を読む。
  *
  * 最初の同期では、始めたときの最大の番号（upTo）を最初のページで決め、その番号までの範囲内の
@@ -142,10 +137,11 @@ async function readTable<T>(
     const rows = await reader.readDelta(at, reader.limit + 1);
     const items = rows.slice(0, reader.limit);
     const last = items.at(-1);
+    const more = rows.length > reader.limit;
     return {
       items,
-      next: last ? { ...reader.position(last), upTo: null } : at,
-      more: rows.length > reader.limit,
+      next: last ? { ...reader.position(last), upTo: null, done: !more } : { ...at, done: true },
+      more,
     };
   }
 
@@ -154,12 +150,16 @@ async function readTable<T>(
   const items = rows.slice(0, reader.limit);
   const last = items.at(-1);
   if (rows.length > reader.limit && last) {
-    return { items, next: { ...reader.position(last), upTo }, more: true };
+    return { items, next: { ...reader.position(last), upTo, done: false }, more: true };
   }
   // 最初の同期を送り終えた。始めたあとに変わった行があれば、続けて差分を取ってもらう
   // （hasMore を false で返すと、クライアントは次に開くまでその変更を受け取らない）
   const changedSince = (await reader.maxSeq()) > upTo;
-  return { items, next: { seq: upTo, id: null, upTo: null }, more: changedSince };
+  return {
+    items,
+    next: { seq: upTo, id: null, upTo: null, done: !changedSince },
+    more: changedSince,
+  };
 }
 
 /**
@@ -177,9 +177,7 @@ export async function readChanges(
   const ua = userArticles;
   const removals = userArticleRemovals;
   const since = new Date(input.now.getTime() - INITIAL_SYNC_DAYS * 24 * 60 * 60 * 1000);
-  const maxSeqOf = async (
-    table: typeof folders | typeof subscriptions | typeof ua | typeof removals,
-  ) => {
+  const maxSeqOf = async (table: typeof folders | typeof subscriptions) => {
     const row = await db
       .select({ value: max(table.seq) })
       .from(table)
@@ -232,7 +230,13 @@ export async function readChanges(
   // 記事は、受信箱の行と、受信箱から消えた記録の 2 つの表から読む。番号は同じ並び（消えた記録の
   // 番号は受信箱の表の続きから振る）なので、(seq, id) の順に混ぜれば 1 つの表として送れる
   type ArticleRow = { seq: number; id: string; item: SyncArticle };
-  const readInbox = async (where: SQL | undefined, limit: number): Promise<ArticleRow[]> => {
+
+  /** 最初の同期：受信箱の行のうち、手元に置く範囲（未読・スター・直近）だけを読む */
+  const readInitialArticles = async (
+    at: SyncPosition,
+    upTo: number,
+    limit: number,
+  ): Promise<ArticleRow[]> => {
     const rows = await db
       .select({
         ...getTableColumns(articles),
@@ -243,7 +247,14 @@ export async function readChanges(
       })
       .from(ua)
       .innerJoin(articles, eq(articles.id, ua.articleId))
-      .where(and(eq(ua.userId, userId), where))
+      .where(
+        and(
+          eq(ua.userId, userId),
+          after(ua.seq, ua.articleId, at),
+          lte(ua.seq, upTo),
+          or(isNull(ua.readAt), isNotNull(ua.starredAt), gt(ua.createdAt, since)),
+        ),
+      )
       .orderBy(asc(ua.seq), asc(ua.articleId))
       .limit(limit)
       .all();
@@ -253,38 +264,101 @@ export async function readChanges(
       item: { deleted: false, article },
     }));
   };
-  const readRemovals = async (at: SyncPosition, limit: number): Promise<ArticleRow[]> => {
+
+  /**
+   * 差分：位置より後に変わった受信箱の行と、消えた記録を、混ぜて (seq, id) の順に読む。
+   *
+   * 2 つの表は必ず 1 つの文で読む（D1 は文ごとに、ある時点の状態を読む）。別々の文で読むと、その
+   * 間に入った新着が、あとから入った消えた記録より小さい番号のまま取り残され、カーソルがその先へ
+   * 進んで取りこぼす（#25 のレビュー）。
+   */
+  const readArticleChanges = async (at: SyncPosition, limit: number): Promise<ArticleRow[]> => {
+    const c = sql.identifier("changes");
+    const col = (name: string) => sql`${c}.${sql.identifier(name)}`;
+    // それぞれの表から limit 件ずつ読めば、混ぜた先頭の limit 件はそろっている
+    const branch = (table: typeof ua | typeof removals, removed: 0 | 1) => sql`
+      select * from (
+        select ${table.seq} as seq, ${table.articleId} as article_id,
+          ${sql.raw(String(removed))} as removed
+        from ${table}
+        where ${table.userId} = ${userId} and ${after(table.seq, table.articleId, at)}
+        order by ${table.seq}, ${table.articleId}
+        limit ${limit}
+      )`;
     const rows = await db
-      .select({ id: removals.articleId, seq: removals.seq })
-      .from(removals)
-      .where(and(eq(removals.userId, userId), after(removals.seq, removals.articleId, at)))
-      .orderBy(asc(removals.seq), asc(removals.articleId))
+      .select({
+        seq: sql<number>`${col("seq")}`,
+        changedId: sql<string>`${col("article_id")}`,
+        removed: sql<number>`${col("removed")}`,
+        ...getTableColumns(articles),
+        readAt: ua.readAt,
+        starredAt: ua.starredAt,
+        receivedAt: ua.createdAt,
+      })
+      .from(sql`(${branch(ua, 0)} union all ${branch(removals, 1)}) as ${c}`)
+      .leftJoin(
+        ua,
+        and(
+          sql`${col("removed")} = 0`,
+          eq(ua.userId, userId),
+          eq(ua.articleId, sql`${col("article_id")}`),
+        ),
+      )
+      .leftJoin(
+        articles,
+        and(sql`${col("removed")} = 0`, eq(articles.id, sql`${col("article_id")}`)),
+      )
+      .orderBy(asc(col("seq")), asc(col("article_id")))
       .limit(limit)
       .all();
-    return rows.map(({ id, seq }) => ({ seq, id, item: { deleted: true, id } }));
+
+    return rows.map((row): ArticleRow => {
+      const { seq, changedId: id } = row;
+      if (row.removed) return { seq, id, item: { deleted: true, id } };
+      // 同じ文で読むので、受信箱の行には必ず受信箱の状態と記事がある（外部キー）
+      const { feedId, guid, publishedAt, createdAt, receivedAt } = row;
+      if (
+        feedId === null ||
+        guid === null ||
+        publishedAt === null ||
+        createdAt === null ||
+        receivedAt === null
+      ) {
+        throw new Error(`inbox row without its article: ${id}`);
+      }
+      const article: InboxArticle = {
+        id,
+        feedId,
+        guid,
+        url: row.url,
+        title: row.title,
+        summary: row.summary,
+        author: row.author,
+        publishedAt,
+        createdAt,
+        readAt: row.readAt,
+        starredAt: row.starredAt,
+        receivedAt,
+      };
+      return { seq, id, item: { deleted: false, article } };
+    });
   };
 
   const a = await readTable<ArticleRow>(
     {
       limit: SYNC_LIMITS.articles,
       // 最初の同期では、消えた記録は送らない（手元にまだ何もない）
-      readInitial: (at, upTo, limit) =>
-        readInbox(
-          and(
-            after(ua.seq, ua.articleId, at),
-            lte(ua.seq, upTo),
-            or(isNull(ua.readAt), isNotNull(ua.starredAt), gt(ua.createdAt, since)),
-          ),
-          limit,
-        ),
-      // それぞれの表から limit 件ずつ読めば、混ぜた先頭の limit 件はそろっている
-      readDelta: async (at, limit) => {
-        const inbox = await readInbox(after(ua.seq, ua.articleId, at), limit);
-        const removed = await readRemovals(at, limit);
-        return [...inbox, ...removed].sort(byPosition).slice(0, limit);
-      },
+      readInitial: readInitialArticles,
+      readDelta: readArticleChanges,
       position: (row) => ({ seq: row.seq, id: row.id }),
-      maxSeq: async () => Math.max(await maxSeqOf(ua), await maxSeqOf(removals)),
+      // 受信箱の行と消えた記録の両方の最大を、1 つの文で読む
+      maxSeq: async () => {
+        const row = await db.get<{ value: number }>(sql`select max(
+          coalesce((select max(${ua.seq}) from ${ua} where ${ua.userId} = ${userId}), 0),
+          coalesce((select max(${removals.seq}) from ${removals} where ${removals.userId} = ${userId}), 0)
+        ) as value`);
+        return row?.value ?? 0;
+      },
     },
     cursor.articles,
   );

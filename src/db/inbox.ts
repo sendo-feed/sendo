@@ -312,7 +312,9 @@ export async function setArticleState(
 /**
  * まとめて既読にするときの境界。
  * - until：その時刻より前に受信箱に入った記事（記事の一覧の asOf を渡す）
- * - synced：同期で手元に届いた記事（同期のカーソルの記事の位置を渡す。docs/decisions/sync.md）
+ * - synced：同期で手元に届いた記事（同期のカーソルの記事の位置を渡す。docs/decisions/sync.md）。
+ *   記事を送り切った位置（SyncPosition の done）に限る。送り切っていない位置では、境界より前に
+ *   受信箱に入った記事でも、番号が後ろへ動いてまだ届いていないことがある
  */
 export type MarkReadBoundary = { until: Date } | { synced: { seq: number; id: string | null } };
 

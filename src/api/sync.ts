@@ -16,6 +16,7 @@ const PositionSchema = z.tuple([
   z.int().nonnegative(),
   z.string().max(64).nullable(),
   z.int().min(-1).nullable(),
+  z.boolean(),
 ]);
 const CursorSchema = z.object({
   v: z.literal(CURSOR_VERSION),
@@ -24,11 +25,12 @@ const CursorSchema = z.object({
   a: PositionSchema,
 });
 
-const toTuple = (p: SyncPosition) => [p.seq, p.id, p.upTo] as const;
-const fromTuple = ([seq, id, upTo]: z.infer<typeof PositionSchema>): SyncPosition => ({
+const toTuple = (p: SyncPosition) => [p.seq, p.id, p.upTo, p.done] as const;
+const fromTuple = ([seq, id, upTo, done]: z.infer<typeof PositionSchema>): SyncPosition => ({
   seq,
   id,
   upTo,
+  done,
 });
 
 /** カーソルを、URL にそのまま載せられる文字列にする（中身に意味を持たせない） */

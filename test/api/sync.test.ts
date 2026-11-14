@@ -1,9 +1,11 @@
 import { env } from "cloudflare:workers";
+import { drizzle } from "drizzle-orm/d1";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
 import { insertFeeds } from "../../src/db/feeds";
 import { createFolder } from "../../src/db/folders";
 import { backfillInbox, deliverNewArticles } from "../../src/db/inbox";
+import * as schema from "../../src/db/schema";
 import { assignFolderIfMissing, subscribeMany } from "../../src/db/subscriptions";
 import { SYNC_LIMITS } from "../../src/db/sync";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
@@ -344,7 +346,82 @@ describe("差分", () => {
   });
 });
 
+/**
+ * pattern に合う SELECT を実行する直前に、一度だけ before を走らせる D1（arm したあとの 1 回だけ）。
+ * 1 回の同期の中で、文と文の間にほかの書き込みが入る場合を作る
+ */
+function d1WithHook(pattern: RegExp, before: () => Promise<void>) {
+  let armed = false;
+  const wrap = (stmt: D1PreparedStatement, query: string): D1PreparedStatement =>
+    new Proxy(stmt, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target);
+        if (typeof value !== "function") return value;
+        if (prop === "bind") {
+          return (...args: unknown[]) => wrap(value.apply(target, args), query);
+        }
+        if (prop === "all" || prop === "raw" || prop === "first" || prop === "run") {
+          return async (...args: unknown[]) => {
+            if (armed && /^\s*select/i.test(query) && pattern.test(query)) {
+              armed = false;
+              await before();
+            }
+            return value.apply(target, args);
+          };
+        }
+        return value.bind(target);
+      },
+    });
+  const db = new Proxy(env.DB, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (prop === "prepare") return (query: string) => wrap(target.prepare(query), query);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return {
+    db,
+    arm: () => {
+      armed = true;
+    },
+  };
+}
+
 describe("受信箱から消えた記事", () => {
+  it("記事の差分を読む間に新着と削除が入っても、新着を取りこぼさない（#25 のレビュー）", async () => {
+    const { platform: plain } = createTestPlatform();
+    const feed = await subscribeFeed(plain, {});
+    const recent = new Date(Date.now() - 1000);
+    await seedArticles(plain, feed.id, [{ id: "r", receivedAt: recent }]);
+    await insertArticles(plain.db, [
+      {
+        id: "n",
+        feedId: feed.id,
+        guid: "n",
+        url: null,
+        title: "n",
+        summary: null,
+        author: null,
+        publishedAt: recent,
+        createdAt: recent,
+      },
+    ]);
+    // 消した記録を読む文の直前に、新着（n）を配り、別の記事（r）を受信箱から消す
+    const hooked = d1WithHook(/user_article_removals/, async () => {
+      await deliverNewArticles(plain.db, { feedId: feed.id });
+      await env.DB.prepare("DELETE FROM user_articles WHERE article_id = 'r'").run();
+    });
+    const { platform } = createTestPlatform({ db: drizzle(hooked.db, { schema }) });
+    const client = createClient(platform);
+    await client.sync();
+    expect([...client.state.articles.keys()]).toEqual(["r"]);
+
+    hooked.arm();
+    await client.sync();
+
+    expect([...client.state.articles.keys()]).toEqual(["n"]);
+  });
+
   it("スターを外してから購読をやめても、消えた記録が届いて手元から消える（#25 のレビュー）", async () => {
     const { platform } = createTestPlatform();
     const feed = await subscribeFeed(platform, {});
@@ -510,6 +587,43 @@ describe("まとめて既読の境界にカーソルを使う", () => {
     });
 
     expect(await res.json()).toEqual({ updated: 2 });
+  });
+
+  it("送り切っていない（hasMore が true の）応答のカーソルは 400。送り切れば使える（#25 のレビュー）", async () => {
+    const { platform } = createTestPlatform();
+    const feed = await subscribeFeed(platform, {});
+    const recent = Date.now() - 1000;
+    const count = SYNC_LIMITS.articles + 1;
+    await seedArticles(
+      platform,
+      feed.id,
+      Array.from({ length: count }, (_, i) => ({
+        id: `m${String(i).padStart(4, "0")}`,
+        receivedAt: new Date(recent + i),
+      })),
+    );
+    // 最初に受信箱に入った記事にスターを付ける（番号が末尾に移り、1 ページ目には入らない）
+    await requestApp(platform, "/api/v1/articles/m0000", {
+      method: "PATCH",
+      json: { starred: true },
+    });
+    const client = createClient(platform);
+    expect((await client.step()).hasMore).toBe(true);
+    expect(client.state.articles.has("m0000")).toBe(false);
+
+    const early = await requestApp(platform, "/api/v1/articles/mark-read", {
+      method: "POST",
+      json: { all: true, cursor: client.cursor() },
+    });
+    expect(early.status).toBe(400);
+    expect(await early.json()).toMatchObject({ error: { code: "sync_incomplete" } });
+
+    await client.sync();
+    const done = await requestApp(platform, "/api/v1/articles/mark-read", {
+      method: "POST",
+      json: { all: true, cursor: client.cursor() },
+    });
+    expect(await done.json()).toEqual({ updated: count });
   });
 
   it("until と cursor の両方、またはどちらもなければ 400", async () => {
