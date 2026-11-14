@@ -1,6 +1,7 @@
+import { decodeHTMLAttribute } from "entities";
 import { parseAttributes, tokenizeHtml } from "../lib/html";
 import { FetchFeedError, fetchFeed } from "./fetch-feed";
-import { decodeEntities, ParseFeedError, parseFeed, toHttpUrl } from "./parse-feed";
+import { ParseFeedError, parseFeed, toHttpUrl } from "./parse-feed";
 import { toFetchableUrl, UrlNotAllowedError } from "./url-guard";
 
 /** HTML の中で見つけたフィードの候補 */
@@ -103,7 +104,8 @@ export function findFeedLinks(html: string, pageUrl: string): FeedCandidate[] {
     const attributes = parseAttributes(token.attributes);
     const value = (name: string) => {
       const raw = attributes.get(name);
-      return raw === undefined ? undefined : decodeEntities(raw);
+      // 属性の値は、本文と文字参照の規則が違う（「&not=2」の &not は戻さない）
+      return raw === undefined ? undefined : decodeHTMLAttribute(raw);
     };
 
     if (token.name === "base") {

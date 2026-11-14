@@ -33,6 +33,15 @@ describe("findFeedLinks", () => {
     ]);
   });
 
+  it("属性の値の文字参照は、属性の規則で戻す（「&not=2」は ¬ にしない）", () => {
+    expect(
+      findFeedLinks(
+        '<link rel="alternate" type="application/rss+xml" title="A&amp;B" href="/feed?x=1&not=2&amp;y=3">',
+        BASE,
+      ),
+    ).toEqual([{ url: "https://blog.example/feed?x=1&not=2&y=3", title: "A&B" }]);
+  });
+
   it("相対 URL は、最初の <base href> を基準に解決する（<link> より後にあっても効く）", () => {
     const page = "https://example.com/";
     const link = '<link rel="alternate" type="application/rss+xml" href="feed.xml">';
