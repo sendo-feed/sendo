@@ -214,6 +214,11 @@ export const userArticles = sqliteTable(
     /** スターを付けた時刻。付いていなければ null */
     starredAt: integer("starred_at", { mode: "timestamp_ms" }),
     seq: seq(),
+    /**
+     * 受信箱に入ったときの変更番号。seq と違って、既読やスターを変えても変わらない。
+     * 「同期で手元に届いた記事だけを既読にする」の境界に使う（docs/decisions/sync.md の 6）
+     */
+    receivedSeq: integer("received_seq").notNull().default(0),
   },
   (t) => [
     primaryKey({ columns: [t.userId, t.articleId] }),

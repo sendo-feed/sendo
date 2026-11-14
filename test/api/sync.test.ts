@@ -297,6 +297,25 @@ describe("差分", () => {
     expect(client.state.articles.size).toBe(count);
   });
 
+  it("フィードの名前を保存するだけで、購読の番号が進み、同期で届く（#25 のレビュー）", async () => {
+    const { platform } = createTestPlatform();
+    const feed = await subscribeFeed(platform, {});
+    const client = createClient(platform);
+    await client.sync();
+
+    // コードで購読の番号を進めなくても、トリガーが進める（途中で落ちても伝え漏れがない）
+    await env.DB.prepare("UPDATE feeds SET title = ? WHERE id = ?").bind("New name", feed.id).run();
+    await client.sync();
+    expect(client.state.feeds.get(feed.id)?.title).toBe("New name");
+
+    // 名前が変わらない更新では、番号は進まない
+    await env.DB.prepare("UPDATE feeds SET title = ?, etag = ? WHERE id = ?")
+      .bind("New name", "x", feed.id)
+      .run();
+    const empty = await client.sync();
+    expect(empty.feeds).toEqual([]);
+  });
+
   it("ほかの人の変更は届かない", async () => {
     const { platform } = createTestPlatform();
     const other = await createUser();
@@ -357,6 +376,26 @@ describe("まとめて既読の境界にカーソルを使う", () => {
     await client.sync();
     expect(client.state.articles.get("later")?.read).toBe(false);
     expect(client.state.articles.get("seen1")?.read).toBe(true);
+  });
+
+  it("同期のあとにスターを付けた（番号の進んだ）記事も、手元に届いていれば既読にする（#25 のレビュー）", async () => {
+    const { platform } = createTestPlatform();
+    const feed = await subscribeFeed(platform, {});
+    const recent = new Date(Date.now() - 1000);
+    await seedArticles(platform, feed.id, [
+      { id: "s1", receivedAt: recent },
+      { id: "s2", receivedAt: recent },
+    ]);
+    const client = createClient(platform);
+    await client.sync();
+    await requestApp(platform, "/api/v1/articles/s1", { method: "PATCH", json: { starred: true } });
+
+    const res = await requestApp(platform, "/api/v1/articles/mark-read", {
+      method: "POST",
+      json: { all: true, cursor: client.cursor() },
+    });
+
+    expect(await res.json()).toEqual({ updated: 2 });
   });
 
   it("until と cursor の両方、またはどちらもなければ 400", async () => {

@@ -1,7 +1,6 @@
 import { type ArticleInput, insertArticles } from "../db/articles";
 import { getFeed, recordFetchFailure, recordFetchSuccess } from "../db/feeds";
 import { deliverNewArticles } from "../db/inbox";
-import { touchSubscriptionsOfFeed } from "../db/subscriptions";
 import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
 import { type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import type { Platform } from "../platform";
@@ -67,10 +66,8 @@ export async function runFetchFeed(
       title: parsed.title,
       siteUrl: parsed.siteUrl,
     });
-    // フィードの名前やサイトの URL が変わったら、同期でクライアントに伝わるようにする
-    if (parsed.title !== feed.title || parsed.siteUrl !== feed.siteUrl) {
-      await touchSubscriptionsOfFeed(db, feed.id);
-    }
+    // フィードの名前やサイトの URL が変わると、購読の変更番号はトリガーが進める
+    // （migrations/0003_received_seq_and_feed_trigger.sql。同期でクライアントに伝わる）
     return { status: "fetched", inserted };
   } catch (error) {
     if (!(error instanceof FetchFeedError || error instanceof ParseFeedError)) throw error;

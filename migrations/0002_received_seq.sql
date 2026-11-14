@@ -1,0 +1,1 @@
+ALTER TABLE `user_articles` ADD `received_seq` integer DEFAULT 0 NOT NULL;

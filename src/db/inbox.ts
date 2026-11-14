@@ -52,6 +52,7 @@ const INBOX_COLUMNS = columns(
   "published_at",
   "created_at",
   "seq",
+  "received_seq",
 );
 
 /**
@@ -67,7 +68,7 @@ export async function deliverNewArticles(db: Database, input: { feedId: string }
   await db.run(sql`
     insert into ${ua} (${INBOX_COLUMNS})
     select ${subscriptions.userId}, ${articles.id}, ${articles.feedId}, ${articles.publishedAt},
-      ${DB_NOW_MS}, ${nextSeq(ua)}
+      ${DB_NOW_MS}, ${nextSeq(ua)}, ${nextSeq(ua)}
     from ${articles}
     inner join ${subscriptions}
       on ${subscriptions.feedId} = ${articles.feedId} and ${subscriptions.deletedAt} is null
@@ -164,7 +165,7 @@ export async function insertRecentArticles(
   await db.run(sql`
     insert into ${ua} (${INBOX_COLUMNS})
     select ${input.userId}, ${col("id")}, ${col("feed_id")}, ${col("published_at")},
-      ${DB_NOW_MS}, ${nextSeq(ua)}
+      ${DB_NOW_MS}, ${nextSeq(ua)}, ${nextSeq(ua)}
     from (
       select ${articles.id}, ${articles.feedId}, ${articles.publishedAt},
         row_number() over (
@@ -348,12 +349,13 @@ export async function markArticlesRead(
     // 境界と同じミリ秒の記事は、未読のまま残す側に倒す
     conditions.push(lt(ua.createdAt, scope.until));
   } else {
-    // 同期で届いた位置まで。そのあとに変わった行（新しく入った記事など）は番号が大きくなるので含まない
+    // 同期で届いた位置までに受信箱に入った記事。境界には、受信箱に入ったときの番号（received_seq）を
+    // 使う。今の番号（seq）はスターを付けるなどで進むので、手元に届いている記事まで外れてしまう
     const { seq, id } = scope.synced;
     const upTo =
       id === null
-        ? lte(ua.seq, seq)
-        : or(lt(ua.seq, seq), and(eq(ua.seq, seq), lte(ua.articleId, id)));
+        ? lte(ua.receivedSeq, seq)
+        : or(lt(ua.receivedSeq, seq), and(eq(ua.receivedSeq, seq), lte(ua.articleId, id)));
     if (upTo) conditions.push(upTo);
   }
   if (!("ids" in scope)) {
