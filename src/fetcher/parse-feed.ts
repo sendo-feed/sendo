@@ -1,4 +1,8 @@
+import { decodeHTML } from "entities";
 import { type AnyFeed, parseFeed as parseAnyFeed } from "feedsmith";
+import { stripTags } from "../lib/html";
+
+export { stripTags };
 
 /** 形式（RSS ／ Atom ／ RDF ／ JSON Feed）の違いをならした、フィードの中身 */
 export type ParsedFeed = {
@@ -147,93 +151,24 @@ export function toHttpUrl(value: string | undefined, baseUrl: string): string | 
   }
 }
 
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  nbsp: " ",
-};
-
 /**
  * HTML をプレーンテキストにする。
  *
  * 結果は「表示する側でエスケープする文字列」として扱う。ここでタグを除くのは
  * 読みやすさと大きさのためで、安全のためのサニタイズではない。
- *
- * 外部から来る入力なので、どんな入力でも長さに比例する時間で終わるようにする。
- * 正規表現でタグを除くと、閉じていない「<」が大量にあるときに時間が二乗で増える。
+ * 外部から来る入力なので、長さに比例する時間で読むトークナイザー（lib/html.ts）を使う。
  */
 export function htmlToText(value: string | undefined, maxLength: number): string | null {
   if (value === undefined) return null;
   return normalizeText(decodeEntities(stripTags(value)), maxLength);
 }
 
-/** script ／ style の中身ごと除く要素 */
-const RAW_TEXT_CLOSE = /<\/(script|style)\s*>/gi;
-const RAW_TEXT_OPEN = /^<(script|style)\b/i;
-
 /**
- * タグとコメントを空白に置き換える。先頭から1回なめるだけで終わる。
- *
- * - 「<」の次が英字・「/」・「!」・「?」のときだけタグとみなす（「x < y」は文字のまま残す）
- * - 閉じていないタグやコメントに当たったら、そこで打ち切る
+ * HTML の文字参照（&amp;、&raquo;、&#12354; など）をもとに戻す。
+ * HTML5 の文字参照をすべて扱う entities を使う（feedsmith も使っている）。
  */
-export function stripTags(html: string): string {
-  let out = "";
-  let i = 0;
-  while (i < html.length) {
-    const lt = html.indexOf("<", i);
-    if (lt === -1) {
-      out += html.slice(i);
-      break;
-    }
-    out += html.slice(i, lt);
-
-    if (!/[a-zA-Z/!?]/.test(html[lt + 1] ?? "")) {
-      out += "<";
-      i = lt + 1;
-      continue;
-    }
-
-    if (html.startsWith("<!--", lt)) {
-      const end = html.indexOf("-->", lt + 4);
-      if (end === -1) break;
-      out += " ";
-      i = end + 3;
-      continue;
-    }
-
-    const gt = html.indexOf(">", lt + 1);
-    if (gt === -1) break;
-    out += " ";
-    i = gt + 1;
-
-    // script と style は、閉じタグまで中身ごと飛ばす
-    if (RAW_TEXT_OPEN.test(html.slice(lt, Math.min(gt + 1, lt + 8)))) {
-      RAW_TEXT_CLOSE.lastIndex = i;
-      const close = RAW_TEXT_CLOSE.exec(html);
-      if (close === null) break;
-      i = close.index + close[0].length;
-    }
-  }
-  return out;
-}
-
 export function decodeEntities(text: string): string {
-  return text.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z]{1,10});/gi, (entity, code: string) => {
-    if (code.startsWith("#")) {
-      const point =
-        code[1] === "x" || code[1] === "X"
-          ? Number.parseInt(code.slice(2), 16)
-          : Number.parseInt(code.slice(1), 10);
-      return Number.isInteger(point) && point > 0 && point <= 0x10ffff
-        ? String.fromCodePoint(point)
-        : entity;
-    }
-    return NAMED_ENTITIES[code.toLowerCase()] ?? entity;
-  });
+  return decodeHTML(text);
 }
 
 /** プレーンテキストの空白をまとめ、長すぎれば切り詰める。中身には手を加えない */

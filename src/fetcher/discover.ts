@@ -1,3 +1,4 @@
+import { parseAttributes, tokenizeHtml } from "../lib/html";
 import { FetchFeedError, fetchFeed } from "./fetch-feed";
 import { decodeEntities, ParseFeedError, parseFeed, toHttpUrl } from "./parse-feed";
 import { toFetchableUrl, UrlNotAllowedError } from "./url-guard";
@@ -24,8 +25,9 @@ const FEED_TYPES = new Set([
   "application/atom+xml",
   "application/rdf+xml",
   "application/feed+json",
-  "application/json",
 ]);
+// application/json は入れない。WordPress などは、REST API を指す <link rel="alternate"
+// type="application/json"> をどのページにも置くので、フィードでない候補が混ざる
 
 /** HTML のうち、<link> を探す範囲。<link> はふつう <head> にあるので、先頭だけで足りる */
 const MAX_SCAN_LENGTH = 512 * 1024;
@@ -84,42 +86,30 @@ async function fetchOrFail(url: string, options: { fetch: typeof fetch }) {
 /**
  * HTML から、フィードを指す <link rel="alternate" type="..." href="..."> を探す。
  *
- * 外部から来る入力なので、先頭から 1 回なめるだけで終わるようにする（正規表現で
- * タグ全体を探すと、閉じていないタグが大量にあるときに時間が二乗で増える）。
+ * コメントや script の中の <link> は読まない。外部から来る入力なので、長さに比例する
+ * 時間で読むトークナイザー（lib/html.ts）を使う。
  */
 export function findFeedLinks(html: string, baseUrl: string): FeedCandidate[] {
-  const text = html.slice(0, MAX_SCAN_LENGTH);
   const candidates: FeedCandidate[] = [];
   const seen = new Set<string>();
-  const open = /<link\b/gi;
 
-  for (let match = open.exec(text); match !== null; match = open.exec(text)) {
-    const end = text.indexOf(">", match.index);
-    if (end === -1) break;
-    open.lastIndex = end + 1;
-    if (end - match.index > MAX_TAG_LENGTH) continue;
+  for (const token of tokenizeHtml(html.slice(0, MAX_SCAN_LENGTH))) {
+    if (token.type !== "tag" || token.name !== "link" || token.closing) continue;
+    if (token.attributes.length > MAX_TAG_LENGTH) continue;
 
-    const attributes = parseAttributes(text.slice(match.index + 5, end));
-    const rel = attributes.get("rel")?.toLowerCase().split(/\s+/) ?? [];
-    const type = attributes.get("type")?.toLowerCase().split(";")[0]?.trim() ?? "";
+    const attributes = parseAttributes(token.attributes);
+    const value = (name: string) => {
+      const raw = attributes.get(name);
+      return raw === undefined ? undefined : decodeEntities(raw);
+    };
+    const rel = value("rel")?.toLowerCase().split(/\s+/) ?? [];
+    const type = value("type")?.toLowerCase().split(";")[0]?.trim() ?? "";
     if (!rel.includes("alternate") || !FEED_TYPES.has(type)) continue;
 
-    const url = toHttpUrl(attributes.get("href"), baseUrl);
+    const url = toHttpUrl(value("href"), baseUrl);
     if (url === null || seen.has(url)) continue;
     seen.add(url);
-    candidates.push({ url, title: attributes.get("title")?.trim() || null });
+    candidates.push({ url, title: value("title")?.trim() || null });
   }
   return candidates;
-}
-
-/** タグの中の属性を読む。値の文字参照は戻す。同じ名前は最初のものを使う */
-function parseAttributes(source: string): Map<string, string> {
-  const attributes = new Map<string, string>();
-  const pattern = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
-  for (const [, name, double, single, bare] of source.matchAll(pattern)) {
-    if (name === undefined) continue;
-    const key = name.toLowerCase();
-    if (!attributes.has(key)) attributes.set(key, decodeEntities(double ?? single ?? bare ?? ""));
-  }
-  return attributes;
 }

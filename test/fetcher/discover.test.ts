@@ -22,6 +22,38 @@ describe("findFeedLinks", () => {
     ]);
   });
 
+  it("文字参照を戻し、WordPress の REST API（application/json）は候補にしない", () => {
+    const html = `<head>
+      <link rel="alternate" type="application/rss+xml" title="Blog &raquo; Feed" href="/feed/">
+      <link rel="alternate" type="application/json" href="/wp-json/wp/v2/pages/1">
+    </head>`;
+
+    expect(findFeedLinks(html, BASE)).toEqual([
+      { url: "https://blog.example/feed/", title: "Blog » Feed" },
+    ]);
+  });
+
+  it("属性の値の中に「>」があっても、href まで読む", () => {
+    expect(
+      findFeedLinks(
+        '<link rel="alternate" type="application/rss+xml" title="A > B" href="/feed.xml">',
+        BASE,
+      ),
+    ).toEqual([{ url: "https://blog.example/feed.xml", title: "A > B" }]);
+  });
+
+  it("コメントや script の中の <link> は候補にしない", () => {
+    const html = `<head>
+      <!-- <link rel="alternate" type="application/rss+xml" href="/old.xml"> -->
+      <script>document.write('<link rel="alternate" type="application/rss+xml" href="/js.xml">')</script>
+      <link rel="alternate" type="application/rss+xml" href="/feed.xml">
+    </head>`;
+
+    expect(findFeedLinks(html, BASE)).toEqual([
+      { url: "https://blog.example/feed.xml", title: null },
+    ]);
+  });
+
   // 二乗の時間がかかる実装だと、どれもテストの制限時間（5 秒）を大きく超える
   it.each([
     ["閉じていない <link の繰り返し", "<link ".repeat(200_000)],
