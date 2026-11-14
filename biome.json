@@ -8,7 +8,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!migrations/meta"]
+    "includes": ["**", "!migrations/meta", "!spec"]
   },
   "formatter": {
     "enabled": true,

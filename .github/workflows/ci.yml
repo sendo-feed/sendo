@@ -51,6 +51,16 @@ jobs:
             exit 1
           fi
 
+      # API を変えたのに、OpenAPI の定義（spec/openapi.json）を書き出し忘れていないか
+      - name: Check OpenAPI spec
+        run: |
+          pnpm openapi:generate
+          if [ -n "$(git status --porcelain -- spec)" ]; then
+            git --no-pager diff --stat -- spec
+            echo "::error::spec/openapi.json が API と合っていない。pnpm openapi:generate を実行してコミットする"
+            exit 1
+          fi
+
       - name: Test
         run: pnpm test
 

@@ -89,6 +89,7 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 | `pnpm test` | テスト（Workers のランタイムの中で動く） |
 | `pnpm build` | デプロイせずにバンドルだけ作って確かめる |
 | `pnpm cf-typegen` | `wrangler.jsonc` から型（`worker-configuration.d.ts`）を作り直す |
+| `pnpm openapi:generate` | API の定義を `spec/openapi.json` に書き出す（API を変えたらコミットする） |
 | `pnpm db:generate` | `src/db/schema.ts` からマイグレーションの SQL を作る |
 | `pnpm db:migrate:local` | 手元の D1 にマイグレーションを当てる |
 | `pnpm db:migrate` | デプロイ先の D1 にマイグレーションを当てる |
@@ -109,6 +110,7 @@ sendo/
 │   └── platform/       # 実行環境の緩衝層
 │       └── cloudflare/ # D1・Queues などの実装
 ├── migrations/         # D1 のマイグレーション（pnpm db:generate で作る）
+├── spec/openapi.json   # API の定義（pnpm openapi:generate で書き出す。sendo-reader が型を作る）
 ├── test/               # テスト（Vitest ＋ Workers のランタイム）
 ├── docs/
 │   ├── decisions/      # 今の決定

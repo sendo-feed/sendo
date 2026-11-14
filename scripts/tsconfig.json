@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // 手元の Node で動かす道具なので、Node の型を使う（アプリ本体の src/ は Workers の型だけ）
+    "types": ["node"],
+    "lib": ["es2024"]
+  },
+  "include": ["./**/*.ts"]
+}
