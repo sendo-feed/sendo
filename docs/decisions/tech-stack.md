@@ -24,9 +24,11 @@
 
 ### 守る規約
 
+ここの規約は、Workers で動くアプリ本体（`src/`）に適用する。手元の Node で動かす道具（`scripts/` の管理用のコマンド、`*.config.ts` などの設定ファイル）は、アプリ本体としてデプロイしないので対象外とし、`node:*` を使ってよい。
+
 - Cloudflare の型やバインディング（`env.DB`、`env.QUEUE`、`cloudflare:*` からの import）に触れてよいのは、`src/platform/cloudflare/` と入口の `src/index.ts` だけにする。それ以外（`api/`、`fetcher/`、`jobs/` など）は `src/platform/` のインターフェース越しに使う。この規約は Biome の `noRestrictedImports` で機械的に検査する。
 - `scheduled` と `queue` の入口は薄くし、中身は普通の関数（例：`runScheduledFetch(deps)`）にする。どの実行環境からでも同じ関数を呼べるようにするため。
-- Web 標準の API（`fetch`、`Request`、`Response`、Web Crypto、Streams）だけを使い、`node:*` のモジュールには頼らない。
+- Web 標準の API（`fetch`、`Request`、`Response`、Web Crypto、Streams）だけを使い、`node:*` のモジュールには頼らない。この規約も Biome の `noNodejsModules` で、`src/` を機械的に検査する。
 - 書き込みは、対話的なトランザクションにも batch にも頼らず、何度実行しても同じ結果になる（冪等な）形で組み立てる。途中で失敗しても、やり直せば正しい状態になるようにする（例：一意制約と「あれば飛ばす」で重複を防ぐ、記録は処理の最後に書く）。複数の書き込みを必ずまとめて反映する必要が出たら、そのときに batch を緩衝層の DB に足す。
 - 件数などの集計は、別の列に持たずにその都度数える。持つ場合は、いつでも数え直せるようにする（途中で失敗したときにずれないように）。
 - スキーマとマイグレーションは SQLite の方言で書く。FTS5 は SQLite 固有なので、全文検索も緩衝層の内側に置く。
