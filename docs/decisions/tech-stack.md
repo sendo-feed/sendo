@@ -8,6 +8,7 @@
 1. **言語は TypeScript、フレームワークは Hono** にする。
 2. **第1版は Cloudflare だけを対象に作る。** Workers・D1・Queues・Cron Triggers を使い、Node や Docker 版は作らない。
 3. **Cloudflare 固有の機能は緩衝層（`src/platform/`）の内側に閉じ込める。** あとで Node ／ Bun ＋ SQLite（さらに Postgres）へ移すときは、緩衝層の実装を足すだけで済むようにする。
+4. **開発ツールは pnpm・Biome・Vitest** にする。テストは本番と同じ Workers のランタイム（workerd）の中で動かす。
 
 ### 緩衝層で隠すもの
 
@@ -41,6 +42,9 @@
 - **第1版から Cloudflare と Node の両方を支える**：最初から移植しやすいが、両方の実装と CI の手間で Phase 1 が遅れる。
 - **Go の単一バイナリ ＋ SQLite**：VPS や Docker にはとても載せやすいが、Workers では動かず、reader と言語が分かれる。
 - **Rust**：性能は高いが、Phase 1 には重すぎる。ボトルネックが見えたら、一部だけを Wasm にする選択肢として残す。
+- **Bun**：本番は workerd で動くので、ランタイムとしては使わない（移植先の候補には残す）。`bun test` は workerd の中で動かせないので、テストランナーにも使えない。パッケージマネージャーとしては速いが、pnpm で揃えた守り（公開から 14 日待つ、インストール時のスクリプトの許可制、宣言していない依存を使えない厳しさ）を優先した。
+- **Vite+（Oxlint・Oxfmt）**：Biome から替える案。速く ESLint 互換のルールが多いが、lint と整形が1つで済み、整形が成熟した Biome を選んだ。Vite が中心になる sendo-reader を作り始めるときに、リポジトリ間で揃えるかを決め直す。
+- **Void（Cloudflare、2026年10月公開）**：Vite で作るフルスタックのアプリを Cloudflare にデプロイする SDK・CLI・基盤。フロントエンドを持つアプリ向けで、API ファーストのサーバーである sendo には向かない。リソースの自動用意が Cloudflare に依存していて緩衝層の方針と逆向きで、公開から日も浅い。内部で Hono を使っているので、後から寄せる道は残る。sendo-reader では候補になる（技術構成の未決事項）。
 
 ## 見直す条件
 
