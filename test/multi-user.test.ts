@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../src/db/articles";
-import { backfillInbox, deliverNewArticles } from "../src/db/inbox";
-import { subscribeMany } from "../src/db/subscriptions";
+import { backfillInbox, deliverNewArticles, insertRecentArticles } from "../src/db/inbox";
+import { subscribeMany, unsubscribe } from "../src/db/subscriptions";
 import { runFetchFeed } from "../src/jobs/fetch-feed";
 import { createTestPlatform, createUser, fakeFetch, requestApp, TEST_USER } from "./helpers";
 
@@ -305,4 +305,41 @@ describe("最近の記事の補充（#21 のレビュー）", () => {
     const list = (await json(await other.get("/api/v1/articles"))) as { items: unknown[] };
     expect(list.items).toHaveLength(2);
   });
+
+  it("購読をやめたあとに補充の INSERT が走っても、やめた購読の記事は入らない（#21 のレビュー）", async () => {
+    const { platform, me, otherId } = await setup();
+    const { feed } = (await json(
+      await me.send("POST", "/api/v1/feeds", { url: "https://shared.example/feed" }),
+    )) as { feed: { id: string } };
+    await runFetchFeed(platform, feed.id);
+    await subscribeMany(platform.db, {
+      userId: otherId,
+      rows: [{ feedId: feed.id, folderId: null }],
+      now: new Date(),
+    });
+    // 補充すべき購読を読んだあと、INSERT の前に購読をやめた
+    await unsubscribe(platform.db, { userId: otherId, feedId: feed.id, now: new Date() });
+
+    await insertRecentArticles(platform.db, { userId: otherId, feedIds: [feed.id], since: 0 });
+
+    const inbox = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+      .bind(otherId)
+      .first<{ n: number }>();
+    expect(inbox?.n).toBe(0);
+  });
+});
+
+describe("次の変更番号を振る速さ（#21 のレビュー）", () => {
+  it.each(["folders", "subscriptions", "user_articles"])(
+    "%s の最大の番号は、インデックスで 1 行だけ読んで取る",
+    async (table) => {
+      const plan = await env.DB.prepare(`EXPLAIN QUERY PLAN SELECT max(seq) FROM ${table}`).all<{
+        detail: string;
+      }>();
+
+      expect(plan.results.map((row) => row.detail).join("\n")).toMatch(
+        new RegExp(`SEARCH ${table} USING COVERING INDEX ${table}_seq_idx`),
+      );
+    },
+  );
 });

@@ -113,26 +113,11 @@ export async function backfillInbox(
       .all();
     if (pending.length === 0) continue;
 
-    const ids = sql.join(
-      pending.map((row) => sql`${row.feedId}`),
-      sql`, `,
-    );
-    await db.run(sql`
-      insert into ${ua} (${INBOX_COLUMNS})
-      select ${input.userId}, ${sql.identifier("id")}, ${sql.identifier("feed_id")},
-        ${sql.identifier("published_at")}, ${DB_NOW_MS}, ${nextSeq(ua)}
-      from (
-        select ${articles.id}, ${articles.feedId}, ${articles.publishedAt},
-          row_number() over (
-            partition by ${articles.feedId}
-            order by ${articles.publishedAt} desc, ${articles.id} desc
-          ) as ${sql.identifier("rank")}
-        from ${articles}
-        where ${articles.feedId} in (${ids}) and ${articles.publishedAt} >= ${since}
-      )
-      where ${sql.identifier("rank")} <= ${BACKFILL_PER_FEED}
-      on conflict do nothing
-    `);
+    await insertRecentArticles(db, {
+      userId: input.userId,
+      feedIds: pending.map((row) => row.feedId),
+      since,
+    });
     await db
       .update(subscriptions)
       .set({ backfilledAt: input.now })
@@ -148,6 +133,47 @@ export async function backfillInbox(
       )
       .run();
   }
+}
+
+/**
+ * フィードの最近の記事を、ユーザーの受信箱に入れる（backfillInbox の中身）。
+ *
+ * 購読がまだ有効かを、INSERT と同じ文の中で確かめる。先に確かめてから入れると、その間に
+ * 購読をやめて受信箱を掃除された場合に、やめた購読の記事を入れ直してしまう。
+ */
+export async function insertRecentArticles(
+  db: Database,
+  input: { userId: string; feedIds: readonly string[]; since: number },
+): Promise<void> {
+  if (input.feedIds.length === 0) return;
+  const ids = sql.join(
+    input.feedIds.map((id) => sql`${id}`),
+    sql`, `,
+  );
+  const recent = sql.identifier("recent");
+  const col = (name: string) => sql`${recent}.${sql.identifier(name)}`;
+  await db.run(sql`
+    insert into ${ua} (${INBOX_COLUMNS})
+    select ${input.userId}, ${col("id")}, ${col("feed_id")}, ${col("published_at")},
+      ${DB_NOW_MS}, ${nextSeq(ua)}
+    from (
+      select ${articles.id}, ${articles.feedId}, ${articles.publishedAt},
+        row_number() over (
+          partition by ${articles.feedId}
+          order by ${articles.publishedAt} desc, ${articles.id} desc
+        ) as ${sql.identifier("rank")}
+      from ${articles}
+      where ${articles.feedId} in (${ids}) and ${articles.publishedAt} >= ${input.since}
+    ) as ${recent}
+    where ${col("rank")} <= ${BACKFILL_PER_FEED}
+      and exists (
+        select 1 from ${subscriptions}
+        where ${subscriptions.userId} = ${input.userId}
+          and ${subscriptions.feedId} = ${col("feed_id")}
+          and ${subscriptions.deletedAt} is null
+      )
+    on conflict do nothing
+  `);
 }
 
 /** 一覧で絞り込む記事の状態。all ならすべて */

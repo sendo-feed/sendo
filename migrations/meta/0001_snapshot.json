@@ -1,6 +1,6 @@
 {
-  "id": "750dff34-1a35-48a2-a8bd-03ce86d55486",
-  "prevId": "7ec7f34c-69ff-4915-aad9-3f1d2b40436e",
+  "id": "a68b7133-c689-4a81-8834-e7fe2b60408a",
+  "prevId": "83fdd934-98f7-42b2-8f1d-d4322a51c9bb",
   "version": "6",
   "dialect": "sqlite",
   "tables": {
@@ -370,6 +370,13 @@
             "seq"
           ],
           "isUnique": false
+        },
+        "folders_seq_idx": {
+          "name": "folders_seq_idx",
+          "columns": [
+            "seq"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -581,6 +588,13 @@
             "seq"
           ],
           "isUnique": false
+        },
+        "subscriptions_seq_idx": {
+          "name": "subscriptions_seq_idx",
+          "columns": [
+            "seq"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -702,6 +716,13 @@
           "name": "user_articles_user_id_seq_idx",
           "columns": [
             "user_id",
+            "seq"
+          ],
+          "isUnique": false
+        },
+        "user_articles_seq_idx": {
+          "name": "user_articles_seq_idx",
+          "columns": [
             "seq"
           ],
           "isUnique": false

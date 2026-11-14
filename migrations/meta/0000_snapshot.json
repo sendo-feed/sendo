@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "7ec7f34c-69ff-4915-aad9-3f1d2b40436e",
+  "id": "83fdd934-98f7-42b2-8f1d-d4322a51c9bb",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -370,6 +370,13 @@
             "seq"
           ],
           "isUnique": false
+        },
+        "folders_seq_idx": {
+          "name": "folders_seq_idx",
+          "columns": [
+            "seq"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -581,6 +588,13 @@
             "seq"
           ],
           "isUnique": false
+        },
+        "subscriptions_seq_idx": {
+          "name": "subscriptions_seq_idx",
+          "columns": [
+            "seq"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -702,6 +716,13 @@
           "name": "user_articles_user_id_seq_idx",
           "columns": [
             "user_id",
+            "seq"
+          ],
+          "isUnique": false
+        },
+        "user_articles_seq_idx": {
+          "name": "user_articles_seq_idx",
+          "columns": [
             "seq"
           ],
           "isUnique": false

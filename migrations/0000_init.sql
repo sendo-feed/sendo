@@ -55,6 +55,7 @@ CREATE TABLE `folders` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `folders_user_id_name_idx` ON `folders` (`user_id`,`name`) WHERE "folders"."deleted_at" is null;--> statement-breakpoint
 CREATE INDEX `folders_user_id_seq_idx` ON `folders` (`user_id`,`seq`);--> statement-breakpoint
+CREATE INDEX `folders_seq_idx` ON `folders` (`seq`);--> statement-breakpoint
 CREATE TABLE `identities` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
@@ -89,6 +90,7 @@ CREATE TABLE `subscriptions` (
 CREATE UNIQUE INDEX `subscriptions_user_id_feed_id_idx` ON `subscriptions` (`user_id`,`feed_id`) WHERE "subscriptions"."deleted_at" is null;--> statement-breakpoint
 CREATE INDEX `subscriptions_feed_id_idx` ON `subscriptions` (`feed_id`);--> statement-breakpoint
 CREATE INDEX `subscriptions_user_id_seq_idx` ON `subscriptions` (`user_id`,`seq`);--> statement-breakpoint
+CREATE INDEX `subscriptions_seq_idx` ON `subscriptions` (`seq`);--> statement-breakpoint
 CREATE TABLE `user_articles` (
 	`user_id` text NOT NULL,
 	`article_id` text NOT NULL,
@@ -105,6 +107,7 @@ CREATE TABLE `user_articles` (
 --> statement-breakpoint
 CREATE INDEX `user_articles_user_id_published_at_idx` ON `user_articles` (`user_id`,`published_at`,`article_id`);--> statement-breakpoint
 CREATE INDEX `user_articles_user_id_seq_idx` ON `user_articles` (`user_id`,`seq`);--> statement-breakpoint
+CREATE INDEX `user_articles_seq_idx` ON `user_articles` (`seq`);--> statement-breakpoint
 CREATE INDEX `user_articles_unread_idx` ON `user_articles` (`user_id`,`feed_id`) WHERE "user_articles"."read_at" is null;--> statement-breakpoint
 CREATE INDEX `user_articles_starred_idx` ON `user_articles` (`user_id`,`starred_at`) WHERE "user_articles"."starred_at" is not null;--> statement-breakpoint
 CREATE TABLE `users` (

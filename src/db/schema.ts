@@ -95,6 +95,8 @@ export const folders = sqliteTable(
     // 消した印の付いたフォルダと同じ名前は、もう一度作れる
     uniqueIndex("folders_user_id_name_idx").on(t.userId, t.name).where(sql`${t.deletedAt} is null`),
     index("folders_user_id_seq_idx").on(t.userId, t.seq),
+    // 次の変更番号を振るときの「表の最大」を、全部読まずに 1 行で取る（db/seq.ts）
+    index("folders_seq_idx").on(t.seq),
   ],
 );
 
@@ -156,6 +158,7 @@ export const subscriptions = sqliteTable(
       .where(sql`${t.deletedAt} is null`),
     index("subscriptions_feed_id_idx").on(t.feedId),
     index("subscriptions_user_id_seq_idx").on(t.userId, t.seq),
+    index("subscriptions_seq_idx").on(t.seq),
   ],
 );
 
@@ -216,6 +219,7 @@ export const userArticles = sqliteTable(
     primaryKey({ columns: [t.userId, t.articleId] }),
     index("user_articles_user_id_published_at_idx").on(t.userId, t.publishedAt, t.articleId),
     index("user_articles_user_id_seq_idx").on(t.userId, t.seq),
+    index("user_articles_seq_idx").on(t.seq),
     // 未読の数はその都度数える（docs/decisions/tech-stack.md）。未読の行だけを載せる
     index("user_articles_unread_idx").on(t.userId, t.feedId).where(sql`${t.readAt} is null`),
     index("user_articles_starred_idx")
