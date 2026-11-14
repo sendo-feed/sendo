@@ -58,8 +58,8 @@ const INBOX_COLUMNS = columns(
  *
  * どこまで配ったかをフィードに記録し（delivered_until）、次はその続きから配る。配るのが途中で
  * 落ちても、記録を進める前なので、次の取得で配り直せる（同じ行は飛ばす）。
- * 記録は「今（DB の時計）の 1 ミリ秒前」までにし、同じミリ秒にほかの取得が入れた記事を
- * 取りこぼさない。
+ * 今（DB の時計）と同じミリ秒の記事まで配り、記録は 1 ミリ秒前までにする。同じミリ秒に
+ * ほかの取得が入れた記事は、次に配り直す（同じ行は飛ばす）。
  */
 export async function deliverNewArticles(db: Database, input: { feedId: string }): Promise<void> {
   const upTo = (await dbNow(db)).getTime();
@@ -73,7 +73,7 @@ export async function deliverNewArticles(db: Database, input: { feedId: string }
     where ${articles.feedId} = ${input.feedId}
       and ${articles.createdAt} > coalesce(
         (select ${feeds.deliveredUntil} from ${feeds} where ${feeds.id} = ${input.feedId}), -1)
-      and ${articles.createdAt} < ${upTo}
+      and ${articles.createdAt} <= ${upTo}
     on conflict do nothing
   `);
   await db
@@ -86,8 +86,12 @@ export async function deliverNewArticles(db: Database, input: { feedId: string }
 }
 
 /**
- * 購読を始めた人の受信箱に、そのフィードの最近の記事を入れる（すでに取り込んであるフィードを
- * あとから購読したとき）。フィードごとに、直近 BACKFILL_DAYS 日の新しい順に BACKFILL_PER_FEED 件まで。
+ * 購読を始めた人の受信箱に、すでに取り込んであった最近の記事を入れる。フィードごとに、
+ * 直近 BACKFILL_DAYS 日の新しい順に BACKFILL_PER_FEED 件まで。
+ *
+ * 入れ終えたら購読に印（backfilled_at）を付ける。印のない購読だけを対象にするので、
+ * 入れる途中で落ちても、もう一度呼べば入る（同じ行は飛ばす）。新しく作ったばかりのフィード
+ * には記事がまだないので、印が付くだけになる。
  */
 export async function backfillInbox(
   db: Database,
@@ -95,8 +99,22 @@ export async function backfillInbox(
 ): Promise<void> {
   const since = input.now.getTime() - BACKFILL_DAYS * 24 * 60 * 60 * 1000;
   for (const chunk of chunked(input.feedIds, null)) {
+    const pending = await db
+      .select({ feedId: subscriptions.feedId })
+      .from(subscriptions)
+      .where(
+        and(
+          eq(subscriptions.userId, input.userId),
+          inArray(subscriptions.feedId, chunk),
+          isNull(subscriptions.deletedAt),
+          isNull(subscriptions.backfilledAt),
+        ),
+      )
+      .all();
+    if (pending.length === 0) continue;
+
     const ids = sql.join(
-      chunk.map((id) => sql`${id}`),
+      pending.map((row) => sql`${row.feedId}`),
       sql`, `,
     );
     await db.run(sql`
@@ -115,6 +133,20 @@ export async function backfillInbox(
       where ${sql.identifier("rank")} <= ${BACKFILL_PER_FEED}
       on conflict do nothing
     `);
+    await db
+      .update(subscriptions)
+      .set({ backfilledAt: input.now })
+      .where(
+        and(
+          eq(subscriptions.userId, input.userId),
+          inArray(
+            subscriptions.feedId,
+            pending.map((row) => row.feedId),
+          ),
+          isNull(subscriptions.deletedAt),
+        ),
+      )
+      .run();
   }
 }
 

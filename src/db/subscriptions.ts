@@ -9,7 +9,7 @@ import {
   subscriptions,
   userArticles,
 } from "./schema";
-import { nextSeq, recordSeqFloor } from "./seq";
+import { nextSeq } from "./seq";
 
 /** 購読と、そのフィード（共有）と、入っているフォルダの名前 */
 export type SubscriptionWithFeed = Subscription & { feed: Feed; folderName: string | null };
@@ -126,10 +126,10 @@ export async function assignFolderIfMissing(
  * 購読をやめる（docs/decisions/sync.md）。
  *
  * 1. 購読に消した印を付ける（行は残し、同期でクライアントに伝える）
- * 2. 受信箱の変更番号の下限を記録する（最大の番号の行を消しても、その番号を二度と使わない）
- * 3. そのフィードの記事を、スターを付けたものを除いて受信箱から消す
+ * 2. そのフィードの記事を、スターを付けたものを除いて受信箱から消す。変更番号の下限は、
+ *    消すのと同じ文の中でトリガーが記録する
  *
- * 2 と 3 は、購読が残っていなければ毎回行う（何度行っても同じ結果になる）。1 のあとで落ちても、
+ * 2 は、購読が残っていなければ毎回行う（何度行っても同じ結果になる）。1 のあとで落ちても、
  * やり直したときに受信箱が掃除される。
  * @returns やめたら true、購読していなければ false
  */
@@ -144,7 +144,6 @@ export async function unsubscribe(
     .returning({ id: subscriptions.id })
     .get();
 
-  await recordSeqFloor(db, userArticles);
   await db
     .delete(userArticles)
     .where(

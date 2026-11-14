@@ -12,7 +12,7 @@ import type { Platform } from "../platform";
  * 1. フィード（共有）がなければ作る。新しく作ったフィードは取得を積む
  * 2. ユーザーの購読を作る。すでに購読していれば、フォルダに入っていないときだけ OPML の
  *    フォルダに入れる（ユーザーが自分で整理した結果を上書きしない）
- * 3. すでにあったフィードを新しく購読したら、最近の記事を受信箱に入れる
+ * 3. すでにあったフィードは、補充の済んでいない購読に最近の記事を受信箱に入れる
  *
  * 何度実行しても同じ結果になるので、途中で落ちたらキューのやり直しに任せる。フィードだけ
  * 作って取得を積めなかったものも、次の取得の時刻が「今」なので、次の定期実行で拾われる。
@@ -76,9 +76,10 @@ export async function runImportFeeds(
     await assignFolderIfMissing(db, { userId, folderId, feedIds: ids });
   }
 
-  // すでにあったフィード（ほかの人が購読している）を新しく購読したら、最近の記事を受信箱に入れる
-  const backfill = [...subscribed].filter((feedId) => !createdFeeds.has(feedId));
-  if (backfill.length > 0) await backfillInbox(db, { userId, feedIds: backfill, now });
+  // すでにあったフィード（ほかの人が購読している）の最近の記事を受信箱に入れる。前回の
+  // インポートが途中で落ちていた場合も、補充の済んでいない購読はここで入れ直す
+  const toBackfill = rows.map((row) => row.feedId).filter((feedId) => !createdFeeds.has(feedId));
+  if (toBackfill.length > 0) await backfillInbox(db, { userId, feedIds: toBackfill, now });
 
   if (createdFeeds.size > 0) {
     await platform.jobs.enqueue(

@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../src/db/articles";
-import { deliverNewArticles } from "../src/db/inbox";
+import { backfillInbox, deliverNewArticles } from "../src/db/inbox";
+import { subscribeMany } from "../src/db/subscriptions";
 import { runFetchFeed } from "../src/jobs/fetch-feed";
 import { createTestPlatform, createUser, fakeFetch, requestApp, TEST_USER } from "./helpers";
 
@@ -37,6 +38,7 @@ async function seqOf(sql: string, ...params: unknown[]) {
 beforeEach(async () => {
   await env.DB.exec("DELETE FROM feeds");
   await env.DB.exec("DELETE FROM folders");
+  // 下限の行が消えていても、トリガーが作り直すことも確かめる
   await env.DB.exec("DELETE FROM seq_floors");
 });
 
@@ -229,5 +231,78 @@ describe("変更番号（docs/decisions/sync.md）", () => {
     const reused = await seqOf("SELECT min(seq) AS seq FROM user_articles");
 
     expect(reused).toBeGreaterThan(max ?? 0);
+  });
+
+  it("既読にして番号がいちばん大きくなった行を消しても、その番号は二度と使わない（#21 のレビュー）", async () => {
+    const { platform, me } = await setup();
+    const { feed } = (await json(
+      await me.send("POST", "/api/v1/feeds", { url: "https://shared.example/feed" }),
+    )) as { feed: { id: string } };
+    await runFetchFeed(platform, feed.id);
+    const [first] = ((await json(await me.get("/api/v1/articles"))) as { items: { id: string }[] })
+      .items;
+    // 既読にすると、その行がいちばん大きい番号になる
+    await me.send("PATCH", `/api/v1/articles/${first?.id}`, { read: true });
+    const max = await seqOf("SELECT max(seq) AS seq FROM user_articles");
+
+    await me.send("DELETE", `/api/v1/feeds/${feed.id}`);
+    await me.send("POST", "/api/v1/feeds", { url: "https://shared.example/feed" });
+
+    expect(await seqOf("SELECT min(seq) AS seq FROM user_articles")).toBeGreaterThan(max ?? 0);
+  });
+});
+
+describe("最近の記事の補充（#21 のレビュー）", () => {
+  it("購読したあと補充の前に落ちても、もう一度補充すれば入り、補充済みならもう入れない", async () => {
+    const { platform, me, otherId } = await setup();
+    // ほかの人が先に購読して、記事が取り込まれている
+    const { feed } = (await json(
+      await me.send("POST", "/api/v1/feeds", { url: "https://shared.example/feed" }),
+    )) as { feed: { id: string } };
+    await runFetchFeed(platform, feed.id);
+    // 購読だけ作られて、補充の前に落ちた
+    await subscribeMany(platform.db, {
+      userId: otherId,
+      rows: [{ feedId: feed.id, folderId: null }],
+      now: new Date(),
+    });
+    const before = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+      .bind(otherId)
+      .first<{ n: number }>();
+    expect(before?.n).toBe(0);
+
+    // やり直し：補充の済んでいない購読に、もう一度補充する
+    await backfillInbox(platform.db, { userId: otherId, feedIds: [feed.id], now: new Date() });
+
+    const after = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+      .bind(otherId)
+      .first<{ n: number }>();
+    expect(after?.n).toBe(2);
+
+    // 補充済みの印が付いたら、もう一度呼んでも何もしない
+    await backfillInbox(platform.db, { userId: otherId, feedIds: [feed.id], now: new Date() });
+    const again = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+      .bind(otherId)
+      .first<{ n: number }>();
+    expect(again?.n).toBe(2);
+  });
+
+  it("API で同じフィードをもう一度購読すると、補充の済んでいない購読は補充される", async () => {
+    const { platform, me, other, otherId } = await setup();
+    const { feed } = (await json(
+      await me.send("POST", "/api/v1/feeds", { url: "https://shared.example/feed" }),
+    )) as { feed: { id: string } };
+    await runFetchFeed(platform, feed.id);
+    await subscribeMany(platform.db, {
+      userId: otherId,
+      rows: [{ feedId: feed.id, folderId: null }],
+      now: new Date(),
+    });
+
+    const res = await other.send("POST", "/api/v1/feeds", { url: "https://shared.example/feed" });
+
+    expect(res.status).toBe(200);
+    const list = (await json(await other.get("/api/v1/articles"))) as { items: unknown[] };
+    expect(list.items).toHaveLength(2);
   });
 });

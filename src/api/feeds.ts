@@ -184,9 +184,8 @@ export function feedsApi(platform: Platform) {
           now,
         })
       ).length > 0;
-    if (created && !input.feedCreated) {
-      await backfillInbox(db, { userId: input.userId, feedIds: [input.feed.id], now });
-    }
+    // 新しく購読したときだけでなく、前回の補充が途中で落ちていた場合も、ここで入れ直す
+    await backfillInbox(db, { userId: input.userId, feedIds: [input.feed.id], now });
     if (input.feedCreated || (created && input.feed.nextFetchAt <= now)) {
       await platform.jobs.enqueue([{ type: "fetch-feed", feedId: input.feed.id }]);
     }

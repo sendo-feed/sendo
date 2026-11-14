@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "0e84cbb6-c0eb-4315-89d4-294443e79b97",
+  "id": "7ec7f34c-69ff-4915-aad9-3f1d2b40436e",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -533,6 +533,13 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "backfilled_at": {
+          "name": "backfilled_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "deleted_at": {

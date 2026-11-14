@@ -78,6 +78,7 @@ CREATE TABLE `subscriptions` (
 	`feed_id` text NOT NULL,
 	`folder_id` text,
 	`created_at` integer NOT NULL,
+	`backfilled_at` integer,
 	`deleted_at` integer,
 	`seq` integer NOT NULL,
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade,

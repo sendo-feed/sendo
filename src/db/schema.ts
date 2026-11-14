@@ -140,6 +140,11 @@ export const subscriptions = sqliteTable(
     /** 入っているフォルダ。フォルダを消すときは、先にこの列を null に戻す */
     folderId: text("folder_id").references(() => folders.id),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * 購読を始めたときに、すでに取り込んであった最近の記事を受信箱に入れ終えた時刻。
+     * null なら、まだ入れていない（入れる途中で落ちても、やり直せば入る）
+     */
+    backfilledAt: integer("backfilled_at", { mode: "timestamp_ms" }),
     /** 購読をやめた時刻。消した印として行は残し、同期でクライアントに伝える */
     deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
     seq: seq(),
@@ -220,8 +225,10 @@ export const userArticles = sqliteTable(
 );
 
 /**
- * 変更番号の下限。行を物理的に消す前に、その表でそれまでに振った最大の番号を記録し、
- * 番号が二度と使われないようにする（docs/decisions/sync.md）
+ * 変更番号の下限（docs/decisions/sync.md）。人ごとの表から行が物理的に消えると、表に付けた
+ * トリガーが、消した行の番号でここを引き上げる。削除と同じ文の中で起きるので、間にほかの書き込みが
+ * 入らず、番号が二度と使われない。トリガーは migrations/0001_seq_floor_triggers.sql にある
+ * （drizzle-kit はトリガーを扱わないので、手で書いたマイグレーションにしている）
  */
 export const seqFloors = sqliteTable("seq_floors", {
   tableName: text("table_name").primaryKey(),
