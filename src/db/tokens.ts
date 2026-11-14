@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { randomBase64Url, sha256Hex } from "../lib/crypto";
 import type { Database } from ".";
 import { type AccessToken, accessTokens, type User, users } from "./schema";
@@ -75,4 +75,39 @@ export async function authenticateToken(
       .run();
   }
   return { user: row.user, tokenId: row.token.id };
+}
+
+/** トークンの用途の名前の長さの上限 */
+export const MAX_TOKEN_NAME_LENGTH = 100;
+
+/** 用途の名前の前後の空白を除く。空か、長すぎれば null */
+export function normalizeTokenName(name: string): string | null {
+  const trimmed = name.trim();
+  return trimmed === "" || trimmed.length > MAX_TOKEN_NAME_LENGTH ? null : trimmed;
+}
+
+/** そのユーザーのトークン（新しい順）。中身は持っていないので返せない */
+export async function listAccessTokens(db: Database, userId: string): Promise<AccessToken[]> {
+  return db
+    .select()
+    .from(accessTokens)
+    .where(eq(accessTokens.userId, userId))
+    .orderBy(desc(accessTokens.createdAt), desc(accessTokens.id))
+    .all();
+}
+
+/**
+ * トークンを取り消す（行を消す）。そのユーザーのものだけを消す。
+ * @returns 消したか。そのユーザーのトークンになければ false
+ */
+export async function deleteAccessToken(
+  db: Database,
+  input: { userId: string; id: string },
+): Promise<boolean> {
+  const deleted = await db
+    .delete(accessTokens)
+    .where(and(eq(accessTokens.id, input.id), eq(accessTokens.userId, input.userId)))
+    .returning({ id: accessTokens.id })
+    .get();
+  return deleted !== undefined;
 }

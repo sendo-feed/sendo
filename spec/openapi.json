@@ -595,6 +595,50 @@
           "id",
           "deleted"
         ]
+      },
+      "AccessToken": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "example": "Reeder"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "最後に使った時刻（1 時間ごとにしか更新しない）。使っていなければ null"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "createdAt",
+          "lastUsedAt"
+        ]
+      },
+      "AccessTokenRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "用途の名前（前後の空白を除いて 1〜100 文字）",
+            "example": "Reeder"
+          }
+        },
+        "required": [
+          "name"
+        ]
       }
     },
     "parameters": {}
@@ -1553,6 +1597,162 @@
           },
           "400": {
             "description": "カーソルが読めない（最初から同期し直す）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tokens": {
+      "get": {
+        "summary": "アクセストークンの一覧",
+        "description": "中身（sendo_ で始まる文字列）は、発行したときにしか返さない。",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "トークン（新しい順）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AccessToken"
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "ブラウザのセッションではない（アクセストークンでは使えない）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "アクセストークンを発行する",
+        "description": "リーダーアプリ（Reeder、NetNewsWire など）のパスワード欄や、エージェント・スクリプトの Authorization: Bearer に使う。",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccessTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "発行した",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "description": "トークンの中身。この応答でしか返さないので、利用者に控えてもらう",
+                      "example": "sendo_..."
+                    },
+                    "accessToken": {
+                      "$ref": "#/components/schemas/AccessToken"
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "accessToken"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "名前が空か、長すぎる",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "ブラウザのセッションではない（アクセストークンでは使えない）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tokens/{id}": {
+      "delete": {
+        "summary": "アクセストークンを取り消す",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "取り消した（そのトークンはすぐに使えなくなる）"
+          },
+          "403": {
+            "description": "ブラウザのセッションではない（アクセストークンでは使えない）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "トークンがない",
             "content": {
               "application/json": {
                 "schema": {

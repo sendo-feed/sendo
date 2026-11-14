@@ -85,7 +85,9 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 2. `.dev.vars.example` を `.dev.vars` に写し、`ALLOWED_EMAILS`（ユーザーになれるメール）、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` を書く。本番では `pnpm exec wrangler secret put <名前>` で入れる
 3. ブラウザで `<オリジン>/api/v1/auth/google/login` を開く。ログインできたら `/` に戻る（`?returnTo=/パス` で戻る先を変えられる）。できなければ `/?login_error=<理由>` に戻る
 
-許可したメールの人が初めてログインすると、ユーザーを作ります。同じメールのユーザー（`pnpm token:create` で作った人など）がいれば、そのユーザーに結び付けます。定期的な取得（Cron）は、`pnpm dev --test-scheduled` で起動して `http://localhost:8787/__scheduled` を開くと、すぐに試せます。
+許可したメールの人が初めてログインすると、ユーザーを作ります。同じメールのユーザー（`pnpm token:create` で作った人など）がいれば、そのユーザーに結び付けます。
+
+ログインしたら、アクセストークン（リーダーアプリのアプリ用パスワード）を `/api/v1/tokens` で発行・一覧・取り消しできます。これはブラウザのセッションでだけ使え、アクセストークンでは使えません（漏れたトークンで新しいトークンを発行させないため）。定期的な取得（Cron）は、`pnpm dev --test-scheduled` で起動して `http://localhost:8787/__scheduled` を開くと、すぐに試せます。
 
 ## コマンド
 
