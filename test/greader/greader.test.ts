@@ -1,9 +1,11 @@
 import { env } from "cloudflare:workers";
+import { drizzle } from "drizzle-orm/d1";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
 import { ITEM_ID_LIMIT, insertArticles } from "../../src/db/articles";
 import { QUERY_BUDGET } from "../../src/db/chunk";
 import { createFolder } from "../../src/db/folders";
+import * as schema from "../../src/db/schema";
 import { parseItemId, parseStreamId, toLongItemId } from "../../src/greader/ids";
 import type { Platform } from "../../src/platform";
 import {
@@ -647,6 +649,77 @@ describe("購読を変える", () => {
       ],
     });
     expect(await folderOf()).toEqual(["Tech"]);
+  });
+
+  it("フォルダから外す（r）間に、ほかのリクエストが別のフォルダへ移しても、移した先からは外さない（#38 のレビュー）", async () => {
+    const { user, feed, folder } = await setup();
+    const news = await createFolder(createTestPlatform().platform.db, {
+      userId: user.id,
+      id: crypto.randomUUID(),
+      name: "News",
+      now: new Date(),
+    });
+    // 購読のフォルダを書き換える文の直前に、ほかのリクエストが News へ移す
+    let armed = true;
+    const hooked = new Proxy(env.DB, {
+      get(target, prop) {
+        if (prop !== "prepare") {
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return (query: string) => {
+          const statement = target.prepare(query);
+          if (!armed || !/^\s*update\s+"subscriptions"/i.test(query)) return statement;
+          armed = false;
+          return new Proxy(statement, {
+            get(stmt, key) {
+              const value = Reflect.get(stmt, key, stmt);
+              if (key === "bind") {
+                return (...args: unknown[]) => {
+                  const bound = value.apply(stmt, args) as D1PreparedStatement;
+                  const run =
+                    (method: "all" | "first" | "run" | "raw") =>
+                    async (...rest: unknown[]) => {
+                      await env.DB.prepare(
+                        "UPDATE subscriptions SET folder_id = ? WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
+                      )
+                        .bind(news.id, user.id, feed.id)
+                        .run();
+                      return (bound[method] as (...a: unknown[]) => unknown).apply(bound, rest);
+                    };
+                  return new Proxy(bound, {
+                    get(b, k) {
+                      if (k === "all" || k === "first" || k === "run" || k === "raw") return run(k);
+                      const v = Reflect.get(b, k, b);
+                      return typeof v === "function" ? v.bind(b) : v;
+                    },
+                  });
+                };
+              }
+              return typeof value === "function" ? value.bind(stmt) : value;
+            },
+          });
+        };
+      },
+    });
+    const { platform } = createTestPlatform({ db: drizzle(hooked, { schema }) });
+
+    const res = await reader(platform, user.token)("/reader/api/0/subscription/edit", {
+      form: [
+        ["ac", "edit"],
+        ["s", `feed/${feed.id}`],
+        ["r", `user/-/label/${folder.name}`],
+      ],
+    });
+
+    expect(res.status).toBe(200);
+    expect(armed).toBe(false);
+    const row = await env.DB.prepare(
+      "SELECT folder_id FROM subscriptions WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
+    )
+      .bind(user.id, feed.id)
+      .first<{ folder_id: string | null }>();
+    expect(row?.folder_id).toBe(news.id);
   });
 
   it("rename-tag でフォルダの名前を変え、disable-tag で消す", async () => {

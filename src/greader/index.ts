@@ -20,8 +20,8 @@ import {
 import { type MarkReadScope, markArticlesRead } from "../db/inbox";
 import type { User } from "../db/schema";
 import {
-  getSubscription,
   listSubscriptions,
+  removeSubscriptionFromFolder,
   setSubscriptionFolder,
   unsubscribe,
 } from "../db/subscriptions";
@@ -534,9 +534,13 @@ export function greaderApp(platform: Platform) {
         if (folderId !== undefined) {
           await setSubscriptionFolder(db, { userId, feedId: stream.feedId, folderId });
         } else if (removeFrom !== null) {
-          const subscription = await getSubscription(db, { userId, feedId: stream.feedId });
-          if (subscription?.folderName === removeFrom) {
-            await setSubscriptionFolder(db, { userId, feedId: stream.feedId, folderId: null });
+          const removeFromId = await findFolderId(userId, removeFrom);
+          if (removeFromId !== undefined) {
+            await removeSubscriptionFromFolder(db, {
+              userId,
+              feedId: stream.feedId,
+              folderId: removeFromId,
+            });
           }
         }
       } else {
