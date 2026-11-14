@@ -1,6 +1,47 @@
 import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+/**
+ * ユーザー。パスワードは持たない（docs/decisions/accounts.md）。
+ *
+ * 外部の提供元でのログイン（OpenID Connect）では、issuer と subject で見分ける。
+ * 管理者がコマンドで先に作ったユーザーは、issuer と subject が空のまま始まり、
+ * そのメールで初めてログインしたときに結び付く。
+ */
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    /** 小文字にそろえる。許可の判定と表示に使う */
+    email: text("email").notNull().unique(),
+    issuer: text("issuer"),
+    subject: text("subject"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [uniqueIndex("users_issuer_subject_idx").on(t.issuer, t.subject)],
+);
+
+/**
+ * アクセストークン（アプリ用パスワード）。REST API の Bearer と、リーダーアプリの
+ * パスワード欄に使う。中身は持たず、SHA-256 のハッシュだけを置く。
+ */
+export const accessTokens = sqliteTable(
+  "access_tokens",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** 用途の名前（「Reeder」「CLI」など） */
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    /** 最後に使った時刻。書き込みを減らすため、1 時間に 1 回だけ更新する */
+    lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [index("access_tokens_user_id_idx").on(t.userId)],
+);
+
 /** フィードをまとめるフォルダ（Feedly のカテゴリ、OPML の入れ子の outline）。1 つのフィードは 1 つのフォルダに入る */
 export const folders = sqliteTable("folders", {
   id: text("id").primaryKey(),
@@ -75,6 +116,8 @@ export const articles = sqliteTable(
   ],
 );
 
+export type User = typeof users.$inferSelect;
+export type AccessToken = typeof accessTokens.$inferSelect;
 export type Folder = typeof folders.$inferSelect;
 export type Feed = typeof feeds.$inferSelect;
 export type NewFeed = typeof feeds.$inferInsert;
