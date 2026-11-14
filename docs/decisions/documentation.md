@@ -20,7 +20,8 @@
 ### コミットメッセージ
 
 - Conventional Commits を土台にし、決定ファイルの変更だけ `decision(<テーマ>): …` にする。
-- 規約の全文は、組織共通の [CONTRIBUTING.md](https://github.com/sendo-feed/.github/blob/main/CONTRIBUTING.md) に置く。GitHub の組織の既定ファイルはクローンに含まれず Claude Code から見えないため、要点は各リポジトリの `CLAUDE.md` にも書く。
+- 規約の全文は、組織共通の [CONTRIBUTING.md](https://github.com/sendo-feed/.github/blob/main/CONTRIBUTING.md) に置く。GitHub の組織の既定ファイルはクローンに含まれず AI エージェントから見えないため、要点は各リポジトリの `AGENTS.md` にも書く。
+- `AGENTS.md` をエージェント共通の正本にし、`CLAUDE.md` は `@AGENTS.md` で読み込んで Claude Code だけの補足を足す。開発は主に Claude Code、レビューは主に Codex で行うため、Codex のレビュー観点は `AGENTS.md` の「Review guidelines」節に書く。
 - 各リポジトリには `CONTRIBUTING.md` を置かない。置くと組織の既定が使われなくなるため。
 
 ### 決定ファイルの形
