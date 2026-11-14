@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, notExists, type SQL, sql } from "drizzle-orm";
 import type { Database } from ".";
 import { chunked } from "./chunk";
 import {
@@ -70,7 +70,7 @@ export async function subscribeMany(
           id: crypto.randomUUID(),
           userId: input.userId,
           feedId: row.feedId,
-          folderId: row.folderId,
+          folderId: activeFolderId(input.userId, row.folderId),
           createdAt: input.now,
           seq: nextSeq(subscriptions),
         })),
@@ -93,7 +93,7 @@ export async function setSubscriptionFolder(
 ): Promise<Subscription | undefined> {
   return db
     .update(subscriptions)
-    .set({ folderId: input.folderId, seq: nextSeq(subscriptions) })
+    .set({ folderId: activeFolderId(input.userId, input.folderId), seq: nextSeq(subscriptions) })
     .where(and(active(input.userId), eq(subscriptions.feedId, input.feedId)))
     .returning()
     .get();
@@ -110,7 +110,7 @@ export async function assignFolderIfMissing(
   for (const chunk of chunked(input.feedIds, null)) {
     await db
       .update(subscriptions)
-      .set({ folderId: input.folderId, seq: nextSeq(subscriptions) })
+      .set({ folderId: activeFolderId(input.userId, input.folderId), seq: nextSeq(subscriptions) })
       .where(
         and(
           active(input.userId),
@@ -144,6 +144,20 @@ export async function unsubscribe(
     .returning({ id: subscriptions.id })
     .get();
 
+  await clearUnsubscribedInbox(db, input);
+  return ended !== undefined;
+}
+
+/**
+ * 購読をやめたフィードの記事を、スターを付けたものを除いて受信箱から消す（unsubscribe の中身）。
+ *
+ * 有効な購読がないことを、DELETE と同じ文の中で確かめる。先に購読をやめてから消すまでの間に、
+ * もう一度購読して最近の記事を補充し終えていたら、その受信箱は消さない。
+ */
+export async function clearUnsubscribedInbox(
+  db: Database,
+  input: { userId: string; feedId: string },
+): Promise<void> {
   await db
     .delete(userArticles)
     .where(
@@ -151,8 +165,26 @@ export async function unsubscribe(
         eq(userArticles.userId, input.userId),
         eq(userArticles.feedId, input.feedId),
         isNull(userArticles.starredAt),
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(subscriptions)
+            .where(and(active(input.userId), eq(subscriptions.feedId, input.feedId))),
+        ),
       ),
     )
     .run();
-  return ended !== undefined;
+}
+
+/**
+ * 購読に入れるフォルダの ID を、書き込みと同じ文の中で確かめる SQL の式。そのユーザーの
+ * 消していないフォルダなら その ID、そうでなければ null になる。先に確かめてから書くと、その間に
+ * フォルダを消された場合に、消したフォルダを指したままの購読が残る。
+ */
+export function activeFolderId(userId: string, folderId: string | null): SQL | null {
+  if (folderId === null) return null;
+  return sql`(select ${folders.id} from ${folders}
+    where ${folders.id} = ${folderId}
+      and ${folders.userId} = ${userId}
+      and ${folders.deletedAt} is null)`;
 }

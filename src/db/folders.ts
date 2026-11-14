@@ -90,26 +90,32 @@ export async function renameFolder(
 }
 
 /**
- * フォルダを消す。入っていた購読は、先にフォルダなしに戻す（DB の ON DELETE には頼らない）。
- * フォルダは消した印を付けて残し、同期でクライアントに伝える。
- * この順なら、途中で落ちてもやり直せば正しい状態になる。
+ * フォルダを消す。フォルダは消した印を付けて残し、同期でクライアントに伝える。
+ *
+ * 1. フォルダに消した印を付ける
+ * 2. 入っていた購読を、フォルダなしに戻す（DB の ON DELETE には頼らない）
+ *
+ * 購読をフォルダに入れる書き込みは、同じ文の中でフォルダが消えていないかを確かめる
+ * （subscriptions.ts の activeFolderId）。1 のあとに入れようとした購読はフォルダなしになり、
+ * 1 の前に入った購読は 2 で外れる。2 は、フォルダがすでに消えていても毎回行うので、1 のあとで
+ * 落ちても、やり直せば掃除される。
  * @returns 消したら true、なければ false
  */
 export async function deleteFolder(
   db: Database,
   input: { userId: string; id: string; now: Date },
 ): Promise<boolean> {
-  await db
-    .update(subscriptions)
-    .set({ folderId: null, seq: nextSeq(subscriptions) })
-    .where(and(eq(subscriptions.userId, input.userId), eq(subscriptions.folderId, input.id)))
-    .run();
   const deleted = await db
     .update(folders)
     .set({ deletedAt: input.now, seq: nextSeq(folders) })
     .where(and(active(input.userId), eq(folders.id, input.id)))
     .returning({ id: folders.id })
     .get();
+  await db
+    .update(subscriptions)
+    .set({ folderId: null, seq: nextSeq(subscriptions) })
+    .where(and(eq(subscriptions.userId, input.userId), eq(subscriptions.folderId, input.id)))
+    .run();
   return deleted !== undefined;
 }
 

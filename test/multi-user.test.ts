@@ -1,10 +1,23 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../src/db/articles";
+import { deleteFolder } from "../src/db/folders";
 import { backfillInbox, deliverNewArticles, insertRecentArticles } from "../src/db/inbox";
-import { subscribeMany, unsubscribe } from "../src/db/subscriptions";
+import {
+  clearUnsubscribedInbox,
+  setSubscriptionFolder,
+  subscribeMany,
+  unsubscribe,
+} from "../src/db/subscriptions";
 import { runFetchFeed } from "../src/jobs/fetch-feed";
-import { createTestPlatform, createUser, fakeFetch, requestApp, TEST_USER } from "./helpers";
+import {
+  createTestPlatform,
+  createUser,
+  fakeFetch,
+  requestApp,
+  subscribeFeed,
+  TEST_USER,
+} from "./helpers";
 
 type Json = Record<string, unknown>;
 const json = async (res: Response) => (await res.json()) as Json;
@@ -342,4 +355,77 @@ describe("次の変更番号を振る速さ（#21 のレビュー）", () => {
       );
     },
   );
+});
+
+describe("並行して動いたとき（#21 のレビュー）", () => {
+  it("購読をやめてから受信箱を消すまでに、もう一度購読して補充していたら、その受信箱は消さない", async () => {
+    const { platform, me } = await setup();
+    const { feed } = (await json(
+      await me.send("POST", "/api/v1/feeds", { url: "https://shared.example/feed" }),
+    )) as { feed: { id: string } };
+    await runFetchFeed(platform, feed.id);
+    // 購読をやめた（消した印だけ付いた）あと、もう一度購読して補充が終わった
+    await env.DB.prepare(
+      "UPDATE subscriptions SET deleted_at = 1 WHERE user_id = ? AND deleted_at IS NULL",
+    )
+      .bind(TEST_USER.id)
+      .run();
+    await me.send("POST", "/api/v1/feeds", { url: "https://shared.example/feed" });
+
+    // 遅れて、やめたときの受信箱の掃除が走る
+    await clearUnsubscribedInbox(platform.db, { userId: TEST_USER.id, feedId: feed.id });
+
+    const list = (await json(await me.get("/api/v1/articles"))) as { items: unknown[] };
+    expect(list.items).toHaveLength(2);
+  });
+
+  it("消したフォルダには、購読を入れられない（フォルダなしになる）", async () => {
+    const { platform, me } = await setup();
+    const { feed } = (await json(
+      await me.send("POST", "/api/v1/feeds", { url: "https://shared.example/feed" }),
+    )) as { feed: { id: string } };
+    const { folder } = (await json(await me.send("POST", "/api/v1/folders", { name: "Tech" }))) as {
+      folder: { id: string };
+    };
+    // フォルダを確かめたあと、入れる前に消された
+    await env.DB.prepare("UPDATE folders SET deleted_at = 1 WHERE id = ?").bind(folder.id).run();
+
+    await setSubscriptionFolder(platform.db, {
+      userId: TEST_USER.id,
+      feedId: feed.id,
+      folderId: folder.id,
+    });
+    await subscribeMany(platform.db, {
+      userId: TEST_USER.id,
+      rows: [{ feedId: (await subscribeFeed(platform, {})).id, folderId: folder.id }],
+      now: new Date(),
+    });
+
+    const rows = await env.DB.prepare("SELECT count(*) AS n FROM subscriptions WHERE folder_id = ?")
+      .bind(folder.id)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(0);
+  });
+
+  it("フォルダに消した印を付けたあとで落ちても、もう一度消せば中の購読が外れる", async () => {
+    const { platform, me } = await setup();
+    const { folder } = (await json(await me.send("POST", "/api/v1/folders", { name: "Tech" }))) as {
+      folder: { id: string };
+    };
+    await me.send("POST", "/api/v1/feeds", {
+      url: "https://shared.example/feed",
+      folderId: folder.id,
+    });
+    // 消した印だけ付いて、中の購読を外す前に落ちた
+    await env.DB.prepare("UPDATE folders SET deleted_at = 1 WHERE id = ?").bind(folder.id).run();
+
+    expect(
+      await deleteFolder(platform.db, { userId: TEST_USER.id, id: folder.id, now: new Date() }),
+    ).toBe(false);
+
+    const feeds = (await json(await me.get("/api/v1/feeds"))) as {
+      items: { folderId: string | null }[];
+    };
+    expect(feeds.items.map((item) => item.folderId)).toEqual([null]);
+  });
 });
