@@ -1,7 +1,11 @@
-import { and, asc, eq, inArray, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { Database } from ".";
 import { chunked } from "./chunk";
-import { type Feed, feeds, folders, type NewFeed } from "./schema";
+import { type Feed, feeds, type NewFeed, subscriptions } from "./schema";
+
+/*
+ * フィードは全員で共有する。誰がどのフォルダで購読しているかは subscriptions.ts。
+ */
 
 export async function findFeedByUrl(db: Database, url: string): Promise<Feed | undefined> {
   return db.select().from(feeds).where(eq(feeds.url, url)).get();
@@ -11,24 +15,19 @@ export async function getFeed(db: Database, id: string): Promise<Feed | undefine
   return db.select().from(feeds).where(eq(feeds.id, id)).get();
 }
 
-export async function listFeeds(db: Database): Promise<Feed[]> {
-  return db.select().from(feeds).orderBy(asc(feeds.createdAt), asc(feeds.id)).all();
-}
-
 /**
  * フィードを登録する。同じ URL がすでにあれば、それを返す。
  * 2つの登録が同時に来ても、URL の一意制約で1件にまとまる。
  */
 export async function insertFeed(
   db: Database,
-  input: { id: string; url: string; now: Date; folderId?: string | null; title?: string | null },
+  input: { id: string; url: string; now: Date; title?: string | null },
 ): Promise<{ feed: Feed; created: boolean }> {
   const inserted = await db
     .insert(feeds)
     .values({
       id: input.id,
       url: input.url,
-      folderId: input.folderId ?? null,
       title: input.title ?? null,
       nextFetchAt: input.now,
       createdAt: input.now,
@@ -44,30 +43,7 @@ export async function insertFeed(
 }
 
 /**
- * フィードを消す。記事は DB の ON DELETE CASCADE で一緒に消える
- * （articles の表は最初のマイグレーションで外部キーごと作っている）。
- * @returns 消したら true、なければ false
- */
-export async function deleteFeed(db: Database, id: string): Promise<boolean> {
-  const deleted = await db.delete(feeds).where(eq(feeds.id, id)).returning({ id: feeds.id }).get();
-  return deleted !== undefined;
-}
-
-/** フィードのフォルダを変える。null ならフォルダなしにする。なければ undefined */
-export async function setFeedFolder(
-  db: Database,
-  input: { id: string; folderId: string | null },
-): Promise<Feed | undefined> {
-  return db
-    .update(feeds)
-    .set({ folderId: input.folderId })
-    .where(eq(feeds.id, input.id))
-    .returning()
-    .get();
-}
-
-/**
- * フィードをまとめて登録する。同じ URL がすでにあれば飛ばし、既存のフィードには触れない。
+ * フィードをまとめて登録する。同じ URL がすでにあれば飛ばす。
  * @returns 新しく登録したフィードの ID
  */
 export async function insertFeeds(db: Database, rows: readonly NewFeed[]): Promise<string[]> {
@@ -84,34 +60,21 @@ export async function insertFeeds(db: Database, rows: readonly NewFeed[]): Promi
   return created;
 }
 
-/**
- * フォルダに入っていないフィードだけを、フォルダに入れる。すでにフォルダがあれば変えない
- * （ユーザーが自分で整理した結果を上書きしないため）。
- */
-export async function assignFolderIfMissing(
+/** URL からフィードの ID を引く表。ないものは含まない */
+export async function findFeedIdsByUrls(
   db: Database,
-  input: { folderId: string; urls: readonly string[] },
-): Promise<void> {
-  for (const chunk of chunked(input.urls, null)) {
-    await db
-      .update(feeds)
-      .set({ folderId: input.folderId })
-      .where(and(inArray(feeds.url, chunk), isNull(feeds.folderId)))
-      .run();
+  urls: readonly string[],
+): Promise<Map<string, string>> {
+  const ids = new Map<string, string>();
+  for (const chunk of chunked([...new Set(urls)], null)) {
+    const rows = await db
+      .select({ id: feeds.id, url: feeds.url })
+      .from(feeds)
+      .where(inArray(feeds.url, chunk))
+      .all();
+    for (const row of rows) ids.set(row.url, row.id);
   }
-}
-
-/** OPML に書き出すために、フィードをフォルダの名前と一緒に返す */
-export async function listFeedsWithFolder(
-  db: Database,
-): Promise<(Feed & { folderName: string | null })[]> {
-  const rows = await db
-    .select({ feed: feeds, folderName: folders.name })
-    .from(feeds)
-    .leftJoin(folders, eq(feeds.folderId, folders.id))
-    .orderBy(asc(folders.name), asc(feeds.createdAt), asc(feeds.id))
-    .all();
-  return rows.map((row) => ({ ...row.feed, folderName: row.folderName }));
+  return ids;
 }
 
 /** 一度に借りられるフィードの数の上限 */
@@ -129,10 +92,17 @@ export async function leaseDueFeeds(
   if (input.limit < 1 || input.limit > MAX_LEASE) {
     throw new RangeError(`limit must be between 1 and ${MAX_LEASE}`);
   }
+  // 購読している人がいないフィードは取得しない（docs/decisions/accounts.md）
+  const subscribed = exists(
+    db
+      .select({ one: sql`1` })
+      .from(subscriptions)
+      .where(and(eq(subscriptions.feedId, feeds.id), isNull(subscriptions.deletedAt))),
+  );
   const due = await db
     .select({ id: feeds.id })
     .from(feeds)
-    .where(lte(feeds.nextFetchAt, input.now))
+    .where(and(lte(feeds.nextFetchAt, input.now), subscribed))
     .orderBy(asc(feeds.nextFetchAt))
     .limit(input.limit)
     .all();

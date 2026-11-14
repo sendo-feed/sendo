@@ -1,9 +1,10 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { listFeedsWithFolder } from "../db/feeds";
+import { listSubscriptions } from "../db/subscriptions";
 import { IMPORT_CHUNK_SIZE } from "../jobs/job";
 import { readLimited, TooLargeError } from "../lib/read-limited";
 import { OpmlError, readOpml, writeOpml } from "../opml";
 import type { Platform } from "../platform";
+import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
 import { ErrorSchema, errorBody } from "./schemas";
 
@@ -74,7 +75,7 @@ const exportRoute = createRoute({
 });
 
 export function opmlApi(platform: Platform) {
-  return new OpenAPIHono({ defaultHook })
+  return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook })
     .openapi(importRoute, async (c) => {
       let xml: string;
       try {
@@ -105,6 +106,7 @@ export function opmlApi(platform: Platform) {
       for (let i = 0; i < result.entries.length; i += IMPORT_CHUNK_SIZE) {
         jobs.push({
           type: "import-feeds" as const,
+          userId: c.get("user").id,
           feeds: result.entries.slice(i, i + IMPORT_CHUNK_SIZE),
         });
       }
@@ -120,8 +122,16 @@ export function opmlApi(platform: Platform) {
       );
     })
     .openapi(exportRoute, async (c) => {
-      const feeds = await listFeedsWithFolder(platform.db);
-      const xml = writeOpml(feeds, platform.now());
+      const subscriptions = await listSubscriptions(platform.db, c.get("user").id);
+      const xml = writeOpml(
+        subscriptions.map((subscription) => ({
+          url: subscription.feed.url,
+          title: subscription.feed.title,
+          siteUrl: subscription.feed.siteUrl,
+          folderName: subscription.folderName,
+        })),
+        platform.now(),
+      );
       return c.body(xml, 200, {
         "content-type": "text/x-opml; charset=utf-8",
         "content-disposition": 'attachment; filename="sendo-subscriptions.opml"',

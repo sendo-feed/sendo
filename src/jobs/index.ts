@@ -14,7 +14,7 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
       return;
     }
     case "import-feeds": {
-      await runImportFeeds(platform, job.feeds);
+      await runImportFeeds(platform, { userId: job.userId, entries: job.feeds });
       return;
     }
   }

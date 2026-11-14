@@ -9,6 +9,7 @@ import {
   renameFolder,
 } from "../db/folders";
 import type { Platform } from "../platform";
+import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
 import { ErrorSchema, errorBody, FolderSchema, toFolderResponse } from "./schemas";
 
@@ -95,9 +96,9 @@ const deleteRoute = createRoute({
 
 export function foldersApi(platform: Platform) {
   const { db } = platform;
-  return new OpenAPIHono({ defaultHook })
+  return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook })
     .openapi(listRoute, async (c) => {
-      const folders = await listFolders(db);
+      const folders = await listFolders(db, c.get("user").id);
       return c.json({ items: folders.map(toFolderResponse) }, 200);
     })
     .openapi(createFolderRoute, async (c) => {
@@ -105,6 +106,7 @@ export function foldersApi(platform: Platform) {
       if (name === null) return c.json(errorBody("invalid_request", "name: empty"), 400);
       try {
         const folder = await createFolder(db, {
+          userId: c.get("user").id,
           id: crypto.randomUUID(),
           name,
           now: platform.now(),
@@ -122,7 +124,7 @@ export function foldersApi(platform: Platform) {
       const name = normalizeFolderName(c.req.valid("json").name);
       if (name === null) return c.json(errorBody("invalid_request", "name: empty"), 400);
       try {
-        const folder = await renameFolder(db, { id, name });
+        const folder = await renameFolder(db, { userId: c.get("user").id, id, name });
         if (!folder) return c.json(errorBody("not_found", "folder does not exist"), 404);
         return c.json({ folder: toFolderResponse(folder) }, 200);
       } catch (e) {
@@ -134,7 +136,7 @@ export function foldersApi(platform: Platform) {
     })
     .openapi(deleteRoute, async (c) => {
       const { id } = c.req.valid("param");
-      if (!(await deleteFolder(db, id))) {
+      if (!(await deleteFolder(db, { userId: c.get("user").id, id, now: platform.now() }))) {
         return c.json(errorBody("not_found", "folder does not exist"), 404);
       }
       return c.body(null, 204);

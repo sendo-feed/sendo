@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
-import { createTestPlatform, fakeFetch, requestApp } from "../helpers";
+import { deliverNewArticles } from "../../src/db/inbox";
+import { createTestPlatform, fakeFetch, requestApp, TEST_USER } from "../helpers";
 
 type FeedJson = { id: string; url: string; title: string | null; folderId: string | null };
 
@@ -271,32 +272,56 @@ describe("PATCH ／ DELETE /api/v1/feeds/{id}", () => {
     expect(noFeed.status).toBe(404);
   });
 
-  it("購読をやめると、記事も消える", async () => {
+  it("購読をやめると、スターを付けた記事を除いて受信箱から消える。記事そのものは残る", async () => {
     const { platform, feed } = await setup();
-    await insertArticles(platform.db, [
-      {
-        id: crypto.randomUUID(),
+    const past = new Date(Date.now() - 1000);
+    await insertArticles(
+      platform.db,
+      ["kept", "gone"].map((id) => ({
+        id,
         feedId: feed.id,
-        guid: "g",
+        guid: id,
         url: null,
-        title: "a",
+        title: id,
         summary: null,
         author: null,
-        publishedAt: new Date(),
-        createdAt: new Date(),
-      },
-    ]);
+        publishedAt: past,
+        createdAt: past,
+      })),
+    );
+    await deliverNewArticles(platform.db, { feedId: feed.id });
+    await requestApp(platform, "/api/v1/articles/kept", {
+      method: "PATCH",
+      json: { starred: true },
+    });
 
     const res = await requestApp(platform, `/api/v1/feeds/${feed.id}`, { method: "DELETE" });
 
     expect(res.status).toBe(204);
+    const inbox = await env.DB.prepare(
+      "SELECT article_id FROM user_articles WHERE user_id = ? AND feed_id = ?",
+    )
+      .bind(TEST_USER.id, feed.id)
+      .all<{ article_id: string }>();
+    expect(inbox.results.map((row) => row.article_id)).toEqual(["kept"]);
     const articles = await env.DB.prepare("SELECT count(*) AS n FROM articles WHERE feed_id = ?")
       .bind(feed.id)
       .first<{ n: number }>();
-    expect(articles?.n).toBe(0);
+    expect(articles?.n).toBe(2);
+    expect((await requestApp(platform, "/api/v1/feeds")).status).toBe(200);
     expect(
       (await requestApp(platform, `/api/v1/feeds/${feed.id}`, { method: "DELETE" })).status,
     ).toBe(404);
+  });
+
+  it("購読をやめたフィードを、もう一度購読できる", async () => {
+    const { platform, feed } = await setup();
+    await requestApp(platform, `/api/v1/feeds/${feed.id}`, { method: "DELETE" });
+
+    const res = await subscribe(platform, { url: feed.url });
+
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { feed: FeedJson }).feed.id).toBe(feed.id);
   });
 });
 

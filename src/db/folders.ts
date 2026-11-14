@@ -1,8 +1,9 @@
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { truncateUtf16 } from "../lib/text";
 import type { Database } from ".";
 import { chunked } from "./chunk";
-import { type Folder, feeds, folders } from "./schema";
+import { type Folder, folders, subscriptions } from "./schema";
+import { nextSeq } from "./seq";
 
 export const MAX_FOLDER_NAME_LENGTH = 200;
 
@@ -13,27 +14,48 @@ export function normalizeFolderName(value: string | undefined): string | null {
   return truncateUtf16(name, MAX_FOLDER_NAME_LENGTH);
 }
 
-export async function listFolders(db: Database): Promise<Folder[]> {
-  return db.select().from(folders).orderBy(asc(folders.name)).all();
+/** そのユーザーの、消していないフォルダだけを扱う条件 */
+const active = (userId: string) => and(eq(folders.userId, userId), isNull(folders.deletedAt));
+
+/** ユーザーのフォルダ（消したものを除く、名前の順） */
+export async function listFolders(db: Database, userId: string): Promise<Folder[]> {
+  return db.select().from(folders).where(active(userId)).orderBy(asc(folders.name)).all();
 }
 
-export async function getFolder(db: Database, id: string): Promise<Folder | undefined> {
-  return db.select().from(folders).where(eq(folders.id, id)).get();
+/** ユーザーのフォルダ。ほかの人のものや、消したものは undefined */
+export async function getFolder(
+  db: Database,
+  input: { userId: string; id: string },
+): Promise<Folder | undefined> {
+  return db
+    .select()
+    .from(folders)
+    .where(and(active(input.userId), eq(folders.id, input.id)))
+    .get();
 }
 
 export class FolderNameTakenError extends Error {
   override readonly name = "FolderNameTakenError";
 }
 
-/** フォルダを作る。同じ名前があれば FolderNameTakenError */
+/** 同じ名前のフォルダを持っていれば FolderNameTakenError */
 export async function createFolder(
   db: Database,
-  input: { id: string; name: string; now: Date },
+  input: { userId: string; id: string; name: string; now: Date },
 ): Promise<Folder> {
   const created = await db
     .insert(folders)
-    .values({ id: input.id, name: input.name, createdAt: input.now })
-    .onConflictDoNothing({ target: folders.name })
+    .values({
+      id: input.id,
+      userId: input.userId,
+      name: input.name,
+      createdAt: input.now,
+      seq: nextSeq(folders),
+    })
+    // 対象の列は書かない。drizzle は部分一意インデックスの条件（where）を「do nothing」の
+    // あとに書いてしまい、SQLite の文法の誤りになる。対象を書かなければ、どの一意制約に
+    // ぶつかっても飛ばす。この表でぶつかりうるのは、消していない行の一意制約だけ
+    .onConflictDoNothing()
     .returning()
     .get();
   if (!created) throw new FolderNameTakenError(input.name);
@@ -43,19 +65,19 @@ export async function createFolder(
 /** フォルダの名前を変える。なければ undefined、同じ名前が別にあれば FolderNameTakenError */
 export async function renameFolder(
   db: Database,
-  input: { id: string; name: string },
+  input: { userId: string; id: string; name: string },
 ): Promise<Folder | undefined> {
   const taken = await db
     .select({ id: folders.id })
     .from(folders)
-    .where(eq(folders.name, input.name))
+    .where(and(active(input.userId), eq(folders.name, input.name)))
     .get();
   if (taken && taken.id !== input.id) throw new FolderNameTakenError(input.name);
   try {
     return await db
       .update(folders)
-      .set({ name: input.name })
-      .where(eq(folders.id, input.id))
+      .set({ name: input.name, seq: nextSeq(folders) })
+      .where(and(active(input.userId), eq(folders.id, input.id)))
       .returning()
       .get();
   } catch (error) {
@@ -68,27 +90,42 @@ export async function renameFolder(
 }
 
 /**
- * フォルダを消す。入っていたフィードは、先にフォルダなしに戻す（DB の ON DELETE には頼らない。
- * schema.ts の feeds.folderId を参照）。この順なら、途中で落ちてもやり直せば正しい状態になる。
+ * フォルダを消す。フォルダは消した印を付けて残し、同期でクライアントに伝える。
+ *
+ * 1. フォルダに消した印を付ける
+ * 2. 入っていた購読を、フォルダなしに戻す（DB の ON DELETE には頼らない）
+ *
+ * 購読をフォルダに入れる書き込みは、同じ文の中でフォルダが消えていないかを確かめる
+ * （subscriptions.ts の activeFolderId）。1 のあとに入れようとした購読はフォルダなしになり、
+ * 1 の前に入った購読は 2 で外れる。2 は、フォルダがすでに消えていても毎回行うので、1 のあとで
+ * 落ちても、やり直せば掃除される。
  * @returns 消したら true、なければ false
  */
-export async function deleteFolder(db: Database, id: string): Promise<boolean> {
-  await db.update(feeds).set({ folderId: null }).where(eq(feeds.folderId, id)).run();
+export async function deleteFolder(
+  db: Database,
+  input: { userId: string; id: string; now: Date },
+): Promise<boolean> {
   const deleted = await db
-    .delete(folders)
-    .where(eq(folders.id, id))
+    .update(folders)
+    .set({ deletedAt: input.now, seq: nextSeq(folders) })
+    .where(and(active(input.userId), eq(folders.id, input.id)))
     .returning({ id: folders.id })
     .get();
+  await db
+    .update(subscriptions)
+    .set({ folderId: null, seq: nextSeq(subscriptions) })
+    .where(and(eq(subscriptions.userId, input.userId), eq(subscriptions.folderId, input.id)))
+    .run();
   return deleted !== undefined;
 }
 
 /**
  * 名前のフォルダがなければ作り、名前から ID を引ける表を返す。
- * 同じ名前が同時に作られても、名前の一意制約で 1 つにまとまる（冪等）。
+ * 同じ名前が同時に作られても、一意制約で 1 つにまとまる（冪等）。
  */
 export async function ensureFolders(
   db: Database,
-  input: { names: readonly string[]; now: Date },
+  input: { userId: string; names: readonly string[]; now: Date },
 ): Promise<Map<string, string>> {
   const names = [...new Set(input.names)];
   if (names.length === 0) return new Map();
@@ -96,8 +133,19 @@ export async function ensureFolders(
   for (const chunk of chunked(names, folders)) {
     await db
       .insert(folders)
-      .values(chunk.map((name) => ({ id: crypto.randomUUID(), name, createdAt: input.now })))
-      .onConflictDoNothing({ target: folders.name })
+      .values(
+        chunk.map((name) => ({
+          id: crypto.randomUUID(),
+          userId: input.userId,
+          name,
+          createdAt: input.now,
+          seq: nextSeq(folders),
+        })),
+      )
+      // 対象の列は書かない。drizzle は部分一意インデックスの条件（where）を「do nothing」の
+      // あとに書いてしまい、SQLite の文法の誤りになる。対象を書かなければ、どの一意制約に
+      // ぶつかっても飛ばす。この表でぶつかりうるのは、消していない行の一意制約だけ
+      .onConflictDoNothing()
       .run();
   }
 
@@ -106,7 +154,7 @@ export async function ensureFolders(
     const rows = await db
       .select({ id: folders.id, name: folders.name })
       .from(folders)
-      .where(inArray(folders.name, chunk))
+      .where(and(active(input.userId), inArray(folders.name, chunk)))
       .all();
     for (const row of rows) ids.set(row.name, row.id);
   }

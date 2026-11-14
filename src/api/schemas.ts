@@ -1,5 +1,7 @@
 import { z } from "@hono/zod-openapi";
-import type { Article, Feed, Folder } from "../db/schema";
+import type { InboxArticle } from "../db/inbox";
+import type { Folder } from "../db/schema";
+import type { SubscriptionWithFeed } from "../db/subscriptions";
 
 export const ErrorSchema = z
   .object({
@@ -27,7 +29,7 @@ export const FeedSchema = z
     nextFetchAt: dateTime,
     errorCount: z.int().nonnegative(),
     lastError: z.string().nullable(),
-    createdAt: dateTime,
+    createdAt: dateTime.openapi({ description: "購読した時刻" }),
   })
   .openapi("Feed");
 
@@ -53,28 +55,30 @@ export const ArticleSchema = z
     }),
     author: z.string().nullable(),
     publishedAt: dateTime,
-    createdAt: dateTime,
+    receivedAt: dateTime.openapi({ description: "受信箱に入った時刻（サーバーの DB の時計）" }),
     readAt: dateTime.nullable().openapi({ description: "既読にした時刻。未読なら null" }),
     starredAt: dateTime.nullable().openapi({ description: "スターを付けた時刻。なければ null" }),
   })
   .openapi("Article");
 
-export function toFeedResponse(feed: Feed): z.infer<typeof FeedSchema> {
+/** ユーザーの購読を、フィードとして返す（id はフィードの ID。フォルダはその人のもの） */
+export function toFeedResponse(subscription: SubscriptionWithFeed): z.infer<typeof FeedSchema> {
+  const { feed } = subscription;
   return {
     id: feed.id,
     url: feed.url,
     title: feed.title,
     siteUrl: feed.siteUrl,
-    folderId: feed.folderId,
+    folderId: subscription.folderId,
     lastFetchedAt: feed.lastFetchedAt?.toISOString() ?? null,
     nextFetchAt: feed.nextFetchAt.toISOString(),
     errorCount: feed.errorCount,
     lastError: feed.lastError,
-    createdAt: feed.createdAt.toISOString(),
+    createdAt: subscription.createdAt.toISOString(),
   };
 }
 
-export function toArticleResponse(article: Article): z.infer<typeof ArticleSchema> {
+export function toArticleResponse(article: InboxArticle): z.infer<typeof ArticleSchema> {
   return {
     id: article.id,
     feedId: article.feedId,
@@ -83,7 +87,7 @@ export function toArticleResponse(article: Article): z.infer<typeof ArticleSchem
     summary: article.summary,
     author: article.author,
     publishedAt: article.publishedAt.toISOString(),
-    createdAt: article.createdAt.toISOString(),
+    receivedAt: article.receivedAt.toISOString(),
     readAt: article.readAt?.toISOString() ?? null,
     starredAt: article.starredAt?.toISOString() ?? null,
   };
