@@ -20,7 +20,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `pnpm build`：デプロイせずにバンドルだけ作る
 - `wrangler.jsonc` を変えたら `pnpm cf-typegen` で型を作り直す
 - `src/db/schema.ts` を変えたら `pnpm db:generate` でマイグレーションを作り、一緒にコミットする。作ったマイグレーションは手で直さない（CI で食い違いを検査している）
-- 手元で動かすときは `.dev.vars.example` を `.dev.vars` に写し、`pnpm db:migrate:local` のあとに `pnpm dev`
+- 手元で動かすときは `pnpm db:migrate:local` と `pnpm token:create --email <メール>` のあとに `pnpm dev`。発行したトークンを `Authorization: Bearer` に付ける
 
 ## ディレクトリ
 
@@ -32,7 +32,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/db/`：スキーマとデータの読み書き。D1 に固有の型ではなく `Database`（SQLite の非同期ドライバに共通の型）で受ける
 - `src/fetcher/`：外部の URL の取得と解析。外部の URL は必ず `toFetchableUrl` を通す（SSRF 対策）
 - `src/jobs/`：キューと定期実行で動く処理
-- テストは `test/` に置き、`*.test.ts` とする。外部への通信はせず、`test/helpers.ts` の `fakeFetch` で差し替える
+- テストは `test/` に置き、`*.test.ts` とする。外部への通信はせず、`test/helpers.ts` の `fakeFetch` で差し替える。API のテストは、`test/setup.ts` が入れるテスト用のユーザーとトークン（`test/fixtures/user.ts`）を使う
 
 ## 言語
 

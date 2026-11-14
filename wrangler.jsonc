@@ -38,8 +38,8 @@
     "crons": ["*/10 * * * *"]
   },
 
-  // 手元では .dev.vars に書く（.dev.vars.example を参照）。本番は wrangler secret put で入れる
+  // 秘密情報は、手元では .dev.vars に書く（.dev.vars.example を参照）。本番は wrangler secret put で入れる
   "secrets": {
-    "required": ["API_TOKEN"]
+    "required": []
   }
 }

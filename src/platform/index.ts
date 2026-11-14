@@ -20,6 +20,4 @@ export interface Platform {
   /** 外部の URL を取得する。SSRF の確認は呼ぶ側（fetcher/）で行う */
   fetch: typeof fetch;
   now: () => Date;
-  /** REST API の認証に使うトークン。設定されていなければ、API はすべて拒む */
-  apiToken: string | undefined;
 }

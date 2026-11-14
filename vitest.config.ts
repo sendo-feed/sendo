@@ -10,7 +10,6 @@ export default defineConfig({
         bindings: {
           // test/setup.ts が、各テストファイルの前に D1 へ当てる
           TEST_MIGRATIONS: await readD1Migrations("./migrations"),
-          API_TOKEN: "test-token",
         },
       },
     })),

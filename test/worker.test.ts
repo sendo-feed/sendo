@@ -2,6 +2,7 @@ import { createExecutionContext, createMessageBatch, getQueueResult } from "clou
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { handleQueueBatch } from "../src/platform/cloudflare";
+import { TEST_TOKEN } from "./fixtures/user";
 
 describe("Worker", () => {
   it("GET /healthz は ok を返す", async () => {
@@ -18,9 +19,9 @@ describe("Worker", () => {
     expect(await res.json()).toEqual({ error: { code: "not_found", message: "Not Found" } });
   });
 
-  it("API は env の API_TOKEN で認証する", async () => {
+  it("API は D1 のアクセストークンで認証する", async () => {
     const res = await exports.default.fetch("https://sendo.test/api/v1/feeds", {
-      headers: { authorization: "Bearer test-token" },
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
     });
 
     expect(res.status).toBe(200);

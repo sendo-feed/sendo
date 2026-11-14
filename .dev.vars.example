@@ -1,5 +1,4 @@
 # 手元で動かすときの秘密情報。このファイルを .dev.vars に写して使う。
 # .dev.vars は .gitignore 済みなので、コミットされない。
-
-# REST API の認証に使うトークン（Authorization: Bearer <API_TOKEN>）
-API_TOKEN=dev-token-change-me
+#
+# いまは必要な秘密情報はない。API のアクセストークンは pnpm token:create で発行する（README を参照）。

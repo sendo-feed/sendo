@@ -87,7 +87,7 @@ describe("D1 のクエリの上限", () => {
     expect(await enqueueDueFeeds(platform)).toBe(5);
   });
 
-  it("OPML のインポートの API は DB を使わず、受け取る側の検証を通るジョブだけを積む", async () => {
+  it("OPML のインポートの API は認証のほかに DB を使わず、受け取る側の検証を通るジョブだけを積む", async () => {
     const { platform, enqueued, queryCount } = createTestPlatform();
     const outlines = Array.from(
       { length: 60 },
@@ -102,7 +102,8 @@ describe("D1 のクエリの上限", () => {
     });
 
     expect(res.status).toBe(202);
-    expect(queryCount()).toBe(0);
+    // 認証のトークンの照合（1）と、最後に使った時刻の書き直し（1 時間に 1 回）だけ
+    expect(queryCount()).toBeLessThanOrEqual(2);
     expect(enqueued.length).toBeGreaterThan(0);
     for (const job of enqueued) {
       expect(jobSchema.safeParse(job).success).toBe(true);

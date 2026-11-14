@@ -32,15 +32,17 @@ Windows では、WSL の中（Linux 側のファイルシステム）にクロ�
 git clone https://github.com/sendo-feed/sendo.git
 cd sendo
 pnpm install
-cp .dev.vars.example .dev.vars   # API のトークンなど、手元の秘密情報
-pnpm db:migrate:local            # 手元の D1 にテーブルを作る
+pnpm db:migrate:local                         # 手元の D1 にテーブルを作る
+pnpm token:create --email you@example.com     # ユーザーとアクセストークンを作る
 pnpm dev
 ```
+
+`pnpm token:create` は、ユーザーがいなければ作り、アクセストークン（`sendo_` で始まる文字列）を発行します。トークンは一度だけ表示されるので、控えておいてください。DB にはハッシュだけを置きます。デプロイ先の D1 に作るときは `--remote` を付けます。
 
 `pnpm dev` で、手元に Workers のランタイム（D1、Queues、Cron を含む）が立ち上がります。Cloudflare のアカウントは要りません。
 
 ```sh
-TOKEN=dev-token-change-me   # .dev.vars の API_TOKEN
+TOKEN=sendo_...   # pnpm token:create で発行したトークン
 
 # フィードを購読する。サイトの URL でもよい（ページからフィードを見つける）
 curl -X POST http://localhost:8787/api/v1/feeds \
@@ -87,6 +89,7 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 | `pnpm db:generate` | `src/db/schema.ts` からマイグレーションの SQL を作る |
 | `pnpm db:migrate:local` | 手元の D1 にマイグレーションを当てる |
 | `pnpm db:migrate` | デプロイ先の D1 にマイグレーションを当てる |
+| `pnpm token:create --email <メール>` | ユーザーとアクセストークンを作る（`--remote` でデプロイ先） |
 
 ## ディレクトリ構成
 
