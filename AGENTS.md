@@ -19,6 +19,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `pnpm test`：テスト。Vitest を Workers のランタイム（workerd）の中で動かす
 - `pnpm build`：デプロイせずにバンドルだけ作る
 - `wrangler.jsonc` を変えたら `pnpm cf-typegen` で型を作り直す
+- API（`src/api/`）を変えたら `pnpm openapi:generate` で `spec/openapi.json` を書き出し、一緒にコミットする。sendo-reader はこのファイルから型を作る（CI で食い違いを検査している）
 - `src/db/schema.ts` を変えたら `pnpm db:generate` でマイグレーションを作り、一緒にコミットする。作ったマイグレーションは手で直さない（CI で食い違いを検査している）
 - 手元で動かすときは `pnpm db:migrate:local` と `pnpm token:create --email <メール>` のあとに `pnpm dev`。発行したトークンを `Authorization: Bearer` に付ける
 

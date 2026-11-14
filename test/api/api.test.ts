@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import spec from "../../spec/openapi.json";
 import { insertArticles } from "../../src/db/articles";
 import { deliverNewArticles } from "../../src/db/inbox";
 import { createTestPlatform, requestApp, subscribeFeed } from "../helpers";
@@ -18,6 +19,13 @@ describe("認証", () => {
     expect(res.status).toBe(401);
     expect(res.headers.get("www-authenticate")).toContain("Bearer");
     expect(await json(res)).toMatchObject({ error: { code: "unauthorized" } });
+  });
+
+  it("サーバーが返す定義は、コミットした spec/openapi.json と一致する", async () => {
+    const { platform } = createTestPlatform();
+    const res = await requestApp(platform, "/api/v1/openapi.json", { token: null });
+
+    expect(await res.json()).toEqual(spec);
   });
 
   it("OpenAPI の定義は認証なしで読める", async () => {

@@ -1,0 +1,1397 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Sendo API",
+    "version": "0.0.0"
+  },
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "Feed": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "example": "https://example.com/feed.xml"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "siteUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastFetchedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "nextFetchAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "errorCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "購読した時刻"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "title",
+          "siteUrl",
+          "folderId",
+          "lastFetchedAt",
+          "nextFetchAt",
+          "errorCount",
+          "lastError",
+          "createdAt"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "example": "invalid_request"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "SubscribeRequest": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "example": "https://example.com/",
+            "description": "フィードの URL か、フィードを持つサイトの URL"
+          },
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "url"
+        ]
+      },
+      "UpdateFeedRequest": {
+        "type": "object",
+        "properties": {
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "null ならフォルダなしにする"
+          }
+        },
+        "required": [
+          "folderId"
+        ]
+      },
+      "Article": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "feedId": {
+            "type": "string"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "http ／ https の URL だけ"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "プレーンテキスト。表示する側でエスケープすること"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "プレーンテキスト（最大 500 文字）。表示する側でエスケープすること"
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "publishedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "receivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "受信箱に入った時刻（サーバーの DB の時計）"
+          },
+          "readAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "既読にした時刻。未読なら null"
+          },
+          "starredAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "スターを付けた時刻。なければ null"
+          }
+        },
+        "required": [
+          "id",
+          "feedId",
+          "url",
+          "title",
+          "summary",
+          "author",
+          "publishedAt",
+          "receivedAt",
+          "readAt",
+          "starredAt"
+        ]
+      },
+      "UpdateArticleRequest": {
+        "type": "object",
+        "properties": {
+          "read": {
+            "type": "boolean"
+          },
+          "starred": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MarkReadRequest": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "minItems": 1,
+            "maxItems": 90
+          },
+          "feedId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "folderId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "all": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "この時刻より前に受信箱に入った記事だけを既読にする。記事の一覧の最初のページの asOf を渡す。クライアントの時計の時刻は使わない（サーバーとずれていると、一覧に出ていなかった記事まで既読になる）"
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 1024,
+            "description": "同期で未読のまま手元に届いた記事だけを既読にする。hasMore が false になるまで同期した、最後の応答の cursor を渡す（ローカルファーストのクライアント向け）。途中の応答の cursor は 400（sync_incomplete）。その同期のあとに未読に戻した記事は、どの端末で戻したかによらず入らない（既読にするなら ids で送る）"
+          }
+        }
+      },
+      "UnreadCounts": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "feeds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "feedId": {
+                  "type": "string"
+                },
+                "unread": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                }
+              },
+              "required": [
+                "feedId",
+                "unread"
+              ]
+            }
+          },
+          "folders": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "folderId": {
+                  "type": "string"
+                },
+                "unread": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                }
+              },
+              "required": [
+                "folderId",
+                "unread"
+              ]
+            }
+          }
+        },
+        "required": [
+          "total",
+          "feeds",
+          "folders"
+        ]
+      },
+      "Folder": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "createdAt"
+        ]
+      },
+      "FolderRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 400,
+            "description": "前後の空白を除き、200 文字までに切り詰める"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "OpmlImportResult": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "登録をキューに積んだフィードの数"
+          },
+          "skippedCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "url_not_allowed",
+                    "url_too_long",
+                    "duplicate",
+                    "too_many"
+                  ]
+                }
+              },
+              "required": [
+                "url",
+                "reason"
+              ]
+            },
+            "description": "飛ばしたフィード（最初の 100 件まで）"
+          }
+        },
+        "required": [
+          "accepted",
+          "skippedCount",
+          "skipped"
+        ]
+      },
+      "SyncChanges": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "folders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncFolder"
+            }
+          },
+          "feeds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncFeed"
+            }
+          },
+          "articles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncArticle"
+            }
+          }
+        },
+        "required": [
+          "cursor",
+          "hasMore",
+          "folders",
+          "feeds",
+          "articles"
+        ]
+      },
+      "SyncFolder": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "消した印。true なら、手元からも消す（ほかの項目は最後の状態）"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "createdAt",
+          "deleted"
+        ]
+      },
+      "SyncFeed": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "フィードの ID"
+          },
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "siteUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "購読した時刻"
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "購読をやめた印。true なら、手元の購読を消す。記事は消さない（受信箱から消えた記事は、articles に deleted: true で届く）"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "title",
+          "siteUrl",
+          "folderId",
+          "createdAt",
+          "deleted"
+        ]
+      },
+      "SyncArticle": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/SyncInboxArticle"
+          },
+          {
+            "$ref": "#/components/schemas/SyncRemovedArticle"
+          }
+        ]
+      },
+      "SyncInboxArticle": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Article"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "deleted": {
+                "type": "boolean",
+                "enum": [
+                  false
+                ],
+                "description": "受信箱にある記事"
+              }
+            },
+            "required": [
+              "deleted"
+            ]
+          }
+        ]
+      },
+      "SyncRemovedArticle": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "記事の ID"
+          },
+          "deleted": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "受信箱から消えた記事。手元から消す"
+          }
+        },
+        "required": [
+          "id",
+          "deleted"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/feeds": {
+      "post": {
+        "summary": "フィードを購読する",
+        "description": "フィードの URL か、サイトの URL を受け取る。サイトの URL なら、ページの\n<link rel=\"alternate\"> からフィードを見つける。見つけたフィードを実際に取得して、\n読めることを確かめてから登録し、記事の取得をキューに積む。\n同じフィードをすでに購読していれば、それを返す（200）。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscribeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "すでに購読している",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "feed": {
+                      "$ref": "#/components/schemas/Feed"
+                    }
+                  },
+                  "required": [
+                    "feed"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "購読した",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "feed": {
+                      "$ref": "#/components/schemas/Feed"
+                    }
+                  },
+                  "required": [
+                    "feed"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "URL が正しくない、取得が許されていない、またはフォルダがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "取得できなかった（fetch_failed）、またはフィードが見つからなかった（feed_not_found）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "購読しているフィードの一覧",
+        "responses": {
+          "200": {
+            "description": "購読しているフィード（登録した順）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Feed"
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/feeds/discover": {
+      "get": {
+        "summary": "URL にあるフィードの候補を調べる",
+        "description": "購読はしない。サイトに複数のフィード（記事、コメントなど）があるときに選ぶのに使う。",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "required": true,
+            "name": "url",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "フィードの候補。URL そのものがフィードなら、それだけを返す",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "candidates": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "url": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "url",
+                          "title"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "candidates"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "URL が正しくない、または取得が許されていない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "取得できなかった",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/feeds/{id}": {
+      "patch": {
+        "summary": "購読を変える（フォルダの移動）",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateFeedRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "変えた",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "feed": {
+                      "$ref": "#/components/schemas/Feed"
+                    }
+                  },
+                  "required": [
+                    "feed"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "フォルダがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "フィードがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "購読をやめる",
+        "description": "フィードの記事は、スターを付けたものを除いて受信箱から消える。フィードと記事そのものは、ほかの人のために残る。",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "消した"
+          },
+          "404": {
+            "description": "フィードがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/articles/{id}": {
+      "patch": {
+        "summary": "記事の既読とスターを変える",
+        "description": "指定しなかったほうは変えない。すでにその状態なら、時刻は変えない。",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateArticleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "変えた",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "article": {
+                      "$ref": "#/components/schemas/Article"
+                    }
+                  },
+                  "required": [
+                    "article"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本文が正しくない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "記事がない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/articles/mark-read": {
+      "post": {
+        "summary": "まとめて既読にする",
+        "description": "ID を並べるか、フィード ／ フォルダ ／ すべてを指定する。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkReadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "既読にした",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "updated": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "既読にした記事の数"
+                    }
+                  },
+                  "required": [
+                    "updated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本文が正しくない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/unread-counts": {
+      "get": {
+        "summary": "未読の数",
+        "description": "未読のないフィード ／ フォルダは含まない。",
+        "responses": {
+          "200": {
+            "description": "全体、フィードごと、フォルダごとの未読の数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnreadCounts"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/articles": {
+      "get": {
+        "summary": "記事の一覧（新しい順）",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "このフィードの記事だけにする"
+            },
+            "required": false,
+            "description": "このフィードの記事だけにする",
+            "name": "feedId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "このフォルダのフィードの記事だけにする"
+            },
+            "required": false,
+            "description": "このフォルダのフィードの記事だけにする",
+            "name": "folderId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "unread",
+                "starred"
+              ],
+              "default": "all",
+              "description": "unread なら未読だけ、starred ならスター付きだけ"
+            },
+            "required": false,
+            "description": "unread なら未読だけ、starred ならスター付きだけ",
+            "name": "state",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 512,
+              "description": "前のページの nextCursor。最初のページでは付けない"
+            },
+            "required": false,
+            "description": "前のページの nextCursor。最初のページでは付けない",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "記事。続きがあれば nextCursor を付けてもう一度呼ぶ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Article"
+                      }
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "asOf": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "この一覧がいつ時点のものか（サーバーの DB の時計）。まとめて既読にするときは、最初のページの asOf を until に渡す。一覧に出ていなかった記事は未読のまま残る"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "nextCursor",
+                    "asOf"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "クエリが正しくない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/folders": {
+      "get": {
+        "summary": "フォルダの一覧",
+        "responses": {
+          "200": {
+            "description": "フォルダ（名前の順）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Folder"
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "フォルダを作る",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FolderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "作った",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "folder": {
+                      "$ref": "#/components/schemas/Folder"
+                    }
+                  },
+                  "required": [
+                    "folder"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "名前が空",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "同じ名前のフォルダがある",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/folders/{id}": {
+      "patch": {
+        "summary": "フォルダの名前を変える",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FolderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "変えた",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "folder": {
+                      "$ref": "#/components/schemas/Folder"
+                    }
+                  },
+                  "required": [
+                    "folder"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "名前が空",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "フォルダがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "同じ名前のフォルダがある",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "フォルダを消す",
+        "description": "入っていたフィードは消さず、フォルダなしに戻す。",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "消した"
+          },
+          "404": {
+            "description": "フォルダがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/opml": {
+      "post": {
+        "summary": "OPML から購読をインポートする",
+        "description": "Feedly などから書き出した OPML を本文にそのまま送る。フォルダ（カテゴリ）も取り込む。\n登録はキューで行うので、応答の時点ではまだ一覧に出ていないことがある。\nすでに購読しているフィードは、フォルダに入っていなければ OPML のフォルダに入れる（入っていれば変えない）。何度送っても同じ結果になる。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/xml": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "text/x-opml": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "登録をキューに積んだ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpmlImportResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "OPML として読めない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "大きすぎる",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "購読を OPML で書き出す",
+        "responses": {
+          "200": {
+            "description": "OPML 2.0。フォルダは入れ子の outline になる",
+            "content": {
+              "text/x-opml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sync": {
+      "get": {
+        "summary": "前回の同期からの差分を取る",
+        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダと購読、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 1024,
+              "description": "前回の応答の cursor"
+            },
+            "required": false,
+            "description": "前回の応答の cursor",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "差分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncChanges"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "カーソルが読めない（最初から同期し直す）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {}
+}
