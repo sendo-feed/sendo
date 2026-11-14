@@ -16,6 +16,8 @@ worker-configuration.d.ts
 .env
 .env.*
 !.env.example
+# pnpm token:create で発行したアクセストークンの控え
+.sendo-token
 
 # ログ
 *.log
