@@ -7,5 +7,37 @@
   // nodejs_compat は付けない。Web 標準の API だけで書く（docs/decisions/tech-stack.md）
   "observability": {
     "enabled": true
+  },
+
+  // database_id は書かない。各自がデプロイしたときに、自分のアカウントに自動で作られる
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sendo",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // 取得や全文抽出などの重い処理は、API の応答と切り離してキューで流す
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "sendo-jobs" }],
+    "consumers": [
+      {
+        "queue": "sendo-jobs",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3
+      }
+    ]
+  },
+
+  // 取得の時期が来たフィードを、10 分おきにキューへ積む
+  "triggers": {
+    "crons": ["*/10 * * * *"]
+  },
+
+  // 手元では .dev.vars に書く（.dev.vars.example を参照）。本番は wrangler secret put で入れる
+  "secrets": {
+    "required": ["API_TOKEN"]
   }
 }
