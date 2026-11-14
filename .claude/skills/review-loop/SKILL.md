@@ -40,9 +40,10 @@ gh pr create --draft --title "<type>(<scope>): <件名>" --body-file <本文の�
 
 ```sh
 gh api "repos/{owner}/{repo}/issues/<番号>/comments" --paginate \
-  --jq '[.[] | select(.body | test("^@codex review"))] | length'
+  --jq '.[] | select(.body | test("^@codex review")) | .id' | wc -l
 ```
 
+- `--paginate` のとき `--jq` はページごとに適用されるので、件数は jq の中で数えず、1件ずつ出して `wc -l` で数える。
 - 6 回目になる場合は始めない（5 回目で必ず止まっているはず）。
 - レビューを依頼する：`gh pr comment <番号> --body "@codex review"`
 
@@ -74,10 +75,10 @@ gh api "repos/{owner}/{repo}/issues/<番号>/comments" --paginate \
 ```sh
 # レビュー本体
 gh api "repos/{owner}/{repo}/pulls/<番号>/reviews" --paginate \
-  --jq '[.[] | select(.user.login | test("codex")) | {id, submitted_at, body}]'
+  --jq '.[] | select(.user.login | test("codex")) | {id, submitted_at, body}'
 # 行ごとの指摘
 gh api "repos/{owner}/{repo}/pulls/<番号>/comments" --paginate \
-  --jq '[.[] | select(.user.login | test("codex")) | {id, path, line, created_at, body}]'
+  --jq '.[] | select(.user.login | test("codex")) | {id, path, line, created_at, body}'
 ```
 
 ### 4. 指摘を判定する
