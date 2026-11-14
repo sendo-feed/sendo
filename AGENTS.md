@@ -42,6 +42,7 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 
 - すべての変更は下書きの PR で出す。`main` へは直接 push できない
 - 下書きの PR には Codex のレビューを回し、終了の条件を満たすまで直す。Claude Code では `/review-loop` スキルがこれを回す
+- マージは、人間にマージを指示されたときだけ行う。自分の判断ではマージしない
 - 終了の条件、優先度の定義、指摘の扱いの全文は CONTRIBUTING.md の「レビューの進め方」にある
 
 ## Review guidelines
