@@ -55,10 +55,11 @@ curl -X PATCH http://localhost:8787/api/v1/articles/<記事の ID> \
   -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
   -d '{"read":true,"starred":true}'
 
-# すべて既読にする（until までに取り込んだ記事だけ。一覧を開いた時刻を渡す）
+# すべて既読にする。until には、記事の一覧の最初のページの asOf を渡す
+# （一覧に出ていなかった記事は未読のまま残る）
 curl -X POST http://localhost:8787/api/v1/articles/mark-read \
   -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
-  -d "{\"all\":true,\"until\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+  -d '{"all":true,"until":"<一覧の asOf>"}'
 
 # Feedly などから書き出した OPML をインポートする（フォルダも取り込む）
 curl -X POST http://localhost:8787/api/v1/opml \

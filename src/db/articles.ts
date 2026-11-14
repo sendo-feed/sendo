@@ -7,14 +7,17 @@ import {
   isNotNull,
   isNull,
   lt,
-  lte,
   or,
   type SQL,
   sql,
 } from "drizzle-orm";
 import type { Database } from ".";
 import { chunked } from "./chunk";
+import { DB_NOW_MS } from "./clock";
 import { type Article, articles, feeds, type NewArticle } from "./schema";
+
+/** 記事を入れるときの値。createdAt を省くと、DB の時計で INSERT した時刻になる */
+export type ArticleInput = Omit<NewArticle, "createdAt"> & { createdAt?: Date };
 
 /**
  * 記事をまとめて入れる。同じフィードの同じ guid はすでにあれば飛ばす。
@@ -24,12 +27,12 @@ import { type Article, articles, feeds, type NewArticle } from "./schema";
  *
  * @returns 新しく入った記事の数
  */
-export async function insertArticles(db: Database, rows: readonly NewArticle[]): Promise<number> {
+export async function insertArticles(db: Database, rows: readonly ArticleInput[]): Promise<number> {
   let inserted = 0;
   for (const chunk of chunked(rows, articles)) {
     const result = await db
       .insert(articles)
-      .values(chunk)
+      .values(chunk.map((row) => ({ ...row, createdAt: row.createdAt ?? DB_NOW_MS })))
       .onConflictDoNothing({ target: [articles.feedId, articles.guid] })
       .returning({ id: articles.id })
       .all();
@@ -103,21 +106,24 @@ export async function getArticle(db: Database, id: string): Promise<Article | un
 
 /**
  * 記事の既読とスターを変える。指定しなかったほうは変えない。
- * すでにその状態なら時刻を変えない（何度送っても同じ結果になる）。
+ *
+ * すでにその状態なら時刻を変えない。先に読んでから書くと、同時に届いた 2 つの「既読」が
+ * どちらも未読を見て後の時刻で上書きするので、UPDATE の中で coalesce して残す。
  * @returns 変えたあとの記事。なければ undefined
  */
 export async function setArticleState(
   db: Database,
   input: { id: string; read?: boolean | undefined; starred?: boolean | undefined; now: Date },
 ): Promise<Article | undefined> {
-  const set: Partial<Pick<Article, "readAt" | "starredAt">> = {};
-  const current = await getArticle(db, input.id);
-  if (!current) return undefined;
-  if (input.read === true && current.readAt === null) set.readAt = input.now;
-  if (input.read === false) set.readAt = null;
-  if (input.starred === true && current.starredAt === null) set.starredAt = input.now;
-  if (input.starred === false) set.starredAt = null;
-  if (Object.keys(set).length === 0) return current;
+  const now = input.now.getTime();
+  const set: { readAt?: SQL | null; starredAt?: SQL | null } = {};
+  if (input.read !== undefined) {
+    set.readAt = input.read ? sql`coalesce(${articles.readAt}, ${now})` : null;
+  }
+  if (input.starred !== undefined) {
+    set.starredAt = input.starred ? sql`coalesce(${articles.starredAt}, ${now})` : null;
+  }
+  if (Object.keys(set).length === 0) return getArticle(db, input.id);
 
   return db.update(articles).set(set).where(eq(articles.id, input.id)).returning().get();
 }
@@ -135,8 +141,8 @@ export const MAX_MARK_READ_IDS = 90;
 /**
  * 未読の記事をまとめて既読にする。1 つの UPDATE 文なので、途中までで止まることはない。
  *
- * ID 以外で指定するときは、until までに取り込んだ記事だけを既読にする。一覧を開いた
- * 時刻を渡せば、そのあとに届いた記事は未読のまま残る。
+ * ID 以外で指定するときは、until より前に取り込んだ記事だけを既読にする。一覧の応答の
+ * asOf（DB の時計）を渡せば、一覧に出ていなかった記事は未読のまま残る。
  * @returns 既読にした記事の数
  */
 export async function markArticlesRead(
@@ -152,7 +158,8 @@ export async function markArticlesRead(
     }
     conditions.push(inArray(articles.id, [...scope.ids]));
   } else {
-    conditions.push(lte(articles.createdAt, scope.until));
+    // 境界と同じミリ秒の記事は、未読のまま残す側に倒す
+    conditions.push(lt(articles.createdAt, scope.until));
     if ("feedId" in scope) conditions.push(eq(articles.feedId, scope.feedId));
     if ("folderId" in scope) conditions.push(inFolder(scope.folderId));
   }

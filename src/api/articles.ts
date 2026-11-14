@@ -8,6 +8,7 @@ import {
   markArticlesRead,
   setArticleState,
 } from "../db/articles";
+import { dbNow } from "../db/clock";
 import { listFeeds } from "../db/feeds";
 import type { Platform } from "../platform";
 import { defaultHook } from "./hook";
@@ -42,7 +43,14 @@ const listRoute = createRoute({
       description: "記事。続きがあれば nextCursor を付けてもう一度呼ぶ",
       content: {
         "application/json": {
-          schema: z.object({ items: z.array(ArticleSchema), nextCursor: z.string().nullable() }),
+          schema: z.object({
+            items: z.array(ArticleSchema),
+            nextCursor: z.string().nullable(),
+            asOf: z.iso.datetime().openapi({
+              description:
+                "この一覧がいつ時点のものか（サーバーの DB の時計）。まとめて既読にするときは、最初のページの asOf を until に渡す。一覧に出ていなかった記事は未読のまま残る",
+            }),
+          }),
         },
       },
     },
@@ -103,7 +111,7 @@ const MarkReadBodySchema = z
     all: z.literal(true).optional(),
     until: z.iso.datetime().optional().openapi({
       description:
-        "この時刻までに取り込んだ記事だけを既読にする（ids 以外では必須）。一覧を開いた時刻を渡せば、そのあとに届いた記事は未読のまま残る",
+        "この時刻より前に取り込んだ記事だけを既読にする（ids 以外では必須）。記事の一覧の最初のページの asOf を渡す。クライアントの時計の時刻は使わない（サーバーとずれていると、一覧に出ていなかった記事まで既読になる）",
     }),
   })
   .superRefine((body, ctx) => {
@@ -221,6 +229,9 @@ export function articlesApi(platform: Platform) {
       const cursor = query.cursor === undefined ? undefined : decodeCursor(query.cursor);
       if (cursor === null) return c.json(errorBody("invalid_request", "cursor: invalid"), 400);
 
+      // 一覧を読む前に取る。読んだあとに取ると、読んだあとに届いた記事が asOf より前になり、
+      // まとめて既読で、一覧に出ていなかったのに既読になる
+      const asOf = await dbNow(platform.db);
       const { items, next } = await listArticles(platform.db, {
         feedId: query.feedId,
         folderId: query.folderId,
@@ -232,6 +243,7 @@ export function articlesApi(platform: Platform) {
         {
           items: items.map(toArticleResponse),
           nextCursor: next === null ? null : encodeCursor(next),
+          asOf: asOf.toISOString(),
         },
         200,
       );

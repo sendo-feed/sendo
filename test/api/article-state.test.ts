@@ -166,6 +166,62 @@ describe("POST /api/v1/articles/mark-read", () => {
   });
 });
 
+describe("一覧を読んだあとに届いた記事", () => {
+  it("一覧の asOf でまとめて既読にしても、一覧に出ていなかった記事は未読のまま残る", async () => {
+    const platform = await seed();
+    const list = (await (await requestApp(platform, "/api/v1/articles")).json()) as {
+      items: ArticleJson[];
+      asOf: string;
+    };
+    expect(list.items).toHaveLength(4);
+
+    // 一覧を読んだあとに、取得のジョブが記事を入れる（createdAt は DB の時計で決まる）
+    await insertArticles(platform.db, [
+      {
+        id: "late",
+        feedId: "a",
+        guid: "late",
+        url: null,
+        title: "late",
+        summary: null,
+        author: null,
+        publishedAt: T0,
+      },
+    ]);
+
+    await markRead(platform, { all: true, until: list.asOf });
+
+    expect(await ids(platform, "state=unread")).toEqual(["late"]);
+  });
+
+  it("until と同じミリ秒に取り込んだ記事は、未読のまま残す", async () => {
+    const platform = await seed();
+
+    await markRead(platform, { all: true, until: T0.toISOString() });
+
+    expect(await ids(platform, "state=unread")).toEqual(["a1", "a2", "a3", "b1"]);
+  });
+});
+
+describe("同時に届いた変更", () => {
+  it("同じ記事への既読が同時に 2 つ届いても、最初に付いた時刻を上書きしない", async () => {
+    await seed();
+    const first = createTestPlatform({ now: () => new Date("2026-11-14T10:00:00Z") }).platform;
+    const second = createTestPlatform({ now: () => new Date("2026-11-14T11:00:00Z") }).platform;
+
+    const responses = await Promise.all([
+      patch(first, "a1", { read: true, starred: true }),
+      patch(second, "a1", { read: true, starred: true }),
+    ]);
+    const articles = await Promise.all(
+      responses.map(async (res) => ((await res.json()) as { article: ArticleJson }).article),
+    );
+
+    expect(articles[0]?.readAt).toBe(articles[1]?.readAt);
+    expect(articles[0]?.starredAt).toBe(articles[1]?.starredAt);
+  });
+});
+
 describe("GET /api/v1/unread-counts", () => {
   it("全体、フィードごと、フォルダごとの未読の数を返す", async () => {
     const platform = await seed();

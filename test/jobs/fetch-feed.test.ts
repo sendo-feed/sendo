@@ -58,6 +58,17 @@ describe("runFetchFeed", () => {
     expect(rows.find((row) => row.guid === "https://blog.example/2")?.publishedAt).toEqual(NOW);
   });
 
+  it("記事の取り込み時刻は、取得を始めた時刻ではなく、DB に入れた時刻になる", async () => {
+    const { platform, feed, articlesOf } = await setup(() => new Response(RSS));
+
+    await runFetchFeed(platform, feed.id);
+
+    // platform.now() は NOW（過去）を返すが、取り込み時刻は DB の時計（今）で決まる
+    for (const row of await articlesOf()) {
+      expect(row.createdAt.getTime()).toBeGreaterThan(NOW.getTime());
+    }
+  });
+
   it("もう一度取得しても、記事は重複しない", async () => {
     const { platform, feed, articlesOf } = await setup(() => new Response(RSS));
 
