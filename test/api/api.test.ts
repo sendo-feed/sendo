@@ -20,13 +20,6 @@ describe("認証", () => {
     expect(await json(res)).toMatchObject({ error: { code: "unauthorized" } });
   });
 
-  it("サーバーにトークンが設定されていなければ、すべて拒む", async () => {
-    const { platform } = createTestPlatform({ apiToken: undefined });
-    const res = await requestApp(platform, "/api/v1/feeds");
-
-    expect(res.status).toBe(401);
-  });
-
   it("OpenAPI の定義は認証なしで読める", async () => {
     const { platform } = createTestPlatform();
     const res = await requestApp(platform, "/api/v1/openapi.json", { token: null });

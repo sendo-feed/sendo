@@ -1,34 +1,32 @@
 import type { MiddlewareHandler } from "hono";
+import type { User } from "../db/schema";
+import { authenticateToken } from "../db/tokens";
+import type { Platform } from "../platform";
 import { errorBody } from "./schemas";
 
+/** 認証したリクエストに付く情報。ハンドラーでは c.get("user") で読む */
+export type AuthVariables = { user: User };
+
 /**
- * Authorization: Bearer <トークン> で認証する。
- *
- * トークンが設定されていなければ、すべて拒む（設定し忘れで API が開いたままにならないように）。
- * 比較は SHA-256 のハッシュ同士を最後まで比べ、一致した位置から中身を推測されないようにする。
+ * Authorization: Bearer <アクセストークン> で認証する（docs/decisions/accounts.md）。
+ * トークンの持ち主のユーザーを c.set("user") に置く。
  */
-export function bearerAuth(expected: string | undefined): MiddlewareHandler {
+export function tokenAuth(
+  platform: Pick<Platform, "db" | "now">,
+): MiddlewareHandler<{ Variables: AuthVariables }> {
   return async (c, next) => {
     const match = /^Bearer\s+(\S+)\s*$/i.exec(c.req.header("authorization") ?? "");
-    const given = match?.[1];
-    if (expected === undefined || given === undefined || !(await safeEqual(given, expected))) {
-      return c.json(errorBody("unauthorized", "a valid bearer token is required"), 401, {
+    const token = match?.[1];
+    const auth =
+      token === undefined
+        ? undefined
+        : await authenticateToken(platform.db, { token, now: platform.now() });
+    if (!auth) {
+      return c.json(errorBody("unauthorized", "a valid access token is required"), 401, {
         "www-authenticate": 'Bearer realm="sendo"',
       });
     }
+    c.set("user", auth.user);
     return next();
   };
-}
-
-async function safeEqual(a: string, b: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const [x, y] = await Promise.all([
-    crypto.subtle.digest("SHA-256", encoder.encode(a)),
-    crypto.subtle.digest("SHA-256", encoder.encode(b)),
-  ]);
-  const left = new Uint8Array(x);
-  const right = new Uint8Array(y);
-  let diff = 0;
-  for (let i = 0; i < left.length; i++) diff |= (left[i] ?? 0) ^ (right[i] ?? 0);
-  return diff === 0;
 }

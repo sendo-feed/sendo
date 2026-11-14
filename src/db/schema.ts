@@ -1,6 +1,64 @@
 import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+/**
+ * ユーザー。パスワードは持たない（docs/decisions/accounts.md）。
+ * 外部の提供元でのログインは identities に置き、1 人が複数の提供元を持てる。
+ */
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  /** 小文字にそろえる。許可の判定、提供元のログインとの結び付け、表示に使う */
+  email: text("email").notNull().unique(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+/**
+ * 外部の提供元（Google、GitHub など）でのログイン。issuer と subject で見分ける。
+ *
+ * 初めてその提供元でログインしたとき、確認済みのメールが一致するユーザーに結び付ける。
+ * 結び付けたあとは issuer と subject で見分けるので、提供元の側でメールが変わっても
+ * 同じユーザーのまま。
+ */
+export const identities = sqliteTable(
+  "identities",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    issuer: text("issuer").notNull(),
+    subject: text("subject").notNull(),
+    /** 最後にログインしたときに、提供元が確認済みとしたメール */
+    email: text("email").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("identities_issuer_subject_idx").on(t.issuer, t.subject),
+    index("identities_user_id_idx").on(t.userId),
+  ],
+);
+
+/**
+ * アクセストークン（アプリ用パスワード）。REST API の Bearer と、リーダーアプリの
+ * パスワード欄に使う。中身は持たず、SHA-256 のハッシュだけを置く。
+ */
+export const accessTokens = sqliteTable(
+  "access_tokens",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** 用途の名前（「Reeder」「CLI」など） */
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    /** 最後に使った時刻。書き込みを減らすため、1 時間に 1 回だけ更新する */
+    lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [index("access_tokens_user_id_idx").on(t.userId)],
+);
+
 /** フィードをまとめるフォルダ（Feedly のカテゴリ、OPML の入れ子の outline）。1 つのフィードは 1 つのフォルダに入る */
 export const folders = sqliteTable("folders", {
   id: text("id").primaryKey(),
@@ -75,6 +133,9 @@ export const articles = sqliteTable(
   ],
 );
 
+export type User = typeof users.$inferSelect;
+export type Identity = typeof identities.$inferSelect;
+export type AccessToken = typeof accessTokens.$inferSelect;
 export type Folder = typeof folders.$inferSelect;
 export type Feed = typeof feeds.$inferSelect;
 export type NewFeed = typeof feeds.$inferInsert;

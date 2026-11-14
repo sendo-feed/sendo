@@ -4,8 +4,9 @@ import { createApp } from "../src/app";
 import * as schema from "../src/db/schema";
 import type { Job } from "../src/jobs/job";
 import type { Platform } from "../src/platform";
+import { TEST_TOKEN as API_TOKEN } from "./fixtures/user";
 
-export const API_TOKEN = "test-token";
+export { API_TOKEN };
 
 /**
  * D1 に投げたクエリの数を数える。D1 は 1 回の実行で投げられるクエリの数に上限があるので、
@@ -44,7 +45,6 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
       throw new Error("network access is not allowed in tests; pass a fake fetch");
     },
     now: () => new Date(),
-    apiToken: API_TOKEN,
     ...overrides,
   };
   return {

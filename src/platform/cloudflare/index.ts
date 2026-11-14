@@ -10,7 +10,6 @@ export function createCloudflarePlatform(env: Env): Platform {
     jobs: createQueueJobQueue(env.JOBS),
     fetch: (input, init) => fetch(input, init),
     now: () => new Date(),
-    apiToken: env.API_TOKEN || undefined,
   };
 }
 

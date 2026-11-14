@@ -20,7 +20,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `pnpm build`：デプロイせずにバンドルだけ作る
 - `wrangler.jsonc` を変えたら `pnpm cf-typegen` で型を作り直す
 - `src/db/schema.ts` を変えたら `pnpm db:generate` でマイグレーションを作り、一緒にコミットする。作ったマイグレーションは手で直さない（CI で食い違いを検査している）
-- 手元で動かすときは `.dev.vars.example` を `.dev.vars` に写し、`pnpm db:migrate:local` のあとに `pnpm dev`
+- 手元で動かすときは `pnpm db:migrate:local` と `pnpm token:create --email <メール>` のあとに `pnpm dev`。発行したトークンを `Authorization: Bearer` に付ける
 
 ## ディレクトリ
 
@@ -32,7 +32,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/db/`：スキーマとデータの読み書き。D1 に固有の型ではなく `Database`（SQLite の非同期ドライバに共通の型）で受ける
 - `src/fetcher/`：外部の URL の取得と解析。外部の URL は必ず `toFetchableUrl` を通す（SSRF 対策）
 - `src/jobs/`：キューと定期実行で動く処理
-- テストは `test/` に置き、`*.test.ts` とする。外部への通信はせず、`test/helpers.ts` の `fakeFetch` で差し替える
+- テストは `test/` に置き、`*.test.ts` とする。外部への通信はせず、`test/helpers.ts` の `fakeFetch` で差し替える。API のテストは、`test/setup.ts` が入れるテスト用のユーザーとトークン（`test/fixtures/user.ts`）を使う
 
 ## 言語
 
@@ -55,6 +55,8 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 - 決定ファイルを足したり状態を変えたりしたら、`docs/decisions/README.md` の一覧も直す
 
 ## 守る規約
+
+ここの規約は、Workers で動くアプリ本体（`src/`）に適用する。手元の Node で動かす道具（`scripts/`、`*.config.ts` などの設定ファイル）は対象外で、`node:*` を使ってよい（docs/decisions/tech-stack.md）。
 
 - Cloudflare のバインディング（`env.DB` など）や `cloudflare:*` からの import に触れてよいのは、`src/index.ts` と `src/platform/cloudflare/` だけ。それ以外は `src/platform/` のインターフェース越しに使う
 - Web 標準の API だけを使い、`node:*` のモジュールには頼らない
@@ -82,7 +84,7 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 レビューは日本語で書く。いまは2人で試作を繰り返している段階なので、捨てる前提の試作の完成度や、書き方の好みは指摘しなくてよい（整形と lint は Biome に任せる）。次の観点を優先する。
 
 1. **決定との食い違い**：`docs/decisions/` と食い違う変更がないか。決定を変えるなら、決定ファイルの更新が同じ PR に入っているか
-2. **緩衝層の破れ**：`src/index.ts` と `src/platform/cloudflare/` 以外で、Cloudflare のバインディング、`cloudflare:*`、`node:*` を使っていないか
+2. **緩衝層の破れ**：`src/` のうち、`src/index.ts` と `src/platform/cloudflare/` 以外で Cloudflare のバインディングや `cloudflare:*` を使っていないか。`src/` で `node:*` を使っていないか（`scripts/` と設定ファイルは対象外）
 3. **セキュリティ**
    - 外部 URL の取得で SSRF が起きないか（プライベート IP、リダイレクト先、URL スキームの制限）
    - 記事本文の HTML がサニタイズされているか。LLM や MCP への入力で、本文がプロンプトインジェクションの経路になっていないか
