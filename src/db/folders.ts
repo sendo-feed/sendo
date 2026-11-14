@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { truncateUtf16 } from "../lib/text";
 import type { Database } from ".";
 import { chunked } from "./chunk";
@@ -111,9 +111,15 @@ export async function deleteFolder(
     .where(and(active(input.userId), eq(folders.id, input.id)))
     .returning({ id: folders.id })
     .get();
+  // やめた購読も、消したフォルダを指したままにしない（あとでフォルダを物理的に消せるように）。
+  // ただし番号を進めるのは、やめていない購読だけ。やめた購読の番号を進めると、同じフィードを
+  // 購読し直していた場合に、今の購読より後に「消した」が届き、クライアントから消える（#25 のレビュー）
   await db
     .update(subscriptions)
-    .set({ folderId: null, seq: nextSeq(subscriptions) })
+    .set({
+      folderId: null,
+      seq: sql`case when ${subscriptions.deletedAt} is null then ${nextSeq(subscriptions)} else ${subscriptions.seq} end`,
+    })
     .where(and(eq(subscriptions.userId, input.userId), eq(subscriptions.folderId, input.id)))
     .run();
   return deleted !== undefined;

@@ -9,10 +9,12 @@ import {
   isNull,
   lte,
   max,
+  notExists,
   or,
   type SQL,
   sql,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
 import type { Database } from ".";
 import type { InboxArticle } from "./inbox";
 import {
@@ -105,6 +107,8 @@ function singleTable<T>(spec: {
   seq: AnyColumn;
   id: AnyColumn;
   initialFilter: SQL | undefined;
+  /** 差分で送る行だけに絞る条件（なければすべて） */
+  deltaFilter?: SQL | undefined;
   limit: number;
   /** 条件に合う行を、(seq, id) の順に limit 件まで読む */
   read: (where: SQL | undefined, limit: number) => Promise<T[]>;
@@ -115,7 +119,7 @@ function singleTable<T>(spec: {
     limit: spec.limit,
     readInitial: (at, upTo, limit) =>
       spec.read(and(after(spec.seq, spec.id, at), lte(spec.seq, upTo), spec.initialFilter), limit),
-    readDelta: (at, limit) => spec.read(after(spec.seq, spec.id, at), limit),
+    readDelta: (at, limit) => spec.read(and(after(spec.seq, spec.id, at), spec.deltaFilter), limit),
     position: spec.position,
     maxSeq: spec.maxSeq,
   };
@@ -206,11 +210,30 @@ export async function readChanges(
     cursor.folders,
   );
 
+  const current = alias(subscriptions, "current");
   const s = await readTable(
     singleTable({
       seq: subscriptions.seq,
       id: subscriptions.id,
       initialFilter: isNull(subscriptions.deletedAt),
+      // API では購読をフィードの ID で返すので、購読し直したフィードには、やめた古い行と今の行の
+      // 2 つが同じ ID で並ぶ。今の行があるのに古い行の「消した」を送ると、クライアントから今の購読が
+      // 消える。古い行の番号があとから進んでも食い違わないよう、今の行があれば古い行は送らない
+      deltaFilter: or(
+        isNull(subscriptions.deletedAt),
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(current)
+            .where(
+              and(
+                eq(current.userId, userId),
+                eq(current.feedId, subscriptions.feedId),
+                isNull(current.deletedAt),
+              ),
+            ),
+        ),
+      ),
       limit: SYNC_LIMITS.subscriptions,
       read: (where, limit) =>
         db

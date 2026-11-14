@@ -323,6 +323,69 @@ describe("差分", () => {
     expect(empty.feeds).toEqual([]);
   });
 
+  it("購読し直したあとに元のフォルダを消しても、今の購読は手元から消えない（#25 のレビュー）", async () => {
+    const { platform } = createTestPlatform();
+    const tech = await createFolder(platform.db, {
+      userId: TEST_USER.id,
+      id: "tech",
+      name: "Tech",
+      now: new Date(),
+    });
+    const feed = await subscribeFeed(platform, { folderId: tech.id });
+    const client = createClient(platform);
+    await client.sync();
+
+    // フォルダに入れたまま購読をやめ、フォルダなしで購読し直す
+    await requestApp(platform, `/api/v1/feeds/${feed.id}`, { method: "DELETE" });
+    await subscribeMany(platform.db, {
+      userId: TEST_USER.id,
+      rows: [{ feedId: feed.id, folderId: null }],
+      now: new Date(),
+    });
+    await client.sync();
+    expect(client.state.feeds.get(feed.id)?.folderId).toBeNull();
+
+    // 元のフォルダを消す（古い購読の行も、まだそのフォルダを指している）
+    const oldRow = () =>
+      env.DB.prepare(
+        "SELECT seq, folder_id FROM subscriptions WHERE feed_id = ? AND deleted_at IS NOT NULL",
+      )
+        .bind(feed.id)
+        .first<{ seq: number; folder_id: string | null }>();
+    const before = await oldRow();
+    await requestApp(platform, `/api/v1/folders/${tech.id}`, { method: "DELETE" });
+    // 古い行はフォルダを指さなくなるが、番号は進まない
+    expect(await oldRow()).toEqual({ seq: before?.seq, folder_id: null });
+    await client.sync();
+
+    expect(client.state.feeds.has(feed.id)).toBe(true);
+    expect(client.state.folders.has(tech.id)).toBe(false);
+  });
+
+  it("同じフィードに今の購読があれば、古い購読の消した印は送らない", async () => {
+    const { platform } = createTestPlatform();
+    const feed = await subscribeFeed(platform, {});
+    await requestApp(platform, `/api/v1/feeds/${feed.id}`, { method: "DELETE" });
+    await subscribeMany(platform.db, {
+      userId: TEST_USER.id,
+      rows: [{ feedId: feed.id, folderId: null }],
+      now: new Date(),
+    });
+    const client = createClient(platform);
+    await client.sync();
+
+    // どの経路であれ、古い購読の番号があとから進んだ場合
+    await env.DB.prepare(
+      "UPDATE subscriptions SET seq = (SELECT max(seq) FROM subscriptions) + 1 WHERE feed_id = ? AND deleted_at IS NOT NULL",
+    )
+      .bind(feed.id)
+      .run();
+    const delta = await client.sync();
+
+    expect(delta.feeds).toEqual([]);
+    expect(client.state.feeds.has(feed.id)).toBe(true);
+  });
+
   it("ほかの人の変更は届かない", async () => {
     const { platform } = createTestPlatform();
     const other = await createUser();
