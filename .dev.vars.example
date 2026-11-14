@@ -1,4 +1,15 @@
 # 手元で動かすときの秘密情報。このファイルを .dev.vars に写して使う。
-# .dev.vars は .gitignore 済みなので、コミットされない。
+# .dev.vars は .gitignore 済みなので、コミットされない。本番は wrangler secret put で入れる。
 #
-# いまは必要な秘密情報はない。API のアクセストークンは pnpm token:create で発行する（README を参照）。
+# API のアクセストークンは pnpm token:create で発行する（README を参照）。
+# 下の 3 つはブラウザのログイン（Google）の設定。手元では、試すときだけ書けばよい（なければ警告が出るだけ）。
+# デプロイには 3 つとも要る（wrangler.jsonc の secrets.required）。
+
+# ユーザーになれるメールアドレス（カンマか空白で区切る）
+ALLOWED_EMAILS=you@example.com
+
+# Google Cloud のコンソールで作った OAuth クライアント（種類は「ウェブ アプリケーション」）。
+# 「承認済みのリダイレクト URI」には、ブラウザから見た <オリジン>/api/v1/auth/google/callback を登録する
+# （手元の sendo-reader なら http://localhost:5173/api/v1/auth/google/callback）
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=

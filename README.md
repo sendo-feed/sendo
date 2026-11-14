@@ -75,7 +75,17 @@ curl -X POST http://localhost:8787/api/v1/opml \
 curl -H "authorization: Bearer $TOKEN" -o sendo.opml http://localhost:8787/api/v1/opml
 ```
 
-API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読めます。定期的な取得（Cron）は、`pnpm dev --test-scheduled` で起動して `http://localhost:8787/__scheduled` を開くと、すぐに試せます。
+API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読めます。
+
+### ブラウザでログインする（Google）
+
+ブラウザ（sendo-reader）からは、Google でログインしてセッションのクッキーで使います。手元では、試すときだけ設定すれば足ります（なければ `pnpm dev` が警告を出すだけ）。デプロイには 3 つとも要ります（`wrangler.jsonc` の `secrets.required`。ないと `wrangler deploy` が止まる）。
+
+1. [Google Cloud のコンソール](https://console.cloud.google.com/apis/credentials)で OAuth クライアント（種類は「ウェブ アプリケーション」）を作る。「承認済みのリダイレクト URI」には、ブラウザから見た `<オリジン>/api/v1/auth/google/callback` を登録する（手元の sendo-reader なら `http://localhost:5173/api/v1/auth/google/callback`、本番なら sendo-reader のオリジン）
+2. `.dev.vars.example` を `.dev.vars` に写し、`ALLOWED_EMAILS`（ユーザーになれるメール）、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` を書く。本番では `pnpm exec wrangler secret put <名前>` で入れる
+3. ブラウザで `<オリジン>/api/v1/auth/google/login` を開く。ログインできたら `/` に戻る（`?returnTo=/パス` で戻る先を変えられる）。できなければ `/?login_error=<理由>` に戻る
+
+許可したメールの人が初めてログインすると、ユーザーを作ります。同じメールのユーザー（`pnpm token:create` で作った人など）がいれば、そのユーザーに結び付けます。定期的な取得（Cron）は、`pnpm dev --test-scheduled` で起動して `http://localhost:8787/__scheduled` を開くと、すぐに試せます。
 
 ## コマンド
 
@@ -103,6 +113,7 @@ sendo/
 │   ├── index.ts        # Worker の入口（fetch ／ scheduled ／ queue）
 │   ├── app.ts          # HTTP のルーティング
 │   ├── api/            # REST API（/api/v1）
+│   ├── auth/           # ログイン（OpenID Connect の提供元、ID トークンの確認）
 │   ├── db/             # スキーマとデータの読み書き（Drizzle）。共有のフィード・記事と、人ごとの購読・受信箱
 │   ├── fetcher/        # フィードの取得と解析、SSRF 対策
 │   ├── jobs/           # キューと定期実行で動く処理

@@ -66,6 +66,27 @@ export const accessTokens = sqliteTable(
   (t) => [index("access_tokens_user_id_idx").on(t.userId)],
 );
 
+/**
+ * ブラウザのログインのセッション（docs/decisions/accounts.md の 6）。クッキーに入れる中身は持たず、
+ * SHA-256 のハッシュだけを置く。行を消せば、そのセッションは使えなくなる（ログアウト、取り消し）。
+ */
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    /** 最後に使った時刻。書き込みを減らすため、1 時間に 1 回だけ更新する */
+    lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }).notNull(),
+    /** この時刻を過ぎたら使えない。使うたびに（last_used_at と一緒に）先へ延ばす */
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [index("sessions_user_id_idx").on(t.userId)],
+);
+
 /*
  * ここから下は、共有のデータ（feeds、articles）と、人ごとのデータ（folders、subscriptions、
  * user_articles）に分かれる（docs/decisions/accounts.md）。
@@ -278,6 +299,7 @@ export const seqFloors = sqliteTable("seq_floors", {
 export type User = typeof users.$inferSelect;
 export type Identity = typeof identities.$inferSelect;
 export type AccessToken = typeof accessTokens.$inferSelect;
+export type Session = typeof sessions.$inferSelect;
 export type Folder = typeof folders.$inferSelect;
 export type Feed = typeof feeds.$inferSelect;
 export type NewFeed = typeof feeds.$inferInsert;
