@@ -48,8 +48,28 @@ gh api "repos/{owner}/{repo}/issues/<番号>/comments" --paginate \
 
 ### 3. Codex のレビューを待つ
 
-- 依頼コメントより後に、Codex のアカウント（ログイン名に `codex` を含む）からのレビューかコメントが付くまで待つ。
-- 待つときはバックグラウンドで 60 秒おきに確かめ、30 分たっても来なければ止めて報告する。
+Codex のアカウントは `chatgpt-codex-connector[bot]`。依頼すると、次の順に反応する。
+
+1. すぐに「Codex Review Summary」の要約コメントが付く（レビュー中は依頼コメントに 👀）。このコメントは、レビューが進むと同じコメントが書き換えられる。**要約コメントが付いただけでは、まだ終わっていない。**
+2. 終わると、要約コメントの中の `<!-- codex-review-state:v1 {...} -->` の JSON が更新される。
+3. 指摘がなければ「Codex Review: Didn't find any major issues」のコメントと 👍 が付く。指摘があれば、レビューと行ごとのコメントが付く。
+
+**完了の判定**は、要約コメントの JSON で行う。
+
+- `code_review.status` が `completed`
+- `code_review.commit_sha` が PR の今の HEAD（`gh api "repos/{owner}/{repo}/pulls/<番号>" --jq .head.sha`）と同じ
+- 前のラウンドから push していない（全部却下した）ときは commit_sha が変わらないので、加えて依頼コメントより後に Codex のレビューか「Didn't find any major issues」のコメントが付いたことも確かめる
+
+```sh
+gh api "repos/{owner}/{repo}/issues/<番号>/comments" --paginate \
+  --jq '.[] | select(.user.login | test("codex")) | .body' \
+  | grep -o 'codex-review-state:v1 {.*} -->'
+```
+
+- 指摘があるかどうかは、同じ JSON の `code_review.has_any_findings` で分かる。
+- 待つときはバックグラウンドで 60 秒おきに確かめ、30 分たっても終わらなければ止めて報告する。たいていは数分で終わる。
+
+指摘の中身は次で読む。今回のラウンドの指摘は、依頼コメントより後に付いたものだけ。
 
 ```sh
 # レビュー本体
@@ -58,12 +78,7 @@ gh api "repos/{owner}/{repo}/pulls/<番号>/reviews" --paginate \
 # 行ごとの指摘
 gh api "repos/{owner}/{repo}/pulls/<番号>/comments" --paginate \
   --jq '[.[] | select(.user.login | test("codex")) | {id, path, line, created_at, body}]'
-# 「問題なし」の返事はここに来ることがある
-gh api "repos/{owner}/{repo}/issues/<番号>/comments" --paginate \
-  --jq '[.[] | select(.user.login | test("codex")) | {id, created_at, body}]'
 ```
-
-- 今回のラウンドの指摘は、依頼コメントより後に付いたものだけ。
 
 ### 4. 指摘を判定する
 
