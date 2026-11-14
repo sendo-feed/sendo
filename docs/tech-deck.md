@@ -107,7 +107,7 @@ flowchart LR
 
 - **共通：** pnpm、TypeScript、GitHub Actions、Biome（案）
 - **記録：** 決定は各リポジトリの `docs/decisions/` にテーマごとのファイルで残し（経緯は git の履歴）、議論は Organization の Discussions で行う
-- **AI 開発：** `.claude/` にスキルと推奨プラグインを置き、Claude Code の環境を揃える
+- **AI 開発：** 開発は主に Claude Code、レビューは主に Codex。エージェント共通の指示は `AGENTS.md` に書き、`CLAUDE.md` はそれを読み込む。`.claude/` にスキルと推奨プラグインを置き、Claude Code の環境を揃える
 
 > API の定義は sendo が持ち、sendo-reader はそれを取り込むだけ。リポジトリは2つでも、API の定義は1か所にする。
 
@@ -142,7 +142,8 @@ sendo/
 ├── migrations/                # D1
 ├── test/
 ├── wrangler.jsonc
-├── CLAUDE.md                  # 規約の要点（Claude 向け）
+├── AGENTS.md                  # エージェント共通の指示・レビュー観点
+├── CLAUDE.md                  # AGENTS.md を読み込む
 └── README.md
 ```
 
@@ -174,6 +175,7 @@ sendo-reader/
 │       ├── ios/
 │       └── android/
 ├── pnpm-workspace.yaml
+├── AGENTS.md
 ├── CLAUDE.md
 └── README.md
 ```
