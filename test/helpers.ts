@@ -150,6 +150,7 @@ export async function addToInbox(
         publishedAt: row.publishedAt,
         createdAt: row.receivedAt,
         seq: nextSeq(schema.userArticles),
+        readSeq: nextSeq(schema.userArticles),
       })
       .run();
   }

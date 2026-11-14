@@ -214,6 +214,13 @@ export const userArticles = sqliteTable(
     /** スターを付けた時刻。付いていなければ null */
     starredAt: integer("starred_at", { mode: "timestamp_ms" }),
     seq: seq(),
+    /**
+     * 既読・未読が最後に変わったときの変更番号（受信箱に入ったときを含む）。seq と違って、
+     * スターを変えても変わらない。「同期で手元に届いた記事だけを既読にする」の境界に使う
+     * （docs/decisions/sync.md の 6）。送り切った位置までにこの番号があり、今も未読の記事は、
+     * 未読の状態で手元に届いている
+     */
+    readSeq: integer("read_seq").notNull().default(0),
   },
   (t) => [
     primaryKey({ columns: [t.userId, t.articleId] }),
@@ -229,10 +236,39 @@ export const userArticles = sqliteTable(
 );
 
 /**
+ * 受信箱から消えた記事の記録（docs/decisions/sync.md の 3）。同期で、クライアントに記事ごとに
+ * 「消えた」と伝えるために使う。
+ *
+ * 受信箱の行が物理的に消えると、表に付けたトリガーが削除と同じ文の中でここに書く。番号（seq）は
+ * 受信箱の表の続きから振り、下限（seq_floors）もその番号まで引き上げるので、受信箱の行と番号が
+ * 重ならない。同じ記事がまた消えたら、番号を振り直す。トリガーは
+ * migrations/0005_user_article_removals_trigger.sql にある。
+ *
+ * 記事（共有）が消えても記録は残すので、記事への外部キーは付けない。
+ */
+export const userArticleRemovals = sqliteTable(
+  "user_article_removals",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    articleId: text("article_id").notNull(),
+    seq: integer("seq").notNull(),
+    /** 消えた時刻（DB の時計）。記録の回収に使う */
+    removedAt: integer("removed_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.articleId] }),
+    index("user_article_removals_user_id_seq_idx").on(t.userId, t.seq),
+  ],
+);
+
+/**
  * 変更番号の下限（docs/decisions/sync.md）。人ごとの表から行が物理的に消えると、表に付けた
  * トリガーが、消した行の番号でここを引き上げる。削除と同じ文の中で起きるので、間にほかの書き込みが
  * 入らず、番号が二度と使われない。トリガーは migrations/0001_seq_floor_triggers.sql にある
- * （drizzle-kit はトリガーを扱わないので、手で書いたマイグレーションにしている）
+ * （drizzle-kit はトリガーを扱わないので、手で書いたマイグレーションにしている）。受信箱の
+ * トリガーは、0005_user_article_removals_trigger.sql で消した記録も残す形に置き換えた
  */
 export const seqFloors = sqliteTable("seq_floors", {
   tableName: text("table_name").primaryKey(),

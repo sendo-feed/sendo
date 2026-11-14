@@ -63,6 +63,9 @@ curl -X POST http://localhost:8787/api/v1/articles/mark-read \
   -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
   -d '{"all":true,"until":"<一覧の asOf>"}'
 
+# 前回からの差分を取る（ローカルファーストのクライアント向け）。応答の cursor を次に渡す
+curl -H "authorization: Bearer $TOKEN" "http://localhost:8787/api/v1/sync"
+
 # Feedly などから書き出した OPML をインポートする（フォルダも取り込む）
 curl -X POST http://localhost:8787/api/v1/opml \
   -H "authorization: Bearer $TOKEN" -H "content-type: text/x-opml" \

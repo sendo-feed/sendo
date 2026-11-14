@@ -66,6 +66,8 @@ export async function runFetchFeed(
       title: parsed.title,
       siteUrl: parsed.siteUrl,
     });
+    // フィードの名前やサイトの URL が変わると、購読の変更番号はトリガーが進める
+    // （migrations/0003_received_seq_and_feed_trigger.sql。同期でクライアントに伝わる）
     return { status: "fetched", inserted };
   } catch (error) {
     if (!(error instanceof FetchFeedError || error instanceof ParseFeedError)) throw error;
