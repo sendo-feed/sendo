@@ -7,11 +7,34 @@ import type { Platform } from "../src/platform";
 
 export const API_TOKEN = "test-token";
 
+/**
+ * D1 に投げたクエリの数を数える。D1 は 1 回の実行で投げられるクエリの数に上限があるので、
+ * 最悪の場合でも収まるかをテストで確かめるのに使う。
+ */
+function countingD1(db: D1Database) {
+  const counter = { queries: 0 };
+  const wrapped = new Proxy(db, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (typeof value !== "function") return value;
+      if (prop === "prepare" || prop === "exec" || prop === "batch") {
+        return (...args: unknown[]) => {
+          counter.queries++;
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      }
+      return value.bind(target);
+    },
+  });
+  return { db: wrapped, counter };
+}
+
 /** テスト用の Platform。DB は本物の D1（手元の Miniflare）、キューと fetch は差し替える */
 export function createTestPlatform(overrides: Partial<Platform> = {}) {
   const enqueued: Job[] = [];
+  const d1 = countingD1(env.DB);
   const platform: Platform = {
-    db: drizzle(env.DB, { schema }),
+    db: drizzle(d1.db, { schema }),
     jobs: {
       async enqueue(jobs) {
         enqueued.push(...jobs);
@@ -24,7 +47,15 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
     apiToken: API_TOKEN,
     ...overrides,
   };
-  return { platform, enqueued };
+  return {
+    platform,
+    enqueued,
+    /** これまでに D1 に投げたクエリの数 */
+    queryCount: () => d1.counter.queries,
+    resetQueryCount: () => {
+      d1.counter.queries = 0;
+    },
+  };
 }
 
 /** アプリにリクエストを送る。既定で認証のヘッダーを付ける */

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { MAX_OPML_FEEDS, OpmlError, readOpml, writeOpml } from "../../src/opml";
+import {
+  MAX_FOLDER_NAME_LENGTH,
+  MAX_OPML_FEEDS,
+  MAX_URL_LENGTH,
+  OpmlError,
+  readOpml,
+  truncateUtf16,
+  writeOpml,
+} from "../../src/opml";
 import { FEEDLY_OPML } from "../fixtures/opml";
 
 describe("readOpml", () => {
@@ -27,6 +35,31 @@ describe("readOpml", () => {
     </body></opml>`);
 
     expect(entries).toEqual([{ url: "https://a.example/feed", folder: "B" }]);
+  });
+
+  it("正規化すると長くなりすぎる URL は飛ばす（日本語はパーセントエンコードで長くなる）", () => {
+    const long = `https://example.com/${"あ".repeat(300)}`;
+    expect(long.length).toBeLessThan(MAX_URL_LENGTH);
+
+    const { entries, skipped } = readOpml(
+      `<opml version="2.0"><body><outline text="f" xmlUrl="${long}"/></body></opml>`,
+    );
+
+    expect(entries).toEqual([]);
+    expect(skipped).toEqual([{ url: expect.any(String), reason: "url_too_long" }]);
+  });
+
+  it("フォルダ名は、文字列の長さ（UTF-16）で切り詰め、絵文字を途中で切らない", () => {
+    const { entries } = readOpml(
+      `<opml version="2.0"><body><outline text="${"😀".repeat(150)}">
+        <outline text="f" xmlUrl="https://a.example/feed"/>
+      </outline></body></opml>`,
+    );
+
+    const folder = entries[0]?.folder ?? "";
+    expect(folder.length).toBeLessThanOrEqual(MAX_FOLDER_NAME_LENGTH);
+    expect(folder).toBe("😀".repeat(MAX_FOLDER_NAME_LENGTH / 2));
+    expect(truncateUtf16("a😀", 2)).toBe("a");
   });
 
   it("上限を超えたフィードは飛ばす", () => {

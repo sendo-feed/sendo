@@ -8,6 +8,12 @@ import type { Platform } from "../platform";
 const LEASE_MS = 15 * 60 * 1000;
 
 /**
+ * 1 回の定期実行で借りる回数の上限。1 回につき 2 クエリなので、D1 のクエリの上限
+ * （QUERY_BUDGET）に収まる。残りは次の定期実行（10 分後）で積む
+ */
+export const MAX_LEASE_ROUNDS = 20;
+
+/**
  * 取得の時期が来たフィードを、取得のキューに積む。定期実行（Cron）から呼ぶ。
  * @returns 積んだフィードの数
  */
@@ -17,7 +23,7 @@ export async function enqueueDueFeeds(
   const now = platform.now();
   let total = 0;
   // 一度に借りられる数には上限があるので、時期の来たものがなくなるまで繰り返す
-  for (;;) {
+  for (let round = 0; round < MAX_LEASE_ROUNDS; round++) {
     const ids = await leaseDueFeeds(platform.db, {
       now,
       leaseUntil: new Date(now.getTime() + LEASE_MS),
@@ -28,4 +34,5 @@ export async function enqueueDueFeeds(
     total += ids.length;
     if (ids.length < MAX_LEASE) return total;
   }
+  return total;
 }

@@ -79,7 +79,7 @@ describe("OPML の API", () => {
     await postOpml(platform, `<opml version="2.0"><body>${outlines}</body></opml>`);
 
     const sizes = enqueued.map((job) => (job.type === "import-feeds" ? job.feeds.length : 0));
-    expect(sizes).toEqual([25, 25, 10]);
+    expect(sizes).toEqual([10, 10, 10, 10, 10, 10]);
   });
 
   it("OPML でなければ 400", async () => {

@@ -6,7 +6,7 @@ export type OpmlEntry = { url: string; folder: string | null };
 
 export type OpmlSkip = {
   url: string;
-  reason: "url_not_allowed" | "duplicate" | "too_many";
+  reason: "url_not_allowed" | "url_too_long" | "duplicate" | "too_many";
 };
 
 export class OpmlError extends Error {
@@ -62,11 +62,15 @@ export function readOpml(xml: string): { entries: OpmlEntry[]; skipped: OpmlSkip
       }
       let url: string;
       try {
-        if (raw.length > MAX_URL_LENGTH) throw new UrlNotAllowedError("invalid_url");
         url = toFetchableUrl(raw).href;
       } catch (error) {
         if (!(error instanceof UrlNotAllowedError)) throw error;
-        skipped.push({ url: raw, reason: "url_not_allowed" });
+        skipped.push({ url: raw.slice(0, MAX_URL_LENGTH), reason: "url_not_allowed" });
+        continue;
+      }
+      // 日本語などはパーセントエンコードで長くなるので、正規化したあとの長さで判定する
+      if (url.length > MAX_URL_LENGTH) {
+        skipped.push({ url: url.slice(0, MAX_URL_LENGTH), reason: "url_too_long" });
         continue;
       }
       if (seen.has(url)) {
@@ -92,7 +96,20 @@ export function readOpml(xml: string): { entries: OpmlEntry[]; skipped: OpmlSkip
 function folderName(value: string | undefined): string | null {
   const name = value?.replace(/\s+/g, " ").trim();
   if (!name) return null;
-  return [...name].slice(0, MAX_FOLDER_NAME_LENGTH).join("");
+  return truncateUtf16(name, MAX_FOLDER_NAME_LENGTH);
+}
+
+/**
+ * JavaScript の文字列の長さ（UTF-16 の単位。zod の max もこれで数える）で切り詰める。
+ * 絵文字などのサロゲートペアは途中で切らない。
+ */
+export function truncateUtf16(value: string, maxLength: number): string {
+  let out = "";
+  for (const char of value) {
+    if (out.length + char.length > maxLength) break;
+    out += char;
+  }
+  return out;
 }
 
 /** OPML に書き出す 1 件 */

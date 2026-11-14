@@ -20,7 +20,7 @@ const ImportResultSchema = z
       .array(
         z.object({
           url: z.string(),
-          reason: z.enum(["url_not_allowed", "duplicate", "too_many"]),
+          reason: z.enum(["url_not_allowed", "url_too_long", "duplicate", "too_many"]),
         }),
       )
       .openapi({ description: `飛ばしたフィード（最初の ${MAX_REPORTED_SKIPS} 件まで）` }),
