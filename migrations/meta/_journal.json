@@ -5,29 +5,8 @@
     {
       "idx": 0,
       "version": "6",
-      "when": 1794628557828,
+      "when": 1794636558803,
       "tag": "0000_init",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1794630663870,
-      "tag": "0001_folders",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1794632880934,
-      "tag": "0002_read_star",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1794634575351,
-      "tag": "0003_users_tokens",
       "breakpoints": true
     }
   ]
