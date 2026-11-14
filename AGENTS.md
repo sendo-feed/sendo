@@ -11,6 +11,23 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `docs/tech-deck.md`：技術構成の全体像
 - `docs/features.md`：作る機能の一覧（Phase 1〜3、MCP のツール）
 
+## 開発コマンド
+
+- `pnpm install`：依存を入れる。あわせて `worker-configuration.d.ts`（Workers の型）を生成する
+- `pnpm check`：型チェック、lint、テストをまとめて実行する。変更したら、コミットの前に必ず通す
+- `pnpm format`：整形して、直せる lint の指摘を直す
+- `pnpm test`：テスト。Vitest を Workers のランタイム（workerd）の中で動かす
+- `pnpm build`：デプロイせずにバンドルだけ作る
+- `wrangler.jsonc` を変えたら `pnpm cf-typegen` で型を作り直す
+
+## ディレクトリ
+
+- `src/index.ts`：Worker の入口。env から実装を組み立てて渡すだけにする
+- `src/app.ts`：HTTP のルーティング。実行環境に依存させない
+- `src/platform/`：実行環境の緩衝層のインターフェース。`src/platform/cloudflare/` にその実装を置く
+- 機能のディレクトリ（`api/`、`fetcher/`、`jobs/` など）は `docs/tech-deck.md` の「6. ディレクトリ構成」に従う
+- テストは `test/` に置き、`*.test.ts` とする
+
 ## 言語
 
 - 文書、コミットメッセージ、PR、レビューコメントは日本語で書く（一般に公開したら英語に切り替える）

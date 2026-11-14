@@ -1,0 +1,31 @@
+name: PR title
+
+# スカッシュマージでは PR のタイトルがそのままコミットの件名になるので、
+# コミットメッセージの規約（CONTRIBUTING.md）に沿っているかを確かめる。
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  check:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          types='feat|fix|docs|decision|refactor|perf|test|build|ci|chore|revert'
+          if [[ ! "$TITLE" =~ ^($types)(\([a-z0-9._/-]+\))?!?:\ .+ ]]; then
+            echo "::error::PR のタイトルは '<type>(<scope>): <件名>' の形で書く。type は ${types//|/ ／ }。いまのタイトル：$TITLE"
+            exit 1
+          fi
+          if [[ "$TITLE" =~ ^decision[:!] ]]; then
+            echo "::error::decision には scope にテーマ名を付ける（例：decision(tech-stack): …）。"
+            exit 1
+          fi
+          echo "OK: $TITLE"

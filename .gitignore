@@ -1,0 +1,32 @@
+# 依存
+node_modules/
+
+# ビルドと実行の生成物
+dist/
+.wrangler/
+coverage/
+
+# wrangler types の生成物（pnpm install のときに生成する）
+worker-configuration.d.ts
+
+# 手元の秘密情報。.dev.vars.example を写して使う
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+
+# ログ
+*.log
+
+# OS とエディタ
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Claude Code の個人設定
+.claude/settings.local.json

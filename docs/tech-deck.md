@@ -105,7 +105,7 @@ flowchart LR
 | `sendo-reader` | 公式リーダー。`packages/core` と `apps/web`・`apps/mobile` のモノレポ。型は sendo の OpenAPI から生成 |
 | `.github` | Organization のプロフィール README、共通の CONTRIBUTING.md（コミット規約など）、Issue・PR テンプレート |
 
-- **共通：** pnpm、TypeScript、GitHub Actions、Biome（案）
+- **共通：** pnpm、TypeScript、GitHub Actions、Biome
 - **記録：** 決定は各リポジトリの `docs/decisions/` にテーマごとのファイルで残し（経緯は git の履歴）、議論は Organization の Discussions で行う
 - **AI 開発：** 開発は主に Claude Code、レビューは主に Codex。エージェント共通の指示は `AGENTS.md` に書き、`CLAUDE.md` はそれを読み込む。`.claude/` にスキルと推奨プラグインを置き、Claude Code の環境を揃える
 
