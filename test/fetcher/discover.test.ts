@@ -1,0 +1,33 @@
+import { describe, expect, it } from "vitest";
+import { findFeedLinks } from "../../src/fetcher/discover";
+
+const BASE = "https://blog.example/posts/";
+
+describe("findFeedLinks", () => {
+  it("rel=alternate でフィードの type の <link> だけを、出てきた順に返す", () => {
+    const html = `<head>
+      <link rel="alternate" type="application/rss+xml" href="../feed.xml" title=" Posts ">
+      <link rel="alternate stylesheet" type="text/css" href="/alt.css">
+      <link rel="alternate" type="application/atom+xml; charset=utf-8" href='https://blog.example/atom'>
+      <link rel=alternate type=application/feed+json href=/feed.json>
+      <link rel="alternate" type="application/rss+xml" href="../feed.xml">
+      <link rel="icon" type="application/rss+xml" href="/not-alternate">
+      <link rel="alternate" type="application/rss+xml" href="javascript:alert(1)">
+    </head>`;
+
+    expect(findFeedLinks(html, BASE)).toEqual([
+      { url: "https://blog.example/feed.xml", title: "Posts" },
+      { url: "https://blog.example/atom", title: null },
+      { url: "https://blog.example/feed.json", title: null },
+    ]);
+  });
+
+  // 二乗の時間がかかる実装だと、どれもテストの制限時間（5 秒）を大きく超える
+  it.each([
+    ["閉じていない <link の繰り返し", "<link ".repeat(200_000)],
+    ["属性の多い長いタグ", `<link ${'a="b" '.repeat(200_000)}>`],
+    ["閉じたタグの繰り返し", '<link rel="x">'.repeat(100_000)],
+  ])("悪意のある入力でも長さに比例する時間で終わる：%s", (_label, html) => {
+    expect(findFeedLinks(html, BASE)).toEqual([]);
+  });
+});

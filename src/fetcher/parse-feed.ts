@@ -221,7 +221,7 @@ export function stripTags(html: string): string {
   return out;
 }
 
-function decodeEntities(text: string): string {
+export function decodeEntities(text: string): string {
   return text.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z]{1,10});/gi, (entity, code: string) => {
     if (code.startsWith("#")) {
       const point =
