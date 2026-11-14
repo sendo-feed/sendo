@@ -1,6 +1,7 @@
-import { asc, eq, inArray, lte } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte } from "drizzle-orm";
 import type { Database } from ".";
-import { type Feed, feeds } from "./schema";
+import { chunked } from "./chunk";
+import { type Feed, feeds, folders, type NewFeed } from "./schema";
 
 export async function findFeedByUrl(db: Database, url: string): Promise<Feed | undefined> {
   return db.select().from(feeds).where(eq(feeds.url, url)).get();
@@ -33,6 +34,54 @@ export async function insertFeed(
   const existing = await findFeedByUrl(db, input.url);
   if (!existing) throw new Error(`feed disappeared while inserting: ${input.url}`);
   return { feed: existing, created: false };
+}
+
+/**
+ * フィードをまとめて登録する。同じ URL がすでにあれば飛ばし、既存のフィードには触れない。
+ * @returns 新しく登録したフィードの ID
+ */
+export async function insertFeeds(db: Database, rows: readonly NewFeed[]): Promise<string[]> {
+  const created: string[] = [];
+  for (const chunk of chunked(rows, feeds)) {
+    const result = await db
+      .insert(feeds)
+      .values(chunk)
+      .onConflictDoNothing({ target: feeds.url })
+      .returning({ id: feeds.id })
+      .all();
+    created.push(...result.map((row) => row.id));
+  }
+  return created;
+}
+
+/**
+ * フォルダに入っていないフィードだけを、フォルダに入れる。すでにフォルダがあれば変えない
+ * （ユーザーが自分で整理した結果を上書きしないため）。
+ */
+export async function assignFolderIfMissing(
+  db: Database,
+  input: { folderId: string; urls: readonly string[] },
+): Promise<void> {
+  for (const chunk of chunked(input.urls, null)) {
+    await db
+      .update(feeds)
+      .set({ folderId: input.folderId })
+      .where(and(inArray(feeds.url, chunk), isNull(feeds.folderId)))
+      .run();
+  }
+}
+
+/** OPML に書き出すために、フィードをフォルダの名前と一緒に返す */
+export async function listFeedsWithFolder(
+  db: Database,
+): Promise<(Feed & { folderName: string | null })[]> {
+  const rows = await db
+    .select({ feed: feeds, folderName: folders.name })
+    .from(feeds)
+    .leftJoin(folders, eq(feeds.folderId, folders.id))
+    .orderBy(asc(folders.name), asc(feeds.createdAt), asc(feeds.id))
+    .all();
+  return rows.map((row) => ({ ...row.feed, folderName: row.folderName }));
 }
 
 /** 一度に借りられるフィードの数の上限 */

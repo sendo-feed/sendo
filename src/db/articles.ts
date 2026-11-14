@@ -1,13 +1,7 @@
 import { and, desc, eq, lt, or, type SQL } from "drizzle-orm";
 import type { Database } from ".";
+import { chunked } from "./chunk";
 import { type Article, articles, type NewArticle } from "./schema";
-
-/**
- * D1 は1つの文に渡せる変数が 100 個まで。記事は 1 行あたり 9 列なので、
- * 11 行（99 個）ずつに分けて入れる。
- */
-const ARTICLE_COLUMNS = 9;
-const INSERT_CHUNK = Math.floor(100 / ARTICLE_COLUMNS);
 
 /**
  * 記事をまとめて入れる。同じフィードの同じ guid はすでにあれば飛ばす。
@@ -19,8 +13,7 @@ const INSERT_CHUNK = Math.floor(100 / ARTICLE_COLUMNS);
  */
 export async function insertArticles(db: Database, rows: readonly NewArticle[]): Promise<number> {
   let inserted = 0;
-  for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
-    const chunk = rows.slice(i, i + INSERT_CHUNK);
+  for (const chunk of chunked(rows, articles)) {
     const result = await db
       .insert(articles)
       .values(chunk)
