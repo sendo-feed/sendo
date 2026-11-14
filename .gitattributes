@@ -1,0 +1,20 @@
+# 改行コードは LF に揃える。Windows・WSL・macOS のどれで開発しても、
+# コミットされる内容とチェックアウトされる内容は LF になる。
+* text=auto eol=lf
+
+# Windows のバッチファイルは CRLF でないと正しく動かない
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# バイナリ（改行の変換も差分の表示もしない）
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.wasm  binary
+*.db    binary
+*.sqlite binary
