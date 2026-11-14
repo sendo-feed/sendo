@@ -41,6 +41,16 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # スキーマ（src/db/schema.ts）を変えたのに、マイグレーションを作り忘れていないか
+      - name: Check migrations
+        run: |
+          pnpm db:generate
+          if [ -n "$(git status --porcelain -- migrations)" ]; then
+            git status --porcelain -- migrations
+            echo "::error::src/db/schema.ts とマイグレーションが合っていない。pnpm db:generate を実行してコミットする"
+            exit 1
+          fi
+
       - name: Test
         run: pnpm test
 
