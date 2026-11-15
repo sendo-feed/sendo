@@ -8,6 +8,11 @@
   "observability": {
     "enabled": true
   },
+  // workers.dev の URL で使う。プレビューの URL は使わない（main 以外のブランチの版が、本番の D1 と
+  // 秘密につながったまま外から呼べてしまうため）。書かないと、デプロイのたびに画面の設定との違いを
+  // 警告される（docs/decisions/deploy.md の 6）
+  "workers_dev": true,
+  "preview_urls": false,
 
   // database_id は書かない。各自がデプロイしたときに、自分のアカウントに自動で作られる
   "d1_databases": [
@@ -41,25 +46,23 @@
     "crons": ["*/10 * * * *"]
   },
 
-  // 秘密ではない設定。手元では .dev.vars で上書きできる
-  "vars": {
-    // フィードを取得する間隔（分）。10 以上の整数で、空なら 30。回せるフィードの数は、プランと
-    // この間隔で決まる（README の「取得の間隔」、docs/decisions/jobs.md）
-    "FETCH_INTERVAL_MINUTES": "30",
+  // 秘密ではない設定は、ここ（vars）に書かず、デプロイする人が Cloudflare の画面の「変数」に入れる。
+  // fork のこのファイルに自分の URL を書くと、公開されてしまうため（docs/decisions/deploy.md の 4）。
+  // keep_vars で、画面の変数をデプロイで消さない。何も入れなければ、コードの既定値で動く。
+  // 手元では pnpm dev --var <名前>:<値> で入れる
+  //
+  // - FETCH_INTERVAL_MINUTES：フィードを取得する間隔（分）。10 以上の整数で、既定は 30。回せるフィードの
+  //   数は、プランとこの間隔で決まる（README の「取得の間隔」、docs/decisions/jobs.md）
+  // - ARTICLE_RETENTION_DAYS：スターのない記事を、取り込んでから消すまでの日数。30 以上の整数で、
+  //   既定は 90。未読でも消す（docs/decisions/retention.md）。長くすると、D1 の容量を多く使う
+  // - PUBLIC_URL、READER_URL：OAuth（Claude.ai や ChatGPT から MCP につなぐ）を使うときに入れる。
+  //   Sendo を外から呼ぶときのオリジン（例：https://sendo.example.workers.dev。OAuth の発行者になる）と、
+  //   許可の画面を置く sendo-reader のオリジン。2 つともなければ OAuth は使えない（/mcp は MCP 用の
+  //   トークンだけで使える）
+  "keep_vars": true,
 
-    // スターのない記事を、取り込んでから消すまでの日数。30 以上の整数で、空なら 90。未読でも消す
-    // （docs/decisions/retention.md）。長くすると、D1 の容量を多く使う（docs/cost.md）
-    "ARTICLE_RETENTION_DAYS": "90",
-
-    // OAuth（Claude.ai や ChatGPT から MCP につなぐ）を使うときに書く。2 つとも空なら OAuth は使えない
-    // （/mcp は MCP 用のトークンだけで使える）
-    // Sendo を外から呼ぶときのオリジン（例：https://sendo.example.workers.dev）。OAuth の発行者になる
-    "PUBLIC_URL": "",
-    // 許可の画面を置く sendo-reader のオリジン（例：https://reader.example.workers.dev）
-    "READER_URL": ""
-  },
-
-  // 秘密情報は、手元では .dev.vars に書く（.dev.vars.example を参照）。本番は wrangler secret put で入れる。
+  // 秘密情報は、手元では .dev.vars に書く（.dev.vars.example を参照）。本番は Cloudflare の画面の
+  // 「変数とシークレット」に、型を「シークレット」にして入れる（README の「デプロイ」）。
   // ここに挙げたものは、ないとデプロイが止まる（手元では警告だけ）。.dev.vars も、ここに挙げたものしか読まれない
   "secrets": {
     "required": ["ALLOWED_EMAILS", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]

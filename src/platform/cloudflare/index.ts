@@ -19,8 +19,20 @@ import { createQueueJobQueue } from "./queue";
 
 export { createQueueJobQueue, handleQueueBatch, type JobRunner } from "./queue";
 
+/**
+ * デプロイする人が、Cloudflare の画面の「変数」に入れる設定（docs/decisions/deploy.md の 4）。
+ * wrangler.jsonc の vars に書かないので、wrangler types が作る Env には出てこない。
+ * 入れていなければ、env にない
+ */
+type SettingName =
+  | "FETCH_INTERVAL_MINUTES"
+  | "ARTICLE_RETENTION_DAYS"
+  | "PUBLIC_URL"
+  | "READER_URL";
+
 /** Cloudflare の env から、アプリが使う Platform を組み立てる */
-export function createCloudflarePlatform(env: Env): Platform {
+export function createCloudflarePlatform(workerEnv: Env): Platform {
+  const env: Env & Partial<Record<SettingName, string>> = workerEnv;
   return {
     db: drizzle(env.DB, { schema }),
     jobs: createQueueJobQueue(env.JOBS),
@@ -33,8 +45,8 @@ export function createCloudflarePlatform(env: Env): Platform {
 }
 
 /**
- * 取得の設定を env から読む（docs/decisions/jobs.md の 6）。秘密ではないので、wrangler.jsonc の
- * vars に書く。空なら既定。形が正しくなければ、エラーをログに出して既定を使う
+ * 取得の設定を env から読む（docs/decisions/jobs.md の 6）。秘密ではないので、Cloudflare の画面の
+ * 変数に入れる。なければ既定。形が正しくなければ、エラーをログに出して既定を使う
  */
 export function readFetchConfig(env: { FETCH_INTERVAL_MINUTES?: string }): FetchConfig {
   let minutes = DEFAULT_FETCH_INTERVAL_MINUTES;
@@ -76,10 +88,10 @@ type AuthEnvName =
 
 /**
  * ログインの設定を env から読む。秘密（メール、Google のクライアント）は、手元では .dev.vars、
- * 本番は wrangler secret put で入れる。設定していなければ、ブラウザのログインは使えない
+ * 本番は Cloudflare の画面のシークレットに入れる。設定していなければ、ブラウザのログインは使えない
  * （アクセストークンだけで使う）。
  *
- * OAuth（PUBLIC_URL と READER_URL）は秘密ではないので、wrangler.jsonc の vars に書く。
+ * OAuth（PUBLIC_URL と READER_URL）は秘密ではないので、Cloudflare の画面の変数に入れる。
  * 2 つともあるときだけ使う。形が正しくなければ、エラーをログに出して OAuth を使わない
  */
 export function readAuthConfig(env: Partial<Record<AuthEnvName, string>>): AuthConfig {

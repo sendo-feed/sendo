@@ -120,7 +120,7 @@ sendo/
 ├── .claude/
 │   ├── settings.json          # 推奨プラグイン
 │   └── skills/                # Sendo 独自の規約
-├── .github/workflows/         # CI・デプロイ
+├── .github/workflows/         # CI（デプロイは各自の fork から Workers Builds。decisions/deploy.md）
 ├── docs/
 │   └── decisions/             # tech-stack.md …
 ├── spec/

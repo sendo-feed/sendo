@@ -43,7 +43,7 @@ pnpm dev
 
 ### 取得の間隔
 
-フィードを取得する間隔（分）は、`wrangler.jsonc` の `vars` の `FETCH_INTERVAL_MINUTES` に書きます。10 以上の整数で、既定は 30 です。取得の時期が来たフィードは 10 分おきの定期実行がキューに積むので、10 分より短くはできません。回せるフィードの数は、Cloudflare のプランとこの間隔で決まります（[決定](docs/decisions/jobs.md)）。
+フィードを取得する間隔（分）は、Cloudflare の画面の変数 `FETCH_INTERVAL_MINUTES` に入れます（[設定を変える](#設定を変える)）。10 以上の整数で、既定は 30 です。取得の時期が来たフィードは 10 分おきの定期実行がキューに積むので、10 分より短くはできません。回せるフィードの数は、Cloudflare のプランとこの間隔で決まります（[決定](docs/decisions/jobs.md)）。
 
 購読するフィードの数に合わせて、次を目安に選んでください。
 
@@ -65,7 +65,7 @@ pnpm dev
 
 スターを付けていない記事は、取り込んでから 90 日たつと消えます。未読でも消えます。スターを付けた記事は、期間を過ぎても残ります（[決定](docs/decisions/retention.md)）。
 
-期間（日）は、`wrangler.jsonc` の `vars` の `ARTICLE_RETENTION_DAYS` に書きます。30 以上の整数で、既定は 90 です。長くすると、そのぶんデータベースの容量を多く使います。
+期間（日）は、Cloudflare の画面の変数 `ARTICLE_RETENTION_DAYS` に入れます（[設定を変える](#設定を変える)）。30 以上の整数で、既定は 90 です。長くすると、そのぶんデータベースの容量を多く使います。
 
 - 記事を消す処理は、取得のたびと、1 日 1 回（日本時間 3:00）に動きます。一度に消す量は抑えているので、期間を短くすると、何日かかけて消えます
 - sendo-reader などのクライアントは、同期で「消えた」と受け取り、手元からも消します。30 日より長く同期しなかったクライアントは、最初から同期し直します
@@ -108,10 +108,10 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 
 ### ブラウザでログインする（Google）
 
-ブラウザ（sendo-reader）からは、Google でログインしてセッションのクッキーで使います。手元では、試すときだけ設定すれば足ります（なければ `pnpm dev` が警告を出すだけ）。デプロイには 3 つとも要ります（`wrangler.jsonc` の `secrets.required`。ないと `wrangler deploy` が止まる）。
+ブラウザ（sendo-reader）からは、Google でログインしてセッションのクッキーで使います。手元では、試すときだけ設定すれば足ります（なければ `pnpm dev` が警告を出すだけ）。デプロイには 3 つとも要ります（`wrangler.jsonc` の `secrets.required`。ないとデプロイが止まる。[初めてのデプロイ](#初めてのデプロイ)）。
 
 1. [Google Cloud のコンソール](https://console.cloud.google.com/apis/credentials)で OAuth クライアント（種類は「ウェブ アプリケーション」）を作る。「承認済みのリダイレクト URI」には、ブラウザから見た `<オリジン>/api/v1/auth/google/callback` を登録する（手元の sendo-reader なら `http://localhost:5173/api/v1/auth/google/callback`、本番なら sendo-reader のオリジン）
-2. `.dev.vars.example` を `.dev.vars` に写し、`ALLOWED_EMAILS`（ユーザーになれるメール）、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` を書く。本番では `pnpm exec wrangler secret put <名前>` で入れる
+2. `.dev.vars.example` を `.dev.vars` に写し、`ALLOWED_EMAILS`（ユーザーになれるメール）、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` を書く。本番では、Cloudflare の画面にシークレットとして入れる（[初めてのデプロイ](#初めてのデプロイ)）
 3. ブラウザで `<オリジン>/api/v1/auth/google/login` を開く。ログインできたら `/` に戻る（`?returnTo=/パス` で戻る先を変えられる）。できなければ `/?login_error=<理由>` に戻る
 
 許可したメールの人が初めてログインすると、ユーザーを作ります。同じメールのユーザー（`pnpm token:create` で作った人など）がいれば、そのユーザーに結び付けます。
@@ -152,9 +152,9 @@ claude mcp add --transport http sendo http://localhost:8787/mcp --header "Author
 
 #### OAuth でつなぐ
 
-Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader に置きます（[決定](docs/decisions/mcp.md)の 3〜7）。使うには、`wrangler.jsonc` の `vars` に 2 つのオリジンを書いてデプロイします（2 つとも空なら OAuth は使えません）。手元では `.dev.vars` で上書きできます。
+Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader に置きます（[決定](docs/decisions/mcp.md)の 3〜7）。使うには、Cloudflare の画面の変数に 2 つのオリジンを入れます（[設定を変える](#設定を変える)。2 つともなければ OAuth は使えません）。手元では `pnpm dev --var PUBLIC_URL:http://localhost:8787 --var READER_URL:http://localhost:5173` のように入れます。
 
-| 名前 | 書くもの |
+| 名前 | 入れるもの |
 |---|---|
 | `PUBLIC_URL` | Sendo を外から呼ぶときのオリジン（例：`https://sendo.example.workers.dev`）。OAuth の発行者になり、クライアントはこのオリジンの `/mcp` につなぐ |
 | `READER_URL` | sendo-reader のオリジン。許可の画面（`/oauth/authorize`）がここにある |
@@ -164,6 +164,56 @@ Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader
 出した許可は `GET /api/v1/oauth/grants` で一覧にし、`DELETE /api/v1/oauth/grants/{id}` で取り消せます（ブラウザのセッションでだけ）。
 
 動的登録は誰でも呼べます。一度も許可されないまま 1 日たったクライアントは消しますが、呼ぶ数そのものは絞っていないので、公開する Sendo では、Cloudflare のレート制限のルールなどで `/oauth/register` を絞ってください。
+
+## デプロイ
+
+自分の Cloudflare アカウントに、GitHub の fork からデプロイします。fork の `main` に push するたびに、Cloudflare（Workers Builds）がビルドしてデプロイします（[決定](docs/decisions/deploy.md)）。Cloudflare の無料プランで動きます。
+
+### 初めてのデプロイ
+
+1. GitHub で `sendo-feed/sendo` を、自分のアカウントに fork する
+2. Cloudflare の画面で、Workers & Pages →「作成」→「リポジトリをインポート」を選び、GitHub につなぐ。Cloudflare の GitHub App を入れるときは、「Repository access」に fork を入れる
+   - 入れ忘れると、画面から始めたビルドは動くのに、push してもビルドが始まらない。あとからは、GitHub の Settings → Applications → Cloudflare Workers and Pages で直せる
+3. fork を選び、次のように入れてデプロイする
+
+   | 項目 | 値 |
+   |---|---|
+   | Worker の名前 | `sendo`（変えない。`wrangler.jsonc` の `name` と違うとビルドが失敗し、sendo-reader もこの名前で呼ぶ） |
+   | ビルドのコマンド | 空のまま（`pnpm run build` が入っていてもよい） |
+   | デプロイのコマンド | `pnpm run deploy`（`run` を付ける。`pnpm deploy` は pnpm 自身のコマンド） |
+
+4. 1 回目のビルドは、秘密がなくて止まる。D1 と Queues はもうできている。Worker の「設定」→「変数とシークレット」に、型を「**シークレット**」にして、次の 3 つを入れる（型を「変数」にすると、必須の確認を通らず、デプロイでも消える）
+   - `ALLOWED_EMAILS`：ユーザーになれるメール（カンマか空白で区切る）
+   - `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`：Google の OAuth クライアント（[ブラウザでログインする](#ブラウザでログインするgoogle)）。リダイレクト URI に入れる sendo-reader のオリジンは、`https://<sendo-reader の Worker の名前>.<自分のサブドメイン>.workers.dev` になる。まだなければ、仮の値を入れておき、あとで入れ直してよい
+5. Worker の「デプロイ」タブで、止まったビルドをやり直す。マイグレーションを当ててから、デプロイする
+6. 手元から、ユーザーとアクセストークンを作り、動くかを確かめる
+
+   ```sh
+   pnpm exec wrangler login                                 # 最初に 1 回
+   pnpm token:create --email you@example.com --remote
+   curl -H "Authorization: Bearer <トークン>" https://sendo.<自分のサブドメイン>.workers.dev/api/v1/feeds
+   # → {"items":[]}
+   ```
+
+デプロイの手順（`pnpm run deploy`）は、D1 がなければ先にデプロイして D1 と Queues を作らせ、マイグレーションを当ててから、もう一度デプロイします。D1 があれば、マイグレーションを当ててからデプロイします。手元から動かしても同じです。
+
+### 設定を変える
+
+秘密ではない設定は、Worker の「設定」→「変数とシークレット」に、型を「変数」にして入れます。デプロイしても消えません（`wrangler.jsonc` の `keep_vars`）。入れなければ、既定で動きます。
+
+| 名前 | 既定 | 中身 |
+|---|---|---|
+| `FETCH_INTERVAL_MINUTES` | 30 | フィードを取得する間隔（分）。[取得の間隔](#取得の間隔) |
+| `ARTICLE_RETENTION_DAYS` | 90 | スターのない記事を消すまでの日数。[古い記事の片付け](#古い記事の片付け) |
+| `PUBLIC_URL`、`READER_URL` | なし | OAuth で MCP につなぐときのオリジン。[OAuth でつなぐ](#oauth-でつなぐ) |
+
+fork の `wrangler.jsonc` には書かないでください。fork は公開されるので、自分の Sendo の URL が誰にでも見えてしまいます。
+
+手元では、`pnpm dev --var FETCH_INTERVAL_MINUTES:60` のように入れます（`.dev.vars` からは、秘密の 3 つしか読まれません）。
+
+### 更新する
+
+GitHub の fork の画面で「Sync fork」→「Update branch」を押します。上流の変更が fork の `main` に入り、その push でデプロイされます（マイグレーションも当たります）。
 
 ## コマンド
 
@@ -181,6 +231,7 @@ Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader
 | `pnpm db:generate` | `src/db/schema.ts` からマイグレーションの SQL を作る |
 | `pnpm db:migrate:local` | 手元の D1 にマイグレーションを当てる |
 | `pnpm db:migrate` | デプロイ先の D1 にマイグレーションを当てる |
+| `pnpm run deploy` | デプロイする（[デプロイ](#デプロイ)。マイグレーションも当てる） |
 | `pnpm token:create --email <メール>` | ユーザーとアクセストークンを作る（`--mcp` で MCP 用、`--remote` でデプロイ先） |
 
 ## ディレクトリ構成
