@@ -122,6 +122,22 @@ export interface JobRunner {
   run(job: Job): Promise<void>;
 }
 
+/**
+ * 届いたメッセージを封筒として読む。封筒に入れる前の形（仕事 1 つだけのメッセージ）も、
+ * 仕事 1 つの封筒として受ける。封筒に変える前のバージョンが積んだメッセージが、デプロイしたあとに
+ * キューに残っていても捨てないため（とくに OPML のインポートは、定期実行では拾い直されない）。
+ * 回数は Queues が数えた配送の回数を引き継ぐ
+ */
+function readEnvelope(message: Message) {
+  const bare = jobSchema.safeParse(message.body);
+  if (bare.success) {
+    return envelopeSchema.safeParse({
+      jobs: [{ job: bare.data, attempt: Math.max(1, message.attempts) }],
+    });
+  }
+  return envelopeSchema.safeParse(message.body);
+}
+
 /** ログに出す仕事の情報。インポートの URL やユーザーの ID は出さない */
 function describeJob(job: Job) {
   return job.type === "fetch-feed" ? { type: job.type, feedId: job.feedId } : { type: job.type };
@@ -130,7 +146,8 @@ function describeJob(job: Job) {
 /**
  * キューから届いた封筒の中の仕事を、1 つずつ別の実行で動かす。
  *
- * - 形の正しくない封筒や仕事は、やり直しても直らないので捨てる
+ * - 形の正しくない封筒や仕事は、やり直しても直らないので捨てる。封筒に入れる前の形のメッセージは、
+ *   仕事 1 つの封筒として動かす（readEnvelope）
  * - 失敗した仕事は、その仕事だけを新しい封筒に入れ、少し間を置いて積み直す。MAX_ATTEMPTS 回
  *   失敗したら諦める。封筒ごとやり直すと、成功したほかの取得までやり直してしまう
  * - 積み直せなかったときは、封筒ごと Queues のやり直しに回す（max_retries まで）。どの仕事も
@@ -142,7 +159,7 @@ export async function handleQueueBatch(
   queue: Queue,
 ): Promise<void> {
   for (const message of batch.messages) {
-    const envelope = envelopeSchema.safeParse(message.body);
+    const envelope = readEnvelope(message);
     if (!envelope.success) {
       console.error("dropping invalid envelope", {
         id: message.id,

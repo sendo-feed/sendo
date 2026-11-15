@@ -156,8 +156,7 @@ describe("handleQueueBatch", () => {
   it("形の正しくない封筒は、動かさずに捨てる", async () => {
     const { queue, sent } = fakeQueue();
     const batch = createMessageBatch("sendo-jobs", [
-      // 封筒に入れていない仕事（以前の形）
-      message("bare", fetchJob("f1")),
+      message("not-a-job", { type: "unknown" }),
       message("empty", { jobs: [] }),
       message("too-many", {
         jobs: Array.from({ length: ENVELOPE_MAX_JOBS + 1 }, (_, i) => entry(fetchJob(`f${i}`))),
@@ -171,7 +170,37 @@ describe("handleQueueBatch", () => {
     const result = await getQueueResult(batch, createExecutionContext());
     expect(run).not.toHaveBeenCalled();
     expect(sent()).toEqual([]);
-    expect(result.explicitAcks.sort()).toEqual(["bare", "empty", "too-many"]);
+    expect(result.explicitAcks.sort()).toEqual(["empty", "not-a-job", "too-many"]);
+    errors.mockRestore();
+  });
+
+  it("封筒に入れる前の形のメッセージも、仕事 1 つとして動かす。回数は配送の回数を引き継ぐ", async () => {
+    const { queue, sent } = fakeQueue();
+    const batch = createMessageBatch("sendo-jobs", [
+      { ...message("ok", fetchJob("ok")), attempts: 1 },
+      { ...message("boom", fetchJob("boom")), attempts: 2 },
+    ]);
+    const ran: string[] = [];
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await handleQueueBatch(
+      batch,
+      {
+        async run(job) {
+          if (job.type !== "fetch-feed") throw new Error(`unexpected job: ${job.type}`);
+          ran.push(job.feedId);
+          if (job.feedId === "boom") throw new Error("boom");
+        },
+      },
+      queue,
+    );
+
+    const result = await getQueueResult(batch, createExecutionContext());
+    expect(ran).toEqual(["ok", "boom"]);
+    expect(sent().map((sentMessage) => sentMessage.body)).toEqual([
+      { jobs: [entry(fetchJob("boom"), 3)] },
+    ]);
+    expect(result.explicitAcks.sort()).toEqual(["boom", "ok"]);
     errors.mockRestore();
   });
 
