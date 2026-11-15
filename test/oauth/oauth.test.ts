@@ -13,6 +13,7 @@ import { drizzle } from "drizzle-orm/d1";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
 import { createPkce } from "../../src/auth/oidc";
+import { MAX_PENDING_CLIENTS } from "../../src/db/oauth";
 import * as schema from "../../src/db/schema";
 import type { OAuthServerConfig, Platform } from "../../src/platform";
 import {
@@ -349,6 +350,76 @@ describe("動的登録（/oauth/register）", () => {
       query: authorizeQuery({ client_id: used.client_id }),
     });
     expect(check.status).toBe(200);
+  });
+});
+
+describe("動的登録の上限（docs/decisions/mcp.md の 5）", () => {
+  const register = (platform: Platform) =>
+    sendo(platform, "/oauth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [REDIRECT_URI] }),
+    });
+
+  /** 一度も許可されていないクライアントを、count 個置く */
+  async function addPendingClients(count: number, createdAt: number) {
+    await env.DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+       INSERT INTO oauth_clients (id, name, redirect_uris, created_at)
+       SELECT 'pending-' || i, NULL, '["https://pending.example.com/cb"]', ? FROM n`,
+    )
+      .bind(count, createdAt)
+      .run();
+  }
+
+  const pendingCount = async () =>
+    (
+      await env.DB.prepare(
+        "SELECT count(*) AS n FROM oauth_clients WHERE authorized_at IS NULL",
+      ).first<{ n: number }>()
+    )?.n;
+
+  it(`一度も許可されていない登録が ${MAX_PENDING_CLIENTS} 件あれば、新しい登録を 429 で断る`, async () => {
+    const clock = { now: Date.now() };
+    const { platform } = setup({ clock });
+    await addPendingClients(MAX_PENDING_CLIENTS, clock.now);
+
+    const res = await register(platform);
+
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ error: "temporarily_unavailable" });
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await pendingCount()).toBe(MAX_PENDING_CLIENTS);
+  });
+
+  it("許可されたことのあるクライアントは数えない。1 日たって消えれば、また登録できる", async () => {
+    const clock = { now: Date.now() };
+    const { platform } = setup({ clock });
+    await addPendingClients(MAX_PENDING_CLIENTS, clock.now);
+    await env.DB.prepare("UPDATE oauth_clients SET authorized_at = ? WHERE id = 'pending-1'")
+      .bind(clock.now)
+      .run();
+
+    expect((await register(platform)).status).toBe(201);
+    expect((await register(platform)).status).toBe(429);
+
+    clock.now += 25 * 60 * 60 * 1000;
+    expect((await register(platform)).status).toBe(201);
+    expect(await pendingCount()).toBe(1);
+  });
+
+  it("上限の手前で同時に登録されても、上限を超えない", async () => {
+    const clock = { now: Date.now() };
+    const { platform } = setup({ clock });
+    await addPendingClients(MAX_PENDING_CLIENTS - 2, clock.now);
+
+    const statuses = (await Promise.all(Array.from({ length: 5 }, () => register(platform)))).map(
+      (res) => res.status,
+    );
+
+    expect(statuses.filter((status) => status === 201)).toHaveLength(2);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(3);
+    expect(await pendingCount()).toBe(MAX_PENDING_CLIENTS);
   });
 });
 

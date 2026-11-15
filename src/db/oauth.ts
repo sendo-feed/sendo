@@ -44,17 +44,26 @@ const NEW_GRANT_MS = CODE_TTL_MS + 60 * 1000;
 /** 動的登録したまま、一度も許可されていないクライアントを残す時間 */
 const UNUSED_CLIENT_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * 一度も許可されていないクライアントを、いくつまで置けるか（docs/decisions/mcp.md の 5）。
+ * 動的登録は、ログインせずに D1 に書き込める入口なので、数に上限を置いて容量と書き込みを守る
+ */
+export const MAX_PENDING_CLIENTS = 100;
+
 /** コードとトークンの乱数の部分の長さ（バイト） */
 const SECRET_BYTES = 32;
 
 /**
  * クライアントを登録する（動的登録）。誰でも登録できるので、一度も許可されないまま 1 日たった
- * クライアントは、ここで消す（溜まり続けないように）。一度許可されたものは、許可がなくなっても残す
+ * クライアントは、ここで消す（溜まり続けないように）。一度許可されたものは、許可がなくなっても残す。
+ *
+ * 一度も許可されていないクライアントが MAX_PENDING_CLIENTS 個あれば、登録せずに undefined を返す。
+ * 数えるのと登録するのは、同じ文の中で行う（同時に来ても上限を超えない）
  */
 export async function registerClient(
   db: Database,
   input: { name: string | null; redirectUris: readonly string[]; now: Date },
-): Promise<OAuthRegisteredClient> {
+): Promise<OAuthRegisteredClient | undefined> {
   await db
     .delete(oauthClients)
     .where(
@@ -64,16 +73,25 @@ export async function registerClient(
       ),
     )
     .run();
-  return db
-    .insert(oauthClients)
-    .values({
-      id: crypto.randomUUID(),
-      name: input.name,
-      redirectUris: [...input.redirectUris],
-      createdAt: input.now,
-    })
-    .returning()
-    .get();
+  const client: OAuthRegisteredClient = {
+    id: crypto.randomUUID(),
+    name: input.name,
+    redirectUris: [...input.redirectUris],
+    createdAt: input.now,
+    authorizedAt: null,
+  };
+  // drizzle の insert は、条件付きの insert ... select を作れないので、SQL で書く。
+  // 登録できたかは、returning で行が返るかで見る（書き込みの結果の形は、DB ごとに違うため）
+  // insert の列の並びと returning には、表の名前を付けない列名を書く
+  const column = (c: { name: string }) => sql.identifier(c.name);
+  const inserted = await db.get<{ id: string }>(sql`
+    insert into ${oauthClients}
+      (${column(oauthClients.id)}, ${column(oauthClients.name)}, ${column(oauthClients.redirectUris)}, ${column(oauthClients.createdAt)})
+    select ${client.id}, ${client.name}, ${JSON.stringify(client.redirectUris)}, ${client.createdAt.getTime()}
+    where (select count(*) from ${oauthClients} where ${oauthClients.authorizedAt} is null)
+      < ${MAX_PENDING_CLIENTS}
+    returning ${column(oauthClients.id)}`);
+  return inserted ? client : undefined;
 }
 
 export async function getRegisteredClient(

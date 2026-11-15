@@ -63,7 +63,7 @@ export function metadataOptions(config: OAuthServerConfig): AuthMetadataOptions 
 }
 
 /** OAuth の誤り（RFC 6749 の 5.2 の形） */
-function oauthError(c: Context, status: 400 | 413, error: string, description: string) {
+function oauthError(c: Context, status: 400 | 413 | 429, error: string, description: string) {
   return c.json({ error, error_description: description }, status, NO_STORE);
 }
 
@@ -203,6 +203,15 @@ export function oauthApp(platform: Platform) {
     }
 
     const client = await registerClient(platform.db, { name, redirectUris, now: platform.now() });
+    if (!client) {
+      // 一度も許可されていない登録が上限に達している（docs/decisions/mcp.md の 5）。1 日たてば消える
+      return oauthError(
+        c,
+        429,
+        "temporarily_unavailable",
+        "too many pending client registrations; try again later",
+      );
+    }
     // 求められた値のうち、Sendo が扱えないもの（秘密を使う認証など）は、扱えるものに置き換えて返す
     // （RFC 7591 の 3.2.1）。公開クライアントだけを登録する（決定の 5）
     return c.json(
