@@ -5,6 +5,7 @@ import { getFeed, insertFeed } from "../../src/db/feeds";
 import { deliverNewArticles, setArticleState } from "../../src/db/inbox";
 import { CLEAN_UP_CATCH_UP } from "../../src/db/retention";
 import { articles, feeds, userArticles } from "../../src/db/schema";
+import { MAX_ITEMS } from "../../src/fetcher/parse-feed";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import { createTestPlatform, fakeFetch, subscribeFeed, TEST_USER, uniqueUrl } from "../helpers";
 
@@ -259,6 +260,22 @@ describe("runFetchFeed の古い記事の片付け（docs/decisions/retention.md
         daysAgo(95).getTime(),
       );
     }
+  });
+
+  it("解析の上限まで記事が載っているフィードでは、記事の行を消さない", async () => {
+    // 上限より後ろに、まだ載っているかもしれないため
+    const items = Array.from(
+      { length: MAX_ITEMS },
+      (_, i) => `<item><title>t${i}</title><link>https://blog.example/${i}</link></item>`,
+    ).join("");
+    const { platform, feed, inbox, guids } = await setupOld(
+      () => new Response(`<rss version="2.0"><channel><title>b</title>${items}</channel></rss>`),
+    );
+
+    await runFetchFeed(platform, feed.id);
+
+    expect(await inbox()).not.toContain("gone");
+    expect(await guids()).toContain("gone");
   });
 
   it("スターを付けた記事は、受信箱にも記事の表にも残す", async () => {

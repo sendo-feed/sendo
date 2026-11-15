@@ -8,7 +8,7 @@ import {
   removeExpiredFromInbox,
 } from "../db/retention";
 import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
-import { type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
+import { MAX_ITEMS, type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import type { Platform } from "../platform";
 
 /*
@@ -81,8 +81,10 @@ export async function runFetchFeed(
     await deliverNewArticles(db, { feedId: feed.id });
 
     // 片付けた範囲までの記事のうち、どの受信箱にも残っておらず、フィードにもう載っていないものを
-    // 消す。フィードに載っている記事を消すと、次の取得で新しい記事として入り直すため
-    if (cleanedUntil) {
+    // 消す。フィードに載っている記事を消すと、次の取得で新しい記事として入り直すため。
+    // 解析は MAX_ITEMS 件で打ち切るので、そこまで届いたら、後ろにまだ載っているかもしれない。
+    // そのときは記事の行を消さない（受信箱からは消える。行は、件数が減ったときに消える）
+    if (cleanedUntil && parsed.items.length < MAX_ITEMS) {
       await deleteExpiredArticles(db, {
         feedId: feed.id,
         until: cleanedUntil,
