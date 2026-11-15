@@ -411,13 +411,17 @@ export const seqFloors = sqliteTable("seq_floors", {
 });
 
 /**
- * 差分同期で、続きを送れる番号の下限（docs/decisions/sync.md の 3、retention.md の 5）。
- * 受信箱の消した記録を回収するとき、回収する記録の番号の最大まで、先にここを引き上げる。
- * カーソルの位置がこれより前なら、その先の消した記録が回収されているかもしれないので、
- * 最初から同期し直してもらう
+ * 受信箱の消した記録を、人ごとにどこまで回収したか（docs/decisions/sync.md の 3、retention.md の 5）。
+ * 回収するとき、回収する記録の番号の最大まで、先にここを引き上げる。その人のカーソルの位置が
+ * これより前なら、その先の消した記録が回収されているかもしれないので、最初から同期し直してもらう。
+ *
+ * 人ごとに持つのは、番号が受信箱の表全体で 1 つの並びだから。全員で 1 つにすると、受信箱の変わらない
+ * 人のカーソルが、ほかの人の回収で古くなり、同期し直しを繰り返す
  */
-export const syncHorizons = sqliteTable("sync_horizons", {
-  tableName: text("table_name").primaryKey(),
+export const removalHorizons = sqliteTable("removal_horizons", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
   seq: integer("seq").notNull(),
 });
 

@@ -7,7 +7,7 @@ import {
   collectRemovals,
   deleteExpiredArticles,
   planFeedCleanUp,
-  raiseRemovalHorizon,
+  raiseRemovalHorizons,
   readRemovalHorizon,
   removeExpiredFromInbox,
   sweepExpiredInbox,
@@ -97,7 +97,7 @@ const star = (platform: Platform, articleId: string, userId = TEST_USER.id) =>
 beforeEach(async () => {
   await env.DB.exec("DELETE FROM feeds");
   await env.DB.exec("DELETE FROM user_article_removals");
-  await env.DB.exec("DELETE FROM sync_horizons");
+  await env.DB.exec("DELETE FROM removal_horizons");
 });
 
 describe("planFeedCleanUp", () => {
@@ -303,17 +303,30 @@ describe("1 日 1 回の片付け", () => {
       }>()
     )?.seq;
 
-    expect(await readRemovalHorizon(platform.db)).toBe(0);
+    expect(await readRemovalHorizon(platform.db, TEST_USER.id)).toBe(0);
     // 下限を引き上げるまでは、消さない
     expect(await collectRemovals(platform.db, { limit: 500 })).toBe(0);
 
-    await raiseRemovalHorizon(platform.db, { before: cutoff });
-    expect(await readRemovalHorizon(platform.db)).toBe(oldSeq);
+    await raiseRemovalHorizons(platform.db, { before: cutoff });
+    expect(await readRemovalHorizon(platform.db, TEST_USER.id)).toBe(oldSeq);
     expect(await collectRemovals(platform.db, { limit: 500 })).toBe(1);
     expect(await removalsOf()).toEqual(["new"]);
 
     // 下限は下がらない
-    await raiseRemovalHorizon(platform.db, { before: new Date(0) });
-    expect(await readRemovalHorizon(platform.db)).toBe(oldSeq);
+    await raiseRemovalHorizons(platform.db, { before: new Date(0) });
+    expect(await readRemovalHorizon(platform.db, TEST_USER.id)).toBe(oldSeq);
+  });
+
+  it("消した記録：回収の下限は人ごと。記録のない人の下限は上がらない", async () => {
+    const { platform } = createTestPlatform();
+    const other = await createUser();
+    const feed = await subscribeFeed(platform, {});
+    await seed(platform, feed.id, [{ id: "x", createdAt: daysAgo(120) }]);
+    await env.DB.exec("DELETE FROM user_articles WHERE article_id = 'x'");
+
+    await raiseRemovalHorizons(platform.db, { before: new Date(Date.now() + DAY) });
+
+    expect(await readRemovalHorizon(platform.db, TEST_USER.id)).toBeGreaterThan(0);
+    expect(await readRemovalHorizon(platform.db, other.id)).toBe(0);
   });
 });

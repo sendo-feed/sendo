@@ -42,7 +42,7 @@ const count = async (sql: string) =>
 beforeEach(async () => {
   await env.DB.exec("DELETE FROM feeds");
   await env.DB.exec("DELETE FROM user_article_removals");
-  await env.DB.exec("DELETE FROM sync_horizons");
+  await env.DB.exec("DELETE FROM removal_horizons");
 });
 
 describe("runCleanUp", () => {
@@ -63,7 +63,7 @@ describe("runCleanUp", () => {
     expect(await runCleanUp(platform)).toEqual({ inbox: 0, articles: 1, removals: 2 });
     expect(await count("SELECT count(*) AS n FROM articles")).toBe(1);
     expect(await count("SELECT count(*) AS n FROM user_article_removals")).toBe(0);
-    expect(await readRemovalHorizon(platform.db)).toBeGreaterThan(0);
+    expect(await readRemovalHorizon(platform.db, TEST_USER.id)).toBeGreaterThan(0);
   });
 
   it("1 回に消す数には上限があり、残りは次の回に回す", async () => {

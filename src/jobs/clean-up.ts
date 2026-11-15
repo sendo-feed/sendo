@@ -1,7 +1,7 @@
 import {
   collectRemovals,
   REMOVAL_RETENTION_MS,
-  raiseRemovalHorizon,
+  raiseRemovalHorizons,
   sweepExpiredInbox,
   sweepUnsubscribedArticles,
 } from "../db/retention";
@@ -54,8 +54,8 @@ export async function runCleanUp(
     sweepUnsubscribedArticles(db, { before: expired, limit: SWEEP_BATCH }),
   );
 
-  // 同期の下限を先に引き上げてから、消した記録を消す
-  await raiseRemovalHorizon(db, { before: new Date(now - REMOVAL_RETENTION_MS) });
+  // 回収の下限を先に引き上げてから、消した記録を消す
+  await raiseRemovalHorizons(db, { before: new Date(now - REMOVAL_RETENTION_MS) });
   const removals = await repeat(SWEEP_ROUNDS.removals, () =>
     collectRemovals(db, { limit: SWEEP_BATCH }),
   );

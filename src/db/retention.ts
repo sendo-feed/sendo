@@ -1,11 +1,11 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Database } from ".";
 import {
   articles,
   type Feed,
   feeds,
+  removalHorizons,
   subscriptions,
-  syncHorizons,
   userArticleRemovals,
   userArticles,
 } from "./schema";
@@ -160,30 +160,28 @@ export async function sweepUnsubscribedArticles(
   return rows.length;
 }
 
-/** 受信箱の消した記録の、回収の下限の名前（sync_horizons の table_name） */
-export const INBOX_HORIZON = "user_articles";
-
 /**
- * 消えてから REMOVAL_RETENTION_MS より前の、受信箱の消した記録を回収する準備として、同期の下限
- * （sync_horizons）を、その記録の番号の最大まで引き上げる。
+ * 消えてから REMOVAL_RETENTION_MS より前の、受信箱の消した記録を回収する準備として、人ごとの
+ * 回収の下限（removal_horizons）を、その人のその記録の番号の最大まで引き上げる。
  *
  * 消すより先に引き上げる。引き上げたあとで落ちても、下限より古いカーソルが最初から同期し直す
  * だけで済む。消してから引き上げると、その間に来たクライアントが、消えた記録を受け取れない
  */
-export async function raiseRemovalHorizon(db: Database, input: { before: Date }): Promise<void> {
+export async function raiseRemovalHorizons(db: Database, input: { before: Date }): Promise<void> {
   const removals = userArticleRemovals;
+  const userId = sql.identifier("user_id");
+  const seq = sql.identifier("seq");
   await db.run(sql`
-    insert into ${syncHorizons} (${sql.identifier("table_name")}, ${sql.identifier("seq")})
-    select ${INBOX_HORIZON}, max(${removals.seq}) from ${removals}
+    insert into ${removalHorizons} (${userId}, ${seq})
+    select ${removals.userId}, max(${removals.seq}) from ${removals}
     where ${removals.removedAt} < ${input.before.getTime()}
-    having max(${removals.seq}) is not null
-    on conflict (${sql.identifier("table_name")}) do update
-      set ${sql.identifier("seq")} = max(${syncHorizons.seq}, excluded.${sql.identifier("seq")})
+    group by ${removals.userId}
+    on conflict (${userId}) do update set ${seq} = max(${removalHorizons.seq}, excluded.${seq})
   `);
 }
 
 /**
- * 番号が同期の下限（raiseRemovalHorizon）までの、受信箱の消した記録を消す。
+ * 番号がその人の回収の下限（raiseRemovalHorizons）までの、受信箱の消した記録を消す。
  *
  * @returns 消した記録の数。limit と同じなら、まだ残っているかもしれない
  */
@@ -194,8 +192,8 @@ export async function collectRemovals(db: Database, input: { limit: number }): P
     where rowid in (
       select rowid from ${removals}
       where ${removals.seq} <= (
-        select ${syncHorizons.seq} from ${syncHorizons}
-        where ${syncHorizons.tableName} = ${INBOX_HORIZON}
+        select ${removalHorizons.seq} from ${removalHorizons}
+        where ${removalHorizons.userId} = ${removals.userId}
       )
       limit ${input.limit}
     )
@@ -204,11 +202,12 @@ export async function collectRemovals(db: Database, input: { limit: number }): P
   return rows.length;
 }
 
-/** 受信箱の消した記録を、どこまで回収したか（同期の下限）。回収したことがなければ 0 */
-export async function readRemovalHorizon(db: Database): Promise<number> {
-  const row = await db.get<{ seq: number } | undefined>(sql`
-    select ${syncHorizons.seq} as seq from ${syncHorizons}
-    where ${syncHorizons.tableName} = ${INBOX_HORIZON}
-  `);
+/** その人の受信箱の消した記録を、どこまで回収したか。回収したことがなければ 0 */
+export async function readRemovalHorizon(db: Database, userId: string): Promise<number> {
+  const row = await db
+    .select({ seq: removalHorizons.seq })
+    .from(removalHorizons)
+    .where(eq(removalHorizons.userId, userId))
+    .get();
   return row?.seq ?? 0;
 }

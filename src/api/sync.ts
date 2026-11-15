@@ -158,13 +158,14 @@ export function syncApi(platform: Platform) {
         return c.json(errorBody("invalid_cursor", "cursor is invalid; start over without it"), 400);
       }
 
+      const userId = c.get("user").id;
       const changes = await readChanges(platform.db, {
-        userId: c.get("user").id,
+        userId,
         cursor,
         now: platform.now(),
       });
       // 消した記録の回収は、読んだあとで確かめる（isCursorExpired）
-      if (raw !== undefined && (await isCursorExpired(platform.db, cursor))) {
+      if (raw !== undefined && (await isCursorExpired(platform.db, { userId, cursor }))) {
         return c.json(errorBody("invalid_cursor", "cursor is too old; start over without it"), 400);
       }
       return c.json(

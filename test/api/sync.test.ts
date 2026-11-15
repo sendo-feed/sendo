@@ -5,7 +5,7 @@ import { insertArticles } from "../../src/db/articles";
 import { insertFeeds } from "../../src/db/feeds";
 import { createFolder } from "../../src/db/folders";
 import { backfillInbox, deliverNewArticles } from "../../src/db/inbox";
-import { collectRemovals, raiseRemovalHorizon } from "../../src/db/retention";
+import { collectRemovals, raiseRemovalHorizons } from "../../src/db/retention";
 import * as schema from "../../src/db/schema";
 import { assignFolderIfMissing, subscribeMany } from "../../src/db/subscriptions";
 import { SYNC_LIMITS } from "../../src/db/sync";
@@ -144,7 +144,7 @@ async function seedArticles(
 beforeEach(async () => {
   await env.DB.exec("DELETE FROM feeds");
   await env.DB.exec("DELETE FROM folders");
-  await env.DB.exec("DELETE FROM sync_horizons");
+  await env.DB.exec("DELETE FROM removal_horizons");
 });
 
 describe("最初の同期", () => {
@@ -776,7 +776,7 @@ describe("まとめて既読の境界にカーソルを使う", () => {
 describe("消した記録の回収（docs/decisions/retention.md の 5）", () => {
   /** 消えてから時間のたった記録として、今ある記録をすべて回収する */
   const collectAll = async (platform: ReturnType<typeof createTestPlatform>["platform"]) => {
-    await raiseRemovalHorizon(platform.db, { before: new Date(Date.now() + DAY) });
+    await raiseRemovalHorizons(platform.db, { before: new Date(Date.now() + DAY) });
     await collectRemovals(platform.db, { limit: 500 });
   };
 
@@ -808,6 +808,30 @@ describe("消した記録の回収（docs/decisions/retention.md の 5）", () =
     const fresh = createClient(platform);
     await fresh.sync();
     expect([...fresh.state.articles.keys()]).toEqual(["b"]);
+  });
+
+  it("回収した記録がその人の最大の番号でも、同期し直したあとは続きから同期できる", async () => {
+    const { platform } = await setup();
+    // b も消し、2 つの記録を回収する。その人の受信箱の行も記録も残らない
+    await env.DB.exec("DELETE FROM user_articles WHERE article_id = 'b'");
+    await collectAll(platform);
+
+    const fresh = createClient(platform);
+    await fresh.sync();
+    // 2 回目（続き）が 400 にならない（createClient の step が 200 を確かめる）
+    await fresh.sync();
+    expect(fresh.state.articles.size).toBe(0);
+  });
+
+  it("ほかの人の記録を回収しても、自分のカーソルは古くならない", async () => {
+    const { platform } = await setup();
+    const other = await createUser();
+    const otherClient = createClient(platform, other.token);
+    await otherClient.sync();
+
+    await collectAll(platform);
+
+    await otherClient.sync();
   });
 
   it("消した記録を受け取ったあとなら、回収しても続きから同期できる", async () => {

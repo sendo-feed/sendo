@@ -24,6 +24,7 @@ import {
   type Folder,
   feeds,
   folders,
+  removalHorizons,
   type Subscription,
   subscriptions,
   userArticleRemovals,
@@ -377,11 +378,14 @@ export async function readChanges(
       readInitial: readInitialArticles,
       readDelta: readArticleChanges,
       position: (row) => ({ seq: row.seq, id: row.id }),
-      // 受信箱の行と消えた記録の両方の最大を、1 つの文で読む
+      // 受信箱の行と消えた記録の両方の最大を、1 つの文で読む。消えた記録を回収した下限も含める。
+      // 最初の同期を、下限より前の位置で終えると、続きの差分で最初から同期し直しを求められ続ける
+      // （回収した記録が、その人の最大だった場合など）
       maxSeq: async () => {
         const row = await db.get<{ value: number }>(sql`select max(
           coalesce((select max(${ua.seq}) from ${ua} where ${ua.userId} = ${userId}), 0),
-          coalesce((select max(${removals.seq}) from ${removals} where ${removals.userId} = ${userId}), 0)
+          coalesce((select max(${removals.seq}) from ${removals} where ${removals.userId} = ${userId}), 0),
+          coalesce((select ${removalHorizons.seq} from ${removalHorizons} where ${removalHorizons.userId} = ${userId}), 0)
         ) as value`);
         return row?.value ?? 0;
       },
@@ -399,18 +403,21 @@ export async function readChanges(
 }
 
 /**
- * カーソルの位置より後の、受信箱の消した記録が、回収されているかもしれないか
+ * カーソルの位置より後の、その人の受信箱の消した記録が、回収されているかもしれないか
  * （docs/decisions/retention.md の 5）。そうなら、クライアントには最初から同期し直してもらう。
  *
- * 変更を読んだ「あと」に呼ぶ。片付けは、同期の下限を引き上げてから記録を消すので、読んだときに
+ * 変更を読んだ「あと」に呼ぶ。片付けは、回収の下限を引き上げてから記録を消すので、読んだときに
  * 記録が消えていたなら、そのあとで読む下限には、必ずそれが表れている。先に呼ぶと、確かめてから
  * 読むまでの間に記録が消えたとき、気づかずに取りこぼす
  */
-export async function isCursorExpired(db: Database, cursor: SyncCursor): Promise<boolean> {
-  const { articles: at } = cursor;
+export async function isCursorExpired(
+  db: Database,
+  input: { userId: string; cursor: SyncCursor },
+): Promise<boolean> {
+  const { articles: at } = input.cursor;
   // 最初の同期の途中なら、送り終えたあと upTo から差分を取るので、upTo を位置として見る。
   // 始めたばかり（upTo を決めていない）なら、消した記録は要らない
   const position = at.upTo === null ? at.seq : at.upTo;
   if (position < 0) return false;
-  return position < (await readRemovalHorizon(db));
+  return position < (await readRemovalHorizon(db, input.userId));
 }
