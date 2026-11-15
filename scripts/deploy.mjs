@@ -8,10 +8,13 @@
  *   それからマイグレーションを当てて、もう一度デプロイする。マイグレーションのコマンドは、
  *   D1 を名前で探すだけで、なければ作らずに止まるため
  *
- * 秘密（wrangler.jsonc の secrets.required）をまだ入れていなければ、初めてのデプロイは、
- * D1 と Queues を作ったあとで止まる。Cloudflare の画面で秘密を入れて、もう一度動かす。
+ * 秘密（wrangler.jsonc の secrets.required）をまだ入れていなければ、初めてのデプロイは止まる。
+ * - Cloudflare の画面からリポジトリをつないだ（Workers Builds）なら、Worker はもうあり、D1 と Queues を
+ *   作ったあとで止まる。画面で秘密を入れて、もう一度動かす
+ * - 手元から初めてデプロイするなら、Worker がまだないので、D1 を作る前に止まる（wrangler secret put も
+ *   使えない）。--secrets-file で秘密を渡す。渡したファイルは、wrangler deploy にそのまま渡す
  *
- *   pnpm run deploy [--config <wrangler の設定ファイル>]
+ *   pnpm run deploy [--secrets-file <秘密のファイル>] [--config <wrangler の設定ファイル>]
  */
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -21,17 +24,21 @@ import { unstable_readConfig } from "wrangler";
 
 const { values } = parseArgs({
   options: {
+    "secrets-file": { type: "string" },
     config: { type: "string" },
     help: { type: "boolean", short: "h", default: false },
   },
 });
 
 if (values.help) {
-  console.log("使い方: pnpm run deploy [--config <wrangler の設定ファイル>]");
+  console.log(
+    "使い方: pnpm run deploy [--secrets-file <秘密のファイル>] [--config <wrangler の設定ファイル>]",
+  );
   process.exit(0);
 }
 
 const configArgs = values.config ? ["--config", values.config] : [];
+const secretsArgs = values["secrets-file"] ? ["--secrets-file", values["secrets-file"]] : [];
 const config = unstable_readConfig(values.config ? { config: values.config } : {});
 const database = config.d1_databases.find((d) => d.binding === "DB");
 if (!database?.database_name) {
@@ -77,12 +84,14 @@ if (!databaseExists()) {
   console.log(
     `D1（${database.database_name}）がまだないので、先にデプロイして、D1 と Queues を作る（初めてのデプロイ）。\n`,
   );
-  wrangler(["deploy"], {
+  wrangler(["deploy", ...secretsArgs], {
     onError:
-      "デプロイが止まった。必須の秘密（wrangler.jsonc の secrets.required）がないなら、Cloudflare の画面の\n" +
-      "「変数とシークレット」に、型を「シークレット」にして入れてから、もう一度デプロイする（README の「デプロイ」）。",
+      "デプロイが止まった。必須の秘密（wrangler.jsonc の secrets.required）がないなら、入れてから、もう一度\n" +
+      "デプロイする（README の「デプロイ」）。\n" +
+      "- Cloudflare の画面からつないだなら：Worker の「変数とシークレット」に、型を「シークレット」にして入れる\n" +
+      "- 手元から初めてデプロイするなら：pnpm run deploy --secrets-file <ファイル> で渡す（1 行に 名前=値）",
   });
 }
 
 wrangler(["d1", "migrations", "apply", database.binding, "--remote"]);
-wrangler(["deploy"]);
+wrangler(["deploy", ...secretsArgs]);
