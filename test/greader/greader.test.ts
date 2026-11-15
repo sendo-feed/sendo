@@ -120,7 +120,7 @@ async function state(userId: string, articleId: string) {
 async function setup() {
   const user = await createUser();
   const { platform } = createTestPlatform();
-  const folder = await createFolder(platform.db, {
+  const { folder } = await createFolder(platform.db, {
     userId: user.id,
     id: crypto.randomUUID(),
     name: "Tech",
@@ -654,7 +654,7 @@ describe("購読を変える", () => {
 
   it("フォルダから外す（r）間に、ほかのリクエストが別のフォルダへ移しても、移した先からは外さない（#38 のレビュー）", async () => {
     const { user, feed, folder } = await setup();
-    const news = await createFolder(createTestPlatform().platform.db, {
+    const { folder: news } = await createFolder(createTestPlatform().platform.db, {
       userId: user.id,
       id: crypto.randomUUID(),
       name: "News",

@@ -84,6 +84,14 @@ describe("人ごとのデータ", () => {
       404,
     );
     expect((await other.send("DELETE", `/api/v1/folders/${folder.id}`)).status).toBe(404);
+    // ほかの人のフォルダの ID では作れず、そのフォルダも変えない
+    const taken = await other.send("POST", "/api/v1/folders", { id: folder.id, name: "Mine" });
+    expect(taken.status).toBe(409);
+    expect(await json(taken)).toMatchObject({ error: { code: "folder_id_taken" } });
+    expect(await json(await other.get("/api/v1/folders"))).toEqual({ items: [] });
+    expect(await json(await me.get("/api/v1/folders"))).toMatchObject({
+      items: [{ id: folder.id, name: "Tech" }],
+    });
     expect((await other.send("DELETE", `/api/v1/feeds/${feed.id}`)).status).toBe(404);
     expect(
       (

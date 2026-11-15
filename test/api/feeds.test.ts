@@ -380,6 +380,86 @@ describe("フォルダの API", () => {
     expect(res.status).toBe(200);
   });
 
+  describe("クライアントが決めた ID", () => {
+    type FolderJson = { id: string; name: string };
+    const createWithId = (platform: Parameters<typeof requestApp>[0], json: unknown) =>
+      requestApp(platform, "/api/v1/folders", { method: "POST", json });
+    const seqOf = async (id: string) =>
+      (
+        await env.DB.prepare("SELECT seq FROM folders WHERE id = ?")
+          .bind(id)
+          .first<{ seq: number }>()
+      )?.seq;
+
+    it("その ID で作り、同じ ID で送り直すと、作らずに今のフォルダを 200 で返す", async () => {
+      const { platform } = createTestPlatform();
+      const id = crypto.randomUUID();
+
+      const created = await createWithId(platform, { id, name: "Tech" });
+      expect(created.status).toBe(201);
+      expect(((await created.json()) as { folder: FolderJson }).folder).toMatchObject({
+        id,
+        name: "Tech",
+      });
+      // ほかの端末で名前を変えたあとに、作った操作が送り直されて届く
+      await requestApp(platform, `/api/v1/folders/${id}`, {
+        method: "PATCH",
+        json: { name: "技術" },
+      });
+      const seq = await seqOf(id);
+
+      const again = await createWithId(platform, { id, name: "Tech" });
+
+      expect(again.status).toBe(200);
+      expect(((await again.json()) as { folder: FolderJson }).folder).toMatchObject({
+        id,
+        name: "技術",
+      });
+      expect(await seqOf(id)).toBe(seq);
+      const list = (await (await requestApp(platform, "/api/v1/folders")).json()) as {
+        items: FolderJson[];
+      };
+      expect(list.items.map((item) => item.id)).toEqual([id]);
+    });
+
+    it("消したフォルダの ID で送り直しても、生き返らせずに 409（folder_id_taken）", async () => {
+      const { platform } = createTestPlatform();
+      const id = crypto.randomUUID();
+      await createWithId(platform, { id, name: "Tech" });
+      await requestApp(platform, `/api/v1/folders/${id}`, { method: "DELETE" });
+
+      const again = await createWithId(platform, { id, name: "Tech" });
+
+      expect(again.status).toBe(409);
+      expect(await again.json()).toMatchObject({ error: { code: "folder_id_taken" } });
+      expect(await (await requestApp(platform, "/api/v1/folders")).json()).toEqual({ items: [] });
+    });
+
+    it("同じ名前の別のフォルダがあれば、409（folder_exists）", async () => {
+      const { platform } = createTestPlatform();
+      await createWithId(platform, { id: crypto.randomUUID(), name: "Tech" });
+
+      const res = await createWithId(platform, { id: crypto.randomUUID(), name: "Tech" });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: { code: "folder_exists" } });
+    });
+
+    it("ID が小文字の UUID でなければ 400", async () => {
+      const { platform } = createTestPlatform();
+
+      for (const id of [
+        crypto.randomUUID().toUpperCase(),
+        "local-1",
+        "",
+        `${crypto.randomUUID()}x`,
+      ]) {
+        expect((await createWithId(platform, { id, name: "Tech" })).status).toBe(400);
+      }
+      expect(await (await requestApp(platform, "/api/v1/folders")).json()).toEqual({ items: [] });
+    });
+  });
+
   it("フォルダを消すと、入っていたフィードはフォルダなしに戻る", async () => {
     const { platform } = createTestPlatform({ fetch: blogSite().fetch });
     const { folder } = (await (await create(platform, "Tech")).json()) as {

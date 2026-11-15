@@ -149,7 +149,7 @@ describe("最初の同期", () => {
   it("消した印の付いていないフォルダと購読、未読・スター・直近 30 日の記事だけを返す", async () => {
     const { platform } = createTestPlatform();
     const now = Date.now();
-    const tech = await createFolder(platform.db, {
+    const { folder: tech } = await createFolder(platform.db, {
       userId: TEST_USER.id,
       id: "tech",
       name: "Tech",
@@ -228,7 +228,7 @@ describe("差分", () => {
         ),
     );
     const { platform } = createTestPlatform({ fetch: site.fetch });
-    const tech = await createFolder(platform.db, {
+    const { folder: tech } = await createFolder(platform.db, {
       userId: TEST_USER.id,
       id: "tech",
       name: "Tech",
@@ -325,7 +325,7 @@ describe("差分", () => {
 
   it("購読し直したあとに元のフォルダを消しても、今の購読は手元から消えない（#25 のレビュー）", async () => {
     const { platform } = createTestPlatform();
-    const tech = await createFolder(platform.db, {
+    const { folder: tech } = await createFolder(platform.db, {
       userId: TEST_USER.id,
       id: "tech",
       name: "Tech",
@@ -531,7 +531,7 @@ describe("受信箱から消えた記事", () => {
 
     // 別の端末で：1 ページに収まらない数の購読をフォルダに入れ、f をやめて、もう一度購読する。
     // 入れ直した x は記事のほうで先に届き、「f をやめた」は購読のほうで次のページに届く
-    const folder = await createFolder(platform.db, {
+    const { folder } = await createFolder(platform.db, {
       userId: TEST_USER.id,
       id: "imported",
       name: "Imported",

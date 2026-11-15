@@ -2,6 +2,7 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
   createFolder,
   deleteFolder,
+  FolderIdTakenError,
   FolderNameTakenError,
   listFolders,
   MAX_FOLDER_NAME_LENGTH,
@@ -21,14 +22,28 @@ const IdParamSchema = z.object({
     .openapi({ param: { name: "id", in: "path" } }),
 });
 
-const FolderBodySchema = z
+const FolderNameSchema = z
+  .string()
+  .max(MAX_FOLDER_NAME_LENGTH * 2)
+  .openapi({ description: `前後の空白を除き、${MAX_FOLDER_NAME_LENGTH} 文字までに切り詰める` });
+
+const FolderBodySchema = z.object({ name: FolderNameSchema }).openapi("FolderRequest");
+
+const CreateFolderBodySchema = z
   .object({
-    name: z
+    name: FolderNameSchema,
+    id: z
       .string()
-      .max(MAX_FOLDER_NAME_LENGTH * 2)
-      .openapi({ description: `前後の空白を除き、${MAX_FOLDER_NAME_LENGTH} 文字までに切り詰める` }),
+      .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+      .optional()
+      .openapi({
+        description:
+          "クライアントが決めた ID（小文字の UUID）。省けば Sendo が決める。" +
+          "同じ ID で送り直すと、作らずに今のフォルダを返す（オフラインで作ったフォルダを、" +
+          "ID を付け替えずに送れる）",
+      }),
   })
-  .openapi("FolderRequest");
+  .openapi("CreateFolderRequest");
 
 const error = (description: string) => ({
   description,
@@ -57,12 +72,16 @@ const createFolderRoute = createRoute({
   path: "/folders",
   summary: "フォルダを作る",
   request: {
-    body: { required: true, content: { "application/json": { schema: FolderBodySchema } } },
+    body: { required: true, content: { "application/json": { schema: CreateFolderBodySchema } } },
   },
   responses: {
+    200: folderResponse("同じ ID のフォルダがもうある（送り直し）。作らずに、今のフォルダを返す"),
     201: folderResponse("作った"),
-    400: error("名前が空"),
-    409: error("同じ名前のフォルダがある"),
+    400: error("名前が空か、ID が小文字の UUID でない"),
+    409: error(
+      "同じ名前の別のフォルダがある（folder_exists）か、その ID は使えない（folder_id_taken：" +
+        "消したフォルダか、ほかの人のフォルダが使っている）",
+    ),
   },
 });
 
@@ -102,19 +121,23 @@ export function foldersApi(platform: Platform) {
       return c.json({ items: folders.map(toFolderResponse) }, 200);
     })
     .openapi(createFolderRoute, async (c) => {
-      const name = normalizeFolderName(c.req.valid("json").name);
+      const body = c.req.valid("json");
+      const name = normalizeFolderName(body.name);
       if (name === null) return c.json(errorBody("invalid_request", "name: empty"), 400);
       try {
-        const folder = await createFolder(db, {
+        const { folder, created } = await createFolder(db, {
           userId: c.get("user").id,
-          id: crypto.randomUUID(),
+          id: body.id ?? crypto.randomUUID(),
           name,
           now: platform.now(),
         });
-        return c.json({ folder: toFolderResponse(folder) }, 201);
+        return c.json({ folder: toFolderResponse(folder) }, created ? 201 : 200);
       } catch (e) {
         if (e instanceof FolderNameTakenError) {
           return c.json(errorBody("folder_exists", "a folder with this name exists"), 409);
+        }
+        if (e instanceof FolderIdTakenError) {
+          return c.json(errorBody("folder_id_taken", "this folder id cannot be used"), 409);
         }
         throw e;
       }

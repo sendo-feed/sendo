@@ -378,6 +378,24 @@
           "createdAt"
         ]
       },
+      "CreateFolderRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 400,
+            "description": "前後の空白を除き、200 文字までに切り詰める"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "クライアントが決めた ID（小文字の UUID）。省けば Sendo が決める。同じ ID で送り直すと、作らずに今のフォルダを返す（オフラインで作ったフォルダを、ID を付け替えずに送れる）"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
       "FolderRequest": {
         "type": "object",
         "properties": {
@@ -1544,12 +1562,30 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/FolderRequest"
+                "$ref": "#/components/schemas/CreateFolderRequest"
               }
             }
           }
         },
         "responses": {
+          "200": {
+            "description": "同じ ID のフォルダがもうある（送り直し）。作らずに、今のフォルダを返す",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "folder": {
+                      "$ref": "#/components/schemas/Folder"
+                    }
+                  },
+                  "required": [
+                    "folder"
+                  ]
+                }
+              }
+            }
+          },
           "201": {
             "description": "作った",
             "content": {
@@ -1569,7 +1605,7 @@
             }
           },
           "400": {
-            "description": "名前が空",
+            "description": "名前が空か、ID が小文字の UUID でない",
             "content": {
               "application/json": {
                 "schema": {
@@ -1579,7 +1615,7 @@
             }
           },
           "409": {
-            "description": "同じ名前のフォルダがある",
+            "description": "同じ名前の別のフォルダがある（folder_exists）か、その ID は使えない（folder_id_taken：消したフォルダか、ほかの人のフォルダが使っている）",
             "content": {
               "application/json": {
                 "schema": {

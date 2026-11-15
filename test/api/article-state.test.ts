@@ -20,7 +20,7 @@ async function seed() {
   await env.DB.exec("DELETE FROM feeds");
   await env.DB.exec("DELETE FROM folders");
   const { platform } = createTestPlatform({ now: () => NOW });
-  const folder = await createFolder(platform.db, {
+  const { folder } = await createFolder(platform.db, {
     userId: TEST_USER.id,
     id: "tech",
     name: "Tech",
