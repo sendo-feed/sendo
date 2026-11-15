@@ -50,7 +50,7 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
       throw new Error("network access is not allowed in tests; pass a fake fetch");
     },
     now: () => new Date(),
-    auth: { allowedEmails: new Set(), google: undefined },
+    auth: { allowedEmails: new Set(), google: undefined, oauth: undefined },
     ...overrides,
   };
   return {
@@ -166,4 +166,43 @@ export async function createSessionHeaders(userId: string) {
   const { platform } = createTestPlatform();
   const { token } = await createSession(platform.db, { userId, now: new Date() });
   return { cookie: `__Host-sendo_session=${token}`, "sec-fetch-site": "same-origin" };
+}
+
+/**
+ * 正規表現に合う文を実行する直前に、一度だけ before を実行する D1。ほかのリクエストが間に入る場合や、
+ * 途中で落ちる場合（before で投げる）をまねる
+ */
+export function d1BeforeStatement(pattern: RegExp, before: () => Promise<void>) {
+  let armed = true;
+  const intercept = <T extends object>(target: T): T =>
+    new Proxy(target, {
+      get(t, key) {
+        const value = Reflect.get(t, key, t);
+        if (typeof value !== "function") return value;
+        if (key === "bind") return (...args: unknown[]) => intercept(value.apply(t, args));
+        if (key === "all" || key === "first" || key === "run" || key === "raw") {
+          return async (...args: unknown[]) => {
+            if (armed) {
+              armed = false;
+              await before();
+            }
+            return value.apply(t, args);
+          };
+        }
+        return value.bind(t);
+      },
+    });
+  const db = new Proxy(env.DB, {
+    get(target, prop) {
+      if (prop === "prepare") {
+        return (query: string) => {
+          const statement = target.prepare(query);
+          return pattern.test(query) ? intercept(statement) : statement;
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { db, fired: () => !armed };
 }

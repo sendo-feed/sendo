@@ -13,3 +13,8 @@ ALLOWED_EMAILS=you@example.com
 # （手元の sendo-reader なら http://localhost:5173/api/v1/auth/google/callback）
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+
+# OAuth（Claude.ai などから MCP につなぐ）を手元で試すときだけ書く。本番は wrangler.jsonc の vars に書く。
+# Sendo のオリジン（pnpm dev なら http://localhost:8787）と、sendo-reader のオリジン（http://localhost:5173）
+# PUBLIC_URL=http://localhost:8787
+# READER_URL=http://localhost:5173

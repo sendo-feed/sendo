@@ -1,7 +1,14 @@
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../../db/schema";
 import { type Job, jobSchema } from "../../jobs/job";
-import { type AuthConfig, type JobQueue, type Platform, parseEmailList } from "..";
+import {
+  type AuthConfig,
+  type JobQueue,
+  type OAuthServerConfig,
+  type Platform,
+  parseEmailList,
+  parseOrigin,
+} from "..";
 
 /** Cloudflare の env から、アプリが使う Platform を組み立てる */
 export function createCloudflarePlatform(env: Env): Platform {
@@ -14,19 +21,43 @@ export function createCloudflarePlatform(env: Env): Platform {
   };
 }
 
+/** 認証の設定に使う env の名前 */
+type AuthEnvName =
+  | "ALLOWED_EMAILS"
+  | "GOOGLE_CLIENT_ID"
+  | "GOOGLE_CLIENT_SECRET"
+  | "PUBLIC_URL"
+  | "READER_URL";
+
 /**
- * ログインの設定を env（手元では .dev.vars、本番は wrangler secret put）から読む。
- * 設定していなければ、ブラウザのログインは使えない（アクセストークンだけで使う）。
+ * ログインの設定を env から読む。秘密（メール、Google のクライアント）は、手元では .dev.vars、
+ * 本番は wrangler secret put で入れる。設定していなければ、ブラウザのログインは使えない
+ * （アクセストークンだけで使う）。
+ *
+ * OAuth（PUBLIC_URL と READER_URL）は秘密ではないので、wrangler.jsonc の vars に書く。
+ * 2 つともあるときだけ使う。形が正しくなければ、エラーをログに出して OAuth を使わない
  */
-export function readAuthConfig(
-  env: Partial<Pick<Env, "ALLOWED_EMAILS" | "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET">>,
-): AuthConfig {
+export function readAuthConfig(env: Partial<Record<AuthEnvName, string>>): AuthConfig {
   const clientId = env.GOOGLE_CLIENT_ID?.trim();
   const clientSecret = env.GOOGLE_CLIENT_SECRET?.trim();
   return {
     allowedEmails: parseEmailList(env.ALLOWED_EMAILS),
     google: clientId && clientSecret ? { clientId, clientSecret } : undefined,
+    oauth: readOAuthServerConfig(env),
   };
+}
+
+function readOAuthServerConfig(
+  env: Partial<Record<AuthEnvName, string>>,
+): OAuthServerConfig | undefined {
+  try {
+    const issuer = parseOrigin(env.PUBLIC_URL);
+    const readerOrigin = parseOrigin(env.READER_URL);
+    return issuer && readerOrigin ? { issuer, readerOrigin } : undefined;
+  } catch (error) {
+    console.error("OAuth is disabled: PUBLIC_URL and READER_URL must be https origins", error);
+    return undefined;
+  }
 }
 
 /**

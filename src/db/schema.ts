@@ -96,6 +96,90 @@ export const sessions = sqliteTable(
   (t) => [index("sessions_user_id_idx").on(t.userId)],
 );
 
+/**
+ * 動的登録（RFC 7591）で登録した OAuth のクライアント（docs/decisions/mcp.md の 5）。
+ * 公開クライアント（秘密なし）だけ。Client ID Metadata Document のクライアント（ID が https の URL）は、
+ * 情報をその URL から取るので、ここには置かない
+ */
+export const oauthClients = sqliteTable("oauth_clients", {
+  /** client_id。Sendo が乱数で振る */
+  id: text("id").primaryKey(),
+  /** client_name。クライアントが名乗ったもので、確かめてはいない */
+  name: text("name"),
+  /** リダイレクト先。認可のリクエストでは、このどれかと完全に一致するものだけを受ける */
+  redirectUris: text("redirect_uris", { mode: "json" }).$type<string[]>().notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+/**
+ * 利用者が OAuth のクライアントに出した許可（docs/decisions/mcp.md の 7）。許可の画面で「許可」を
+ * 選ぶたびに 1 つ作る。認可コードとトークンはこれに付き、消すとまとめて使えなくなる。
+ *
+ * 使えなくなった許可（期限の切れていないリフレッシュトークンも、使っていない認可コードもない）は、
+ * 一覧に出さず、同じ人が次に許可するときに消す（db/oauth.ts）
+ */
+export const oauthGrants = sqliteTable(
+  "oauth_grants",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** 動的登録で振った ID か、Client ID Metadata Document の URL */
+    clientId: text("client_id").notNull(),
+    /** 許可したときのクライアントの名前（一覧に出す） */
+    clientName: text("client_name"),
+    /** 範囲（"read" か "read write"） */
+    scopes: text("scopes").notNull(),
+    /** トークンの宛先（RFC 8707）。https://<sendo>/mcp */
+    resource: text("resource").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [index("oauth_grants_user_id_idx").on(t.userId)],
+);
+
+/** 認可コード。1 回だけ使える。使ったコードがもう一度来たら、許可ごと取り消す（OAuth 2.1 の 4.1.3） */
+export const oauthCodes = sqliteTable(
+  "oauth_codes",
+  {
+    /** コードのハッシュ（SHA-256 の 16 進）。中身は DB に置かない */
+    codeHash: text("code_hash").primaryKey(),
+    grantId: text("grant_id")
+      .notNull()
+      .references(() => oauthGrants.id, { onDelete: "cascade" }),
+    /** 認可のリクエストの redirect_uri。トークンのリクエストでも同じものを求める */
+    redirectUri: text("redirect_uri").notNull(),
+    /** PKCE の code_challenge（S256） */
+    codeChallenge: text("code_challenge").notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    usedAt: integer("used_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [index("oauth_codes_grant_id_idx").on(t.grantId)],
+);
+
+/**
+ * OAuth で出したアクセストークン（1 時間）とリフレッシュトークン（30 日）。DB にはハッシュだけを置く。
+ * リフレッシュトークンは使うたびに作り直し、作り直したものがもう一度来たら、許可ごと取り消す
+ */
+export const oauthTokens = sqliteTable(
+  "oauth_tokens",
+  {
+    id: text("id").primaryKey(),
+    grantId: text("grant_id")
+      .notNull()
+      .references(() => oauthGrants.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ["access", "refresh"] }).notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    /** 範囲（"read" か "read write"） */
+    scopes: text("scopes").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    /** リフレッシュトークンを使って、新しいものに作り直した時刻 */
+    rotatedAt: integer("rotated_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [index("oauth_tokens_grant_id_idx").on(t.grantId)],
+);
+
 /*
  * ここから下は、共有のデータ（feeds、articles）と、人ごとのデータ（folders、subscriptions、
  * user_articles）に分かれる（docs/decisions/accounts.md）。
@@ -316,6 +400,10 @@ export type User = typeof users.$inferSelect;
 export type Identity = typeof identities.$inferSelect;
 export type AccessToken = typeof accessTokens.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
+export type OAuthRegisteredClient = typeof oauthClients.$inferSelect;
+export type OAuthGrant = typeof oauthGrants.$inferSelect;
+export type OAuthCode = typeof oauthCodes.$inferSelect;
+export type OAuthToken = typeof oauthTokens.$inferSelect;
 export type Folder = typeof folders.$inferSelect;
 export type Feed = typeof feeds.$inferSelect;
 export type NewFeed = typeof feeds.$inferInsert;

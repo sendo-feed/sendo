@@ -19,12 +19,29 @@ export interface OAuthClient {
   clientSecret: string;
 }
 
+/**
+ * Sendo が OAuth の認可サーバーになるための設定（docs/decisions/mcp.md の 3、4）。
+ * Claude.ai や ChatGPT などが、OAuth で /mcp につなぐのに使う
+ */
+export interface OAuthServerConfig {
+  /**
+   * 発行者（issuer）。Sendo を外から呼ぶときのオリジン（https://sendo.example.com）。
+   * 許可の画面の API は sendo-reader から中継されて届き、リクエストの URL からは Sendo の
+   * オリジンが分からないので、設定で受け取る
+   */
+  issuer: string;
+  /** 許可の画面（/oauth/authorize）を置く sendo-reader のオリジン */
+  readerOrigin: string;
+}
+
 /** ブラウザのログインの設定（docs/decisions/accounts.md） */
 export interface AuthConfig {
   /** ユーザーになれるメールアドレス（小文字） */
   allowedEmails: ReadonlySet<string>;
   /** Google のクライアント。なければ Google ではログインできない */
   google: OAuthClient | undefined;
+  /** OAuth の認可サーバー。なければ OAuth は使えない（/mcp は MCP 用のトークンだけで使う） */
+  oauth: OAuthServerConfig | undefined;
 }
 
 /** アプリが実行環境から受け取るもの */
@@ -48,4 +65,33 @@ export function parseEmailList(value: string | undefined): ReadonlySet<string> {
       .map((email) => email.trim().toLowerCase())
       .filter((email) => email !== ""),
   );
+}
+
+/** 手元で動かすときに、http でもよいホスト */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * 設定に書いたオリジン（https://sendo.example.com）を読む。末尾の / は除く。
+ * https（手元で動かすなら http://localhost なども）で、パス・クエリ・フラグメント・
+ * ユーザー名のないものだけを受ける。空なら undefined、形が正しくなければ例外
+ */
+export function parseOrigin(value: string | undefined): string | undefined {
+  const text = value?.trim() ?? "";
+  if (text === "") return undefined;
+  const url = new URL(text);
+  const secure =
+    url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname));
+  if (
+    !secure ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    text.endsWith("?") ||
+    text.endsWith("#")
+  ) {
+    throw new Error(`not an https origin: ${text}`);
+  }
+  return url.origin;
 }

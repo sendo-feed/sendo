@@ -105,7 +105,12 @@ Reeder、NetNewsWire など、Google Reader API（FreshRSS 互換）に対応し
 
 `/mcp` にリモート MCP サーバーがあります（[決定](docs/decisions/mcp.md)）。ツールは `list_feeds`、`get_unread`、`get_article`（読む）と、`subscribe`、`unsubscribe`、`mark_read`、`star`（変える）です。
 
-いまは MCP 用のアクセストークンでつなぎます（OAuth でつなぐ Claude.ai や ChatGPT には、まだ対応していません）。MCP 用のトークンは `/mcp` でしか使えず、リーダーアプリ用のトークンは `/mcp` では使えません。
+つなぎ方は 2 通りです。どちらのトークンも `/mcp` でしか使えず、リーダーアプリ用のトークンは `/mcp` では使えません。
+
+- **MCP 用のアクセストークン**（Claude Code など、ヘッダーにトークンを書けるクライアント）
+- **OAuth**（Claude.ai や ChatGPT のコネクタ）：つなぐときに、sendo-reader の画面で許可します
+
+#### MCP 用のアクセストークンでつなぐ
 
 ```sh
 # MCP 用のトークンを発行する。--write を付けると、状態を変えるツールも使える（付けなければ読むだけ）
@@ -115,6 +120,21 @@ pnpm token:create --email you@example.com --name "Claude Code" --mcp --write
 # Claude Code に足す
 claude mcp add --transport http sendo http://localhost:8787/mcp --header "Authorization: Bearer <トークン>"
 ```
+
+#### OAuth でつなぐ
+
+Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader に置きます（[決定](docs/decisions/mcp.md)の 3〜7）。使うには、`wrangler.jsonc` の `vars` に 2 つのオリジンを書いてデプロイします（2 つとも空なら OAuth は使えません）。手元では `.dev.vars` で上書きできます。
+
+| 名前 | 書くもの |
+|---|---|
+| `PUBLIC_URL` | Sendo を外から呼ぶときのオリジン（例：`https://sendo.example.workers.dev`）。OAuth の発行者になり、クライアントはこのオリジンの `/mcp` につなぐ |
+| `READER_URL` | sendo-reader のオリジン。許可の画面（`/oauth/authorize`）がここにある |
+
+クライアントには `<PUBLIC_URL>/mcp` を渡します。クライアントは、`/mcp` の 401 からメタデータ（`/.well-known/oauth-protected-resource/mcp`、`/.well-known/oauth-authorization-server`）をたどり、Client ID Metadata Document か動的登録（`/oauth/register`）でクライアントを示して、許可の画面へ移ります。許可するとトークン（アクセストークンは 1 時間、リフレッシュトークンは 30 日。使うたびに作り直す）を受け取ります。最初は読むだけ（`read`）で、状態を変えるツールを呼ぶと、`write` を足す許可を求め直します。
+
+出した許可は `GET /api/v1/oauth/grants` で一覧にし、`DELETE /api/v1/oauth/grants/{id}` で取り消せます（ブラウザのセッションでだけ）。
+
+動的登録は誰でも呼べます。登録したまま 1 日たっても許可のないクライアントは消しますが、呼ぶ数そのものは絞っていないので、公開する Sendo では、Cloudflare のレート制限のルールなどで `/oauth/register` を絞ってください。
 
 ## コマンド
 
@@ -148,6 +168,7 @@ sendo/
 │   ├── fetcher/        # フィードの取得と解析、SSRF 対策
 │   ├── greader/        # Google Reader API 互換（/accounts/ClientLogin、/reader/api/0）
 │   ├── mcp/            # リモート MCP サーバー（/mcp）
+│   ├── oauth/          # OAuth の認可サーバー（MCP 用。メタデータ、トークン、クライアントの登録）
 │   ├── jobs/           # キューと定期実行で動く処理
 │   ├── opml/           # OPML の読み書き
 │   └── platform/       # 実行環境の緩衝層

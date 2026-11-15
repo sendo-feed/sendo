@@ -7,6 +7,7 @@ import { foldersApi } from "./folders";
 import { defaultHook } from "./hook";
 import { loginApi } from "./login";
 import { meApi } from "./me";
+import { oauthApi } from "./oauth";
 import { opmlApi } from "./opml";
 import { syncApi } from "./sync";
 import { tokensApi } from "./tokens";
@@ -57,6 +58,7 @@ export function createApi(platform: Platform) {
   protectedApi.route("/", opmlApi(platform));
   protectedApi.route("/", syncApi(platform));
   protectedApi.route("/", tokensApi(platform));
+  protectedApi.route("/", oauthApi(platform));
 
   api.route("/", protectedApi);
   return api;

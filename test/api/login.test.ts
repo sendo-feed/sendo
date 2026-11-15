@@ -128,7 +128,7 @@ function setup(options: { allowed?: string[]; clock?: { now: number } } = {}) {
     const { platform } = createTestPlatform({
       fetch: google.fetch,
       now: () => new Date(clock.now),
-      auth: { allowedEmails: new Set(options.allowed ?? []), google: CLIENT },
+      auth: { allowedEmails: new Set(options.allowed ?? []), google: CLIENT, oauth: undefined },
     });
     return { platform, google, clock };
   });

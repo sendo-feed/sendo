@@ -72,7 +72,7 @@ flowchart LR
 | 検索 | FTS5（D1）／ Vectorize | 意味検索は Phase 3 |
 | エージェント連携 | リモート MCP ＋ CLI・Skill | MCP は仕様 2026-07-28 準拠で /mcp に直接載せる |
 | LLM | OpenAI 互換で差し替え | Claude・OpenAI・Workers AI・Ollama |
-| 認証 | 自前の OpenID Connect ／ アクセストークン | ブラウザはセッションのクッキー、それ以外は Bearer（[decisions/accounts.md](decisions/accounts.md)） |
+| 認証 | 自前の OpenID Connect ／ アクセストークン ／ OAuth 2.1（MCP） | ブラウザはセッションのクッキー、それ以外は Bearer（[decisions/accounts.md](decisions/accounts.md)）。Claude.ai などは Sendo が出す OAuth のトークンで /mcp につなぐ（[decisions/mcp.md](decisions/mcp.md)） |
 
 > テストは Vitest と Workers 用のテストプール。Rust は本体には使わず、ボトルネックが見えたら解析や抽出だけ Wasm にする選択肢を残す。
 
@@ -132,6 +132,7 @@ sendo/
 │   ├── greader/               # Google Reader API 互換
 │   ├── feeds/                 # 購読の手続き（REST API・Google Reader API・MCP で共通）
 │   ├── mcp/                   # ツール・リソース
+│   ├── oauth/                 # MCP 用の OAuth の認可サーバー
 │   ├── jobs/                  # Cron・Queues
 │   ├── fetcher/               # 取得・解析・全文抽出
 │   ├── search/                # FTS5・意味検索

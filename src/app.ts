@@ -3,6 +3,7 @@ import { createApi } from "./api";
 import { errorBody } from "./api/schemas";
 import { greaderApp } from "./greader";
 import { mcpApp } from "./mcp";
+import { oauthApp } from "./oauth";
 import type { Platform } from "./platform";
 
 /**
@@ -19,6 +20,8 @@ export function createApp(platform: Platform) {
   app.route("/", greaderApp(platform));
   // リモート MCP サーバー（/mcp。docs/decisions/mcp.md）
   app.route("/", mcpApp(platform));
+  // OAuth の認可サーバー（メタデータ、トークン、動的登録。docs/decisions/mcp.md の 3、5）
+  app.route("/", oauthApp(platform));
 
   app.notFound((c) => c.json(errorBody("not_found", "Not Found"), 404));
 

@@ -12,6 +12,7 @@ import {
   addToInbox,
   createTestPlatform,
   createUser,
+  d1BeforeStatement,
   fakeFetch,
   requestApp,
   subscribeFeed,
@@ -127,45 +128,6 @@ async function setup() {
   });
   const feed = await subscribeFeed(platform, { userId: user.id, folderId: folder.id });
   return { user, platform, feed, folder, send: reader(platform, user.token) };
-}
-
-/**
- * 正規表現に合う文を実行する直前に、一度だけ before を実行する D1。ほかのリクエストが間に入る場合や、
- * 途中で落ちる場合（before で投げる）をまねる
- */
-function d1BeforeStatement(pattern: RegExp, before: () => Promise<void>) {
-  let armed = true;
-  const intercept = <T extends object>(target: T): T =>
-    new Proxy(target, {
-      get(t, key) {
-        const value = Reflect.get(t, key, t);
-        if (typeof value !== "function") return value;
-        if (key === "bind") return (...args: unknown[]) => intercept(value.apply(t, args));
-        if (key === "all" || key === "first" || key === "run" || key === "raw") {
-          return async (...args: unknown[]) => {
-            if (armed) {
-              armed = false;
-              await before();
-            }
-            return value.apply(t, args);
-          };
-        }
-        return value.bind(t);
-      },
-    });
-  const db = new Proxy(env.DB, {
-    get(target, prop) {
-      if (prop === "prepare") {
-        return (query: string) => {
-          const statement = target.prepare(query);
-          return pattern.test(query) ? intercept(statement) : statement;
-        };
-      }
-      const value = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-  return { db, fired: () => !armed };
 }
 
 beforeEach(async () => {
