@@ -115,6 +115,17 @@ describe("runFetchFeed", () => {
     expect(twice?.nextFetchAt).toEqual(new Date(NOW.getTime() + INTERVAL_MS * 4));
   });
 
+  it("失敗したときに延ばす間隔は、1 日より長い設定の間隔より短くしない", async () => {
+    const twoDays = 2 * 24 * 60 * 60 * 1000;
+    const { platform, feed } = await setup(() => new Response("oops", { status: 500 }));
+
+    await runFetchFeed({ ...platform, fetchConfig: { intervalMs: twoDays } }, feed.id);
+
+    expect((await getFeed(platform.db, feed.id))?.nextFetchAt).toEqual(
+      new Date(NOW.getTime() + twoDays),
+    );
+  });
+
   it("フィードとして読めなければ、失敗として記録する", async () => {
     const { platform, feed } = await setup(() => new Response("<html>not a feed</html>"));
 

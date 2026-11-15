@@ -10,7 +10,7 @@ import type { Platform } from "../platform";
  * フィードごとの調整は後で足す（docs/decisions/jobs.md の「見直す条件」）。
  */
 
-/** 失敗が続いたときに延ばす間隔の上限 */
+/** 失敗が続いたときに延ばす間隔の上限。設定の間隔がこれより長ければ、設定の間隔 */
 const MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
 
 export type FetchFeedOutcome =
@@ -77,7 +77,9 @@ export async function runFetchFeed(
     if (!(error instanceof FetchFeedError || error instanceof ParseFeedError)) throw error;
 
     const errorCount = feed.errorCount + 1;
-    const backoff = Math.min(intervalMs * 2 ** errorCount, MAX_BACKOFF_MS);
+    // 上限は、設定の間隔より短くしない（1 日より長い間隔にしたとき、失敗中のフィードのほうが
+    // 頻繁に取得されないように）
+    const backoff = Math.min(intervalMs * 2 ** errorCount, Math.max(MAX_BACKOFF_MS, intervalMs));
     const message = `${error.name}: ${error.message}`;
     await recordFetchFailure(db, feed.id, {
       now: startedAt,
