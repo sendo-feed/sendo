@@ -10,6 +10,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `docs/inception-deck.md`：プロダクトの目的と進め方
 - `docs/tech-deck.md`：技術構成の全体像
 - `docs/features.md`：作る機能の一覧（Phase 1〜3、MCP のツール）
+- `docs/cost.md`：Cloudflare の無料枠と費用の見積もり。D1 の書き込みの行数、Queues の使い方、取得の流れを変えたら、ここの数字も見直す
 
 ## 開発コマンド
 
