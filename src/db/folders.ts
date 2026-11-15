@@ -73,13 +73,24 @@ export async function createFolder(
     .returning()
     .get();
   if (created) return { folder: created, created: true };
-  // どの一意制約にぶつかったかを、ID から確かめる
-  const existing = await db.select().from(folders).where(eq(folders.id, input.id)).get();
-  if (!existing) throw new FolderNameTakenError(input.name);
-  if (existing.userId !== input.userId || existing.deletedAt !== null) {
-    throw new FolderIdTakenError(input.id);
+  // どの一意制約にぶつかったかを確かめる。まず、そのユーザーのフォルダだけを引く
+  const mine = await db
+    .select()
+    .from(folders)
+    .where(and(eq(folders.userId, input.userId), eq(folders.id, input.id)))
+    .get();
+  if (mine) {
+    if (mine.deletedAt !== null) throw new FolderIdTakenError(input.id);
+    return { folder: mine, created: false };
   }
-  return { folder: existing, created: false };
+  // ほかの人のフォルダは、中身を読まず、その ID が使われているかだけを見る
+  const taken = await db
+    .select({ id: folders.id })
+    .from(folders)
+    .where(eq(folders.id, input.id))
+    .get();
+  if (taken) throw new FolderIdTakenError(input.id);
+  throw new FolderNameTakenError(input.name);
 }
 
 /** フォルダの名前を変える。なければ undefined、同じ名前が別にあれば FolderNameTakenError */
