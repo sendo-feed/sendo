@@ -85,7 +85,9 @@ async function fetchProviderJson(
     res = await fetcher(url, {
       ...init,
       headers: { accept: "application/json", ...init.headers },
-      redirect: "error",
+      // リダイレクトはたどらない。Workers は redirect: "error" を受け付けない（Request を作るときに
+      // TypeError になる）ので "manual" にする。3xx は res.ok でないので、下で失敗になる
+      redirect: "manual",
       signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
     });
   } catch (error) {

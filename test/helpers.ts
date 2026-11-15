@@ -93,6 +93,9 @@ export function fakeFetch(
 ) {
   const calls: { url: string; headers: Headers }[] = [];
   const fn: typeof fetch = async (input, init) => {
+    // 本物の fetch と同じように Request を組み立てる。Workers が受け付けない指定
+    // （redirect: "error" など）は、ここで本番と同じ TypeError になる
+    new Request(input, init);
     const url = new URL(input instanceof Request ? input.url : String(input));
     calls.push({ url: url.href, headers: new Headers(init?.headers) });
     return respond(url, init);
