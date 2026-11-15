@@ -201,7 +201,7 @@ Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader
 
 ### 設定を変える
 
-秘密ではない設定は、Worker の「設定」→「変数とシークレット」に、型を「変数」にして入れます。デプロイしても消えません（`wrangler.jsonc` の `keep_vars`）。入れなければ、既定で動きます。
+秘密ではない設定は、Worker の「設定」→「変数とシークレット」に、型を「変数」にして入れます。保存すると、その場で新しい版がデプロイされて効きます。そのあとのデプロイでも消えません（`wrangler.jsonc` の `keep_vars`）。入れなければ、既定で動きます。
 
 | 名前 | 既定 | 中身 |
 |---|---|---|
@@ -209,7 +209,7 @@ Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader
 | `ARTICLE_RETENTION_DAYS` | 90 | スターのない記事を消すまでの日数。[古い記事の片付け](#古い記事の片付け) |
 | `PUBLIC_URL`、`READER_URL` | なし | OAuth で MCP につなぐときのオリジン。[OAuth でつなぐ](#oauth-でつなぐ) |
 
-fork の `wrangler.jsonc` には書かないでください。fork は公開されるので、自分の Sendo の URL が誰にでも見えてしまいます。
+fork の `wrangler.jsonc` には書かないでください。fork は公開されるので、自分の Sendo の URL が誰にでも見えてしまいます。画面に「これらの変更で Wrangler 設定を更新し、デプロイを同期させてください」と出ますが、写さなくてかまいません。
 
 手元では、`pnpm dev --var FETCH_INTERVAL_MINUTES:60` のように入れます（`.dev.vars` からは、秘密の 3 つしか読まれません）。
 
