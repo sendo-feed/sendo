@@ -82,14 +82,14 @@ flowchart LR
 
 | 領域 | 選定（案） | メモ |
 |---|---|---|
-| UI | Svelte 5 | ネイティブとの共有や Void（React ／ Vue のアダプタ）を優先するなら React を再検討 |
+| UI | Svelte 5 ＋ Vite（SPA） | SvelteKit と Void は使わない（sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md)） |
 | ビルド・配信 | Vite ＋ Workers Static Assets | Pages は使わない |
 | サーバー接続 | reader Worker → Service binding | 同一オリジンで CORS 不要。外部の sendo にも直結可 |
 | PWA | vite-plugin-pwa（Workbox） | アプリの外枠をキャッシュして即起動 |
 | ローカル DB | SQLite（Web は Wasm ＋ OPFS） | 全プラットフォームで同じスキーマ |
 | 同期 | packages/core | 起動時に差分を1リクエストで取得、楽観的更新 |
 | API クライアント | openapi-typescript ＋ openapi-fetch | sendo の OpenAPI から型を生成 |
-| ネイティブ | Capacitor（後から） | バックグラウンド更新・共有拡張・APNs |
+| ネイティブ | Capacitor（後から） | バックグラウンド更新・共有拡張・APNs（[decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md)） |
 | 通知 | Web Push（VAPID） | 送信は sendo 側。APNs ／ FCM に差し替え可 |
 | 品質の関所 | Playwright ＋ Lighthouse CI | JS は gzip 後 100KB 以下、操作の反応 100ms 以内 |
 
@@ -189,12 +189,12 @@ sendo-reader/
 
 ## 8. 未決事項
 
-1. UI：Svelte 5 か React か（ネイティブの方針しだい）
-2. ネイティブ：Capacitor か Expo か
+1. ~~UI：Svelte 5 か React か（ネイティブの方針しだい）~~ → sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md) で決めた（Svelte 5 ＋ Vite の SPA。SvelteKit は使わない）
+2. ~~ネイティブ：Capacitor か Expo か~~ → sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md) で決めた（Web のビルドを、あとで Capacitor で包む）
 3. Cloudflare 以外（Docker・Postgres）をどこまで支えるか
 4. ~~MCP の書き込み権限（OAuth スコープ）と、記事本文のインジェクション対策~~ → [decisions/mcp.md](decisions/mcp.md) で決めた（範囲は read と write、記事は構造化した JSON で信頼できないデータとして返す）
 5. ライセンス：[ MIT ／ Apache-2.0 ／ AGPL-3.0 ]
-6. sendo-reader のツール：Void（Cloudflare）と Vite+ を使うか。Void の UI のアダプタは React と Vue なので、1 と一緒に決める
-7. 差分同期の目印：記事の公開日時（publishedAt）や作成時刻ではなく、サーバーが書き込み順に振る番号（D1 は書き込みを1つずつ順に処理するので、自動で増える番号が書き込み順になる）を目印にする案。公開日時が古い記事が後から入っても取りこぼさない。reader の同期を作るときに決める
+6. ~~sendo-reader のツール：Void（Cloudflare）と Vite+ を使うか。Void の UI のアダプタは React と Vue なので、1 と一緒に決める~~ → sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md) で決めた（どちらも使わない。pnpm・Biome・Vitest で sendo と揃え、TypeScript だけは svelte-check に合わせて 6 系）
+7. ~~差分同期の目印：記事の公開日時（publishedAt）や作成時刻ではなく、サーバーが書き込み順に振る番号（D1 は書き込みを1つずつ順に処理するので、自動で増える番号が書き込み順になる）を目印にする案。公開日時が古い記事が後から入っても取りこぼさない。reader の同期を作るときに決める~~ → [decisions/sync.md](decisions/sync.md) で決めた（人ごとの行に変更番号 `seq` を振り、カーソルより後に変わった行を返す）
 
 > 決まったものから docs/decisions/ に書く。テックスタックは sendo の tech-stack.md、リーダーのローカルファースト方針は sendo-reader の local-first.md。
