@@ -70,6 +70,29 @@ export function isAllowedRedirectUri(value: string): boolean {
   );
 }
 
+/** ループバックの http の戻る先の、ポートの部分（http://<ホスト> のすぐあと） */
+const LOOPBACK_AUTHORITY = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?(?=[/?]|$)/;
+
+/** ループバックの http の戻る先なら、ポートを外した文字列。それ以外は undefined */
+function withoutLoopbackPort(uri: string): string | undefined {
+  const match = LOOPBACK_AUTHORITY.exec(uri);
+  return match ? `http://${match[1]}${uri.slice(match[0].length)}` : undefined;
+}
+
+/**
+ * 認可のリクエストの戻る先が、登録された戻る先のどれかと一致するか（docs/decisions/mcp.md の 5）。
+ * 文字列として完全に一致させる。ただし、ループバックの http は、ポートを問わずに比べる（RFC 8252 の
+ * 7.3。手元のクライアントは、空いているポートをその場で選ぶ）。https は、ポートも含めて一致させる
+ */
+export function matchesRegisteredRedirectUri(
+  registered: readonly string[],
+  requested: string,
+): boolean {
+  if (registered.includes(requested)) return true;
+  const loopback = withoutLoopbackPort(requested);
+  return loopback !== undefined && registered.some((uri) => withoutLoopbackPort(uri) === loopback);
+}
+
 /** ループバックのホストへのリダイレクトか。ほかのアプリでも受けられるので、許可の画面で注意を出す */
 export function isLoopbackRedirectUri(value: string): boolean {
   try {

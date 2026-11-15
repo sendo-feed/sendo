@@ -460,6 +460,68 @@ describe("許可の画面の API（/api/v1/oauth/authorize）", () => {
     expect(await res.json()).toMatchObject({ loopbackRedirect: true, scopes: ["read"] });
   });
 
+  it("ループバックの戻る先は、ポートを問わずに受ける。パス・クエリ・ホストや、https のポートが違えば断る", async () => {
+    const { headers } = await session();
+    // Claude Code の文書と同じく、ループバックはポートなしで示す
+    const fetch = documentFetch(() =>
+      Response.json(
+        clientDocument({
+          redirect_uris: [REDIRECT_URI, "http://localhost/callback", "http://127.0.0.1:33418/cb"],
+        }),
+      ),
+    ).fetch;
+    const { platform } = setup({ fetch });
+    const check = (redirectUri: string) =>
+      readerApi(platform, headers, "/oauth/authorize/check", {
+        query: authorizeQuery({ redirect_uri: redirectUri }),
+      });
+
+    for (const uri of [
+      "http://localhost:3118/callback",
+      "http://localhost/callback",
+      "http://127.0.0.1:50000/cb",
+      "http://127.0.0.1/cb",
+    ]) {
+      const res = await check(uri);
+      expect(res.status, uri).toBe(200);
+      expect(((await res.json()) as Json).redirectUri, uri).toBe(uri);
+    }
+    for (const uri of [
+      "http://localhost:3118/other",
+      "http://localhost:3118/callback?x=1",
+      "http://localhost:3118/callback/",
+      "http://127.0.0.1:3118/callback",
+      "http://[::1]:3118/callback",
+      "http://localhost:3118@evil.example.com/callback",
+      "https://agent.example.com:8443/callback",
+      "https://localhost:3118/callback",
+    ]) {
+      const res = await check(uri);
+      expect(res.status, uri).toBe(400);
+      expect(await res.json(), uri).toMatchObject({ error: { code: "invalid_redirect_uri" } });
+    }
+  });
+
+  it("ポートを選んだループバックの戻る先でも、コードをトークンに換えられる。換えるときは同じポートでなければならない", async () => {
+    const { headers } = await session();
+    const fetch = documentFetch(() =>
+      Response.json(clientDocument({ redirect_uris: ["http://localhost/callback"] })),
+    ).fetch;
+    const { platform } = setup({ fetch });
+    const redirectUri = "http://localhost:3118/callback";
+
+    const other = await approve(platform, headers, { redirect_uri: redirectUri });
+    const wrongPort = await exchange(platform, other, {
+      redirect_uri: "http://localhost:4000/callback",
+    });
+    expect(wrongPort.status).toBe(400);
+
+    const approved = await approve(platform, headers, { redirect_uri: redirectUri });
+    expect(approved.url.origin).toBe("http://localhost:3118");
+    const res = await exchange(platform, approved, { redirect_uri: redirectUri });
+    expect(res.status).toBe(200);
+  });
+
   it("クライアントか戻る先が確かめられなければ、クライアントに返さず、画面に誤りを出させる", async () => {
     const { headers } = await session();
     const cases: [string, typeof fetch | undefined, Record<string, string | undefined>, string][] =

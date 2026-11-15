@@ -1,6 +1,12 @@
 import { formatScopes, type McpScope, parseScopes } from "../db/tokens";
 import type { OAuthServerConfig, Platform } from "../platform";
-import { ClientError, isAllowedRedirectUri, type ResolvedClient, resolveClient } from "./clients";
+import {
+  ClientError,
+  isAllowedRedirectUri,
+  matchesRegisteredRedirectUri,
+  type ResolvedClient,
+  resolveClient,
+} from "./clients";
 
 /*
  * 認可のリクエスト（OAuth 2.1 の 4.1.1）を確かめる（docs/decisions/mcp.md の 3〜6）。
@@ -121,13 +127,16 @@ export async function parseAuthorizationRequest(
     throw error;
   }
 
-  // リダイレクト先は、登録されたものと完全に一致するものだけ（決定の 5）
+  // リダイレクト先は、登録されたものと完全に一致するものだけ。ループバックはポートを問わない（決定の 5）
   const redirectUris = params.getAll("redirect_uri");
   const redirectUri = redirectUris[0];
   if (redirectUris.length !== 1 || redirectUri === undefined) {
     return reject("invalid_request", "redirect_uri is required exactly once");
   }
-  if (!client.redirectUris.includes(redirectUri) || !isAllowedRedirectUri(redirectUri)) {
+  if (
+    !matchesRegisteredRedirectUri(client.redirectUris, redirectUri) ||
+    !isAllowedRedirectUri(redirectUri)
+  ) {
     return reject("invalid_redirect_uri", "redirect_uri is not registered for this client");
   }
 
