@@ -106,6 +106,20 @@
       "when": 1794738956651,
       "tag": "0014_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1794768401970,
+      "tag": "0015_images",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1794768403713,
+      "tag": "0016_feed_icon_trigger",
+      "breakpoints": true
     }
   ]
 }

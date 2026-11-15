@@ -1,5 +1,5 @@
 import { type ArticleInput, insertArticles } from "../db/articles";
-import { getFeed, recordFetchFailure, recordFetchSuccess } from "../db/feeds";
+import { getFeed, recordFeedIcon, recordFetchFailure, recordFetchSuccess } from "../db/feeds";
 import { deliverNewArticles } from "../db/inbox";
 import {
   CLEAN_UP_CATCH_UP,
@@ -7,7 +7,9 @@ import {
   planFeedCleanUp,
   removeExpiredFromInbox,
 } from "../db/retention";
+import type { Feed } from "../db/schema";
 import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
+import { findFeedIcon } from "../fetcher/find-icon";
 import { MAX_ITEMS, type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import type { Platform } from "../platform";
 
@@ -15,6 +17,9 @@ import type { Platform } from "../platform";
  * 取得の間隔は設定（platform.fetchConfig）から受け取る。いまはすべてのフィードで同じ。
  * フィードごとの調整は後で足す（docs/decisions/jobs.md の「見直す条件」）。
  */
+
+/** フィードのアイコンを探し直す間隔（docs/decisions/images.md の 8） */
+export const ICON_CHECK_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** 失敗が続いたときに延ばす間隔の上限。設定の間隔がこれより長ければ、設定の間隔 */
 const MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
@@ -71,6 +76,8 @@ export async function runFetchFeed(
         lastModified: feed.lastModified,
         cleanedUntil: cleanUp?.until,
       });
+      // フィードの中身は読んでいないので、フィード自身のアイコンは分からない。サイトから探す
+      await refreshIcon(platform, feed, { siteUrl: feed.siteUrl, feedIconUrl: null }, startedAt);
       return { status: "not-modified" };
     }
 
@@ -104,6 +111,12 @@ export async function runFetchFeed(
     });
     // フィードの名前やサイトの URL が変わると、購読の変更番号はトリガーが進める
     // （migrations/0003_received_seq_and_feed_trigger.sql。同期でクライアントに伝わる）
+    await refreshIcon(
+      platform,
+      feed,
+      { siteUrl: parsed.siteUrl, feedIconUrl: parsed.iconUrl },
+      startedAt,
+    );
     return { status: "fetched", inserted };
   } catch (error) {
     if (!(error instanceof FetchFeedError || error instanceof ParseFeedError)) throw error;
@@ -125,6 +138,37 @@ export async function runFetchFeed(
 }
 
 /**
+ * フィードのアイコンを、30 日に 1 回探して記録する（docs/decisions/images.md の 8）。
+ *
+ * 取得の結果を記録したあとに呼ぶ。探すのに失敗しても（取得できない、時間切れなど）、フィードの
+ * 取得は失敗にしない。記録の前に落ちたら、次の取得でもう一度探す
+ */
+async function refreshIcon(
+  platform: Pick<Platform, "db" | "fetch">,
+  feed: Feed,
+  found: { siteUrl: string | null; feedIconUrl: string | null },
+  now: Date,
+): Promise<void> {
+  const checkedAt = feed.iconCheckedAt?.getTime();
+  if (checkedAt !== undefined && now.getTime() - checkedAt < ICON_CHECK_INTERVAL_MS) return;
+
+  let iconUrl: string | null;
+  try {
+    iconUrl = await findFeedIcon({
+      fetch: platform.fetch,
+      feedIconUrl: found.feedIconUrl,
+      siteUrl: found.siteUrl,
+      currentIconUrl: feed.iconUrl,
+    });
+  } catch (error) {
+    // 外から来た中身の扱いで起きた例外。アイコンは今のままにして、次の時期にもう一度探す
+    console.warn("failed to look for the feed icon", { feedId: feed.id, error });
+    iconUrl = feed.iconUrl;
+  }
+  await recordFeedIcon(platform.db, feed.id, { iconUrl, now });
+}
+
+/**
  * 取り込む記事にする。createdAt は入れず、INSERT するときに DB の時計で決める
  * （取得を始めた時刻を入れると、取得中に開いた一覧の「まとめて既読」で、一覧に
  * 出ていなかった記事まで既読になる）。
@@ -138,6 +182,7 @@ async function toArticle(feedId: string, item: ParsedItem, fetchedAt: Date): Pro
     title: item.title,
     summary: item.summary,
     author: item.author,
+    thumbnailUrl: item.thumbnailUrl,
     publishedAt: item.publishedAt ?? fetchedAt,
   };
 }

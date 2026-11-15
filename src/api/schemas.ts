@@ -2,6 +2,7 @@ import { z } from "@hono/zod-openapi";
 import type { InboxArticle } from "../db/inbox";
 import type { Folder } from "../db/schema";
 import type { SubscriptionWithFeed } from "../db/subscriptions";
+import type { ImageSigner } from "../lib/image-url";
 
 export const ErrorSchema = z
   .object({
@@ -18,12 +19,25 @@ export function errorBody(code: string, message: string) {
 
 const dateTime = z.iso.datetime();
 
+/** 中継を通る画像の URL（docs/decisions/images.md の 9） */
+const relayImageUrl = (what: string) =>
+  z
+    .string()
+    .nullable()
+    .openapi({
+      description: `${what}。中継を通る画像の URL（/api/v1/images?url=…&sig=… の形のパス。オリジンは付かない）で、そのまま <img src> に入れる。クライアントは組み立てたり書き換えたりしない。なければ null`,
+      example: "/api/v1/images?url=https%3A%2F%2Fexample.com%2Fa.png&sig=0123456789abcdefghijkl",
+    });
+
+export const FeedIconUrlSchema = relayImageUrl("フィードのアイコン");
+
 export const FeedSchema = z
   .object({
     id: z.string(),
     url: z.string().openapi({ example: "https://example.com/feed.xml" }),
     title: z.string().nullable(),
     siteUrl: z.string().nullable(),
+    iconUrl: FeedIconUrlSchema,
     folderId: z.string().nullable(),
     lastFetchedAt: dateTime.nullable(),
     nextFetchAt: dateTime,
@@ -54,6 +68,7 @@ export const ArticleSchema = z
       description: "プレーンテキスト（最大 500 文字）。表示する側でエスケープすること",
     }),
     author: z.string().nullable(),
+    thumbnailUrl: relayImageUrl("記事のサムネイル"),
     publishedAt: dateTime,
     receivedAt: dateTime.openapi({ description: "受信箱に入った時刻（サーバーの DB の時計）" }),
     readAt: dateTime.nullable().openapi({ description: "既読にした時刻。未読なら null" }),
@@ -62,13 +77,17 @@ export const ArticleSchema = z
   .openapi("Article");
 
 /** ユーザーの購読を、フィードとして返す（id はフィードの ID。フォルダはその人のもの） */
-export function toFeedResponse(subscription: SubscriptionWithFeed): z.infer<typeof FeedSchema> {
+export async function toFeedResponse(
+  subscription: SubscriptionWithFeed,
+  images: ImageSigner,
+): Promise<z.infer<typeof FeedSchema>> {
   const { feed } = subscription;
   return {
     id: feed.id,
     url: feed.url,
     title: feed.title,
     siteUrl: feed.siteUrl,
+    iconUrl: await images.toRelayUrl(feed.iconUrl),
     folderId: subscription.folderId,
     lastFetchedAt: feed.lastFetchedAt?.toISOString() ?? null,
     nextFetchAt: feed.nextFetchAt.toISOString(),
@@ -78,7 +97,10 @@ export function toFeedResponse(subscription: SubscriptionWithFeed): z.infer<type
   };
 }
 
-export function toArticleResponse(article: InboxArticle): z.infer<typeof ArticleSchema> {
+export async function toArticleResponse(
+  article: InboxArticle,
+  images: ImageSigner,
+): Promise<z.infer<typeof ArticleSchema>> {
   return {
     id: article.id,
     feedId: article.feedId,
@@ -86,6 +108,7 @@ export function toArticleResponse(article: InboxArticle): z.infer<typeof Article
     title: article.title,
     summary: article.summary,
     author: article.author,
+    thumbnailUrl: await images.toRelayUrl(article.thumbnailUrl),
     publishedAt: article.publishedAt.toISOString(),
     receivedAt: article.receivedAt.toISOString(),
     readAt: article.readAt?.toISOString() ?? null,

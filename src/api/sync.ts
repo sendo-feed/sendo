@@ -1,4 +1,5 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { imageSigner } from "../db/secrets";
 import {
   INITIAL_CURSOR,
   isCursorExpired,
@@ -9,7 +10,13 @@ import {
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
-import { ArticleSchema, ErrorSchema, errorBody, toArticleResponse } from "./schemas";
+import {
+  ArticleSchema,
+  ErrorSchema,
+  errorBody,
+  FeedIconUrlSchema,
+  toArticleResponse,
+} from "./schemas";
 
 /*
  * 差分同期の API（docs/decisions/sync.md）。
@@ -85,6 +92,7 @@ const SyncFeedSchema = z
     url: z.string(),
     title: z.string().nullable(),
     siteUrl: z.string().nullable(),
+    iconUrl: FeedIconUrlSchema,
     folderId: z.string().nullable(),
     createdAt: z.iso.datetime().openapi({ description: "購読した時刻" }),
     deleted: deleted.openapi({
@@ -168,6 +176,7 @@ export function syncApi(platform: Platform) {
       if (raw !== undefined && (await isCursorExpired(platform.db, { userId, cursor }))) {
         return c.json(errorBody("invalid_cursor", "cursor is too old; start over without it"), 400);
       }
+      const images = imageSigner(platform.db);
       return c.json(
         {
           cursor: encodeSyncCursor(changes.cursor),
@@ -178,19 +187,24 @@ export function syncApi(platform: Platform) {
             createdAt: folder.createdAt.toISOString(),
             deleted: folder.deletedAt !== null,
           })),
-          feeds: changes.subscriptions.map((subscription) => ({
-            id: subscription.feedId,
-            url: subscription.feed.url,
-            title: subscription.feed.title,
-            siteUrl: subscription.feed.siteUrl,
-            folderId: subscription.folderId,
-            createdAt: subscription.createdAt.toISOString(),
-            deleted: subscription.deletedAt !== null,
-          })),
-          articles: changes.articles.map((item) =>
-            item.deleted
-              ? { id: item.id, deleted: true as const }
-              : { ...toArticleResponse(item.article), deleted: false as const },
+          feeds: await Promise.all(
+            changes.subscriptions.map(async (subscription) => ({
+              id: subscription.feedId,
+              url: subscription.feed.url,
+              title: subscription.feed.title,
+              siteUrl: subscription.feed.siteUrl,
+              iconUrl: await images.toRelayUrl(subscription.feed.iconUrl),
+              folderId: subscription.folderId,
+              createdAt: subscription.createdAt.toISOString(),
+              deleted: subscription.deletedAt !== null,
+            })),
+          ),
+          articles: await Promise.all(
+            changes.articles.map(async (item) =>
+              item.deleted
+                ? { id: item.id, deleted: true as const }
+                : { ...(await toArticleResponse(item.article, images)), deleted: false as const },
+            ),
           ),
         },
         200,

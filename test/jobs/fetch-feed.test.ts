@@ -6,7 +6,8 @@ import { deliverNewArticles, setArticleState } from "../../src/db/inbox";
 import { CLEAN_UP_CATCH_UP } from "../../src/db/retention";
 import { articles, feeds, userArticles } from "../../src/db/schema";
 import { MAX_ITEMS } from "../../src/fetcher/parse-feed";
-import { runFetchFeed } from "../../src/jobs/fetch-feed";
+import { ICON_CHECK_INTERVAL_MS, runFetchFeed } from "../../src/jobs/fetch-feed";
+import { PNG } from "../fixtures/images";
 import { createTestPlatform, fakeFetch, subscribeFeed, TEST_USER, uniqueUrl } from "../helpers";
 
 const NOW = new Date("2026-11-14T00:00:00Z");
@@ -38,6 +39,102 @@ async function setup(respond: Parameters<typeof fakeFetch>[0]) {
     platform.db.select().from(articles).where(eq(articles.feedId, feed.id)).all();
   return { platform, feed, calls: fake.calls, articlesOf };
 }
+
+describe("サムネイルとアイコン（docs/decisions/images.md）", () => {
+  const SITE_RSS = (extra = "") => `<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+    <channel><title>Blog</title><link>https://blog.example/</link>
+    <item><title>One</title><guid>1</guid><media:thumbnail url="https://blog.example/t.jpg"/></item>
+    <item><title>Two</title><guid>2</guid></item>${extra}</channel></rss>`;
+
+  /** フィード、サイトのページ、画像に、それらしい応答を返す */
+  const site = (options: { icon?: boolean; feedStatus?: number } = {}) =>
+    setup((url) => {
+      if (url.hostname !== "blog.example") {
+        return options.feedStatus === 304
+          ? new Response(null, { status: 304 })
+          : new Response(SITE_RSS(), { headers: { etag: '"e1"' } });
+      }
+      if (url.pathname === "/") return new Response('<link rel="icon" href="/icon.png">');
+      if (url.pathname === "/icon.png" && options.icon !== false) return new Response(PNG);
+      return new Response(null, { status: 404 });
+    });
+
+  it("記事のサムネイルを、フィードの中から採って保存する", async () => {
+    const { platform, feed, articlesOf } = await site();
+    await runFetchFeed(platform, feed.id);
+    const saved = await articlesOf();
+    expect(saved.find((a) => a.guid === "1")?.thumbnailUrl).toBe("https://blog.example/t.jpg");
+    expect(saved.find((a) => a.guid === "2")?.thumbnailUrl).toBeNull();
+  });
+
+  it("取り込んだ記事のサムネイルは、あとの取得で変えない", async () => {
+    let thumbnail = "https://blog.example/t.jpg";
+    const { platform, feed, articlesOf } = await setup((url) =>
+      url.hostname === "blog.example"
+        ? new Response(null, { status: 404 })
+        : new Response(SITE_RSS().replace("https://blog.example/t.jpg", thumbnail)),
+    );
+    await runFetchFeed(platform, feed.id);
+    thumbnail = "https://blog.example/changed.jpg";
+    await runFetchFeed(platform, feed.id);
+    expect((await articlesOf()).find((a) => a.guid === "1")?.thumbnailUrl).toBe(
+      "https://blog.example/t.jpg",
+    );
+  });
+
+  it("アイコンを探して、画像と確かめられたものを記録する", async () => {
+    const { platform, feed } = await site();
+    await runFetchFeed(platform, feed.id);
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({
+      iconUrl: "https://blog.example/icon.png",
+      iconCheckedAt: NOW,
+    });
+  });
+
+  it("アイコンが見つからなくても、取得は成功し、探した時刻を記録する", async () => {
+    const { platform, feed } = await site({ icon: false });
+    expect(await runFetchFeed(platform, feed.id)).toMatchObject({ status: "fetched" });
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({
+      iconUrl: null,
+      iconCheckedAt: NOW,
+      errorCount: 0,
+    });
+  });
+
+  it("探してから 30 日たつまでは、探し直さない", async () => {
+    const { platform, feed, calls } = await site();
+    await runFetchFeed(platform, feed.id);
+    const before = calls.length;
+
+    await runFetchFeed(
+      { ...platform, now: () => new Date(NOW.getTime() + ICON_CHECK_INTERVAL_MS - 1) },
+      feed.id,
+    );
+    expect(calls.length - before).toBe(1); // フィードの取得だけ
+
+    await runFetchFeed(
+      { ...platform, now: () => new Date(NOW.getTime() + ICON_CHECK_INTERVAL_MS) },
+      feed.id,
+    );
+    expect(calls.length - before).toBeGreaterThan(2);
+  });
+
+  it("304 のときも、サイトの URL が分かっていれば探す", async () => {
+    const { platform, feed } = await site({ feedStatus: 304 });
+    await platform.db
+      .update(feeds)
+      .set({ siteUrl: "https://blog.example/" })
+      .where(eq(feeds.id, feed.id));
+    expect(await runFetchFeed(platform, feed.id)).toEqual({ status: "not-modified" });
+    expect((await getFeed(platform.db, feed.id))?.iconUrl).toBe("https://blog.example/icon.png");
+  });
+
+  it("フィードの取得に失敗したときは、探さない", async () => {
+    const { platform, feed } = await setup(() => new Response("oops", { status: 500 }));
+    await runFetchFeed(platform, feed.id);
+    expect((await getFeed(platform.db, feed.id))?.iconCheckedAt).toBeNull();
+  });
+});
 
 describe("runFetchFeed", () => {
   it("記事を取り込み、フィードの情報と次の取得の時刻を記録する", async () => {
@@ -99,7 +196,9 @@ describe("runFetchFeed", () => {
 
     await runFetchFeed(platform, feed.id);
     expect(await runFetchFeed(platform, feed.id)).toEqual({ status: "not-modified" });
-    expect(calls[1]?.headers.get("if-none-match")).toBe('"e1"');
+    // フィードの取得のほかに、アイコンを探す取得も入る
+    const fetches = calls.filter((call) => call.url === feed.url);
+    expect(fetches[1]?.headers.get("if-none-match")).toBe('"e1"');
     expect(await articlesOf()).toHaveLength(3);
     expect((await getFeed(platform.db, feed.id))?.etag).toBe('"e1"');
   });

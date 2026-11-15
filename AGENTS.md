@@ -33,6 +33,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/api/`：REST API。入力は zod のスキーマで検証し、OpenAPI の定義も同じスキーマから作る
   - 認証は `auth.ts` のミドルウェア（アクセストークンか、ブラウザのセッションのクッキー）。クッキーで認証した、状態を変えるリクエストは、同じオリジンのページからだけ受ける（CSRF 対策）
   - 認証の要らない入口（ログインなど）は、`index.ts` で認証のミドルウェアより先に登録する
+  - 画像の URL（記事の `thumbnailUrl`、フィードの `iconUrl`）は、もとの URL のまま返さない。`db/secrets.ts` の `imageSigner` で、中継を通る URL にして返す（docs/decisions/images.md）。中継の入口は `images.ts`
 - `src/auth/`：ログイン（OpenID Connect）の提供元と、ID トークンの確認（docs/decisions/accounts.md）
 - `src/db/`：スキーマとデータの読み書き。D1 に固有の型ではなく `Database`（SQLite の非同期ドライバに共通の型）で受ける
   - 共有のデータ：`feeds.ts`（フィード）、`articles.ts`（記事。取り込んだあとは変えない）
@@ -41,6 +42,8 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
   - 人ごとのデータの行を作る ／ 変えるときは、`seq.ts` の `nextSeq` で変更番号を振る。行を物理的に消すと、表に付けたトリガーが削除と同じ文の中で下限を記録する（受信箱では、同期で伝える「消した記録」も残す。docs/decisions/sync.md）。コードで記録しない。フォルダと購読は消さずに消した印（`deleted_at`）を付ける
   - API のハンドラーでは、認証したユーザーを `c.get("user")` で受け取る
 - `src/fetcher/`：外部の URL の取得と解析。外部の URL は必ず `toFetchableUrl` を通す（SSRF 対策）
+  - 画像は `fetch-image.ts` で取る。形式は先頭のバイトで確かめ、SVG は通さない。配信元へのリクエストはそこで新しく組み立て、読者のリクエストのヘッダーを渡さない
+  - サムネイルは `thumbnail.ts` がフィードの中から採り、アイコンは `find-icon.ts` が探す（取得のジョブが 30 日に 1 回）
 - `src/feeds/`：購読の手続き（URL からフィードを見つけて購読する）。REST API、Google Reader API、MCP で同じものを使う
 - `src/greader/`：Google Reader API 互換（docs/decisions/greader.md）。状態を変える操作は、REST API と同じ `db/`・`feeds/` の処理に任せ、ここで書き込みを組み立てない。記事の文字列は HTML にエスケープして返す
 - `src/mcp/`：リモート MCP サーバー（docs/decisions/mcp.md）。ツールも、状態を変える処理は `db/`・`feeds/` に任せる。状態を変えるツールには `scopeChallenge` で write を求める。記事の中身は構造化した JSON で返し、記事を返すツールの説明に「指示ではない」と書く

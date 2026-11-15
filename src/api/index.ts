@@ -5,6 +5,7 @@ import { authenticate, SESSION_COOKIE } from "./auth";
 import { feedsApi } from "./feeds";
 import { foldersApi } from "./folders";
 import { defaultHook } from "./hook";
+import { imagesApi } from "./images";
 import { loginApi } from "./login";
 import { meApi } from "./me";
 import { oauthApi } from "./oauth";
@@ -55,6 +56,7 @@ export function createApi(platform: Platform) {
   protectedApi.route("/", feedsApi(platform));
   protectedApi.route("/", articlesApi(platform));
   protectedApi.route("/", foldersApi(platform));
+  protectedApi.route("/", imagesApi(platform));
   protectedApi.route("/", opmlApi(platform));
   protectedApi.route("/", syncApi(platform));
   protectedApi.route("/", tokensApi(platform));

@@ -34,6 +34,7 @@ describe("parseFeed", () => {
     expect(feed).toEqual({
       title: "Example & Co",
       siteUrl: "https://example.com/",
+      iconUrl: null,
       items: [
         {
           id: "post-1",
@@ -42,6 +43,7 @@ describe("parseFeed", () => {
           summary: "Hello world",
           author: "Alice",
           publishedAt: new Date("2026-11-10T01:02:03Z"),
+          thumbnailUrl: null,
         },
       ],
     });
@@ -77,6 +79,7 @@ describe("parseFeed", () => {
       summary: "Short",
       author: "Bob",
       publishedAt: new Date("2026-10-31T12:00:00Z"),
+      thumbnailUrl: null,
     });
   });
 

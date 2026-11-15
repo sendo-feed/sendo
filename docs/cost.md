@@ -72,6 +72,22 @@ Sendo が使うものだけを挙げる。
 - 消すときは、索引の行は数えられない（入れるときは数えられる）
 - フィードにまだ載っている記事と、スターの付いた記事は、期間を過ぎても行が残る。数はフィードに載っている数とスターの数までなので、ここでは数えない
 
+### 画像の中継とサムネイル
+
+記事のサムネイルとフィードのアイコンは、sendo が中継する（[画像の中継とサムネイル](decisions/images.md)）。
+
+| 項目 | 使う量 | 出どころ |
+|---|---|---|
+| 画像 1 枚の中継 | Workers のリクエスト 2 回（reader と sendo）、外への取得 1 回（リダイレクトがあればその分）、D1 の読み取り 2 クエリ（セッションの確認、署名の鍵）。D1 の書き込みはなし | 作り |
+| 中継の回数 | 画像 1 枚につき、端末ごとに 30 日に 1 回（ブラウザと reader の Service Worker がキャッシュする） | 作り |
+| サムネイルの保存 | 記事の行に URL を 1 つ足すだけ。書き込みの行数は変わらない。容量は、サムネイルのある記事 1 件で 0.1KB ほど | 作り |
+| アイコンを探す | フィードごとに 30 日に 1 回。外への取得 1〜6 回、D1 の書き込み 1 行。アイコンが変わったときだけ、購読している人ごとに購読の行を 1 つ書く | 作り |
+| 同期の量 | サムネイルのある記事 1 件で 0.1〜0.2KB、ない記事で 0.02KB 増える（圧縮前）。今の記事 1 件（1〜2KB）に対して、サムネイルのある記事で 1〜2 割 | 計算 |
+
+- 1 日に 500 枚の画像を新しく見ても、Workers のリクエストは 1,000 回ほど（無料プランの 1 日 10 万の 1%）。画像の本体はそのまま流すので、CPU はほとんど使わない。Workers は、通信量には課金されない
+- 画像を小さく作り直さないので、一覧のサムネイルはもとの大きさのまま届く。Cloudflare Images の変換は、無料で月 5,000 種類まで（超えると新しい変換は失敗する）、有料で 1,000 種類ごとに 0.50 ドル。30 分おき・160 フィードなら月 2 万件ほどの記事が入るので、今は使わない
+- 同期の量は、URL の長さからの計算。実際のフィード集では、まだ測っていない
+
 ### 決まった量
 
 | 項目 | 使う量 |
@@ -154,6 +170,7 @@ Google Reader API のクライアント（Reeder、NetNewsWire）と MCP は、r
 
 - 本番のソークテスト（100 件ほどのフィード集）のあと。1 フィードの 1 日の記事の数、CPU 時間、D1 の読み取りを、実際の数字に直す
 - 記事を残す期間の既定や、片付けの進め方を変えたとき
+- 画像を小さく作り直す、sendo の側にキャッシュを置くなど、画像の中継の作りを変えたとき
 - Phase 2 の全文抽出を入れたとき（CPU と容量が増える。[仕事の流し方](decisions/jobs.md)の「見直す条件」）
 - Cloudflare が、料金や上限を変えたとき
 
@@ -164,3 +181,4 @@ Google Reader API のクライアント（Reeder、NetNewsWire）と MCP は、r
 - [Queues の制限](https://developers.cloudflare.com/queues/platform/limits/)、[Queues の料金](https://developers.cloudflare.com/queues/platform/pricing/)
 - [Static Assets の料金と制限](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)
 - [Service bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/)
+- [Cloudflare Images の料金](https://developers.cloudflare.com/images/pricing/)

@@ -1,5 +1,6 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { getFolder } from "../db/folders";
+import { imageSigner } from "../db/secrets";
 import {
   getSubscription,
   listSubscriptions,
@@ -181,7 +182,10 @@ export function feedsApi(platform: Platform) {
           url: url.href,
           folderId,
         });
-        return c.json({ feed: toFeedResponse(subscription) }, created ? 201 : 200);
+        return c.json(
+          { feed: await toFeedResponse(subscription, imageSigner(db)) },
+          created ? 201 : 200,
+        );
       } catch (e) {
         if (e instanceof DiscoverError) return c.json(errorBody(e.code, e.message), 422);
         throw e;
@@ -215,7 +219,11 @@ export function feedsApi(platform: Platform) {
     })
     .openapi(listRoute, async (c) => {
       const subscriptions = await listSubscriptions(db, c.get("user").id);
-      return c.json({ items: subscriptions.map(toFeedResponse) }, 200);
+      const images = imageSigner(db);
+      return c.json(
+        { items: await Promise.all(subscriptions.map((s) => toFeedResponse(s, images))) },
+        200,
+      );
     })
     .openapi(updateRoute, async (c) => {
       const user = c.get("user");
@@ -227,7 +235,7 @@ export function feedsApi(platform: Platform) {
       const updated = await setSubscriptionFolder(db, { userId: user.id, feedId: id, folderId });
       const subscription = updated && (await getSubscription(db, { userId: user.id, feedId: id }));
       if (!subscription) return c.json(errorBody("not_found", "feed is not subscribed"), 404);
-      return c.json({ feed: toFeedResponse(subscription) }, 200);
+      return c.json({ feed: await toFeedResponse(subscription, imageSigner(db)) }, 200);
     })
     .openapi(deleteRoute, async (c) => {
       const { id } = c.req.valid("param");

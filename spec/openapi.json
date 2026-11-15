@@ -94,6 +94,14 @@
               "null"
             ]
           },
+          "iconUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "フィードのアイコン。中継を通る画像の URL（/api/v1/images?url=…&sig=… の形のパス。オリジンは付かない）で、そのまま <img src> に入れる。クライアントは組み立てたり書き換えたりしない。なければ null",
+            "example": "/api/v1/images?url=https%3A%2F%2Fexample.com%2Fa.png&sig=0123456789abcdefghijkl"
+          },
           "folderId": {
             "type": [
               "string",
@@ -132,6 +140,7 @@
           "url",
           "title",
           "siteUrl",
+          "iconUrl",
           "folderId",
           "lastFetchedAt",
           "nextFetchAt",
@@ -215,6 +224,14 @@
               "null"
             ]
           },
+          "thumbnailUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "記事のサムネイル。中継を通る画像の URL（/api/v1/images?url=…&sig=… の形のパス。オリジンは付かない）で、そのまま <img src> に入れる。クライアントは組み立てたり書き換えたりしない。なければ null",
+            "example": "/api/v1/images?url=https%3A%2F%2Fexample.com%2Fa.png&sig=0123456789abcdefghijkl"
+          },
           "publishedAt": {
             "type": "string",
             "format": "date-time"
@@ -248,6 +265,7 @@
           "title",
           "summary",
           "author",
+          "thumbnailUrl",
           "publishedAt",
           "receivedAt",
           "readAt",
@@ -536,6 +554,14 @@
               "null"
             ]
           },
+          "iconUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "フィードのアイコン。中継を通る画像の URL（/api/v1/images?url=…&sig=… の形のパス。オリジンは付かない）で、そのまま <img src> に入れる。クライアントは組み立てたり書き換えたりしない。なければ null",
+            "example": "/api/v1/images?url=https%3A%2F%2Fexample.com%2Fa.png&sig=0123456789abcdefghijkl"
+          },
           "folderId": {
             "type": [
               "string",
@@ -557,6 +583,7 @@
           "url",
           "title",
           "siteUrl",
+          "iconUrl",
           "folderId",
           "createdAt",
           "deleted"
@@ -1724,6 +1751,69 @@
           },
           "404": {
             "description": "フォルダがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/images": {
+      "get": {
+        "summary": "画像を中継する",
+        "description": "記事の thumbnailUrl や、フィードの iconUrl として配った URL を、そのまま開くための入口。\n中継するのは、sendo が署名した URL だけ。クライアントは、url と sig を自分で組み立てない。\n応答は Cache-Control で 30 日のキャッシュを許す。URL が同じなら中身も同じとみなしてよい。\n通す形式は JPEG、PNG、GIF、WebP、AVIF、ICO。SVG は通さない。",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 4096,
+              "description": "もとの画像の URL"
+            },
+            "required": true,
+            "description": "もとの画像の URL",
+            "name": "url",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "description": "sendo が付けた署名"
+            },
+            "required": true,
+            "description": "sendo が付けた署名",
+            "name": "sig",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "画像",
+            "content": {
+              "image/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "署名が合わない（sendo が配った URL ではない）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "配信元から取れない、画像でない、大きすぎる",
             "content": {
               "application/json": {
                 "schema": {

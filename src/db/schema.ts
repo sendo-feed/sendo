@@ -248,6 +248,14 @@ export const feeds = sqliteTable(
      * （フィードを登録した時刻から始める）
      */
     cleanedUntil: integer("cleaned_until", { mode: "timestamp_ms" }),
+    /**
+     * アイコンの URL（docs/decisions/images.md の 8）。実際に取得して、画像と確かめられたものだけを置く。
+     * 変わると、トリガーが購読の変更番号を進める（migrations/0016_feed_icon_trigger.sql）。
+     * API では、中継を通る URL にして返す
+     */
+    iconUrl: text("icon_url"),
+    /** アイコンを最後に探した時刻。null なら、まだ探していない */
+    iconCheckedAt: integer("icon_checked_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   },
   (t) => [index("feeds_next_fetch_at_idx").on(t.nextFetchAt)],
@@ -303,6 +311,11 @@ export const articles = sqliteTable(
     title: text("title"),
     summary: text("summary"),
     author: text("author"),
+    /**
+     * サムネイルのもとの URL（docs/decisions/images.md の 7）。http ／ https だけ。フィードの中から採り、
+     * 取り込んだあとは変えない。API では、中継を通る URL にして返す
+     */
+    thumbnailUrl: text("thumbnail_url"),
     /** フィードに日付がなければ、取り込んだ時刻を入れる */
     publishedAt: integer("published_at", { mode: "timestamp_ms" }).notNull(),
     /** 取り込んだ時刻（DB の時計）。受信箱に配る範囲を決めるのに使う */
@@ -423,6 +436,17 @@ export const removalHorizons = sqliteTable("removal_horizons", {
     .primaryKey()
     .references(() => users.id, { onDelete: "cascade" }),
   seq: integer("seq").notNull(),
+});
+
+/**
+ * sendo が自分で作って持つ秘密（docs/decisions/images.md の 2）。今は、画像の URL の署名の鍵だけ。
+ * 初めて使うときに作る（db/secrets.ts）。行を消すと、次に使うときに作り直す
+ */
+export const appSecrets = sqliteTable("app_secrets", {
+  name: text("name").primaryKey(),
+  /** 乱数を base64url にしたもの */
+  value: text("value").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
 export type User = typeof users.$inferSelect;

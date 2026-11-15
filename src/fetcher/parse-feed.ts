@@ -1,6 +1,7 @@
 import { decodeHTML } from "entities";
 import { type AnyFeed, parseFeed as parseAnyFeed } from "feedsmith";
 import { stripTags } from "../lib/html";
+import { pickThumbnail, toImageUrl } from "./thumbnail";
 
 export { stripTags };
 
@@ -8,6 +9,8 @@ export { stripTags };
 export type ParsedFeed = {
   title: string | null;
   siteUrl: string | null;
+  /** フィードが自分のアイコンとして示した URL（JSON Feed の icon ／ favicon、Atom の icon）。なければ null */
+  iconUrl: string | null;
   items: ParsedItem[];
 };
 
@@ -22,6 +25,8 @@ export type ParsedItem = {
   summary: string | null;
   author: string | null;
   publishedAt: Date | null;
+  /** サムネイルのもとの URL（http ／ https だけ）。フィードの中になければ null */
+  thumbnailUrl: string | null;
 };
 
 export class ParseFeedError extends Error {
@@ -51,6 +56,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
   }
 
   const base = (url: string | undefined) => toHttpUrl(url, baseUrl);
+  const thumbnail = (sources: Parameters<typeof pickThumbnail>[0]) => pickThumbnail(sources, base);
   // 欄によって中身が HTML かプレーンテキストかが決まっている。HTML の欄だけタグを除く。
   // プレーンテキストの欄にタグの除去をかけると、「x < y」のような本文が壊れる
   const html = (value: string | undefined, max: number) => htmlToText(value, max);
@@ -67,6 +73,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
       return {
         title: plain(feed.title, MAX_TITLE_LENGTH),
         siteUrl: base(feed.link),
+        iconUrl: null,
         items: (feed.items ?? []).map((item) => ({
           id: nonEmpty(item.guid?.value),
           url: base(item.link),
@@ -74,6 +81,12 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
           summary: html(item.description ?? item.content?.encoded, MAX_SUMMARY_LENGTH),
           author: plain(item.authors?.[0]?.name ?? item.dc?.creators?.[0], MAX_TITLE_LENGTH),
           publishedAt: toDate(item.pubDate ?? item.dc?.dates?.[0]),
+          thumbnailUrl: thumbnail({
+            media: item.media,
+            attachments: item.enclosures,
+            images: [item.itunes?.image],
+            html: [item.content?.encoded, item.description],
+          }),
         })),
       };
     }
@@ -82,6 +95,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
       return {
         title: atomText(feed.title, MAX_TITLE_LENGTH),
         siteUrl: base(alternateLink(feed.links)),
+        iconUrl: toImageUrl(feed.icon, base),
         items: (feed.entries ?? []).map((entry) => ({
           id: nonEmpty(entry.id),
           url: base(alternateLink(entry.links)),
@@ -89,6 +103,16 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
           summary: atomText(entry.summary ?? entry.content, MAX_SUMMARY_LENGTH),
           author: plain(entry.authors?.[0]?.name, MAX_TITLE_LENGTH),
           publishedAt: toDate(entry.published ?? entry.updated ?? entry.dc?.dates?.[0]),
+          thumbnailUrl: thumbnail({
+            media: entry.media,
+            attachments: (entry.links ?? [])
+              .filter((link) => link.rel === "enclosure")
+              .map((link) => ({ url: link.href, type: link.type })),
+            images: [entry.itunes?.image],
+            html: [entry.content, entry.summary]
+              .filter((text) => text?.type === "html" || text?.type === "xhtml")
+              .map((text) => text?.value),
+          }),
         })),
       };
     }
@@ -97,6 +121,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
       return {
         title: plain(feed.title, MAX_TITLE_LENGTH),
         siteUrl: base(feed.link),
+        iconUrl: null,
         items: (feed.items ?? []).map((item) => ({
           id: null,
           url: base(item.link),
@@ -104,6 +129,10 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
           summary: html(item.description ?? item.content?.encoded, MAX_SUMMARY_LENGTH),
           author: plain(item.dc?.creators?.[0], MAX_TITLE_LENGTH),
           publishedAt: toDate(item.dc?.dates?.[0]),
+          thumbnailUrl: thumbnail({
+            media: item.media,
+            html: [item.content?.encoded, item.description],
+          }),
         })),
       };
     }
@@ -112,6 +141,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
       return {
         title: plain(feed.title, MAX_TITLE_LENGTH),
         siteUrl: base(feed.home_page_url),
+        iconUrl: toImageUrl(feed.icon, base) ?? toImageUrl(feed.favicon, base),
         items: (feed.items ?? []).map((item) => ({
           id: nonEmpty(item.id),
           url: base(item.url),
@@ -122,6 +152,14 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
             html(item.content_html, MAX_SUMMARY_LENGTH),
           author: plain(item.authors?.[0]?.name, MAX_TITLE_LENGTH),
           publishedAt: toDate(item.date_published ?? item.date_modified),
+          thumbnailUrl: thumbnail({
+            attachments: (item.attachments ?? []).map((attachment) => ({
+              url: attachment.url,
+              type: attachment.mime_type,
+            })),
+            images: [item.image, item.banner_image],
+            html: [item.content_html],
+          }),
         })),
       };
     }

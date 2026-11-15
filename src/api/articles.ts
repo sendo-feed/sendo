@@ -10,6 +10,7 @@ import {
   markArticlesRead,
   setArticleState,
 } from "../db/inbox";
+import { imageSigner } from "../db/secrets";
 import { listSubscriptions } from "../db/subscriptions";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
@@ -200,7 +201,7 @@ export function articlesApi(platform: Platform) {
         now: platform.now(),
       });
       if (!article) return c.json(errorBody("not_found", "article does not exist"), 404);
-      return c.json({ article: toArticleResponse(article) }, 200);
+      return c.json({ article: await toArticleResponse(article, imageSigner(db)) }, 200);
     })
     .openapi(markReadRoute, async (c) => {
       const body = c.req.valid("json");
@@ -278,9 +279,10 @@ export function articlesApi(platform: Platform) {
         limit: query.limit,
         cursor,
       });
+      const images = imageSigner(db);
       return c.json(
         {
-          items: items.map(toArticleResponse),
+          items: await Promise.all(items.map((item) => toArticleResponse(item, images))),
           nextCursor: next === null ? null : encodeCursor(next),
           asOf: asOf.toISOString(),
         },

@@ -143,6 +143,21 @@ export async function recordFetchSuccess(
     .where(eq(feeds.id, id));
 }
 
+/**
+ * アイコンを探した結果を記録する（docs/decisions/images.md の 8）。見つからなければ null。
+ * アイコンが変わると、購読の変更番号はトリガーが進める（migrations/0016_feed_icon_trigger.sql）
+ */
+export async function recordFeedIcon(
+  db: Database,
+  id: string,
+  input: { iconUrl: string | null; now: Date },
+): Promise<void> {
+  await db
+    .update(feeds)
+    .set({ iconUrl: input.iconUrl, iconCheckedAt: input.now })
+    .where(eq(feeds.id, id));
+}
+
 export async function recordFetchFailure(
   db: Database,
   id: string,

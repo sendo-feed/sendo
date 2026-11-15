@@ -360,6 +360,7 @@ export async function readChanges(
         title: row.title,
         summary: row.summary,
         author: row.author,
+        thumbnailUrl: row.thumbnailUrl,
         publishedAt,
         createdAt,
         itemId,
