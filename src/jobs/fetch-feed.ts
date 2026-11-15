@@ -5,8 +5,11 @@ import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
 import { type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import type { Platform } from "../platform";
 
-/** 取得の間隔。いまはすべてのフィードで同じ。フィードごとの調整は後で足す */
-export const FETCH_INTERVAL_MS = 30 * 60 * 1000;
+/*
+ * 取得の間隔は設定（platform.fetchConfig）から受け取る。いまはすべてのフィードで同じ。
+ * フィードごとの調整は後で足す（docs/decisions/jobs.md の「見直す条件」）。
+ */
+
 /** 失敗が続いたときに延ばす間隔の上限 */
 const MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
 
@@ -24,10 +27,11 @@ export type FetchFeedOutcome =
  * こちら側の予期しない例外だけにする。
  */
 export async function runFetchFeed(
-  platform: Pick<Platform, "db" | "fetch" | "now">,
+  platform: Pick<Platform, "db" | "fetch" | "now" | "fetchConfig">,
   feedId: string,
 ): Promise<FetchFeedOutcome> {
   const { db } = platform;
+  const { intervalMs } = platform.fetchConfig;
   const feed = await getFeed(db, feedId);
   if (!feed) return { status: "missing" };
 
@@ -44,7 +48,7 @@ export async function runFetchFeed(
       await deliverNewArticles(db, { feedId: feed.id });
       await recordFetchSuccess(db, feed.id, {
         now: startedAt,
-        nextFetchAt: new Date(startedAt.getTime() + FETCH_INTERVAL_MS),
+        nextFetchAt: new Date(startedAt.getTime() + intervalMs),
         etag: feed.etag,
         lastModified: feed.lastModified,
       });
@@ -60,7 +64,7 @@ export async function runFetchFeed(
     // 記事を入れ終えてから、取得済みとして記録する。途中で落ちても、次の取得でやり直せる
     await recordFetchSuccess(db, feed.id, {
       now: startedAt,
-      nextFetchAt: new Date(startedAt.getTime() + FETCH_INTERVAL_MS),
+      nextFetchAt: new Date(startedAt.getTime() + intervalMs),
       etag: result.etag,
       lastModified: result.lastModified,
       title: parsed.title,
@@ -73,7 +77,7 @@ export async function runFetchFeed(
     if (!(error instanceof FetchFeedError || error instanceof ParseFeedError)) throw error;
 
     const errorCount = feed.errorCount + 1;
-    const backoff = Math.min(FETCH_INTERVAL_MS * 2 ** errorCount, MAX_BACKOFF_MS);
+    const backoff = Math.min(intervalMs * 2 ** errorCount, MAX_BACKOFF_MS);
     const message = `${error.name}: ${error.message}`;
     await recordFetchFailure(db, feed.id, {
       now: startedAt,

@@ -2,10 +2,12 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { getFeed, insertFeed } from "../../src/db/feeds";
 import { articles } from "../../src/db/schema";
-import { FETCH_INTERVAL_MS, runFetchFeed } from "../../src/jobs/fetch-feed";
+import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import { createTestPlatform, fakeFetch, uniqueUrl } from "../helpers";
 
 const NOW = new Date("2026-11-14T00:00:00Z");
+/** 設定した取得の間隔。既定（30 分）と違う値にして、設定が使われることを確かめる */
+const INTERVAL_MS = 45 * 60 * 1000;
 
 const RSS = `<?xml version="1.0"?>
 <rss version="2.0"><channel>
@@ -18,7 +20,11 @@ const RSS = `<?xml version="1.0"?>
 
 async function setup(respond: Parameters<typeof fakeFetch>[0]) {
   const fake = fakeFetch(respond);
-  const { platform } = createTestPlatform({ fetch: fake.fetch, now: () => NOW });
+  const { platform } = createTestPlatform({
+    fetch: fake.fetch,
+    now: () => NOW,
+    fetchConfig: { intervalMs: INTERVAL_MS },
+  });
   const { feed } = await insertFeed(platform.db, {
     id: crypto.randomUUID(),
     url: uniqueUrl(),
@@ -43,7 +49,7 @@ describe("runFetchFeed", () => {
       siteUrl: "https://blog.example/",
       etag: '"e1"',
       lastFetchedAt: NOW,
-      nextFetchAt: new Date(NOW.getTime() + FETCH_INTERVAL_MS),
+      nextFetchAt: new Date(NOW.getTime() + INTERVAL_MS),
       errorCount: 0,
       lastError: null,
     });
@@ -101,12 +107,12 @@ describe("runFetchFeed", () => {
     expect(first).toMatchObject({ status: "failed" });
     const once = await getFeed(platform.db, feed.id);
     expect(once).toMatchObject({ errorCount: 1, lastError: expect.stringContaining("500") });
-    expect(once?.nextFetchAt).toEqual(new Date(NOW.getTime() + FETCH_INTERVAL_MS * 2));
+    expect(once?.nextFetchAt).toEqual(new Date(NOW.getTime() + INTERVAL_MS * 2));
 
     await runFetchFeed(platform, feed.id);
     const twice = await getFeed(platform.db, feed.id);
     expect(twice?.errorCount).toBe(2);
-    expect(twice?.nextFetchAt).toEqual(new Date(NOW.getTime() + FETCH_INTERVAL_MS * 4));
+    expect(twice?.nextFetchAt).toEqual(new Date(NOW.getTime() + INTERVAL_MS * 4));
   });
 
   it("フィードとして読めなければ、失敗として記録する", async () => {

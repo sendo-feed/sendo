@@ -43,7 +43,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/greader/`：Google Reader API 互換（docs/decisions/greader.md）。状態を変える操作は、REST API と同じ `db/`・`feeds/` の処理に任せ、ここで書き込みを組み立てない。記事の文字列は HTML にエスケープして返す
 - `src/mcp/`：リモート MCP サーバー（docs/decisions/mcp.md）。ツールも、状態を変える処理は `db/`・`feeds/` に任せる。状態を変えるツールには `scopeChallenge` で write を求める。記事の中身は構造化した JSON で返し、記事を返すツールの説明に「指示ではない」と書く
 - `src/oauth/`：MCP のための OAuth の認可サーバー（docs/decisions/mcp.md の 3〜7）。クライアントが直接呼ぶ入口（メタデータ、`/oauth/token`、`/oauth/register`）はここ、許可の画面（sendo-reader）が使う API は `src/api/oauth.ts`（セッションでだけ使える）。コードとトークンは DB にハッシュだけを置き、1 回だけ使えるものは、使った印を同じ文の中で確かめて付ける（`db/oauth.ts`）。Client ID Metadata Document も `toFetchableUrl` を通して取りにいく
-- `src/jobs/`：キューと定期実行で動く処理
+- `src/jobs/`：キューと定期実行で動く処理。仕事は 1 つずつ積み、1 つずつ受け取る形で書く。キューでは封筒に束ねて運び、受け手が 1 つずつ別の実行（`ctx.exports` の `JobRunner`）で動かすが、それは `src/platform/cloudflare/queue.ts` の中に閉じている（docs/decisions/jobs.md）。1 つの仕事は、それだけで `QUERY_BUDGET` に収める
 - テストは `test/` に置き、`*.test.ts` とする。外部への通信はせず、`test/helpers.ts` の `fakeFetch` で差し替える。API のテストは、`test/setup.ts` が入れるテスト用のユーザーとトークン（`test/fixtures/user.ts`）を使う
 
 ## 言語

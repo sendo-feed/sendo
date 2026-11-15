@@ -8,7 +8,7 @@ import { createSession } from "../src/db/sessions";
 import { subscribeMany } from "../src/db/subscriptions";
 import { createAccessToken } from "../src/db/tokens";
 import type { Job } from "../src/jobs/job";
-import type { Platform } from "../src/platform";
+import { DEFAULT_FETCH_INTERVAL_MINUTES, type Platform } from "../src/platform";
 import { TEST_TOKEN as API_TOKEN, TEST_USER } from "./fixtures/user";
 
 export { API_TOKEN, TEST_USER };
@@ -51,6 +51,7 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
     },
     now: () => new Date(),
     auth: { allowedEmails: new Set(), google: undefined, oauth: undefined },
+    fetchConfig: { intervalMs: DEFAULT_FETCH_INTERVAL_MINUTES * 60 * 1000 },
     ...overrides,
   };
   return {

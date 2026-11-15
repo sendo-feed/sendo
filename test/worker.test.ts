@@ -1,7 +1,6 @@
-import { createExecutionContext, createMessageBatch, getQueueResult } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { handleQueueBatch } from "../src/platform/cloudflare";
+import type { Job } from "../src/jobs/job";
 import { TEST_TOKEN } from "./fixtures/user";
 
 describe("Worker", () => {
@@ -28,29 +27,19 @@ describe("Worker", () => {
   });
 });
 
-describe("handleQueueBatch", () => {
-  it("正しい仕事は実行して ack、失敗したら retry、形の正しくないものは捨てる", async () => {
-    const batch = createMessageBatch("sendo-jobs", [
-      { id: "ok", timestamp: new Date(), attempts: 1, body: { type: "fetch-feed", feedId: "f1" } },
-      {
-        id: "boom",
-        timestamp: new Date(),
-        attempts: 1,
-        body: { type: "fetch-feed", feedId: "f2" },
-      },
-      { id: "bad", timestamp: new Date(), attempts: 1, body: { type: "unknown" } },
-    ]);
-    const ran: string[] = [];
+describe("JobRunner", () => {
+  it("ctx.exports から、キューの仕事を 1 つ動かせる", async () => {
+    // フィードがなければ、取得は何もせずに終わる
+    await expect(
+      exports.JobRunner.run({ type: "fetch-feed", feedId: "no-such-feed" }),
+    ).resolves.toBeUndefined();
+  });
 
-    await handleQueueBatch(batch, async (job) => {
-      if (job.type !== "fetch-feed") throw new Error(`unexpected job: ${job.type}`);
-      ran.push(job.feedId);
-      if (job.feedId === "f2") throw new Error("boom");
-    });
-
-    const result = await getQueueResult(batch, createExecutionContext());
-    expect(ran).toEqual(["f1", "f2"]);
-    expect(result.explicitAcks.sort()).toEqual(["bad", "ok"]);
-    expect(result.retryMessages.map((message) => message.msgId)).toEqual(["boom"]);
+  it("形の正しくない仕事は動かさない", async () => {
+    const error = await exports.JobRunner.run({ type: "unknown" } as unknown as Job).then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(Error);
   });
 });

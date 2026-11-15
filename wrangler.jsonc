@@ -18,14 +18,16 @@
     }
   ],
 
-  // 取得や全文抽出などの重い処理は、API の応答と切り離してキューで流す
+  // 取得や全文抽出などの重い処理は、API の応答と切り離してキューで流す。仕事は最大 10 個の封筒に
+  // 束ねて 1 つのメッセージにし、受け手が 1 つずつ別の実行（ctx.exports の JobRunner）で動かす
+  // （docs/decisions/jobs.md、src/platform/cloudflare/queue.ts）
   "queues": {
     "producers": [{ "binding": "JOBS", "queue": "sendo-jobs" }],
     "consumers": [
       {
         "queue": "sendo-jobs",
-        // D1 は 1 回の実行で 50 クエリまで（無料プラン）。まとめて受け取るとジョブの分が足し合わさる
-        // ので、1 件ずつ処理する。各ジョブは、それだけで上限に収まるように作る（src/db/chunk.ts）
+        // 1 回に受け取る封筒は 1 つ。失敗した仕事は、受け手がその仕事だけを積み直す。
+        // max_retries は、受け手の実行そのものが落ちたときに、封筒ごとやり直す回数
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_retries": 3
@@ -33,14 +35,20 @@
     ]
   },
 
-  // 取得の時期が来たフィードを、10 分おきにキューへ積む
+  // 取得の時期が来たフィードを、10 分おきにキューへ積む。間隔を変えたら、src/platform/index.ts の
+  // MIN_FETCH_INTERVAL_MINUTES も合わせる
   "triggers": {
     "crons": ["*/10 * * * *"]
   },
 
-  // OAuth（Claude.ai や ChatGPT から MCP につなぐ）を使うときに書く。2 つとも空なら OAuth は使えない
-  // （/mcp は MCP 用のトークンだけで使える）。秘密ではないので vars に置く。手元では .dev.vars で上書きできる
+  // 秘密ではない設定。手元では .dev.vars で上書きできる
   "vars": {
+    // フィードを取得する間隔（分）。10 以上の整数で、空なら 30。回せるフィードの数は、プランと
+    // この間隔で決まる（README の「取得の間隔」、docs/decisions/jobs.md）
+    "FETCH_INTERVAL_MINUTES": "30",
+
+    // OAuth（Claude.ai や ChatGPT から MCP につなぐ）を使うときに書く。2 つとも空なら OAuth は使えない
+    // （/mcp は MCP 用のトークンだけで使える）
     // Sendo を外から呼ぶときのオリジン（例：https://sendo.example.workers.dev）。OAuth の発行者になる
     "PUBLIC_URL": "",
     // 許可の画面を置く sendo-reader のオリジン（例：https://reader.example.workers.dev）

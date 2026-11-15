@@ -41,6 +41,10 @@ pnpm dev
 
 `pnpm dev` で、手元に Workers のランタイム（D1、Queues、Cron を含む）が立ち上がります。Cloudflare のアカウントは要りません。
 
+### 取得の間隔
+
+フィードを取得する間隔（分）は、`wrangler.jsonc` の `vars` の `FETCH_INTERVAL_MINUTES` に書きます。10 以上の整数で、既定は 30 です。取得の時期が来たフィードは 10 分おきの定期実行がキューに積むので、10 分より短くはできません。回せるフィードの数は、Cloudflare のプランとこの間隔で決まります（[決定](docs/decisions/jobs.md)）。
+
 ```sh
 TOKEN=sendo_...   # pnpm token:create で発行したトークン
 

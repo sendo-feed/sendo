@@ -44,6 +44,12 @@ export interface AuthConfig {
   oauth: OAuthServerConfig | undefined;
 }
 
+/** フィードの取得の設定（docs/decisions/jobs.md の 6） */
+export interface FetchConfig {
+  /** 取得の間隔（ミリ秒）。失敗が続いたときは、これを元に延ばす */
+  intervalMs: number;
+}
+
 /** アプリが実行環境から受け取るもの */
 export interface Platform {
   db: Database;
@@ -52,6 +58,32 @@ export interface Platform {
   fetch: typeof fetch;
   now: () => Date;
   auth: AuthConfig;
+  fetchConfig: FetchConfig;
+}
+
+/** 取得の間隔の既定（分） */
+export const DEFAULT_FETCH_INTERVAL_MINUTES = 30;
+
+/**
+ * 取得の間隔の下限（分）。取得の時期が来たフィードは定期実行（wrangler.jsonc の triggers.crons、
+ * 10 分おき）が積むので、これより短くしても、その間隔でしか取得されない
+ */
+export const MIN_FETCH_INTERVAL_MINUTES = 10;
+
+/**
+ * 取得の間隔（分）の設定を読む。空なら undefined（既定を使う）。下限以上の整数でなければ例外。
+ * 設定は実行環境ごとに渡し方が違うので、読むのは緩衝層の実装で行い、形だけここで決める。
+ */
+export function parseFetchIntervalMinutes(value: string | undefined): number | undefined {
+  const text = value?.trim() ?? "";
+  if (text === "") return undefined;
+  const minutes = Number(text);
+  if (!/^\d+$/.test(text) || minutes < MIN_FETCH_INTERVAL_MINUTES) {
+    throw new RangeError(
+      `fetch interval must be an integer of at least ${MIN_FETCH_INTERVAL_MINUTES} minutes: ${text}`,
+    );
+  }
+  return minutes;
 }
 
 /**
