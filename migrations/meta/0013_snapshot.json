@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "7bfe4ff7-a940-414d-b437-ad13fa4da790",
+  "id": "a18ace85-3229-4985-bef7-c829fc8f5ce6",
   "prevId": "48d8240b-343a-41ab-af43-e28c265fedeb",
   "tables": {
     "access_tokens": {
@@ -540,6 +540,13 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "authorized_at": {
+          "name": "authorized_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         }
       },

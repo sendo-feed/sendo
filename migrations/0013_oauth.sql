@@ -2,7 +2,8 @@ CREATE TABLE `oauth_clients` (
 	`id` text PRIMARY KEY NOT NULL,
 	`name` text,
 	`redirect_uris` text NOT NULL,
-	`created_at` integer NOT NULL
+	`created_at` integer NOT NULL,
+	`authorized_at` integer
 );
 --> statement-breakpoint
 CREATE TABLE `oauth_codes` (

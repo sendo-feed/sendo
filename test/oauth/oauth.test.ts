@@ -328,7 +328,7 @@ describe("動的登録（/oauth/register）", () => {
     expect(((await missing.json()) as Json).error).toBe("invalid_client_metadata");
   });
 
-  it("登録したまま 1 日たっても許可のないクライアントは、次の登録で消す。許可のあるものは残す", async () => {
+  it("一度も許可されないまま 1 日たったクライアントは、次の登録で消す。一度許可されたものは、許可を取り消しても残す", async () => {
     const clock = { now: Date.now() };
     const { platform } = setup({ clock });
     const { headers } = await session();
@@ -336,6 +336,7 @@ describe("動的登録（/oauth/register）", () => {
     const unused = (await (await register(platform, body)).json()) as { client_id: string };
     const used = (await (await register(platform, body)).json()) as { client_id: string };
     await approve(platform, headers, { client_id: used.client_id });
+    await env.DB.exec("DELETE FROM oauth_grants");
 
     clock.now += 25 * 60 * 60 * 1000;
     await register(platform, body);
@@ -344,6 +345,10 @@ describe("動的登録（/oauth/register）", () => {
       .results;
     expect(ids.map((row) => row.id)).toContain(used.client_id);
     expect(ids.map((row) => row.id)).not.toContain(unused.client_id);
+    const check = await readerApi(platform, headers, "/oauth/authorize/check", {
+      query: authorizeQuery({ client_id: used.client_id }),
+    });
+    expect(check.status).toBe(200);
   });
 });
 
@@ -669,6 +674,46 @@ describe("トークンのエンドポイント（/oauth/token）", () => {
     expect((await mcp(platform, tokens.access_token)).status).toBe(401);
   });
 
+  it("リフレッシュトークンを作り直している途中に、同じ人がほかの許可を出しても、この許可は消えない", async () => {
+    const clock = { now: Date.now() };
+    const { platform } = setup({ clock });
+    const { headers } = await session();
+    const tokens = await authorizeAndExchange(platform, headers);
+    clock.now += 10 * 60 * 1000;
+    // 新しいトークンを入れる文の直前に、ほかの許可（使えない許可の掃除）が走る
+    const hooked = d1BeforeStatement(/^\s*insert\s+into\s+"oauth_tokens"/i, async () => {
+      await approve(platform, headers);
+    });
+
+    const res = await refresh(
+      { ...platform, db: drizzle(hooked.db, { schema }) },
+      tokens.refresh_token,
+    );
+
+    expect(hooked.fired()).toBe(true);
+    expect(res.status).toBe(200);
+    const renewed = (await res.json()) as Tokens;
+    expect((await mcp(platform, renewed.access_token)).status).toBe(200);
+  });
+
+  it("コードを期限ぎりぎりに換える途中で、同じ人がほかの許可を出しても、この許可は消えない", async () => {
+    const clock = { now: Date.now() };
+    const { platform } = setup({ clock });
+    const { headers } = await session();
+    const approved = await approve(platform, headers);
+    clock.now += 5 * 60 * 1000 - 1;
+    // トークンを入れる文の直前に、コードの期限を過ぎてから、ほかの許可（掃除）が走る
+    const hooked = d1BeforeStatement(/^\s*insert\s+into\s+"oauth_tokens"/i, async () => {
+      clock.now += 1000;
+      await approve(platform, headers);
+    });
+
+    const res = await exchange({ ...platform, db: drizzle(hooked.db, { schema }) }, approved);
+
+    expect(hooked.fired()).toBe(true);
+    expect(res.status).toBe(200);
+  });
+
   it("client_id は、秘密なしの Basic でも受ける。本文と食い違えば受けない", async () => {
     const { platform } = setup();
     const { headers } = await session();
@@ -862,7 +907,7 @@ describe("出した許可の一覧と取り消し（/api/v1/oauth/grants）", ()
     await authorizeAndExchange(platform, headers);
     expect(await listGrants(platform, headers)).toHaveLength(2);
 
-    clock.now += 6 * 60 * 1000;
+    clock.now += 7 * 60 * 1000;
     const items = await listGrants(platform, headers);
     expect(items).toEqual([expect.objectContaining({ lastUsedAt: expect.any(String) })]);
     await approve(platform, headers);

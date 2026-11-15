@@ -36,15 +36,20 @@ export const CODE_TTL_MS = 5 * 60 * 1000;
 export const ACCESS_TOKEN_TTL_MS = 60 * 60 * 1000;
 /** リフレッシュトークンの期限。作り直すたびに、そこから 30 日 */
 export const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-/** 動的登録したまま、許可を 1 つも出していないクライアントを残す時間 */
+/**
+ * 作ったばかりの許可を「使える」とみなす時間。認可コードの期限に、コードを換える処理の途中で
+ * 期限をまたいでも掃除で消されないよう、余裕を足す
+ */
+const NEW_GRANT_MS = CODE_TTL_MS + 60 * 1000;
+/** 動的登録したまま、一度も許可されていないクライアントを残す時間 */
 const UNUSED_CLIENT_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** コードとトークンの乱数の部分の長さ（バイト） */
 const SECRET_BYTES = 32;
 
 /**
- * クライアントを登録する（動的登録）。誰でも登録できるので、登録したまま 1 日たっても許可を
- * 出していないクライアントは、ここで消す（溜まり続けないように）
+ * クライアントを登録する（動的登録）。誰でも登録できるので、一度も許可されないまま 1 日たった
+ * クライアントは、ここで消す（溜まり続けないように）。一度許可されたものは、許可がなくなっても残す
  */
 export async function registerClient(
   db: Database,
@@ -54,15 +59,8 @@ export async function registerClient(
     .delete(oauthClients)
     .where(
       and(
+        isNull(oauthClients.authorizedAt),
         lte(oauthClients.createdAt, new Date(input.now.getTime() - UNUSED_CLIENT_TTL_MS)),
-        not(
-          exists(
-            db
-              .select({ one: sql`1` })
-              .from(oauthGrants)
-              .where(eq(oauthGrants.clientId, oauthClients.id)),
-          ),
-        ),
       ),
     )
     .run();
@@ -86,8 +84,9 @@ export async function getRegisteredClient(
 }
 
 /**
- * まだ使える許可の条件。作ったばかり（認可コードを使う前）か、期限の切れていない
- * リフレッシュトークン（作り直す前のもの）があるもの
+ * まだ使える許可の条件。作ったばかり（認可コードを使う前か、使っている途中）か、期限の切れていない
+ * リフレッシュトークン（作り直す前のもの）があるもの。リフレッシュトークンを作り直すときは、新しい
+ * ものを入れてから古いものに印を付けるので、その途中でもこの条件を満たす（oauth/token.ts）
  */
 function activeGrant(db: Database, now: Date): SQL {
   const live = exists(
@@ -103,7 +102,7 @@ function activeGrant(db: Database, now: Date): SQL {
         ),
       ),
   );
-  return sql`(${gt(oauthGrants.createdAt, new Date(now.getTime() - CODE_TTL_MS))} or ${live})`;
+  return sql`(${gt(oauthGrants.createdAt, new Date(now.getTime() - NEW_GRANT_MS))} or ${live})`;
 }
 
 /**
@@ -140,6 +139,12 @@ export async function createGrant(
     })
     .returning()
     .get();
+  // 動的登録のクライアントなら、許可された印を付ける（Client ID Metadata Document のものは行がない）
+  await db
+    .update(oauthClients)
+    .set({ authorizedAt: input.now })
+    .where(and(eq(oauthClients.id, input.clientId), isNull(oauthClients.authorizedAt)))
+    .run();
   const code = randomBase64Url(SECRET_BYTES);
   await db
     .insert(oauthCodes)

@@ -109,6 +109,11 @@ export const oauthClients = sqliteTable("oauth_clients", {
   /** リダイレクト先。認可のリクエストでは、このどれかと完全に一致するものだけを受ける */
   redirectUris: text("redirect_uris", { mode: "json" }).$type<string[]>().notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  /**
+   * 初めて許可された時刻。一度も許可されないまま 1 日たったクライアントは消す（誰でも登録できるので）。
+   * 一度許可されたものは、許可を取り消したあとも残す（クライアントは同じ client_id でつなぎ直す）
+   */
+  authorizedAt: integer("authorized_at", { mode: "timestamp_ms" }),
 });
 
 /**

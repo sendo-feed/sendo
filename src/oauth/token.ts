@@ -190,16 +190,19 @@ async function refresh(
   }
   const accessScopes = requested.length > 0 ? parseScopes(formatScopes(requested)) : granted;
 
-  if (!(await markRefreshTokenRotated(platform.db, { id: found.token.id, now }))) {
-    // 同時にもう一方が使った。どちらかが漏れたものなので、許可ごと取り消す
-    await revokeGrant(platform.db, grant.id);
-    throw new TokenError("invalid_grant", "refresh token was already used");
-  }
+  // 新しいトークンを先に入れ、そのあとで古いものに作り直した印を付ける。逆の順だと、その間は
+  // 作り直していないリフレッシュトークンがなくなり、同じ人がほかの許可を出したときの掃除で、
+  // この許可が「もう使えない」とみなされて消される（db/oauth.ts の activeGrant）
   const tokens = await issueTokens(platform.db, {
     grantId: grant.id,
     accessScopes,
     refreshScopes: granted,
     now,
   });
+  if (!(await markRefreshTokenRotated(platform.db, { id: found.token.id, now }))) {
+    // 同時にもう一方が使った。どちらかが漏れたものなので、許可ごと取り消す（いま出したトークンも消える）
+    await revokeGrant(platform.db, grant.id);
+    throw new TokenError("invalid_grant", "refresh token was already used");
+  }
   return toResponse(tokens, accessScopes);
 }
