@@ -5,6 +5,7 @@ import { insertArticles } from "../../src/db/articles";
 import { insertFeeds } from "../../src/db/feeds";
 import { createFolder } from "../../src/db/folders";
 import { backfillInbox, deliverNewArticles } from "../../src/db/inbox";
+import { collectRemovals, raiseRemovalHorizon } from "../../src/db/retention";
 import * as schema from "../../src/db/schema";
 import { assignFolderIfMissing, subscribeMany } from "../../src/db/subscriptions";
 import { SYNC_LIMITS } from "../../src/db/sync";
@@ -143,6 +144,7 @@ async function seedArticles(
 beforeEach(async () => {
   await env.DB.exec("DELETE FROM feeds");
   await env.DB.exec("DELETE FROM folders");
+  await env.DB.exec("DELETE FROM sync_horizons");
 });
 
 describe("最初の同期", () => {
@@ -768,5 +770,65 @@ describe("まとめて既読の境界にカーソルを使う", () => {
       });
       expect(res.status).toBe(400);
     }
+  });
+});
+
+describe("消した記録の回収（docs/decisions/retention.md の 5）", () => {
+  /** 消えてから時間のたった記録として、今ある記録をすべて回収する */
+  const collectAll = async (platform: ReturnType<typeof createTestPlatform>["platform"]) => {
+    await raiseRemovalHorizon(platform.db, { before: new Date(Date.now() + DAY) });
+    await collectRemovals(platform.db, { limit: 500 });
+  };
+
+  /** 記事を 2 つ同期したクライアントを作り、そのあとで a を受信箱から消す */
+  async function setup() {
+    const { platform } = createTestPlatform();
+    const feed = await subscribeFeed(platform, {});
+    const now = new Date();
+    await seedArticles(platform, feed.id, [
+      { id: "a", receivedAt: now },
+      { id: "b", receivedAt: now },
+    ]);
+    const client = createClient(platform);
+    await client.sync();
+    expect([...client.state.articles.keys()].sort()).toEqual(["a", "b"]);
+    await env.DB.exec("DELETE FROM user_articles WHERE article_id = 'a'");
+    return { platform, client };
+  }
+
+  it("届いていない消した記録を回収したら、そのカーソルは 400（最初から同期し直す）", async () => {
+    const { platform, client } = await setup();
+    await collectAll(platform);
+
+    const res = await requestApp(platform, `/api/v1/sync?cursor=${client.cursor()}`);
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: "invalid_cursor" } });
+    // 最初から同期し直せば、消えた記事は手元に来ない
+    const fresh = createClient(platform);
+    await fresh.sync();
+    expect([...fresh.state.articles.keys()]).toEqual(["b"]);
+  });
+
+  it("消した記録を受け取ったあとなら、回収しても続きから同期できる", async () => {
+    const { platform, client } = await setup();
+    await client.sync();
+    expect([...client.state.articles.keys()]).toEqual(["b"]);
+
+    await collectAll(platform);
+
+    const body = await client.sync();
+    expect(body.articles).toEqual([]);
+  });
+
+  it("差分を読む直前に回収されても、取りこぼさずに 400 を返す", async () => {
+    const { platform: plain, client } = await setup();
+    const hook = d1WithHook(/union all/i, () => collectAll(plain));
+    const { platform } = createTestPlatform({ db: drizzle(hook.db, { schema }) });
+    hook.arm();
+
+    const res = await requestApp(platform, `/api/v1/sync?cursor=${client.cursor()}`);
+
+    expect(res.status).toBe(400);
   });
 });

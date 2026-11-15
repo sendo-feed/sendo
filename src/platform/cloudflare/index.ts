@@ -2,14 +2,18 @@ import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../../db/schema";
 import {
   type AuthConfig,
+  DEFAULT_ARTICLE_RETENTION_DAYS,
   DEFAULT_FETCH_INTERVAL_MINUTES,
   type FetchConfig,
+  MIN_ARTICLE_RETENTION_DAYS,
   MIN_FETCH_INTERVAL_MINUTES,
   type OAuthServerConfig,
   type Platform,
+  parseArticleRetentionDays,
   parseEmailList,
   parseFetchIntervalMinutes,
   parseOrigin,
+  type RetentionConfig,
 } from "..";
 import { createQueueJobQueue } from "./queue";
 
@@ -24,6 +28,7 @@ export function createCloudflarePlatform(env: Env): Platform {
     now: () => new Date(),
     auth: readAuthConfig(env),
     fetchConfig: readFetchConfig(env),
+    retentionConfig: readRetentionConfig(env),
   };
 }
 
@@ -42,6 +47,23 @@ export function readFetchConfig(env: { FETCH_INTERVAL_MINUTES?: string }): Fetch
     );
   }
   return { intervalMs: minutes * 60 * 1000 };
+}
+
+/**
+ * 古い記事の片付けの設定を env から読む（docs/decisions/retention.md の 1）。読み方は
+ * readFetchConfig と同じ
+ */
+export function readRetentionConfig(env: { ARTICLE_RETENTION_DAYS?: string }): RetentionConfig {
+  let days = DEFAULT_ARTICLE_RETENTION_DAYS;
+  try {
+    days = parseArticleRetentionDays(env.ARTICLE_RETENTION_DAYS) ?? days;
+  } catch (error) {
+    console.error(
+      `ARTICLE_RETENTION_DAYS must be an integer of at least ${MIN_ARTICLE_RETENTION_DAYS}; using ${days}`,
+      error,
+    );
+  }
+  return { articleMs: days * 24 * 60 * 60 * 1000 };
 }
 
 /** 認証の設定に使う env の名前 */

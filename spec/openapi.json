@@ -1796,7 +1796,7 @@
             }
           },
           "400": {
-            "description": "カーソルが読めない（最初から同期し直す）",
+            "description": "カーソルが読めないか、古すぎて消した記録を送れない（最初から同期し直す）",
             "content": {
               "application/json": {
                 "schema": {

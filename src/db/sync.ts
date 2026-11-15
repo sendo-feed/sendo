@@ -17,6 +17,7 @@ import {
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Database } from ".";
 import type { InboxArticle } from "./inbox";
+import { readRemovalHorizon } from "./retention";
 import {
   articles,
   type Feed,
@@ -395,4 +396,21 @@ export async function readChanges(
     cursor: { folders: f.next, subscriptions: s.next, articles: a.next },
     hasMore: f.more || s.more || a.more,
   };
+}
+
+/**
+ * カーソルの位置より後の、受信箱の消した記録が、回収されているかもしれないか
+ * （docs/decisions/retention.md の 5）。そうなら、クライアントには最初から同期し直してもらう。
+ *
+ * 変更を読んだ「あと」に呼ぶ。片付けは、同期の下限を引き上げてから記録を消すので、読んだときに
+ * 記録が消えていたなら、そのあとで読む下限には、必ずそれが表れている。先に呼ぶと、確かめてから
+ * 読むまでの間に記録が消えたとき、気づかずに取りこぼす
+ */
+export async function isCursorExpired(db: Database, cursor: SyncCursor): Promise<boolean> {
+  const { articles: at } = cursor;
+  // 最初の同期の途中なら、送り終えたあと upTo から差分を取るので、upTo を位置として見る。
+  // 始めたばかり（upTo を決めていない）なら、消した記録は要らない
+  const position = at.upTo === null ? at.seq : at.upTo;
+  if (position < 0) return false;
+  return position < (await readRemovalHorizon(db));
 }

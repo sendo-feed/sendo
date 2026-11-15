@@ -47,6 +47,10 @@
     // この間隔で決まる（README の「取得の間隔」、docs/decisions/jobs.md）
     "FETCH_INTERVAL_MINUTES": "30",
 
+    // スターのない記事を、取り込んでから消すまでの日数。30 以上の整数で、空なら 90。未読でも消す
+    // （docs/decisions/retention.md）。長くすると、D1 の容量を多く使う（docs/cost.md）
+    "ARTICLE_RETENTION_DAYS": "90",
+
     // OAuth（Claude.ai や ChatGPT から MCP につなぐ）を使うときに書く。2 つとも空なら OAuth は使えない
     // （/mcp は MCP 用のトークンだけで使える）
     // Sendo を外から呼ぶときのオリジン（例：https://sendo.example.workers.dev）。OAuth の発行者になる

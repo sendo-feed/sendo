@@ -1,6 +1,12 @@
 import { type ArticleInput, insertArticles } from "../db/articles";
 import { getFeed, recordFetchFailure, recordFetchSuccess } from "../db/feeds";
 import { deliverNewArticles } from "../db/inbox";
+import {
+  CLEAN_UP_CATCH_UP,
+  deleteExpiredArticles,
+  planFeedCleanUp,
+  removeExpiredFromInbox,
+} from "../db/retention";
 import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
 import { type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import type { Platform } from "../platform";
@@ -20,14 +26,15 @@ export type FetchFeedOutcome =
   | { status: "missing" };
 
 /**
- * フィードを1つ取得して、新しい記事を保存する。
+ * フィードを1つ取得して、新しい記事を保存する。あわせて、古い記事を片付ける
+ * （docs/decisions/retention.md の 4）。
  *
  * フィードの側の問題（取得できない、形式が壊れている）は、フィードに記録して
  * 間隔を延ばし、正常に終わらせる。キューのやり直しに回すのは、DB の失敗など
  * こちら側の予期しない例外だけにする。
  */
 export async function runFetchFeed(
-  platform: Pick<Platform, "db" | "fetch" | "now" | "fetchConfig">,
+  platform: Pick<Platform, "db" | "fetch" | "now" | "fetchConfig" | "retentionConfig">,
   feedId: string,
 ): Promise<FetchFeedOutcome> {
   const { db } = platform;
@@ -36,6 +43,17 @@ export async function runFetchFeed(
   if (!feed) return { status: "missing" };
 
   const startedAt = platform.now();
+
+  // 期間を過ぎた記事を、受信箱から片付ける。取得の結果によらない。片付けた位置は、取得の結果と
+  // 一緒に記録する（記録の前に落ちても、やり直せば同じ範囲をもう一度片付けるだけ）
+  const cleanUp = planFeedCleanUp(feed, {
+    now: startedAt,
+    retentionMs: platform.retentionConfig.articleMs,
+    stepMs: CLEAN_UP_CATCH_UP * intervalMs,
+  });
+  if (cleanUp) await removeExpiredFromInbox(db, { feedId: feed.id, window: cleanUp });
+  const cleanedUntil = cleanUp?.until ?? feed.cleanedUntil;
+
   try {
     const result = await fetchFeed(feed.url, {
       fetch: platform.fetch,
@@ -51,6 +69,7 @@ export async function runFetchFeed(
         nextFetchAt: new Date(startedAt.getTime() + intervalMs),
         etag: feed.etag,
         lastModified: feed.lastModified,
+        cleanedUntil: cleanUp?.until,
       });
       return { status: "not-modified" };
     }
@@ -61,6 +80,16 @@ export async function runFetchFeed(
     // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
     await deliverNewArticles(db, { feedId: feed.id });
 
+    // 片付けた範囲までの記事のうち、どの受信箱にも残っておらず、フィードにもう載っていないものを
+    // 消す。フィードに載っている記事を消すと、次の取得で新しい記事として入り直すため
+    if (cleanedUntil) {
+      await deleteExpiredArticles(db, {
+        feedId: feed.id,
+        until: cleanedUntil,
+        currentGuids: rows.map((row) => row.guid),
+      });
+    }
+
     // 記事を入れ終えてから、取得済みとして記録する。途中で落ちても、次の取得でやり直せる
     await recordFetchSuccess(db, feed.id, {
       now: startedAt,
@@ -69,6 +98,7 @@ export async function runFetchFeed(
       lastModified: result.lastModified,
       title: parsed.title,
       siteUrl: parsed.siteUrl,
+      cleanedUntil: cleanUp?.until,
     });
     // フィードの名前やサイトの URL が変わると、購読の変更番号はトリガーが進める
     // （migrations/0003_received_seq_and_feed_trigger.sql。同期でクライアントに伝わる）
@@ -86,6 +116,7 @@ export async function runFetchFeed(
       nextFetchAt: new Date(startedAt.getTime() + backoff),
       errorCount,
       error: message,
+      cleanedUntil: cleanUp?.until,
     });
     return { status: "failed", error: message };
   }

@@ -1,5 +1,5 @@
 import { leaseDueFeeds, MAX_LEASE } from "../db/feeds";
-import type { Platform } from "../platform";
+import { MIN_FETCH_INTERVAL_MINUTES, type Platform } from "../platform";
 
 /**
  * キューに積んでから取得が終わるまでの猶予。これを過ぎても取得が記録されなければ、
@@ -35,4 +35,30 @@ export async function enqueueDueFeeds(
     if (ids.length < MAX_LEASE) return total;
   }
   return total;
+}
+
+/** 1 日 1 回の片付けを積む時刻（UTC の時）。日本時間の 3 時 */
+export const CLEAN_UP_HOUR_UTC = 18;
+
+/**
+ * 定期実行の時刻が、1 日 1 回の片付けの時刻なら、片付けの仕事を積む（docs/decisions/retention.md の 4）。
+ *
+ * 定期実行は MIN_FETCH_INTERVAL_MINUTES おきに動くので、片付けの時刻の最初のその分の間に
+ * 予定された 1 回だけが積む。その回が落ちたら、その日は片付けない（翌日にまとめて片付ける）
+ *
+ * @param scheduledTime 定期実行が予定された時刻（実際に動き出した時刻ではない）
+ * @returns 積んだら true
+ */
+export async function enqueueDailyCleanUp(
+  platform: Pick<Platform, "jobs">,
+  scheduledTime: Date,
+): Promise<boolean> {
+  if (
+    scheduledTime.getUTCHours() !== CLEAN_UP_HOUR_UTC ||
+    scheduledTime.getUTCMinutes() >= MIN_FETCH_INTERVAL_MINUTES
+  ) {
+    return false;
+  }
+  await platform.jobs.enqueue([{ type: "clean-up" }]);
+  return true;
 }

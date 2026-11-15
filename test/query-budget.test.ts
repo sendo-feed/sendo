@@ -1,9 +1,10 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { QUERY_BUDGET } from "../src/db/chunk";
-import { insertFeeds, MAX_LEASE } from "../src/db/feeds";
+import { getFeed, insertFeeds, MAX_LEASE } from "../src/db/feeds";
 import { subscribeMany } from "../src/db/subscriptions";
 import { MAX_ITEMS } from "../src/fetcher/parse-feed";
+import { runCleanUp, SWEEP_ROUNDS } from "../src/jobs/clean-up";
 import { runFetchFeed } from "../src/jobs/fetch-feed";
 import { runImportFeeds } from "../src/jobs/import-feeds";
 import { IMPORT_CHUNK_SIZE, jobSchema } from "../src/jobs/job";
@@ -69,6 +70,44 @@ describe("D1 のクエリの上限", () => {
       inserted: MAX_ITEMS,
     });
     expect(queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
+  });
+
+  it("取得のジョブ：記事が上限まであり、古い記事の片付けもする場合", async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const items = Array.from(
+      { length: MAX_ITEMS },
+      (_, i) => `<item><title>t${i}</title><link>https://blog.example/${i}</link></item>`,
+    ).join("");
+    const { fetch } = fakeFetch(
+      () => new Response(`<rss version="2.0"><channel><title>b</title>${items}</channel></rss>`),
+    );
+    const { platform, queryCount, resetQueryCount } = createTestPlatform({
+      fetch,
+      now: () => NOW,
+    });
+    // 期間より前に登録したフィードなので、片付けの範囲がある
+    const feed = await subscribeFeed(platform, {
+      url: "https://blog.example/feed",
+      now: new Date(NOW.getTime() - 200 * DAY),
+    });
+    resetQueryCount();
+
+    await runFetchFeed(platform, feed.id);
+
+    expect((await getFeed(platform.db, feed.id))?.cleanedUntil).not.toBeNull();
+    expect(queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
+  });
+
+  it("1 日 1 回の片付け：どれも文の数の上限まで使う場合", async () => {
+    const { platform, queryCount } = createTestPlatform({ now: () => NOW });
+
+    await runCleanUp(platform);
+
+    // 消すものがなければ、それぞれ 1 文で終わる（受信箱、記事、下限の引き上げ、消した記録）
+    expect(queryCount()).toBe(4);
+    // いちばん多いのは、どれも上限の回数まで消し続ける場合
+    const worst = SWEEP_ROUNDS.inbox + SWEEP_ROUNDS.articles + 1 + SWEEP_ROUNDS.removals;
+    expect(worst).toBeLessThanOrEqual(QUERY_BUDGET);
   });
 
   it("定期実行：時期の来たフィードが 1 回で積める数より多い場合は、残りを次に回す", async () => {

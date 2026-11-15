@@ -17,6 +17,8 @@ export const IMPORT_CHUNK_SIZE = 10;
  */
 export const jobSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("fetch-feed"), feedId: z.string().min(1) }),
+  /** 1 日 1 回の片付け（docs/decisions/retention.md の 4、5）。定期実行が積む */
+  z.object({ type: z.literal("clean-up") }),
   z.object({
     type: z.literal("import-feeds"),
     /** 誰の購読としてインポートするか */

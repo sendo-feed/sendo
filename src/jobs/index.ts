@@ -1,4 +1,5 @@
 import type { Platform } from "../platform";
+import { runCleanUp } from "./clean-up";
 import { runFetchFeed } from "./fetch-feed";
 import { runImportFeeds } from "./import-feeds";
 import type { Job } from "./job";
@@ -11,6 +12,10 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
       if (outcome.status === "failed") {
         console.warn("feed fetch failed", { feedId: job.feedId, error: outcome.error });
       }
+      return;
+    }
+    case "clean-up": {
+      console.info("cleaned up", await runCleanUp(platform));
       return;
     }
     case "import-feeds": {

@@ -50,6 +50,12 @@ export interface FetchConfig {
   intervalMs: number;
 }
 
+/** 古い記事の片付けの設定（docs/decisions/retention.md の 1） */
+export interface RetentionConfig {
+  /** スターのない記事を、取り込んでから消すまでの期間（ミリ秒） */
+  articleMs: number;
+}
+
 /** アプリが実行環境から受け取るもの */
 export interface Platform {
   db: Database;
@@ -59,6 +65,7 @@ export interface Platform {
   now: () => Date;
   auth: AuthConfig;
   fetchConfig: FetchConfig;
+  retentionConfig: RetentionConfig;
 }
 
 /** 取得の間隔の既定（分） */
@@ -70,20 +77,41 @@ export const DEFAULT_FETCH_INTERVAL_MINUTES = 30;
  */
 export const MIN_FETCH_INTERVAL_MINUTES = 10;
 
+/** 記事を残す期間の既定（日） */
+export const DEFAULT_ARTICLE_RETENTION_DAYS = 90;
+
+/**
+ * 記事を残す期間の下限（日）。最初の同期と、購読を始めたときの補充が直近 30 日の記事を扱うので、
+ * これより短いと、補充した記事が次の片付けですぐに消える（docs/decisions/retention.md）
+ */
+export const MIN_ARTICLE_RETENTION_DAYS = 30;
+
+/** 下限以上の整数の設定を読む。空なら undefined（既定を使う）。下限以上の整数でなければ例外 */
+function parseIntegerSetting(
+  value: string | undefined,
+  min: number,
+  name: string,
+): number | undefined {
+  const text = value?.trim() ?? "";
+  if (text === "") return undefined;
+  const number = Number(text);
+  if (!/^\d+$/.test(text) || number < min) {
+    throw new RangeError(`${name} must be an integer of at least ${min}: ${text}`);
+  }
+  return number;
+}
+
 /**
  * 取得の間隔（分）の設定を読む。空なら undefined（既定を使う）。下限以上の整数でなければ例外。
  * 設定は実行環境ごとに渡し方が違うので、読むのは緩衝層の実装で行い、形だけここで決める。
  */
 export function parseFetchIntervalMinutes(value: string | undefined): number | undefined {
-  const text = value?.trim() ?? "";
-  if (text === "") return undefined;
-  const minutes = Number(text);
-  if (!/^\d+$/.test(text) || minutes < MIN_FETCH_INTERVAL_MINUTES) {
-    throw new RangeError(
-      `fetch interval must be an integer of at least ${MIN_FETCH_INTERVAL_MINUTES} minutes: ${text}`,
-    );
-  }
-  return minutes;
+  return parseIntegerSetting(value, MIN_FETCH_INTERVAL_MINUTES, "fetch interval (minutes)");
+}
+
+/** 記事を残す期間（日）の設定を読む。読み方は parseFetchIntervalMinutes と同じ */
+export function parseArticleRetentionDays(value: string | undefined): number | undefined {
+  return parseIntegerSetting(value, MIN_ARTICLE_RETENTION_DAYS, "article retention (days)");
 }
 
 /**
