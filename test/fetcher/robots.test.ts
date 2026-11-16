@@ -305,14 +305,14 @@ describe("fetchRobotsTxt", () => {
     expect(calls[0]?.url).toBe("https://example.com:8443/robots.txt");
   });
 
-  it.each([400, 401, 403, 404, 410, 429, 451])("%i ならない（すべて許可）", async (status) => {
+  it.each([400, 401, 403, 404, 410, 451])("%i ならない（すべて許可）", async (status) => {
     const { fetch } = robotsFetch(() => new Response("User-agent: *\nDisallow: /", { status }));
     expect(await fetchRobotsTxt("https://example.com", { fetch })).toEqual({
       status: "unavailable",
     });
   });
 
-  it.each([500, 502, 503, 504])("%i なら届かない（すべて不許可）", async (status) => {
+  it.each([429, 500, 502, 503, 504])("%i なら届かない（すべて不許可、一時的）", async (status) => {
     const { fetch } = robotsFetch(() => new Response("oops", { status }));
     expect(await fetchRobotsTxt("https://example.com", { fetch })).toMatchObject({
       status: "unreachable",
@@ -539,6 +539,23 @@ describe("RobotsCache", () => {
       "could not fetch robots.txt; treating as disallowed",
       expect.objectContaining({ origin: "https://example.com" }),
     );
+  });
+
+  it("429 なら、届かないときと同じく不許可にし、10 分たったら取りにいき直す", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let status = 429;
+    const { fetch, calls } = robotsFetch(() => new Response("", { status }));
+    const cache = new RobotsCache();
+    const now = new Date();
+    expect(await cache.isAllowed(url("/a"), { fetch, now })).toBe(false);
+    const soon = new Date(now.getTime() + ROBOTS_UNREACHABLE_TTL_MS - 1);
+    expect(await cache.isAllowed(url("/a"), { fetch, now: soon })).toBe(false);
+    expect(calls).toHaveLength(1);
+
+    status = 404;
+    const later = new Date(now.getTime() + ROBOTS_UNREACHABLE_TTL_MS);
+    expect(await cache.isAllowed(url("/a"), { fetch, now: later })).toBe(true);
+    expect(calls).toHaveLength(2);
   });
 
   it("同時に聞かれても、取りにいくのは 1 回", async () => {

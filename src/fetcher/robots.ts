@@ -21,9 +21,9 @@ export type RobotsRule = { allow: boolean; pattern: string };
 export type RobotsTxt =
   /** 読めた。当てはまる規則（なければ空で、すべて許可） */
   | { status: "fetched"; rules: readonly RobotsRule[] }
-  /** ない（4xx、リダイレクトが多すぎる）。すべて許可 */
+  /** ない（429 を除く 4xx、リダイレクトが多すぎる）。すべて許可 */
   | { status: "unavailable" }
-  /** 届かない（5xx、時間切れ、接続できない、SSRF の守りで止めた）。すべて不許可（一時的） */
+  /** 届かない（429、5xx、時間切れ、接続できない、SSRF の守りで止めた）。すべて不許可（一時的） */
   | { status: "unreachable"; reason: string };
 
 type Group = { agents: string[]; rules: RobotsRule[] };
@@ -235,7 +235,8 @@ const DEFAULTS = { timeoutMs: 10_000, maxBytes: 500 * 1024, maxRedirects: 5 };
  * - フィードと同じ守り：toFetchableUrl、リダイレクトごとの確認、時間の上限。接続する IP の確認は、
  *   緩衝層の fetch（コンテナ版の platform/node/safe-fetch.ts）が行う
  * - 最初の maxBytes だけを読み、そこで切れた最後の行は捨てる
- * - 2xx は読む。4xx はない（すべて許可）。5xx と届かないときは unreachable（すべて不許可）
+ * - 2xx は読む。429 を除く 4xx はない（すべて許可）。429、5xx と届かないときは unreachable（すべて不許可）。
+ *   429 は、回数を減らしてほしいというサイトの知らせなので、Google と同じく 5xx と同じに扱う
  * - リダイレクトは maxRedirects 回までたどる。それを超えたら、ない（すべて許可）
  */
 export async function fetchRobotsTxt(
@@ -268,7 +269,9 @@ export async function fetchRobotsTxt(
         return { status: "fetched", rules: parseRobotsTxt(text) };
       }
       await res.body?.cancel();
-      if (res.status >= 400 && res.status < 500) return { status: "unavailable" };
+      if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+        return { status: "unavailable" };
+      }
       return { status: "unreachable", reason: `status ${res.status}` };
     }
   } catch (error) {

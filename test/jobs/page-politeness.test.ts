@@ -194,13 +194,16 @@ describe("robots.txt（決定の 18）", () => {
     expect(t.calls().filter((url) => url.includes("/posts/"))).toEqual([]);
   });
 
-  it("robots.txt に届かなければ（5xx）、取りにいかずに抜けなかったものとして記録する", async () => {
-    const t = await setUpSite({ robots: () => new Response("oops", { status: 503 }) });
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    await runJob(t.platform, { type: "extract-page", articleId: t.articleId });
-    expect(await getPageContent(t.platform.db, t.articleId)).toMatchObject({ status: "failed" });
-    expect(t.calls().filter((url) => url.includes("/posts/"))).toEqual([]);
-  });
+  it.each([429, 503])(
+    "robots.txt が %i なら、取りにいかずに抜けなかったものとして記録する",
+    async (status) => {
+      const t = await setUpSite({ robots: () => new Response("oops", { status }) });
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      await runJob(t.platform, { type: "extract-page", articleId: t.articleId });
+      expect(await getPageContent(t.platform.db, t.articleId)).toMatchObject({ status: "failed" });
+      expect(t.calls().filter((url) => url.includes("/posts/"))).toEqual([]);
+    },
+  );
 
   it("robots.txt がなければ（4xx）、取りにいく", async () => {
     const t = await setUpSite({ robots: () => new Response("", { status: 403 }) });
