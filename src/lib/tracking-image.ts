@@ -44,12 +44,33 @@ const PIXEL_LENGTH = /^\s*(\d+(?:\.\d*)?|\.\d+)\s*(?:px)?\s*$/i;
 /** style の中の幅と高さの宣言（「width: 1px !important」など） */
 const STYLE_SIZE = /^\s*(width|height)\s*:\s*(.*?)\s*(?:!\s*important\s*)?$/i;
 
+/** 画像の幅か高さ。style に書いてあれば、属性より style を使う（ブラウザと同じ） */
+export type ImageLength = { value: string; from: "attribute" | "style" } | undefined;
+
+export type ImageSize = { width: ImageLength; height: ImageLength };
+
+/** 画像の幅と高さを読む。attributes は、parseAttributes で読んだもとの属性（名前は小文字） */
+export function imageSize(attributes: ReadonlyMap<string, string>): ImageSize {
+  const fromAttribute = (key: "width" | "height"): ImageLength => {
+    const value = attributes.get(key);
+    return value === undefined ? undefined : { value: decodeHTML(value), from: "attribute" };
+  };
+  const size: ImageSize = { width: fromAttribute("width"), height: fromAttribute("height") };
+  const style = attributes.get("style");
+  for (const declaration of (style === undefined ? "" : decodeHTML(style)).split(";")) {
+    const match = STYLE_SIZE.exec(declaration);
+    if (match?.[1] && match[2] !== undefined) {
+      size[match[1].toLowerCase() as "width" | "height"] = { value: match[2], from: "style" };
+    }
+  }
+  return size;
+}
+
 /**
- * 計測用の画像か。src は、絶対の URL にしたもの。attributes は、parseAttributes で読んだ
- * もとの属性（名前は小文字）
+ * 計測用の画像か。src は絶対の URL にしたもの、size は imageSize で読んだもの
  */
-export function isTrackingImage(src: string, attributes: ReadonlyMap<string, string>): boolean {
-  return isTrackingAddress(src) || isPixelSized(attributes);
+export function isTrackingImage(src: string, size: ImageSize): boolean {
+  return isTrackingAddress(src) || (isAtMostOnePixel(size.width) && isAtMostOnePixel(size.height));
 }
 
 function isTrackingAddress(src: string): boolean {
@@ -67,27 +88,9 @@ function isTrackingAddress(src: string): boolean {
   );
 }
 
-/** 幅と高さが、ともに 1 以下と書かれているか。style に書いてあれば、属性より style を見る */
-function isPixelSized(attributes: ReadonlyMap<string, string>): boolean {
-  const size = {
-    width: decode(attributes.get("width")),
-    height: decode(attributes.get("height")),
-  };
-  for (const declaration of (decode(attributes.get("style")) ?? "").split(";")) {
-    const match = STYLE_SIZE.exec(declaration);
-    if (match?.[1] && match[2] !== undefined) {
-      size[match[1].toLowerCase() as "width" | "height"] = match[2];
-    }
-  }
-  return isAtMostOnePixel(size.width) && isAtMostOnePixel(size.height);
-}
-
-function isAtMostOnePixel(value: string | undefined): boolean {
-  if (value === undefined) return false;
-  const match = PIXEL_LENGTH.exec(value);
+/** 幅か高さが 1 以下か */
+function isAtMostOnePixel(length: ImageLength): boolean {
+  if (length === undefined) return false;
+  const match = PIXEL_LENGTH.exec(length.value);
   return match?.[1] !== undefined && Number(match[1]) <= 1;
-}
-
-function decode(value: string | undefined): string | undefined {
-  return value === undefined ? undefined : decodeHTML(value);
 }

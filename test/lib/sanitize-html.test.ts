@@ -138,8 +138,12 @@ describe("sanitizeHtml", () => {
 
 describe("sanitizeHtml の計測用の画像（トラッキングピクセル）", () => {
   const IMG = "https://img.example.com/a.png";
-  const kept = (attributes: string) =>
-    clean(`<p>前<img src="${IMG}" ${attributes}>後</p>`).includes("<img");
+  /** 画像が残るか。保存の前と返すときの 2 回通しても、結果が変わらないことも確かめる */
+  const kept = (attributes: string) => {
+    const once = clean(`<p>前<img src="${IMG}" ${attributes}>後</p>`);
+    expect(clean(once), attributes).toBe(once);
+    return once.includes("<img");
+  };
 
   it("幅と高さがともに 1 以下の画像は落とす", () => {
     for (const attributes of [
@@ -183,6 +187,17 @@ describe("sanitizeHtml の計測用の画像（トラッキングピクセル）
     ]) {
       expect(kept(attributes), attributes).toBe(true);
     }
+  });
+
+  it("style が大きさを上書きして残した画像は、上書きされた属性を出さず、返すときにも残る", async () => {
+    const stored = clean(
+      `<img src="${IMG}" width="1" height="1" style="width:640px;height:480px"><img src="${IMG}" width="1" height="1" style="width:auto"><img src="${IMG}" width="1" height="1" style="width:2px">`,
+    );
+    expect(stored).toBe(
+      `<img src="${IMG}"><img src="${IMG}" height="1"><img src="${IMG}" height="1">`,
+    );
+    const returned = await sanitizeHtmlWithImages(stored, BASE, async (url) => url);
+    expect(returned).toBe(stored);
   });
 
   it("片方だけが小さい画像、大きさのない画像、隠しただけの画像は残す", () => {

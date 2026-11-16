@@ -1,6 +1,6 @@
 import { decodeHTML } from "entities";
 import { escapeHtml, parseAttributes, tokenizeHtml } from "./html";
-import { isTrackingImage } from "./tracking-image";
+import { imageSize, isTrackingImage } from "./tracking-image";
 
 /*
  * 記事の本文（外部から来る HTML）のサニタイズ（docs/decisions/content.md の 2）。
@@ -123,14 +123,19 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
 
     if (name === "img") {
       const src = toUrl(attributes.get("src"), baseUrl, HTTP);
+      const size = imageSize(attributes);
       // 計測用の画像（トラッキングピクセル）は落とす
-      if (!src || isTrackingImage(src, attributes)) continue;
+      if (!src || isTrackingImage(src, size)) continue;
       let rest = "";
       const alt = attributes.get("alt");
       if (alt !== undefined) rest += ` alt="${escapeHtml(decodeHTML(alt))}"`;
+      // style は落とすので、style が上書きした属性も出さない（出すと、もう一度通したときに
+      // 計測用の画像に見えて落ちることがある）
       for (const key of ["width", "height"] as const) {
-        const value = attributes.get(key);
-        if (value !== undefined && DIGITS.test(value)) rest += ` ${key}="${value}"`;
+        const length = size[key];
+        if (length?.from === "attribute" && DIGITS.test(length.value)) {
+          rest += ` ${key}="${length.value}"`;
+        }
       }
       parts.push({ image: src, rest });
       continue;
