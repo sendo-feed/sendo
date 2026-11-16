@@ -1,12 +1,14 @@
 import { decodeHTML } from "entities";
 import { escapeHtml, parseAttributes, tokenizeHtml } from "./html";
+import { isTrackingImage } from "./tracking-image";
 
 /*
  * 記事の本文（外部から来る HTML）のサニタイズ（docs/decisions/content.md の 2）。
  *
- * 決めたタグと属性だけを通し、ほかは落とす。出力は、ここで組み立て直した HTML だけにする
- * （入力のタグの文字列を、そのまま写さない）。開いたタグは必ず閉じ、文字と属性の値は
- * エスケープし直す。同じ入力をもう一度通しても、結果は変わらない。
+ * 決めたタグと属性だけを通し、ほかは落とす。計測用の画像（lib/tracking-image.ts）も落とす。
+ * 出力は、ここで組み立て直した HTML だけにする（入力のタグの文字列を、そのまま写さない）。
+ * 開いたタグは必ず閉じ、文字と属性の値はエスケープし直す。同じ入力をもう一度通しても、
+ * 結果は変わらない。
  */
 
 /** 中身を持たない要素 */
@@ -122,7 +124,8 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
 
     if (name === "img") {
       const src = toUrl(attributes.get("src"), baseUrl, HTTP);
-      if (!src) continue;
+      // 計測用の画像（トラッキングピクセル）は落とす
+      if (!src || isTrackingImage(src, attributes)) continue;
       let rest = "";
       const alt = attributes.get("alt");
       if (alt !== undefined) rest += ` alt="${escapeHtml(decodeHTML(alt))}"`;
