@@ -114,8 +114,8 @@ describe("D1 のクエリの上限", () => {
       SWEEP_ROUNDS.removals +
       1 +
       SWEEP_ROUNDS.settings +
-      // 本文の書き留めは、1 回につき読むのと消すので 2 文
-      2 * SWEEP_ROUNDS.contents;
+      // 本文の書き留めは、1 回につき、読む、本文を消した分を消す、行に入っている分を消すの 3 文
+      3 * SWEEP_ROUNDS.contents;
     expect(worst).toBeLessThanOrEqual(QUERY_BUDGET);
   });
 

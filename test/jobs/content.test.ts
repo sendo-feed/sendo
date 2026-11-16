@@ -269,6 +269,42 @@ describe("本文を片付ける", () => {
   });
 });
 
+describe("本文の書き留めと、記事の削除の競合", () => {
+  it("行に入っていると読んだあとで記事が消えても、書き留めは残り、次の片付けで本文を消す", async () => {
+    const t = await setUp(() => rss(item("full", FULL)));
+    await runFetchFeed(t.platform, t.feed.id);
+    const key = (await t.byGuid("full")).contentKey ?? "";
+    // 記事の行を入れたあと、書き留めを消す前に落ちた状態（記事と書き留めの両方がある）
+    await noteContentKeys(t.platform.db, [key]);
+    t.advance(CONTENT_NOTE_GRACE_MS + 60_000);
+
+    // 片付けが書き留めを読んだあと、消す前に、記事が消える
+    let deleted = false;
+    const racing = {
+      ...t.platform,
+      content: {
+        ...t.platform.content,
+        async delete(keys: readonly string[]) {
+          if (!deleted) {
+            deleted = true;
+            await t.platform.db.delete(articles).where(eq(articles.contentKey, key)).run();
+          }
+          await t.platform.content.delete(keys);
+        },
+      },
+    };
+    await runCleanUp(racing);
+
+    // 本文はまだ消えていないが、書き留めが残っているので、手掛かりは失われない
+    expect(await t.platform.content.get(key)).not.toBeNull();
+    expect(await t.notes([key])).toHaveLength(1);
+
+    await runCleanUp(t.platform);
+    expect(await t.platform.content.get(key)).toBeNull();
+    expect(await t.notes([key])).toEqual([]);
+  });
+});
+
 describe("本文を配る", () => {
   type Article = { id: string; title: string; hasContent: boolean };
 

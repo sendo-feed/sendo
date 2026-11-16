@@ -41,8 +41,12 @@ export async function noteContentKeys(db: Database, keys: readonly string[]): Pr
 }
 
 /**
- * 記事の行に入った名前の書き留めを消す。記事の行を入れたあとで呼ぶ。行に入っているかは、
- * 消す文の中で確かめる。入らなかった名前は残り、片付けが本文を消す
+ * 記事の行に入っている名前の書き留めを消す。行に入っているかは、消す文の中で確かめる。
+ * 入っていない名前は残り、片付けが本文を消す。
+ *
+ * 取り込みで記事の行を入れたあとと、片付けが「行に入っている」と読んだ名前を消すときに使う。
+ * 片付けでは、読んだあとで記事が消えていることがある（トリガーは、書き留めがもうあると何も
+ * 足さない）ので、読んだ結果ではなく、この文で確かめる
  */
 export async function clearUsedContentNotes(db: Database, keys: readonly string[]): Promise<void> {
   if (keys.length === 0) return;
@@ -74,7 +78,7 @@ export async function readOldContentNotes(
   return rows.map((row) => ({ key: row.key, used: row.used !== 0 }));
 }
 
-/** 書き留めを消す。行に入っていない名前は、本文を消したあとで呼ぶ */
+/** 書き留めを消す。行に入っていない名前の本文を、置き場から消したあとで呼ぶ */
 export async function deleteContentNotes(db: Database, keys: readonly string[]): Promise<void> {
   if (keys.length === 0) return;
   await db.run(sql`

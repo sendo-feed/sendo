@@ -1,4 +1,9 @@
-import { CONTENT_NOTE_GRACE_MS, deleteContentNotes, readOldContentNotes } from "../db/content";
+import {
+  CONTENT_NOTE_GRACE_MS,
+  clearUsedContentNotes,
+  deleteContentNotes,
+  readOldContentNotes,
+} from "../db/content";
 import {
   collectRemovals,
   REMOVAL_RETENTION_MS,
@@ -61,7 +66,8 @@ async function repeat(rounds: number, step: () => Promise<number>): Promise<numb
 
 /**
  * before より前の書き留めを見て、どの記事の行にも入っていない名前の本文を置き場から消し、
- * 書き留めを消す。行に入っている名前は、書き留めだけを消す。
+ * 書き留めを消す。行に入っている名前は、書き留めだけを消す（行がまだあるかは、消す文の中で
+ * 確かめ直す）。
  *
  * 本文を消してから、書き留めを消す。間で落ちても、書き留めが残っているので、次の片付けで
  * もう一度消す（ない本文を消しても、何も起きない）
@@ -77,9 +83,13 @@ async function sweepContents(
     const notes = await readOldContentNotes(platform.db, { before, limit: SWEEP_BATCH });
     const unused = notes.filter((note) => !note.used).map((note) => note.key);
     await platform.content.delete(unused);
-    await deleteContentNotes(
+    await deleteContentNotes(platform.db, unused);
+    // 行に入っていた名前は、消す文の中で、行がまだあるかを確かめ直す。読んだあとで記事が消えると、
+    // トリガーは書き留めがもうあるので何も足さない。ここで確かめずに消すと、その本文を消す
+    // 手掛かりがなくなる。行がなくなっていれば書き留めは残り、次の片付けで本文を消す
+    await clearUsedContentNotes(
       platform.db,
-      notes.map((note) => note.key),
+      notes.filter((note) => note.used).map((note) => note.key),
     );
     removed += unused.length;
     if (notes.length < SWEEP_BATCH) break;
