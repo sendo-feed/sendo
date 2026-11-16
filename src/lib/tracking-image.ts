@@ -43,8 +43,24 @@ const TRACKING_ADDRESSES: readonly TrackingAddress[] = [
  * （同じ文字を取り合う量指定子を並べない。前後の空白は、先に trim で除く）
  */
 
-/** 大きさの数（「1」「1.0」「.5」など）。単位と前後の空白は、除いてから当てる */
+/** 属性の大きさの数（「1」「1.0」「.5」など）。単位（px）と前後の空白は、除いてから当てる */
 const PIXEL_NUMBER = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
+
+/**
+ * style の長さ。CSS で正しい書き方だけ（数と px の間に空白を置かない。単位を省けるのは 0 だけ）。
+ * CSS で無効な宣言はブラウザが捨てるので、ここでも大きさとみなさない
+ */
+const STYLE_PIXELS = /^(?:\d+(?:\.\d+)?|\.\d+)px$/;
+const STYLE_ZERO = /^(?:\d+(?:\.\d+)?|\.\d+)$/;
+
+/**
+ * width ／ height のほかに、画像の出る大きさを変える style の性質。これがあれば、大きさが
+ * 分からないものとして扱う（min-width は width より強く、zoom や transform は拡大する）
+ */
+const SIZE_AFFECTING = new Set([
+  ...["min-width", "min-height", "inline-size", "block-size", "min-inline-size"],
+  ...["min-block-size", "zoom", "transform", "scale"],
+]);
 
 /**
  * style のうち、ここでは読み切れない書き方。コメント、エスケープ、文字列（引用符）、関数や
@@ -65,16 +81,19 @@ export function imageSize(attributes: ReadonlyMap<string, string>): ImageSize {
   };
   const size: ImageSize = { width: fromAttribute("width"), height: fromAttribute("height") };
   const style = decodeHTML(attributes.get("style") ?? "");
-  if (UNREADABLE_STYLE.test(style)) {
-    // 読み切れない style は、大きさが分からないものとして扱う（迷うものは残す）
-    return { width: { value: "", from: "style" }, height: { value: "", from: "style" } };
-  }
+  // 読み切れない style は、大きさが分からないものとして扱う（迷うものは残す）
+  const unknown: ImageSize = {
+    width: { value: "", from: "style" },
+    height: { value: "", from: "style" },
+  };
+  if (UNREADABLE_STYLE.test(style)) return unknown;
   // あとの宣言が勝つ。ただし、!important の宣言は、!important でない宣言には負けない
   const important = { width: false, height: false };
   for (const declaration of style.split(";")) {
     const colon = declaration.indexOf(":");
     if (colon === -1) continue;
     const key = declaration.slice(0, colon).trim().toLowerCase();
+    if (SIZE_AFFECTING.has(key)) return unknown;
     if (key !== "width" && key !== "height") continue;
     let value = declaration.slice(colon + 1).trim();
     const bang = value.lastIndexOf("!");
@@ -118,6 +137,10 @@ function isTrackingAddress(src: string): boolean {
 function isAtMostOnePixel(length: ImageLength): boolean {
   if (length === undefined) return false;
   let value = length.value.trim().toLowerCase();
+  if (length.from === "style") {
+    if (STYLE_ZERO.test(value)) return Number(value) === 0;
+    return STYLE_PIXELS.test(value) && Number(value.slice(0, -2)) <= 1;
+  }
   if (value.endsWith("px")) value = value.slice(0, -2).trimEnd();
   return PIXEL_NUMBER.test(value) && Number(value) <= 1;
 }

@@ -172,6 +172,8 @@ describe("sanitizeHtml の計測用の画像（トラッキングピクセル）
       'style="width:1px;height:1px"',
       'style="height: 1px !important; width: 1px !important; border: 0 !important;"',
       'style="WIDTH:0;HEIGHT:0"',
+      'style="width:0.5px;height:.5PX"',
+      'style="width:0px;height:0.0"',
       'width="1" style="height:1px"',
       'width="640" height="480" style="width:1px;height:1px"',
       'style="width:300px;height:200px;width:1px;height:1px"',
@@ -197,6 +199,15 @@ describe("sanitizeHtml の計測用の画像（トラッキングピクセル）
       `width="640" height="480" style="--example:';width:1px;height:1px;'"`,
       'width="640" height="480" style="background:url(a;width:1px;height:1px)"',
       'style="width:calc(1px);height:calc(1px)"',
+      // 最小の大きさや拡大で、出る大きさが変わる
+      'width="1" height="1" style="min-width:640px;min-height:480px"',
+      'width="1" height="1" style="min-width:640px"',
+      'style="width:1px;height:1px;zoom:640"',
+      'style="width:1px;height:1px;scale:640"',
+      // CSS で無効な長さ（ブラウザが捨てる）は、大きさとみなさない
+      'width="640" height="480" style="width:1 px;height:1 px"',
+      'width="640" height="480" style="width:1;height:1"',
+      'width="640" height="480" style="width:1.px;height:1.px"',
     ]) {
       expect(kept(attributes), attributes).toBe(true);
     }
