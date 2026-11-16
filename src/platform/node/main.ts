@@ -85,7 +85,11 @@ async function runServer(env: NodeEnv): Promise<void> {
       console.error("shutdown timed out; exiting");
       process.exit(1);
     }, SHUTDOWN_TIMEOUT_MS);
-    server.close();
+    // 新しい接続を受けるのをやめ、処理中のリクエストが終わるのを待つ。待っている間の、使われていない
+    // 接続（keep-alive）は閉じる。終わらなければ、上の上限で打ち切る
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    if ("closeIdleConnections" in server) server.closeIdleConnections();
+    await closed;
     await scheduler.stop();
     await jobs.stop();
     database.close();

@@ -62,7 +62,11 @@ export function withPublicOrigin(
   if (publicOrigin === undefined) return handler;
   return (request) => {
     const url = new URL(request.url);
-    const rewritten = new URL(`${url.pathname}${url.search}`, publicOrigin);
+    // パスを URL として解釈させない（//evil.example.com/... のようなパスで、ホストを変えられないように）。
+    // 設定のオリジンに、パスとクエリだけを入れる
+    const rewritten = new URL(publicOrigin);
+    rewritten.pathname = url.pathname;
+    rewritten.search = url.search;
     if (rewritten.href === url.href) return handler(request);
     const hasBody = request.method !== "GET" && request.method !== "HEAD";
     return handler(

@@ -139,6 +139,16 @@ describe("withPublicOrigin", () => {
     });
   });
 
+  it("パスでホストを変えられない（//host/... のようなパスも、パスのまま扱う）", async () => {
+    const handler = withPublicOrigin(echo, "https://sendo.example.com");
+    const res = await handler(
+      new Request("http://0.0.0.0:8787//evil.example.com/api/v1/auth/logout", { method: "POST" }),
+    );
+    const { url } = (await res.json()) as { url: string };
+    expect(new URL(url).origin).toBe("https://sendo.example.com");
+    expect(new URL(url).pathname).toBe("//evil.example.com/api/v1/auth/logout");
+  });
+
   it("PUBLIC_URL がなければ、そのまま渡す", async () => {
     const handler = withPublicOrigin(echo, undefined);
     const res = await handler(new Request("http://localhost:8787/healthz"));
