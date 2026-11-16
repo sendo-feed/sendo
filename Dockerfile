@@ -13,7 +13,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # ビルドするマシンの CPU のまま、イメージの CPU（TARGETARCH）向けにクロスコンパイルする（arm64 を
 # エミュレーションでコンパイルすると遅いため）。土台は、動かすイメージと同じ Debian（bookworm）にそろえ、
 # glibc の版を合わせる
-FROM --platform=$BUILDPLATFORM rust:1.97.0-bookworm@sha256:8fa55b2f3ddf97471ab6a767bfa3f37e6bad0986ba823e75fea57e2a2a5c3073 AS native
+FROM --platform=$BUILDPLATFORM rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS native
 ARG TARGETARCH
 ARG BUILDARCH
 WORKDIR /app
