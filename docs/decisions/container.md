@@ -1,7 +1,7 @@
 # コンテナ版
 
 - 状態：提案中
-- 関連：[テックスタック](tech-stack.md)（2 つの版、緩衝層）、[仕事の流し方](jobs.md)（Cloudflare 版の仕事の運び方と、実測した上限）、[デプロイ](deploy.md)（Cloudflare 版のデプロイ）、[コストの見積もり](../cost.md)
+- 関連：[テックスタック](tech-stack.md)（2 つの版、緩衝層）、[仕事の流し方](jobs.md)（Cloudflare 版の仕事の運び方と、実測した上限）、[デプロイ](deploy.md)（Cloudflare 版のデプロイ）、[コストの見積もり](../cost.md)、sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)（画面のコンテナと中継）
 
 Sendo は、Cloudflare 版とコンテナ版の 2 つの版を、同じリポジトリの同じコードから作る（[テックスタック](tech-stack.md)の 2）。
 
@@ -37,10 +37,12 @@ Sendo は、Cloudflare 版とコンテナ版の 2 つの版を、同じリポジ
    - 失敗した仕事は、Cloudflare 版と同じく、少し間を置いて 3 回までやり直す
 7. **sendo は、1 つのコンテナ・1 つのプロセスで動かす。** データ（SQLite のファイルと記事の本文）は、1 つのボリューム（`/data`）にまとめる。記事の本文は、そのボリュームにファイルとして置く。
    - 既存のサーバー（関連検索の RustXNG など）を使う機能は、そのサーバーを別のコンテナとして `compose.yaml` に並べる（[テックスタック](tech-stack.md)の 6）。その機能を使わない人は、入れなくてよい
+   - 画面（sendo-reader）も、別のコンテナ（`ghcr.io/sendo-feed/sendo-reader`）として `compose.yaml` に並べる。外に出すのは sendo-reader のコンテナだけにし、sendo のポートは出さない。sendo-reader が画面を返し、sendo のパスを中継するので、外からは sendo-reader のオリジン 1 つに見える。`PUBLIC_URL` と `READER_URL` には、どちらもそのオリジンを入れる（sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)の 1〜4）
+   - 画面を使わない人は、sendo-reader のコンテナを外し、sendo のポートを出してよい（`PUBLIC_URL` は sendo のオリジン、`READER_URL` は空。OAuth は使えない）
 8. **外への取得では、接続する IP アドレスも確かめる。**
    - 名前解決の結果が内部用・予約済みの範囲なら、接続しない。リダイレクトの行き先にも同じ確認をかける
    - この確認ができるまで、コンテナ版は出さない
-9. **コンテナは HTTP だけを受ける。** TLS は、デプロイする人が手前に置くリバースプロキシ（Caddy など）に任せる。
+9. **コンテナは HTTP だけを受ける。** TLS は、デプロイする人が手前に置くリバースプロキシ（Caddy など）や Cloudflare Tunnel に任せる。
 
 ### 配り方
 
@@ -48,7 +50,7 @@ Sendo は、Cloudflare 版とコンテナ版の 2 つの版を、同じリポジ
     - 使う人は、手元に `compose.yaml` と `.env` だけを置き、イメージを取ってきて動かす。上流の更新は `docker compose pull` で取り込む
     - `main` に変更が入るたびに、`main` のタグを付けて出す。版を切るようになったら、版のタグ（`1.2.3`、`1.2`）と `latest` も付ける
     - amd64 と arm64 の両方で作る。Rust のネイティブのモジュールも、それぞれの CPU 向けにビルドしてイメージに入れる
-    - リポジトリを公開するまでは、イメージも非公開にする
+    - イメージは公開する。使う人は `docker login` せずに取ってこられる
 11. **設定は環境変数で渡し、名前は Cloudflare 版と同じにする**（`PUBLIC_URL`、`READER_URL`、`ALLOWED_EMAILS`、`FETCH_INTERVAL_MINUTES` など）。秘密も、`.env` から環境変数として渡す。
 12. **テストは、どちらの版でも動く処理を今までどおり workerd で動かす。コンテナ版の緩衝層と、コンテナ版だけの機能は Node で動かす。Rust の処理は cargo test で確かめ、Node から呼べることは Node のテストで確かめる。** CI ではすべてを通す。
 
@@ -87,6 +89,10 @@ Sendo は、Cloudflare 版とコンテナ版の 2 つの版を、同じリポジ
   - FTS5 とトリガーも使える
 - **スキーマを 1 組にする：** マイグレーションを 2 組持たずに済む。2 つの版の間で、データも移せる（D1 から書き出した SQLite を、コンテナ版で読める）。
 - **ジョブの表とタイマーで動かす：** 外のキューやスケジューラ（Redis など）を足さずに、1 つのコンテナで完結する。仕事を表に積むので、再起動しても消えない。
+- **sendo-reader を、外に出す唯一のコンテナにする：**
+  - コンテナ版の sendo は、リクエストの URL のオリジンを `PUBLIC_URL` に置き換える（9）。`PUBLIC_URL` を sendo-reader のオリジンにすれば、Cloudflare 版の Service binding と同じく、ログインの戻り先、セッションのクッキー、状態を変えるリクエストの確かめ、OAuth の発行者と MCP の宛先が、どれも 1 つのオリジンでそろう
+  - sendo のコードも設定の名前も変えずに済む。`PUBLIC_URL` と `READER_URL` が同じオリジンでも、設定は受ける（2 つを比べない）
+  - 画面と画面の守り（CSP など）は、sendo-reader が持ったままになる（[技術構成](../tech-deck.md)。sendo は API だけを持つ）
 - **1 つのプロセスで動かす：** SQLite のファイルは、1 つのプロセスから書くのが安全。個人で使う規模なら、1 つで足りる。Rust の重い処理も同じプロセスのスレッドプールで動くので、プロセスを分けずに済む。既存のサーバーを別のコンテナにしても、それらは sendo の SQLite に触らない。
 - **接続する IP も確かめる：**
   - 今の確認（`toFetchableUrl`）は、ホスト名の文字列しか見ていない

@@ -50,7 +50,7 @@ MCP のクライアントのつなぎ方は 2 通りある。
 
 ## 理由
 
-- **`/mcp` に置く**：MCP のクライアントは、Sendo の URL に直接つなぐ（sendo-reader の中継を通らない）。REST API（`/api/v1`）は OpenAPI で定義する決まりなので、JSON-RPC の MCP とは分ける。
+- **`/mcp` に置く**：Cloudflare 版では、MCP のクライアントは Sendo の URL に直接つなぐ（sendo-reader の中継を通らない）。コンテナ版では、外に出るのは sendo-reader のオリジンだけで、`/mcp` もその中継を通る。`PUBLIC_URL` をそのオリジンにするので、発行者と宛先もそろう（[コンテナ版](container.md)の 7）。REST API（`/api/v1`）は OpenAPI で定義する決まりなので、JSON-RPC の MCP とは分ける。
 - **セッションを持たない**：Workers は 1 回の実行ごとに状態を持たない。セッションを持つには Durable Objects などが要り、緩衝層（[テックスタック](tech-stack.md)）の外に出る。ツールはどれも 1 回のリクエストで完結する。
 - **アプリ用パスワードを `/mcp` で受けず、MCP 用のトークンを分ける**：MCP の仕様は、宛先がその MCP サーバーのトークンだけを受けるよう求めている。アプリ用パスワードは宛先も範囲も持たないので、Reeder などに入れたものが漏れると、エージェントからも書き込めてしまう。用途と範囲を持つ MCP 用のトークンなら、読むだけのエージェントには `read` だけを渡せる。ヘッダーで使うクライアント（Claude Code など）には、OAuth なしでつなげる道を残す。
 - **Sendo 自身が認可サーバー**：ログインはすでに自前の OpenID Connect で持っている（[ユーザーと認証](accounts.md)の 2）。外の認可サーバー（Cloudflare Access など）に任せると、移植するときに作り直しになる。
