@@ -167,61 +167,23 @@ describe("sanitizeHtml の計測用の画像（トラッキングピクセル）
     expect(clean(`<p>前<img src="${IMG}" width="1" height="1">後</p>`)).toBe("<p>前後</p>");
   });
 
-  it("style に書いた幅と高さも見て、style があれば属性より優先する", () => {
+  it("style の大きさは見ず、width と height の属性だけで決める", () => {
+    // style だけで 1×1 にした画像は残す（content.md の 2）
     for (const attributes of [
       'style="width:1px;height:1px"',
       'style="height: 1px !important; width: 1px !important; border: 0 !important;"',
-      'style="WIDTH:0;HEIGHT:0"',
-      'style="width:0.5px;height:.5PX"',
-      'style="width:0px;height:0.0"',
-      'width="1" style="height:1px"',
       'width="640" height="480" style="width:1px;height:1px"',
-      'style="width:300px;height:200px;width:1px;height:1px"',
-      'style="width:640px !important;height:480px !important;width:1px !important;height:1px!important"',
-      'style="width:1px !important;height:1px !important;width:640px;height:480px"',
-    ]) {
-      expect(kept(attributes), attributes).toBe(false);
-    }
-    for (const attributes of [
-      'width="1" height="1" style="width:640px;height:480px"',
-      'width="1" height="1" style="width:auto"',
-      'style="max-width:1px;max-height:1px"',
-      'style="min-width:1px;min-height:1px"',
-      'style="width:1px"',
-      // あとの宣言でも、!important でなければ、!important の宣言には勝たない
-      'style="width:640px !important;height:480px !important;width:1px;height:1px"',
-      'style="width:640px!important;width:1px;height:1px"',
-      // 読み切れない書き方（コメント、エスケープ）は、大きさが分からないものとして残す
-      'style="width:1px;height:1px;/* x */"',
-      'width="1" height="1" style="wid\\74h:640px"',
-      // 文字列や url() の中の「;」と「width:」を、宣言と取り違えない
-      `width="640" height="480" style='--example:";width:1px;height:1px;"'`,
-      `width="640" height="480" style="--example:';width:1px;height:1px;'"`,
-      'width="640" height="480" style="background:url(a;width:1px;height:1px)"',
-      'style="width:calc(1px);height:calc(1px)"',
-      // 最小の大きさや拡大で、出る大きさが変わる
-      'width="1" height="1" style="min-width:640px;min-height:480px"',
-      'width="1" height="1" style="min-width:640px"',
-      'style="width:1px;height:1px;zoom:640"',
-      'style="width:1px;height:1px;scale:640"',
-      // CSS で無効な長さ（ブラウザが捨てる）は、大きさとみなさない
-      'width="640" height="480" style="width:1 px;height:1 px"',
-      'width="640" height="480" style="width:1;height:1"',
-      'width="640" height="480" style="width:1.px;height:1.px"',
+      'width="1" style="height:1px"',
     ]) {
       expect(kept(attributes), attributes).toBe(true);
     }
-  });
-
-  it("style が大きさを上書きして残した画像は、上書きされた属性を出さず、返すときにも残る", async () => {
-    const stored = clean(
-      `<img src="${IMG}" width="1" height="1" style="width:640px;height:480px"><img src="${IMG}" width="1" height="1" style="width:auto"><img src="${IMG}" width="1" height="1" style="width:2px">`,
-    );
-    expect(stored).toBe(
-      `<img src="${IMG}"><img src="${IMG}" height="1"><img src="${IMG}" height="1">`,
-    );
-    const returned = await sanitizeHtmlWithImages(stored, BASE, async (url) => url);
-    expect(returned).toBe(stored);
+    // 属性が 1×1 なら、style が何であっても落とす
+    for (const attributes of [
+      'width="1" height="1" style="width:640px;height:480px"',
+      `width="1" height="1" style='--example:";width:640px;"'`,
+    ]) {
+      expect(kept(attributes), attributes).toBe(false);
+    }
   });
 
   it("片方だけが小さい画像、大きさのない画像、隠しただけの画像は残す", () => {
@@ -308,14 +270,11 @@ describe("sanitizeHtml の計測用の画像（トラッキングピクセル）
     expect(sanitizeHtml('<img src="//pixel.wp.com/b.gif?feed=1">', BASE)).toBe("");
   });
 
-  it("大きさの値や style が長くても、長さに比例する時間で終わる", () => {
+  it("大きさの値が長くても、長さに比例する時間で終わる", () => {
     const spaces = " ".repeat(200_000);
     for (const attributes of [
       `width="1${spaces}x" height="1"`,
       `width="1" height="${spaces}1${spaces}px${spaces}x"`,
-      `style="width:1${spaces}x;height:1px"`,
-      `style="width:1px${spaces}!${spaces}x;height:1px"`,
-      `style="${"!".repeat(100_000)}width:1px;height:${"! ".repeat(100_000)}"`,
     ]) {
       expect(kept(attributes)).toBe(true);
     }

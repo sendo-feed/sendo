@@ -4,7 +4,8 @@ import { decodeHTML } from "entities";
  * 計測用の画像（トラッキングピクセル）の見分け方（docs/decisions/content.md の 2）。
  *
  * 保存する前にも通すので、誤って落とした画像は戻らない。迷うものは残す。
- * - 大きさ：幅と高さが、ともに 1 以下と書かれた画像だけ。片方だけ、隠しただけの画像は残す
+ * - 大きさ：幅と高さが、ともに 1 以下と書かれた画像だけ（width ／ height の属性。style は見ない）。
+ *   片方だけ、隠しただけ、style だけで小さくした画像は残す
  * - アドレス：計測のためだけに使うと、出どころを確かめたものだけ
  */
 
@@ -38,84 +39,21 @@ const TRACKING_ADDRESSES: readonly TrackingAddress[] = [
   { host: "google-analytics.com" },
 ];
 
-/*
- * 外から来る値を読むので、正規表現は、入力の長さに比例する時間で終わる形にする
- * （同じ文字を取り合う量指定子を並べない。前後の空白は、先に trim で除く）
+/**
+ * 大きさの数（「1」「1.0」「.5」など）。単位（px）と前後の空白は、除いてから当てる。
+ * 外から来る値を読むので、同じ文字を取り合う量指定子を並べない（長さに比例する時間で終わる）
  */
-
-/** 属性の大きさの数（「1」「1.0」「.5」など）。単位（px）と前後の空白は、除いてから当てる */
 const PIXEL_NUMBER = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 /**
- * style の長さ。CSS で正しい書き方だけ（数と px の間に空白を置かない。単位を省けるのは 0 だけ）。
- * CSS で無効な宣言はブラウザが捨てるので、ここでも大きさとみなさない
+ * 計測用の画像か。src は絶対の URL にしたもの、attributes は parseAttributes で読んだもとの
+ * 属性（名前は小文字）
  */
-const STYLE_PIXELS = /^(?:\d+(?:\.\d+)?|\.\d+)px$/;
-const STYLE_ZERO = /^(?:\d+(?:\.\d+)?|\.\d+)$/;
-
-/**
- * width ／ height のほかに、画像の出る大きさを変える style の性質。これがあれば、大きさが
- * 分からないものとして扱う（min-width は width より強く、zoom や transform は拡大する）
- */
-const SIZE_AFFECTING = new Set([
-  ...["min-width", "min-height", "inline-size", "block-size", "min-inline-size"],
-  ...["min-block-size", "zoom", "transform", "scale"],
-]);
-
-/**
- * style のうち、ここでは読み切れない書き方。コメント、エスケープ、文字列（引用符）、関数や
- * url()（かっこ）、ブロック。この中の「;」や「width:」を、宣言と取り違えないように
- */
-const UNREADABLE_STYLE = /\/\*|["'\\(){}]/;
-
-/** 画像の幅か高さ。style に書いてあれば、属性より style を使う（ブラウザと同じ） */
-export type ImageLength = { value: string; from: "attribute" | "style" } | undefined;
-
-export type ImageSize = { width: ImageLength; height: ImageLength };
-
-/** 画像の幅と高さを読む。attributes は、parseAttributes で読んだもとの属性（名前は小文字） */
-export function imageSize(attributes: ReadonlyMap<string, string>): ImageSize {
-  const fromAttribute = (key: "width" | "height"): ImageLength => {
-    const value = attributes.get(key);
-    return value === undefined ? undefined : { value: decodeHTML(value), from: "attribute" };
-  };
-  const size: ImageSize = { width: fromAttribute("width"), height: fromAttribute("height") };
-  const style = decodeHTML(attributes.get("style") ?? "");
-  // 読み切れない style は、大きさが分からないものとして扱う（迷うものは残す）
-  const unknown: ImageSize = {
-    width: { value: "", from: "style" },
-    height: { value: "", from: "style" },
-  };
-  if (UNREADABLE_STYLE.test(style)) return unknown;
-  // あとの宣言が勝つ。ただし、!important の宣言は、!important でない宣言には負けない
-  const important = { width: false, height: false };
-  for (const declaration of style.split(";")) {
-    const colon = declaration.indexOf(":");
-    if (colon === -1) continue;
-    const key = declaration.slice(0, colon).trim().toLowerCase();
-    if (SIZE_AFFECTING.has(key)) return unknown;
-    if (key !== "width" && key !== "height") continue;
-    let value = declaration.slice(colon + 1).trim();
-    const bang = value.lastIndexOf("!");
-    const isImportant =
-      bang !== -1 &&
-      value
-        .slice(bang + 1)
-        .trim()
-        .toLowerCase() === "important";
-    if (isImportant) value = value.slice(0, bang).trim();
-    if (important[key] && !isImportant) continue;
-    size[key] = { value, from: "style" };
-    important[key] = isImportant;
-  }
-  return size;
-}
-
-/**
- * 計測用の画像か。src は絶対の URL にしたもの、size は imageSize で読んだもの
- */
-export function isTrackingImage(src: string, size: ImageSize): boolean {
-  return isTrackingAddress(src) || (isAtMostOnePixel(size.width) && isAtMostOnePixel(size.height));
+export function isTrackingImage(src: string, attributes: ReadonlyMap<string, string>): boolean {
+  return (
+    isTrackingAddress(src) ||
+    (isAtMostOnePixel(attributes.get("width")) && isAtMostOnePixel(attributes.get("height")))
+  );
 }
 
 function isTrackingAddress(src: string): boolean {
@@ -133,14 +71,10 @@ function isTrackingAddress(src: string): boolean {
   );
 }
 
-/** 幅か高さが 1 以下か */
-function isAtMostOnePixel(length: ImageLength): boolean {
-  if (length === undefined) return false;
-  let value = length.value.trim().toLowerCase();
-  if (length.from === "style") {
-    if (STYLE_ZERO.test(value)) return Number(value) === 0;
-    return STYLE_PIXELS.test(value) && Number(value.slice(0, -2)) <= 1;
-  }
+/** 幅か高さの属性が 1 以下か */
+function isAtMostOnePixel(attribute: string | undefined): boolean {
+  if (attribute === undefined) return false;
+  let value = decodeHTML(attribute).trim().toLowerCase();
   if (value.endsWith("px")) value = value.slice(0, -2).trimEnd();
   return PIXEL_NUMBER.test(value) && Number(value) <= 1;
 }
