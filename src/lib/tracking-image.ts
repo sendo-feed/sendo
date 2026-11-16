@@ -38,11 +38,13 @@ const TRACKING_ADDRESSES: readonly TrackingAddress[] = [
   { host: "google-analytics.com" },
 ];
 
-/** 大きさの値（「1」「1px」「 1.0 」など）。単位は px か、なし */
-const PIXEL_LENGTH = /^\s*(\d+(?:\.\d*)?|\.\d+)\s*(?:px)?\s*$/i;
+/*
+ * 外から来る値を読むので、正規表現は、入力の長さに比例する時間で終わる形にする
+ * （同じ文字を取り合う量指定子を並べない。前後の空白は、先に trim で除く）
+ */
 
-/** style の中の幅と高さの宣言（「width: 1px !important」など） */
-const STYLE_SIZE = /^\s*(width|height)\s*:\s*(.*?)\s*(!\s*important\s*)?$/i;
+/** 大きさの数（「1」「1.0」「.5」など）。単位と前後の空白は、除いてから当てる */
+const PIXEL_NUMBER = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 /** style のうち、ここでは読み切れない書き方（コメント、エスケープ） */
 const UNREADABLE_STYLE = /\/\*|\\/;
@@ -67,12 +69,21 @@ export function imageSize(attributes: ReadonlyMap<string, string>): ImageSize {
   // あとの宣言が勝つ。ただし、!important の宣言は、!important でない宣言には負けない
   const important = { width: false, height: false };
   for (const declaration of style.split(";")) {
-    const match = STYLE_SIZE.exec(declaration);
-    if (!match?.[1] || match[2] === undefined) continue;
-    const key = match[1].toLowerCase() as "width" | "height";
-    const isImportant = match[3] !== undefined;
+    const colon = declaration.indexOf(":");
+    if (colon === -1) continue;
+    const key = declaration.slice(0, colon).trim().toLowerCase();
+    if (key !== "width" && key !== "height") continue;
+    let value = declaration.slice(colon + 1).trim();
+    const bang = value.lastIndexOf("!");
+    const isImportant =
+      bang !== -1 &&
+      value
+        .slice(bang + 1)
+        .trim()
+        .toLowerCase() === "important";
+    if (isImportant) value = value.slice(0, bang).trim();
     if (important[key] && !isImportant) continue;
-    size[key] = { value: match[2], from: "style" };
+    size[key] = { value, from: "style" };
     important[key] = isImportant;
   }
   return size;
@@ -103,6 +114,7 @@ function isTrackingAddress(src: string): boolean {
 /** 幅か高さが 1 以下か */
 function isAtMostOnePixel(length: ImageLength): boolean {
   if (length === undefined) return false;
-  const match = PIXEL_LENGTH.exec(length.value);
-  return match?.[1] !== undefined && Number(match[1]) <= 1;
+  let value = length.value.trim().toLowerCase();
+  if (value.endsWith("px")) value = value.slice(0, -2).trimEnd();
+  return PIXEL_NUMBER.test(value) && Number(value) <= 1;
 }

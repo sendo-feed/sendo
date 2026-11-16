@@ -292,6 +292,19 @@ describe("sanitizeHtml の計測用の画像（トラッキングピクセル）
     expect(sanitizeHtml('<img src="//pixel.wp.com/b.gif?feed=1">', BASE)).toBe("");
   });
 
+  it("大きさの値や style が長くても、長さに比例する時間で終わる", () => {
+    const spaces = " ".repeat(200_000);
+    for (const attributes of [
+      `width="1${spaces}x" height="1"`,
+      `width="1" height="${spaces}1${spaces}px${spaces}x"`,
+      `style="width:1${spaces}x;height:1px"`,
+      `style="width:1px${spaces}!${spaces}x;height:1px"`,
+      `style="${"!".repeat(100_000)}width:1px;height:${"! ".repeat(100_000)}"`,
+    ]) {
+      expect(kept(attributes)).toBe(true);
+    }
+  });
+
   it("落としたあとの本文は、もう一度通しても変わらない", () => {
     const input = `<p>本文<img src="${IMG}" alt="図"></p><img src="https://pixel.wp.com/b.gif" width="1" height="1"><img src="${IMG}" width="1px" height="1px">`;
     const once = clean(input);
