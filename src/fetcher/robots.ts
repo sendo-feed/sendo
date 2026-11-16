@@ -1,0 +1,303 @@
+/**
+ * robots.txt（RFC 9309）。記事のページを取りにいく前に、取りにいってよいかを確かめる
+ * （docs/decisions/content.md の 18）。フィードの取得には使わない。
+ *
+ * - parseRobotsTxt：Sendo に当てはまる規則だけを取り出す
+ * - isAllowedByRules：規則で URL を照合する（最長一致。同じ長さなら Allow）
+ * - fetchRobotsTxt：robots.txt を取りにいく。フィードの取得と同じ守りをかける
+ * - RobotsCache：オリジンごとの結果を、プロセスのメモリに置く
+ */
+import { readPrefix } from "../lib/read-limited";
+import { USER_AGENT } from "./fetch-feed";
+import { toFetchableUrl } from "./url-guard";
+
+/** 照合に使う製品トークン（USER_AGENT の先頭） */
+export const PRODUCT_TOKEN = "Sendo";
+
+/** 規則 1 つ。pattern は、比べられるようにそろえたもの（normalizePath） */
+export type RobotsRule = { allow: boolean; pattern: string };
+
+/** robots.txt を取りにいった結果 */
+export type RobotsTxt =
+  /** 読めた。当てはまる規則（なければ空で、すべて許可） */
+  | { status: "fetched"; rules: readonly RobotsRule[] }
+  /** ない（4xx、リダイレクトが多すぎる）。すべて許可 */
+  | { status: "unavailable" }
+  /** 届かない（5xx、時間切れ、接続できない、SSRF の守りで止めた）。すべて不許可（一時的） */
+  | { status: "unreachable"; reason: string };
+
+type Group = { agents: string[]; rules: RobotsRule[] };
+
+/**
+ * robots.txt を読み、製品トークンに当てはまる規則を返す。
+ *
+ * - 当たるグループ（User-agent の製品トークンが、大文字と小文字を区別せずに同じ）をすべてまとめる
+ * - なければ、`*` のグループをすべてまとめる。それもなければ空（すべて許可）
+ * - 続けて書いた User-agent の行は、1 つのグループになる。規則のあとの User-agent の行から、次のグループ
+ * - 値が空の Allow ／ Disallow は、何にも当たらない（グループには数える）
+ * - 知らない行（Sitemap、Crawl-delay など）は読まない
+ */
+export function parseRobotsTxt(text: string, productToken = PRODUCT_TOKEN): RobotsRule[] {
+  const groups: Group[] = [];
+  let current: Group | undefined;
+  let inAgents = false;
+
+  for (const rawLine of text.replace(/^\uFEFF/, "").split(/\r\n|\r|\n/)) {
+    const line = rawLine.replace(/#.*$/, "");
+    const colon = line.indexOf(":");
+    if (colon === -1) continue;
+    const key = line.slice(0, colon).trim().toLowerCase();
+    const value = line.slice(colon + 1).trim();
+
+    if (key === "user-agent") {
+      if (!current || !inAgents) {
+        current = { agents: [], rules: [] };
+        groups.push(current);
+      }
+      current.agents.push(value);
+      inAgents = true;
+    } else if (key === "allow" || key === "disallow") {
+      // どのグループにも入らない規則（User-agent の行より前）は読まない
+      if (!current) continue;
+      inAgents = false;
+      if (value !== "")
+        current.rules.push({ allow: key === "allow", pattern: normalizePath(value) });
+    }
+  }
+
+  const token = productToken.toLowerCase();
+  const matched = groups.filter((group) =>
+    group.agents.some((agent) => agentToken(agent)?.toLowerCase() === token),
+  );
+  const chosen =
+    matched.length > 0 ? matched : groups.filter((group) => group.agents.some((a) => a === "*"));
+  return chosen.flatMap((group) => group.rules);
+}
+
+/**
+ * User-agent の値から製品トークンを取り出す（`Sendo/1.0` なら `Sendo`）。製品トークンに使える文字
+ * （英字、`_`、`-`）が先頭になければ null
+ */
+function agentToken(value: string): string | null {
+  return value.match(/^[A-Za-z_-]+/)?.[0] ?? null;
+}
+
+/**
+ * URL を規則で照合する。いちばん長く一致した規則を使い、Allow と Disallow が同じ長さなら Allow。
+ * どれにも当たらなければ許可。`/robots.txt` そのものは、いつも許可
+ */
+export function isAllowedByRules(rules: readonly RobotsRule[], url: URL): boolean {
+  if (url.pathname === "/robots.txt") return true;
+  const target = normalizePath(`${url.pathname}${url.search}`);
+  let allow = -1;
+  let disallow = -1;
+  for (const rule of rules) {
+    const length = rule.pattern.length;
+    if (length <= (rule.allow ? allow : disallow)) continue;
+    if (!matches(rule.pattern, target)) continue;
+    if (rule.allow) allow = length;
+    else disallow = length;
+  }
+  return allow >= disallow;
+}
+
+/**
+ * パターンの照合。`*` は任意の文字の並び、末尾の `$` は URL の終わり。`$` がなければ、先頭からの
+ * 一致（後ろに何が続いてもよい）。
+ *
+ * 後戻りは、最後の `*` の位置からだけにする（正規表現にすると、`*` が多いパターンで遅くなる）
+ */
+function matches(pattern: string, target: string): boolean {
+  const anchored = pattern.endsWith("$");
+  const body = anchored ? pattern.slice(0, -1) : `${pattern}*`;
+
+  let p = 0;
+  let t = 0;
+  let star = -1;
+  let resume = 0;
+  while (t < target.length) {
+    if (p < body.length && body[p] === "*") {
+      star = p++;
+      resume = t;
+    } else if (p < body.length && body[p] === target[t]) {
+      p++;
+      t++;
+    } else if (star !== -1) {
+      p = star + 1;
+      t = ++resume;
+    } else {
+      return false;
+    }
+  }
+  while (p < body.length && body[p] === "*") p++;
+  return p === body.length;
+}
+
+/** RFC 3986 の、エンコードしなくてよい文字 */
+const UNRESERVED = /^[A-Za-z0-9\-._~]$/;
+
+/** RFC 3986 の、区切りに使う文字。`*` と `$` もここに入るので、パターンの記号はそのまま残る */
+const RESERVED = /^[:/?#[\]@!$&'()*+,;=]$/;
+
+/**
+ * 比べられるようにそろえる（RFC 9309 の 2.2.2）。パターンにも URL にも同じものを当てる。
+ *
+ * - `%XX` のうち、エンコードしなくてよい文字（英数字と `-._~`）は戻す。ほかは 16 進を大文字にする
+ * - ASCII でない文字と、そのままでは URL に書けない ASCII（空白、`"`、`<`、`{` など）は、UTF-8 で
+ *   `%XX` にする（URL の側は、ブラウザと同じ決まりでエンコードされて届く）
+ */
+export function normalizePath(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const char = text.charAt(i);
+    const hex = text.slice(i + 1, i + 3);
+    if (char === "%" && /^[0-9A-Fa-f]{2}$/.test(hex)) {
+      const decoded = String.fromCharCode(Number.parseInt(hex, 16));
+      out += UNRESERVED.test(decoded) ? decoded : `%${hex.toUpperCase()}`;
+      i += 2;
+    } else if (char === "%" || UNRESERVED.test(char) || RESERVED.test(char)) {
+      out += char;
+    } else {
+      // サロゲートペアは 2 つで 1 文字なので、まとめてエンコードする
+      const whole = String.fromCodePoint(text.codePointAt(i) ?? 0xfffd);
+      out += encodeUtf8(whole);
+      i += whole.length - 1;
+    }
+  }
+  return out;
+}
+
+function encodeUtf8(char: string): string {
+  try {
+    return encodeURIComponent(char);
+  } catch {
+    // 対になっていないサロゲート
+    return "%EF%BF%BD";
+  }
+}
+
+const DEFAULTS = { timeoutMs: 10_000, maxBytes: 500 * 1024, maxRedirects: 5 };
+
+/**
+ * オリジンの robots.txt を取りにいく。例外は投げない（届かなければ unreachable）。
+ *
+ * - フィードと同じ守り：toFetchableUrl、リダイレクトごとの確認、時間の上限。接続する IP の確認は、
+ *   緩衝層の fetch（コンテナ版の platform/node/safe-fetch.ts）が行う
+ * - 最初の maxBytes だけを読み、そこで切れた最後の行は捨てる
+ * - 2xx は読む。4xx はない（すべて許可）。5xx と届かないときは unreachable（すべて不許可）
+ * - リダイレクトは maxRedirects 回までたどる。それを超えたら、ない（すべて許可）
+ */
+export async function fetchRobotsTxt(
+  origin: string,
+  options: { fetch: typeof fetch; timeoutMs?: number; maxBytes?: number; maxRedirects?: number },
+): Promise<RobotsTxt> {
+  const { timeoutMs, maxBytes, maxRedirects } = { ...DEFAULTS, ...options };
+  const signal = AbortSignal.timeout(timeoutMs);
+  const headers = { accept: "text/plain,*/*;q=0.1", "user-agent": USER_AGENT };
+
+  try {
+    let current = toFetchableUrl(new URL("/robots.txt", origin));
+    for (let redirects = 0; ; redirects++) {
+      const res = await options.fetch(current, { headers, redirect: "manual", signal });
+
+      if ([301, 302, 303, 307, 308].includes(res.status)) {
+        await res.body?.cancel();
+        const location = res.headers.get("location");
+        if (!location) return { status: "unreachable", reason: "redirect without location" };
+        if (redirects >= maxRedirects) return { status: "unavailable" };
+        current = toFetchableUrl(new URL(location, current));
+        continue;
+      }
+      if (res.status >= 200 && res.status < 300) {
+        const { bytes, truncated } = await readPrefix(res.body, maxBytes);
+        let text = new TextDecoder().decode(bytes);
+        // 途中で切れた行は、意味が変わっているかもしれないので捨てる
+        if (truncated) text = text.slice(0, Math.max(text.lastIndexOf("\n"), 0));
+        return { status: "fetched", rules: parseRobotsTxt(text) };
+      }
+      await res.body?.cancel();
+      if (res.status >= 400 && res.status < 500) return { status: "unavailable" };
+      return { status: "unreachable", reason: `status ${res.status}` };
+    }
+  } catch (error) {
+    if (signal.aborted) return { status: "unreachable", reason: `timed out after ${timeoutMs}ms` };
+    return {
+      status: "unreachable",
+      reason: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    };
+  }
+}
+
+/** 読めた結果と、ないという結果を置く時間（RFC 9309 の 2.4。24 時間まで） */
+export const ROBOTS_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** 届かなかった結果を置く時間。同じサイトの記事が続くときに、取りにいき直さないための短い間 */
+export const ROBOTS_UNREACHABLE_TTL_MS = 10 * 60 * 1000;
+
+/** 置くオリジンの数。超えたら、古く置いたものから捨てる */
+export const ROBOTS_MAX_ENTRIES = 1000;
+
+type CacheEntry = { result: RobotsTxt; expiresAt: number };
+
+/**
+ * robots.txt の結果を、オリジン（スキーム、ホスト、ポート）ごとに、プロセスのメモリに置く。
+ * コンテナ版は 1 つのプロセスで動く（docs/decisions/container.md の 7）ので、DB には置かない
+ */
+export class RobotsCache {
+  readonly #entries = new Map<string, CacheEntry>();
+  readonly #inflight = new Map<string, Promise<RobotsTxt>>();
+  readonly #maxEntries: number;
+
+  constructor(options: { maxEntries?: number } = {}) {
+    this.#maxEntries = options.maxEntries ?? ROBOTS_MAX_ENTRIES;
+  }
+
+  /** URL を取りにいってよいか。オリジンの結果がなければ（古ければ）取りにいく */
+  async isAllowed(url: URL, context: { fetch: typeof fetch; now: Date }): Promise<boolean> {
+    if (url.pathname === "/robots.txt") return true;
+    const result = await this.#get(url.origin, context);
+    switch (result.status) {
+      case "fetched":
+        return isAllowedByRules(result.rules, url);
+      case "unavailable":
+        return true;
+      case "unreachable":
+        return false;
+    }
+  }
+
+  async #get(origin: string, context: { fetch: typeof fetch; now: Date }): Promise<RobotsTxt> {
+    const cached = this.#entries.get(origin);
+    if (cached && cached.expiresAt > context.now.getTime()) return cached.result;
+
+    // 同じオリジンを、同時に何度も取りにいかない
+    const running = this.#inflight.get(origin);
+    if (running) return running;
+    const task = fetchRobotsTxt(origin, { fetch: context.fetch })
+      .then((result) => {
+        if (result.status === "unreachable") {
+          console.warn("could not fetch robots.txt; treating as disallowed", {
+            origin,
+            reason: result.reason,
+          });
+        }
+        this.#put(origin, result, context.now);
+        return result;
+      })
+      .finally(() => this.#inflight.delete(origin));
+    this.#inflight.set(origin, task);
+    return task;
+  }
+
+  #put(origin: string, result: RobotsTxt, now: Date): void {
+    const ttl = result.status === "unreachable" ? ROBOTS_UNREACHABLE_TTL_MS : ROBOTS_TTL_MS;
+    // 置き直したものを後ろへ回す（Map は入れた順に並ぶ）
+    this.#entries.delete(origin);
+    this.#entries.set(origin, { result, expiresAt: now.getTime() + ttl });
+    while (this.#entries.size > this.#maxEntries) {
+      const oldest = this.#entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.#entries.delete(oldest);
+    }
+  }
+}

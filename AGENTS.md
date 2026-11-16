@@ -51,7 +51,8 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/fetcher/`：外部の URL の取得と解析。外部の URL は必ず `toFetchableUrl` を通す（SSRF 対策）
   - 画像は `fetch-image.ts` で取る。形式は先頭のバイトで確かめ、SVG は通さない。配信元へのリクエストはそこで新しく組み立て、読者のリクエストのヘッダーを渡さない
   - サムネイルは `thumbnail.ts` がフィードの中から採り、アイコンは `find-icon.ts` が探す（取得のジョブが 30 日に 1 回）
-  - 記事のページの本文は `page-content.ts`（docs/decisions/content.md の 10〜15）。コンテナ版では、取得の仕事が新しい記事ごとに `extract-page` の仕事を積み、`fetch-page.ts` でページを取り、緩衝層の `pageContent`（Rust）で抜く。開いたときにまだなければ、そのリクエストの中で抜く。サニタイズした HTML は、置き場ではなく `db/page-contents.ts` の表の行に入れる
+  - 記事のページの本文は `page-content.ts`（docs/decisions/content.md の 10〜18）。コンテナ版では、取得の仕事が新しい記事ごとに `extract-page` の仕事を積み、`fetch-page.ts` でページを取り、緩衝層の `pageContent`（Rust）で抜く。開いたときにまだなければ、そのリクエストの中で抜く。サニタイズした HTML は、置き場ではなく `db/page-contents.ts` の表の行に入れる
+  - 記事のページを取りにいくときは、同じホストへは 1 本ずつ（`host-gate.ts`）にし、robots.txt を守る（`robots.ts`）。どちらもプロセスのメモリに持つ。フィードの取得には robots.txt を当てない
 - `src/lib/sanitize-html.ts`：記事の本文（HTML）のサニタイズ。外部から来た HTML は、保存する前にも、返す前にも、必ずここを通す。通すタグと属性を足すときは、テスト（`test/lib/sanitize-html.test.ts`）も足す
 - `src/feeds/`：購読の手続き（URL からフィードを見つけて購読する）。REST API、Google Reader API、MCP で同じものを使う
 - `src/greader/`：Google Reader API 互換（docs/decisions/greader.md）。状態を変える操作は、REST API と同じ `db/`・`feeds/` の処理に任せ、ここで書き込みを組み立てない。記事の文字列は HTML にエスケープして返す

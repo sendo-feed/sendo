@@ -32,7 +32,41 @@ export async function readLimited(
     }
     chunks.push(value);
   }
+  return concat(chunks, total);
+}
 
+/**
+ * 本文の先頭を、決めた大きさまで読む。超えた分は読まずに捨てる（readLimited と違い、例外にしない）。
+ * robots.txt のように、先頭だけを使えばよいものに使う
+ */
+export async function readPrefix(
+  body: ReadableStream<Uint8Array> | null,
+  maxBytes: number,
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  if (!body) return { bytes: new Uint8Array(), truncated: false };
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const room = maxBytes - total;
+    if (value.byteLength > room) {
+      chunks.push(value.subarray(0, room));
+      total += room;
+      truncated = true;
+      await reader.cancel();
+      break;
+    }
+    chunks.push(value);
+    total += value.byteLength;
+  }
+  return { bytes: concat(chunks, total), truncated };
+}
+
+function concat(chunks: readonly Uint8Array[], total: number): Uint8Array {
   const bytes = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {

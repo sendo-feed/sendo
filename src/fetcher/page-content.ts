@@ -1,9 +1,12 @@
 /**
- * 記事のページの本文（docs/decisions/content.md の 10〜14）。コンテナ版では、取り込んだときに抜く仕事
+ * 記事のページの本文（docs/decisions/content.md の 10〜18）。コンテナ版では、取り込んだときに抜く仕事
  * （extract-page）が抜き、読者が開いたときにまだ抜いていなければ、そのリクエストの中で抜く。
  * サニタイズした本文は、DB の行に入れる（置き場には置かない）。結果は全員で共有する。
  *
  * 抜く処理は緩衝層（platform.pageContent）が持つ。持っていない版（Cloudflare 版）では呼ばない。
+ *
+ * ページを取りにいくときは、同じホストへは 1 本ずつにし（決定の 17）、robots.txt を守る（決定の 18）。
+ * どちらの状態も、プロセスのメモリに持つ（コンテナ版は 1 つのプロセスで動く）。
  */
 import { getArticleUrl } from "../db/articles";
 import { MAX_CONTENT_BYTES } from "../db/content";
@@ -16,7 +19,9 @@ import {
 import { sanitizeHtml } from "../lib/sanitize-html";
 import type { PageContentExtractor, Platform } from "../platform";
 import { FetchPageError, fetchPage } from "./fetch-page";
+import { type GatePriority, HostGate } from "./host-gate";
 import { htmlToText } from "./parse-feed";
+import { RobotsCache } from "./robots";
 
 /** 返す本文。html は保存したもの（サニタイズ済み）。返す前に、もう一度サニタイズする */
 export type PageContentResult = { status: "ok"; html: string } | { status: "unavailable" };
@@ -29,6 +34,15 @@ type PageContentPlatform = Pick<Platform, "db" | "fetch" | "now">;
  * （db/page-contents.ts）
  */
 const inflight = new Map<string, Promise<PageContentResult>>();
+
+/** 同じホストへの取得の間隔（決定の 17） */
+export const SAME_HOST_INTERVAL_MS = 1000;
+
+/** 同じホストへの取得を、1 本ずつにする（決定の 17） */
+const hostGate = new HostGate({ intervalMs: SAME_HOST_INTERVAL_MS });
+
+/** robots.txt の結果（決定の 18） */
+const robots = new RobotsCache();
 
 /**
  * 読者が開いたときに、記事のページの本文を返す。抜いてあれば行から、なければ取りにいって抜く。
@@ -48,7 +62,8 @@ export async function loadPageContent(
     return { status: "unavailable" };
   }
   if (article.url === null) return { status: "unavailable" };
-  return extractOnce(platform, extractor, { id: article.id, url: article.url });
+  // 読者が待っているので、抜く仕事より前に並べる
+  return extractOnce(platform, extractor, { id: article.id, url: article.url }, "interactive");
 }
 
 /**
@@ -64,7 +79,7 @@ export async function extractPageContentOnce(
   const article = await getArticleUrl(platform.db, articleId);
   // 記事が消えた（片付けられた）か、URL がない
   if (!article?.url) return;
-  await extractOnce(platform, extractor, { id: articleId, url: article.url });
+  await extractOnce(platform, extractor, { id: articleId, url: article.url }, "background");
 }
 
 /** 同じ記事を同時に抜かないようにして、抜いて記録する */
@@ -72,10 +87,11 @@ function extractOnce(
   platform: PageContentPlatform,
   extractor: PageContentExtractor,
   article: { id: string; url: string },
+  priority: GatePriority,
 ): Promise<PageContentResult> {
   const running = inflight.get(article.id);
   if (running) return running;
-  const task = extractAndRecord(platform, extractor, article).finally(() =>
+  const task = extractAndRecord(platform, extractor, article, priority).finally(() =>
     inflight.delete(article.id),
   );
   inflight.set(article.id, task);
@@ -86,8 +102,9 @@ async function extractAndRecord(
   platform: PageContentPlatform,
   extractor: PageContentExtractor,
   article: { id: string; url: string },
+  priority: GatePriority,
 ): Promise<PageContentResult> {
-  const html = await extract(platform, extractor, article);
+  const html = await extract(platform, extractor, article, priority);
   if (html === null) {
     await recordFailedPageContent(platform.db, { articleId: article.id, now: platform.now() });
     return { status: "unavailable" };
@@ -101,16 +118,37 @@ async function extractAndRecord(
   return stored === null ? { status: "unavailable" } : { status: "ok", html: stored };
 }
 
+/**
+ * 記事のページを取りにいく。記事の URL のホストの順番を待ち、robots.txt の取得とリダイレクトを含めて、
+ * そのホストへの取得を 1 本にする（決定の 17）。取りにいく URL ごとに robots.txt を確かめる（決定の 18）
+ */
+function politeFetchPage(
+  platform: Pick<Platform, "fetch" | "now">,
+  url: string,
+  priority: GatePriority,
+): ReturnType<typeof fetchPage> {
+  const fetchIt = () =>
+    fetchPage(url, {
+      fetch: platform.fetch,
+      isAllowed: (target) =>
+        robots.isAllowed(target, { fetch: platform.fetch, now: platform.now() }),
+    });
+  // URL として読めなければ、順番を待たずに fetchPage に断らせる（blocked_url）
+  const host = URL.canParse(url) ? new URL(url).hostname : null;
+  return host === null ? fetchIt() : hostGate.run(host, priority, fetchIt);
+}
+
 /** ページを取りにいって本文を抜き、サニタイズする。抜けなければ null（理由はログにだけ出す） */
 async function extract(
-  platform: Pick<Platform, "fetch">,
+  platform: Pick<Platform, "fetch" | "now">,
   extractor: PageContentExtractor,
   article: { id: string; url: string },
+  priority: GatePriority,
 ): Promise<string | null> {
   const detail = { articleId: article.id };
   let page: Awaited<ReturnType<typeof fetchPage>>;
   try {
-    page = await fetchPage(article.url, { fetch: platform.fetch });
+    page = await politeFetchPage(platform, article.url, priority);
   } catch (error) {
     if (error instanceof FetchPageError) {
       console.warn("could not fetch the article page", { ...detail, code: error.code });
