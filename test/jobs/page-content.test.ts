@@ -112,6 +112,38 @@ describe("ページの本文の行", () => {
   });
 });
 
+describe("抜いている間に記事が消えたとき", () => {
+  /** 抜いている間に、記事の行を消す（片付けと重なった場合） */
+  const deletingExtractor = (t: Awaited<ReturnType<typeof setUp>>, html: string | null) => ({
+    async extract() {
+      await t.platform.db.delete(articles).where(eq(articles.id, t.article.id)).run();
+      return html === null ? null : { title: "記事", html, textLength: html.length };
+    },
+  });
+
+  it.each([
+    ["抜けた", "<p>本文</p>"],
+    ["抜けなかった", null],
+  ])("%s結果を書かずに終える（仕事は例外にしない）", async (_, html) => {
+    const t = await setUp();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const platform = { ...t.platform, pageContent: deletingExtractor(t, html) };
+    await runJob(platform, { type: "extract-page", articleId: t.article.id });
+    expect(await getPageContent(t.platform.db, t.article.id)).toBeUndefined();
+    vi.restoreAllMocks();
+  });
+
+  it("開いたときに抜いていたら、404（page_content_unavailable）を返す（500 にしない）", async () => {
+    const t = await setUp();
+    const platform = { ...t.platform, pageContent: deletingExtractor(t, "<p>本文</p>") };
+    const res = await requestApp(platform, `/api/v1/articles/${t.article.id}/content?source=page`, {
+      token: t.user.token,
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: { code: "page_content_unavailable" } });
+  });
+});
+
 describe("取り込んだときに抜く", () => {
   it("取得の仕事は、新しい記事ごとに、ページから抜く仕事を積む", async () => {
     const t = await setUp();
