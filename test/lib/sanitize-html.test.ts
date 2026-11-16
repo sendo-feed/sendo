@@ -136,6 +136,157 @@ describe("sanitizeHtml", () => {
   });
 });
 
+describe("sanitizeHtml の計測用の画像（トラッキングピクセル）", () => {
+  const IMG = "https://img.example.com/a.png";
+  const kept = (attributes: string) =>
+    clean(`<p>前<img src="${IMG}" ${attributes}>後</p>`).includes("<img");
+
+  it("幅と高さがともに 1 以下の画像は落とす", () => {
+    for (const attributes of [
+      'width="1" height="1"',
+      'width="0" height="0"',
+      'width="1" height="0"',
+      "width=1 height=1",
+      "width='1' height='1'",
+      'WIDTH="1" HEIGHT="1"',
+      'width="1px" height="1px"',
+      'width="1PX" height="1Px"',
+      'width=" 1 " height="1 "',
+      'width="1.0" height="1."',
+      'width="0.5" height=".5"',
+      'width="01" height="001"',
+      'width="&#49;" height="1"',
+      'alt="" border="0" width="1" height="1"',
+    ]) {
+      expect(kept(attributes), attributes).toBe(false);
+    }
+    expect(clean(`<p>前<img src="${IMG}" width="1" height="1">後</p>`)).toBe("<p>前後</p>");
+  });
+
+  it("style に書いた幅と高さも見て、style があれば属性より優先する", () => {
+    for (const attributes of [
+      'style="width:1px;height:1px"',
+      'style="height: 1px !important; width: 1px !important; border: 0 !important;"',
+      'style="WIDTH:0;HEIGHT:0"',
+      'width="1" style="height:1px"',
+      'width="640" height="480" style="width:1px;height:1px"',
+      'style="width:300px;height:200px;width:1px;height:1px"',
+    ]) {
+      expect(kept(attributes), attributes).toBe(false);
+    }
+    for (const attributes of [
+      'width="1" height="1" style="width:640px;height:480px"',
+      'width="1" height="1" style="width:auto"',
+      'style="max-width:1px;max-height:1px"',
+      'style="min-width:1px;min-height:1px"',
+      'style="width:1px"',
+    ]) {
+      expect(kept(attributes), attributes).toBe(true);
+    }
+  });
+
+  it("片方だけが小さい画像、大きさのない画像、隠しただけの画像は残す", () => {
+    for (const attributes of [
+      'width="1"',
+      'height="1"',
+      'width="1" height="2"',
+      'width="2" height="2"',
+      'width="1" height="100"',
+      'width="1.5" height="1"',
+      'width="1%" height="1%"',
+      'width="1em" height="1em"',
+      'width="" height=""',
+      'width="1" height=""',
+      'width="1" height="auto"',
+      'width="-1" height="-1"',
+      'width="0x1" height="1"',
+      'style="display:none"',
+      'style="visibility:hidden"',
+      "hidden",
+      "",
+    ]) {
+      expect(kept(attributes), attributes).toBe(true);
+    }
+  });
+
+  it("計測に使うと分かっているアドレスの画像は、大きさによらず落とす", () => {
+    for (const src of [
+      // Feedburner の記事ごとの計測（http も https も）
+      "http://feeds.feedburner.com/~r/ExampleBlog/~4/AbCdEf123",
+      "https://feeds.feedburner.com/~r/example-blog/~4/x?utm_source=feedburner",
+      "https://FEEDS.FEEDBURNER.COM/~r/ExampleBlog/~4/AbCdEf123",
+      "http://feedproxy.google.com/~r/ExampleBlog/~4/AbCdEf123",
+      // WordPress.com と Jetpack の統計
+      "https://pixel.wp.com/b.gif?host=blog.example.com&blog=1&post=2&subd=x&ref=&feed=1",
+      "http://stats.wordpress.com/b.gif?host=blog.example.com&blog=1&post=2",
+      // Medium の閲覧の計測
+      "https://medium.com/_/stat?event=post.clientViewed&referrerSource=full_rss&postId=abc",
+      // Mailchimp の開封の計測
+      "https://example.us1.list-manage.com/track/open.php?u=1&id=2&e=3",
+      // Google Analytics
+      "https://www.google-analytics.com/collect?v=1&tid=UA-1-1&t=pageview",
+      "https://ssl.google-analytics.com/__utm.gif?utmwv=1",
+    ]) {
+      expect(clean(`<p>前<img src="${src}" width="600" height="400">後</p>`), src).toBe(
+        "<p>前後</p>",
+      );
+      expect(clean(`<img src="${src}">`), src).toBe("");
+    }
+  });
+
+  it("計測のアドレスに似ているだけの画像は残す", () => {
+    for (const src of [
+      // Feedburner でも、記事ごとの計測でないもの
+      "https://feeds.feedburner.com/~ff/ExampleBlog?d=yIl2AUoC8zA",
+      "https://feeds.feedburner.com/ExampleBlog",
+      "https://feeds.feedburner.com/~r/ExampleBlog/~3/AbCdEf123/",
+      // ホストの名前の一部が同じだけ
+      "https://notpixel.wp.com/b.gif",
+      "https://pixel.wp.com.example.com/b.gif",
+      "https://feeds.feedburner.com.example.com/~r/a/~4/b",
+      "https://example.com/pixel.wp.com/b.gif",
+      "https://img.example.com/a.png?ref=https://pixel.wp.com/b.gif",
+      // Medium の本物の画像
+      "https://cdn-images-1.medium.com/max/1024/1*abc.png",
+      "https://miro.medium.com/v2/resize:fit:1400/1*abc.png",
+      "https://medium.com/_/stat/x.png",
+      // Mailchimp の本物の画像
+      "https://mcusercontent.com/abc/images/def.png",
+      "https://gallery.mailchimp.com/abc/images/def.png",
+      "https://example.us1.list-manage.com/track/click?u=1",
+      // WordPress の本物の画像
+      "https://i0.wp.com/blog.example.com/wp-content/uploads/a.png",
+      "https://blog.files.wordpress.com/2026/11/a.png",
+    ]) {
+      expect(clean(`<img src="${src}">`), src).toContain("<img");
+    }
+  });
+
+  it("相対の URL も、記事の URL を基準にしてから見る", () => {
+    expect(
+      sanitizeHtml('<img src="/~r/ExampleBlog/~4/AbC">', "https://feeds.feedburner.com/x"),
+    ).toBe("");
+    expect(sanitizeHtml('<img src="//pixel.wp.com/b.gif?feed=1">', BASE)).toBe("");
+  });
+
+  it("落としたあとの本文は、もう一度通しても変わらない", () => {
+    const input = `<p>本文<img src="${IMG}" alt="図"></p><img src="https://pixel.wp.com/b.gif" width="1" height="1"><img src="${IMG}" width="1px" height="1px">`;
+    const once = clean(input);
+    expect(once).toBe(`<p>本文<img src="${IMG}" alt="図"></p>`);
+    expect(clean(once)).toBe(once);
+  });
+
+  it("画像を落としても、まわりのリンクや文字は残す", () => {
+    expect(
+      clean(
+        '<p>本文</p><a href="https://feeds.feedburner.com/~ff/x?a=1"><img src="https://feeds.feedburner.com/~r/x/~4/y" height="1" width="1" alt=""/></a>',
+      ),
+    ).toBe(
+      '<p>本文</p><a href="https://feeds.feedburner.com/~ff/x?a=1" rel="noopener noreferrer nofollow"></a>',
+    );
+  });
+});
+
 describe("sanitizeHtmlWithImages", () => {
   it("画像の URL を差し替え、差し替え先のない画像は落とす", async () => {
     const out = await sanitizeHtmlWithImages(
@@ -146,6 +297,22 @@ describe("sanitizeHtmlWithImages", () => {
     );
     expect(out).toBe(
       '<p><img src="/api/v1/images?url=https%3A%2F%2Fimg.example.com%2Fa.png" alt="a"></p>',
+    );
+  });
+
+  it("計測用の画像は、中継の URL を作らずに落とす（保存してある本文にも効く）", async () => {
+    const seen: string[] = [];
+    const out = await sanitizeHtmlWithImages(
+      '<p>a<img src="https://img.example.com/a.png" width="1" height="1"><img src="https://pixel.wp.com/b.gif?feed=1"><img src="https://img.example.com/b.png" width="1"></p>',
+      BASE,
+      async (url) => {
+        seen.push(url);
+        return `/api/v1/images?url=${encodeURIComponent(url)}`;
+      },
+    );
+    expect(seen).toEqual(["https://img.example.com/b.png"]);
+    expect(out).toBe(
+      '<p>a<img src="/api/v1/images?url=https%3A%2F%2Fimg.example.com%2Fb.png" width="1"></p>',
     );
   });
 });
