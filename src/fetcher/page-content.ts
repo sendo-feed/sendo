@@ -19,7 +19,7 @@ import {
 import { sanitizeHtml } from "../lib/sanitize-html";
 import type { PageContentExtractor, Platform } from "../platform";
 import { FetchPageError, fetchPage } from "./fetch-page";
-import { type GatePriority, HostGate } from "./host-gate";
+import { type GatePriority, GateTicket, HostGate } from "./host-gate";
 import { htmlToText } from "./parse-feed";
 import { RobotsCache } from "./robots";
 
@@ -33,7 +33,7 @@ type PageContentPlatform = Pick<Platform, "db" | "fetch" | "now">;
  * とき、取りにいくのを 1 回にする）。別のプロセスとの重なりは、DB に書く文の中で確かめる
  * （db/page-contents.ts）
  */
-const inflight = new Map<string, Promise<PageContentResult>>();
+const inflight = new Map<string, { task: Promise<PageContentResult>; ticket: GateTicket }>();
 
 /** 同じホストへの取得の間隔（決定の 17） */
 export const SAME_HOST_INTERVAL_MS = 1000;
@@ -90,11 +90,16 @@ function extractOnce(
   priority: GatePriority,
 ): Promise<PageContentResult> {
   const running = inflight.get(article.id);
-  if (running) return running;
-  const task = extractAndRecord(platform, extractor, article, priority).finally(() =>
+  if (running) {
+    // 抜く仕事が順番を待っている記事を読者が開いたら、読者の位置へ並び直す（決定の 17）
+    if (priority === "interactive") running.ticket.promote();
+    return running.task;
+  }
+  const ticket = new GateTicket(priority);
+  const task = extractAndRecord(platform, extractor, article, ticket).finally(() =>
     inflight.delete(article.id),
   );
-  inflight.set(article.id, task);
+  inflight.set(article.id, { task, ticket });
   return task;
 }
 
@@ -102,9 +107,9 @@ async function extractAndRecord(
   platform: PageContentPlatform,
   extractor: PageContentExtractor,
   article: { id: string; url: string },
-  priority: GatePriority,
+  ticket: GateTicket,
 ): Promise<PageContentResult> {
-  const html = await extract(platform, extractor, article, priority);
+  const html = await extract(platform, extractor, article, ticket);
   if (html === null) {
     await recordFailedPageContent(platform.db, { articleId: article.id, now: platform.now() });
     return { status: "unavailable" };
@@ -125,7 +130,7 @@ async function extractAndRecord(
 function politeFetchPage(
   platform: Pick<Platform, "fetch" | "now">,
   url: string,
-  priority: GatePriority,
+  ticket: GateTicket,
 ): ReturnType<typeof fetchPage> {
   const fetchIt = () =>
     fetchPage(url, {
@@ -135,7 +140,7 @@ function politeFetchPage(
     });
   // URL として読めなければ、順番を待たずに fetchPage に断らせる（blocked_url）
   const host = URL.canParse(url) ? new URL(url).hostname : null;
-  return host === null ? fetchIt() : hostGate.run(host, priority, fetchIt);
+  return host === null ? fetchIt() : hostGate.run(host, ticket, fetchIt);
 }
 
 /** ページを取りにいって本文を抜き、サニタイズする。抜けなければ null（理由はログにだけ出す） */
@@ -143,12 +148,12 @@ async function extract(
   platform: Pick<Platform, "fetch" | "now">,
   extractor: PageContentExtractor,
   article: { id: string; url: string },
-  priority: GatePriority,
+  ticket: GateTicket,
 ): Promise<string | null> {
   const detail = { articleId: article.id };
   let page: Awaited<ReturnType<typeof fetchPage>>;
   try {
-    page = await politeFetchPage(platform, article.url, priority);
+    page = await politeFetchPage(platform, article.url, ticket);
   } catch (error) {
     if (error instanceof FetchPageError) {
       console.warn("could not fetch the article page", { ...detail, code: error.code });

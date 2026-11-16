@@ -34,7 +34,7 @@ const html = () => new Response(PAGE_HTML, { headers: { "content-type": "text/ht
 async function setUpSite(options: {
   count?: number;
   robots?: (url: URL) => Response;
-  page?: (url: URL) => Response;
+  page?: (url: URL) => Response | Promise<Response>;
 }) {
   const user = await createUser();
   const host = `${crypto.randomUUID()}.example.com`;
@@ -67,6 +67,8 @@ async function setUpSite(options: {
     host,
     articleId: first.id,
     articleIds: rows.map((row) => row.id),
+    /** 記事のページの URL（パス）から、記事の ID を引く */
+    idOf: (path: string) => rows.find((row) => row.url === `https://${host}${path}`)?.id ?? "",
     calls: () => fetched.calls.map((call) => call.url),
     most: () => most,
   };
@@ -104,6 +106,51 @@ describe("同じホストへは 1 本ずつ（決定の 17）", () => {
     ]);
     expect(t.most()).toBe(1);
     expect(t.calls().filter((url) => url.includes("/posts/"))).toHaveLength(2);
+  });
+
+  it("抜く仕事が順番を待っている記事を読者が開いたら、ほかの抜く仕事より先に取りにいく", async () => {
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const t = await setUpSite({
+      count: 3,
+      page: async (url) => {
+        if (url.pathname === "/posts/0") {
+          started();
+          await blocked;
+        }
+        return html();
+      },
+    });
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    // 0 を取りにいっている間に、1 と 2 の抜く仕事が順番を待つ
+    const jobs = ["/posts/0", "/posts/1", "/posts/2"].map((path) =>
+      runJob(t.platform, { type: "extract-page", articleId: t.idOf(path) }),
+    );
+    await firstStarted;
+    await wait(100);
+    // 読者が 2 を開く。2 の抜く仕事は、読者の位置へ並び直す
+    const opened = requestApp(
+      t.platform,
+      `/api/v1/articles/${t.idOf("/posts/2")}/content?source=page`,
+      { token: t.user.token },
+    );
+    await wait(100);
+    release();
+    await Promise.all([...jobs, opened]);
+
+    expect((await opened).status).toBe(200);
+    expect(t.calls().filter((url) => url.includes("/posts/"))).toEqual([
+      `https://${t.host}/posts/0`,
+      `https://${t.host}/posts/2`,
+      `https://${t.host}/posts/1`,
+    ]);
   });
 });
 

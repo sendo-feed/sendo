@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HostGate } from "../../src/fetcher/host-gate";
+import { GateTicket, HostGate } from "../../src/fetcher/host-gate";
 
 /*
  * 同じホストへの取得を 1 つずつにする（docs/decisions/content.md の 17）。時計と待ちを差し替えて、
@@ -145,6 +145,39 @@ describe("HostGate", () => {
     await Promise.all(runs);
     // 動いている仕事は追い越さない。読者どうしは来た順
     expect(order).toEqual(["job 0", "reader 0", "reader 1", "job 1", "job 2"]);
+  });
+
+  it("待っている仕事を interactive に上げると、読者の位置へ並び直す", async () => {
+    const gate = new HostGate({ intervalMs: 0, ...fakeClock() });
+    const first = deferred();
+    const order: string[] = [];
+    const tickets = [0, 1, 2].map(() => new GateTicket("background"));
+    const runs = tickets.map((ticket, i) =>
+      gate.run("a.example", ticket, async () => {
+        order.push(`job ${i}`);
+        if (i === 0) await first.promise;
+      }),
+    );
+    const reader = gate.run("a.example", "interactive", async () => {
+      order.push("reader");
+    });
+    await flush();
+    // job 2 を開いた読者がいる。先に並んだ読者は追い越さない
+    tickets[2]?.promote();
+    // 動いている仕事を上げても、何も変わらない
+    tickets[0]?.promote();
+    expect(tickets[2]?.priority).toBe("interactive");
+    first.resolve();
+    await Promise.all([...runs, reader]);
+    expect(order).toEqual(["job 0", "reader", "job 2", "job 1"]);
+  });
+
+  it("動き終えた札を上げても、何も起きない", async () => {
+    const gate = new HostGate({ intervalMs: 0, ...fakeClock() });
+    const ticket = new GateTicket("background");
+    await gate.run("a.example", ticket, async () => {});
+    ticket.promote();
+    expect(await gate.run("a.example", "background", async () => "ok")).toBe("ok");
   });
 
   it("仕事が失敗しても、次に順番を渡す", async () => {

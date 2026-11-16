@@ -3,14 +3,38 @@
  *
  * - 同じホストの取得は、同時に 1 つだけ。前の取得が終わってから intervalMs 空けて、次を始める
  * - 待っている取得は、並んだ順に動かす。ただし interactive（読者が開いたとき）は、background
- *   （抜く仕事）より前に並べる
+ *   （抜く仕事）より前に並べる。並んだあとで interactive に上げることもできる（GateTicket.promote）
  * - 数えるのはプロセスのメモリ。コンテナ版は 1 つのプロセスで動く（docs/decisions/container.md の 7）
  *   ので、それで全体を絞れる
  */
 
 export type GatePriority = "interactive" | "background";
 
-type Waiter = { priority: GatePriority; resolve: () => void };
+/**
+ * 順番を待つ取得の札。待っている間に promote すると、interactive の位置へ並び直す
+ * （抜く仕事が待っている記事を、読者が開いたとき）
+ */
+export class GateTicket {
+  #priority: GatePriority;
+  /** 並んでいる間だけ、HostGate が入れる */
+  onPromote: (() => void) | undefined;
+
+  constructor(priority: GatePriority) {
+    this.#priority = priority;
+  }
+
+  get priority(): GatePriority {
+    return this.#priority;
+  }
+
+  promote(): void {
+    if (this.#priority === "interactive") return;
+    this.#priority = "interactive";
+    this.onPromote?.();
+  }
+}
+
+type Waiter = { ticket: GateTicket; resolve: () => void };
 
 type HostState = {
   /** 取得が動いているか（順番を渡している間も含む） */
@@ -42,8 +66,15 @@ export class HostGate {
   }
 
   /** ホストの順番を待ってから task を動かす。task が終われば（失敗しても）、次に順番を渡す */
-  async run<T>(host: string, priority: GatePriority, task: () => Promise<T>): Promise<T> {
-    const state = await this.#acquire(host, priority);
+  async run<T>(
+    host: string,
+    ticket: GateTicket | GatePriority,
+    task: () => Promise<T>,
+  ): Promise<T> {
+    const state = await this.#acquire(
+      host,
+      typeof ticket === "string" ? new GateTicket(ticket) : ticket,
+    );
     try {
       return await task();
     } finally {
@@ -51,7 +82,7 @@ export class HostGate {
     }
   }
 
-  async #acquire(host: string, priority: GatePriority): Promise<HostState> {
+  async #acquire(host: string, ticket: GateTicket): Promise<HostState> {
     let state = this.#hosts.get(host);
     if (state === undefined) {
       this.#sweep();
@@ -62,12 +93,16 @@ export class HostGate {
       const { waiters } = state;
       // 前の取得から順番を渡されるまで待つ（渡されたときも busy のまま）
       await new Promise<void>((resolve) => {
-        const waiter = { priority, resolve };
-        const index =
-          priority === "interactive" ? waiters.findIndex((w) => w.priority === "background") : -1;
-        if (index === -1) waiters.push(waiter);
-        else waiters.splice(index, 0, waiter);
+        const waiter = { ticket, resolve };
+        enqueue(waiters, waiter);
+        ticket.onPromote = () => {
+          const index = waiters.indexOf(waiter);
+          if (index === -1) return;
+          waiters.splice(index, 1);
+          enqueue(waiters, waiter);
+        };
       });
+      ticket.onPromote = undefined;
     } else {
       state.busy = true;
     }
@@ -91,4 +126,14 @@ export class HostGate {
       if (!state.busy && state.lastEndAt + this.#intervalMs <= now) this.#hosts.delete(host);
     }
   }
+}
+
+/** 並ぶ。interactive は、最初の background の前に入れる（interactive どうしは来た順） */
+function enqueue(waiters: Waiter[], waiter: Waiter): void {
+  const index =
+    waiter.ticket.priority === "interactive"
+      ? waiters.findIndex((w) => w.ticket.priority === "background")
+      : -1;
+  if (index === -1) waiters.push(waiter);
+  else waiters.splice(index, 0, waiter);
 }
