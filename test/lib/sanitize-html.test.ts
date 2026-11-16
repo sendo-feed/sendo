@@ -175,6 +175,8 @@ describe("sanitizeHtml の計測用の画像（トラッキングピクセル）
       'width="1" style="height:1px"',
       'width="640" height="480" style="width:1px;height:1px"',
       'style="width:300px;height:200px;width:1px;height:1px"',
+      'style="width:640px !important;height:480px !important;width:1px !important;height:1px!important"',
+      'style="width:1px !important;height:1px !important;width:640px;height:480px"',
     ]) {
       expect(kept(attributes), attributes).toBe(false);
     }
@@ -184,6 +186,12 @@ describe("sanitizeHtml の計測用の画像（トラッキングピクセル）
       'style="max-width:1px;max-height:1px"',
       'style="min-width:1px;min-height:1px"',
       'style="width:1px"',
+      // あとの宣言でも、!important でなければ、!important の宣言には勝たない
+      'style="width:640px !important;height:480px !important;width:1px;height:1px"',
+      'style="width:640px!important;width:1px;height:1px"',
+      // 読み切れない書き方（コメント、エスケープ）は、大きさが分からないものとして残す
+      'style="width:1px;height:1px;/* x */"',
+      'width="1" height="1" style="wid\\74h:640px"',
     ]) {
       expect(kept(attributes), attributes).toBe(true);
     }

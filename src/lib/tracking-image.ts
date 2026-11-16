@@ -42,7 +42,10 @@ const TRACKING_ADDRESSES: readonly TrackingAddress[] = [
 const PIXEL_LENGTH = /^\s*(\d+(?:\.\d*)?|\.\d+)\s*(?:px)?\s*$/i;
 
 /** style の中の幅と高さの宣言（「width: 1px !important」など） */
-const STYLE_SIZE = /^\s*(width|height)\s*:\s*(.*?)\s*(?:!\s*important\s*)?$/i;
+const STYLE_SIZE = /^\s*(width|height)\s*:\s*(.*?)\s*(!\s*important\s*)?$/i;
+
+/** style のうち、ここでは読み切れない書き方（コメント、エスケープ） */
+const UNREADABLE_STYLE = /\/\*|\\/;
 
 /** 画像の幅か高さ。style に書いてあれば、属性より style を使う（ブラウザと同じ） */
 export type ImageLength = { value: string; from: "attribute" | "style" } | undefined;
@@ -56,12 +59,21 @@ export function imageSize(attributes: ReadonlyMap<string, string>): ImageSize {
     return value === undefined ? undefined : { value: decodeHTML(value), from: "attribute" };
   };
   const size: ImageSize = { width: fromAttribute("width"), height: fromAttribute("height") };
-  const style = attributes.get("style");
-  for (const declaration of (style === undefined ? "" : decodeHTML(style)).split(";")) {
+  const style = decodeHTML(attributes.get("style") ?? "");
+  if (UNREADABLE_STYLE.test(style)) {
+    // 読み切れない style は、大きさが分からないものとして扱う（迷うものは残す）
+    return { width: { value: "", from: "style" }, height: { value: "", from: "style" } };
+  }
+  // あとの宣言が勝つ。ただし、!important の宣言は、!important でない宣言には負けない
+  const important = { width: false, height: false };
+  for (const declaration of style.split(";")) {
     const match = STYLE_SIZE.exec(declaration);
-    if (match?.[1] && match[2] !== undefined) {
-      size[match[1].toLowerCase() as "width" | "height"] = { value: match[2], from: "style" };
-    }
+    if (!match?.[1] || match[2] === undefined) continue;
+    const key = match[1].toLowerCase() as "width" | "height";
+    const isImportant = match[3] !== undefined;
+    if (important[key] && !isImportant) continue;
+    size[key] = { value: match[2], from: "style" };
+    important[key] = isImportant;
   }
   return size;
 }
