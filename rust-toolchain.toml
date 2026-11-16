@@ -1,4 +1,4 @@
-# CI とイメージのビルドで、同じ版の Rust を使う
+# CI とイメージのビルドで、同じ版の Rust を使う。Dockerfile の rust のイメージの版と揃えて上げる
 [toolchain]
-channel = "1.97.0"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]
