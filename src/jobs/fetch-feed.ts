@@ -14,7 +14,6 @@ import { findFeedIcon } from "../fetcher/find-icon";
 import {
   htmlToText,
   MAX_ITEMS,
-  MAX_SUMMARY_LENGTH,
   type ParsedItem,
   ParseFeedError,
   parseFeed,
@@ -196,8 +195,8 @@ async function refreshIcon(
  * 新しい記事の、フィードに入っていた本文をサニタイズして置き場に置き、置いた名前を rows に入れる
  * （docs/decisions/content.md の 1、2、4）。
  *
- * - 置くのは、要約に収まらなかった本文（文字が要約の長さを超える）か、画像・リンク・コード・表
- *   などを含む本文だけ。サニタイズしたあとで MAX_CONTENT_BYTES を超える本文は置かない
+ * - 要約と同じ中身の本文（文字が要約と同じで、画像・リンク・コード・表などを含まない）は
+ *   置かない。サニタイズしたあとで MAX_CONTENT_BYTES を超える本文も置かない
  * - 置く前に名前を書き留める。名前は乱数で、二度使わない。落ちてやり直すと、新しい名前で置き直し、
  *   前の本文は、書き留めから片付けられる
  * - すでにある記事かどうかは、置く手間を省くために読むだけ。読んだあとで別の取得が同じ記事を
@@ -227,8 +226,11 @@ async function storeContents(
     .filter(({ row }) => !existing.has(row.guid))
     .slice(0, MAX_CONTENTS_PER_FETCH)) {
     const sanitized = sanitizeHtml(html, row.url ?? input.feedUrl);
+    // 要約と同じ中身なら置かない。保存する要約そのものと比べる。要約は別の欄（RSS の description
+    // など）から採ることがあるので、短い本文でも、要約と違えば置く。要約に収まらなかった本文は、
+    // 要約が切り詰められているので、同じにならない
     const text = htmlToText(sanitized, Number.POSITIVE_INFINITY) ?? "";
-    if ([...text].length <= MAX_SUMMARY_LENGTH && !hasMarkupBeyondText(sanitized)) continue;
+    if (text === (row.summary ?? "") && !hasMarkupBeyondText(sanitized)) continue;
     if (encoder.encode(sanitized).length > MAX_CONTENT_BYTES) continue;
     contents.push({ row, key: newContentKey(), html: sanitized });
   }

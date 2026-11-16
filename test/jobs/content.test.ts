@@ -108,6 +108,27 @@ describe("本文を取り込む", () => {
     expect(await t.notes(t.puts)).toEqual([]);
   });
 
+  it("短い本文でも、要約と中身が違えば置く（要約が別の欄から採られている場合）", async () => {
+    const t = await setUp(() =>
+      rss(
+        item(
+          "differs",
+          `<description>短い紹介文</description>${encoded("<p>紹介文にない、短い本文</p>")}`,
+        ),
+        item("same", `<description>同じ文</description>${encoded("<p>同じ文</p>")}`),
+      ),
+    );
+
+    await runFetchFeed(t.platform, t.feed.id);
+
+    const differs = await t.byGuid("differs");
+    expect(differs.summary).toBe("短い紹介文");
+    expect(await t.platform.content.get(differs.contentKey ?? "")).toBe(
+      "<p>紹介文にない、短い本文</p>",
+    );
+    expect((await t.byGuid("same")).contentKey).toBeNull();
+  });
+
   it("短くても、画像やリンクのある本文は置く", async () => {
     const t = await setUp(() => rss(item("img", encoded('<p>図<img src="/a.png"></p>'))));
 
