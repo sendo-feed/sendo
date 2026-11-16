@@ -439,6 +439,51 @@ export const removalHorizons = sqliteTable("removal_horizons", {
 });
 
 /**
+ * クライアントの設定（docs/decisions/settings.md）。ユーザー × 端末の種類ごとに、項目（名前）
+ * ごとの行で持つ。値は JSON の文字列で、sendo は中身を解釈しない。
+ *
+ * 消すときは行を残し、消した印と新しい変更番号を付けて、値を捨てる。同じ名前でもう一度置くと、
+ * 同じ行の印が外れる。印の行は 30 日たったら物理的に消す（db/settings.ts）。行が消えると、
+ * トリガーが番号の下限を引き上げる（migrations/0018_client_settings_seq_floor_trigger.sql）
+ */
+export const clientSettings = sqliteTable(
+  "client_settings",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** 端末の種類（mobile ／ desktop）。種類を足すときに表を変えずに済むよう、列は文字列にする */
+    deviceType: text("device_type").notNull(),
+    /** `<クライアント>.<残り>`。公式リーダーは reader. で始める */
+    name: text("name").notNull(),
+    /** JSON の文字列。消した印の行では null */
+    value: text("value"),
+    /** 名前と値のバイト数（UTF-8）。種類ごとの合計の上限に使う。消した印の行では 0 */
+    size: integer("size").notNull(),
+    seq: integer("seq").notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [
+    uniqueIndex("client_settings_user_id_device_type_name_idx").on(t.userId, t.deviceType, t.name),
+    index("client_settings_user_id_seq_idx").on(t.userId, t.seq),
+  ],
+);
+
+/**
+ * 設定の消した印の行を、人ごとにどこまで回収したか（docs/decisions/settings.md の 3）。
+ * 回収する行の番号の最大まで、先にここを引き上げる。その人のカーソルの位置がこれより前なら、
+ * 最初から同期し直してもらう。人ごとに持つ理由は removal_horizons と同じ
+ */
+export const settingHorizons = sqliteTable("setting_horizons", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  seq: integer("seq").notNull(),
+});
+
+/**
  * sendo が自分で作って持つ秘密（docs/decisions/images.md の 2）。今は、画像の URL の署名の鍵だけ。
  * 初めて使うときに作る（db/secrets.ts）。行を消すと、次に使うときに作り直す
  */

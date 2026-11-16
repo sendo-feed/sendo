@@ -31,6 +31,11 @@ const relayImageUrl = (what: string) =>
 
 export const FeedIconUrlSchema = relayImageUrl("フィードのアイコン");
 
+/** 設定の値。JSON の値なら何でもよく、sendo は中身を解釈しない（docs/decisions/settings.md の 2） */
+export const SettingValueSchema = z.unknown().openapi({
+  description: "JSON の値（オブジェクト、配列、文字列、数、真偽、null）。Sendo は中身を解釈しない",
+});
+
 export const FeedSchema = z
   .object({
     id: z.string(),

@@ -103,10 +103,17 @@ describe("D1 のクエリの上限", () => {
 
     await runCleanUp(platform);
 
-    // 消すものがなければ、それぞれ 1 文で終わる（受信箱、記事、下限の引き上げ、消した記録）
-    expect(queryCount()).toBe(4);
+    // 消すものがなければ、それぞれ 1 文で終わる（受信箱、記事、下限の引き上げ、消した記録、
+    // 設定の下限の引き上げ、設定の消した印の行）
+    expect(queryCount()).toBe(6);
     // いちばん多いのは、どれも上限の回数まで消し続ける場合
-    const worst = SWEEP_ROUNDS.inbox + SWEEP_ROUNDS.articles + 1 + SWEEP_ROUNDS.removals;
+    const worst =
+      SWEEP_ROUNDS.inbox +
+      SWEEP_ROUNDS.articles +
+      1 +
+      SWEEP_ROUNDS.removals +
+      1 +
+      SWEEP_ROUNDS.settings;
     expect(worst).toBeLessThanOrEqual(QUERY_BUDGET);
   });
 

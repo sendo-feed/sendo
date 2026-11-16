@@ -120,6 +120,20 @@
       "when": 1794768403713,
       "tag": "0016_feed_icon_trigger",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1794793926889,
+      "tag": "0017_client_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1794793928260,
+      "tag": "0018_client_settings_seq_floor_trigger",
+      "breakpoints": true
     }
   ]
 }

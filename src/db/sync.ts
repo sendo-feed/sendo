@@ -20,19 +20,22 @@ import type { InboxArticle } from "./inbox";
 import { readRemovalHorizon } from "./retention";
 import {
   articles,
+  clientSettings,
   type Feed,
   type Folder,
   feeds,
   folders,
   removalHorizons,
   type Subscription,
+  settingHorizons,
   subscriptions,
   userArticleRemovals,
   userArticles,
 } from "./schema";
+import { readSettingHorizon } from "./settings";
 
 /*
- * 差分同期（docs/decisions/sync.md）。人ごとの 3 つの表から、カーソルより後に変わった行を返す。
+ * 差分同期（docs/decisions/sync.md）。人ごとの表（フォルダ、購読、受信箱、クライアントの設定）から、カーソルより後に変わった行を返す。
  */
 
 /**
@@ -54,20 +57,30 @@ export type SyncCursor = {
   folders: SyncPosition;
   subscriptions: SyncPosition;
   articles: SyncPosition;
+  settings: SyncPosition;
 };
 
 /** 最初の同期の始まり。upTo は、最初のページで決める（-1 は「まだ決めていない」） */
 const START: SyncPosition = { seq: 0, id: null, upTo: -1, done: false };
 
 /** カーソルなしで来たとき（最初の同期の始まり） */
+/** 最初の同期の始まりの位置。設定の位置を持たない古いカーソルを、設定だけ最初から送るのにも使う */
+export const INITIAL_POSITION = START;
+
 export const INITIAL_CURSOR: SyncCursor = {
   folders: START,
   subscriptions: START,
   articles: START,
+  settings: START,
 };
 
 /** 1 回の応答で返す行の数の上限（表ごと） */
-export const SYNC_LIMITS = { folders: 500, subscriptions: 500, articles: 300 } as const;
+export const SYNC_LIMITS = {
+  folders: 500,
+  subscriptions: 500,
+  articles: 300,
+  settings: 500,
+} as const;
 
 /** 最初の同期で送る、既読の記事の範囲（受信箱に入ってからの日数） */
 export const INITIAL_SYNC_DAYS = 30;
@@ -78,10 +91,17 @@ export const INITIAL_SYNC_DAYS = 30;
  */
 export type SyncArticle = { deleted: false; article: InboxArticle } | { deleted: true; id: string };
 
+/** 同期で返す設定の項目。消した印の付いた項目には、値がない（docs/decisions/settings.md の 4） */
+export type SyncSetting = { deviceType: string; name: string } & (
+  | { deleted: false; json: string }
+  | { deleted: true }
+);
+
 export type SyncChanges = {
   folders: Folder[];
   subscriptions: (Subscription & { feed: Feed })[];
   articles: SyncArticle[];
+  settings: SyncSetting[];
   cursor: SyncCursor;
   hasMore: boolean;
 };
@@ -173,6 +193,7 @@ async function readTable<T>(
  *
  * - 最初の同期では、消した印の付いた行と消した記録は送らず、記事は未読・スター・直近
  *   INITIAL_SYNC_DAYS 日に受信箱に入ったものに絞る
+ * - 設定は、端末の種類で絞らない（カーソルを、種類によらないものにする）
  * - 差分では、消した印の付いた行も、受信箱から消えた記録も送る（クライアントが手元から消せるように）
  */
 export async function readChanges(
@@ -394,18 +415,52 @@ export async function readChanges(
     cursor.articles,
   );
 
+  const c = await readTable(
+    singleTable({
+      seq: clientSettings.seq,
+      id: clientSettings.id,
+      initialFilter: isNull(clientSettings.deletedAt),
+      limit: SYNC_LIMITS.settings,
+      read: (where, limit) =>
+        db
+          .select()
+          .from(clientSettings)
+          .where(and(eq(clientSettings.userId, userId), where))
+          .orderBy(asc(clientSettings.seq), asc(clientSettings.id))
+          .limit(limit)
+          .all(),
+      position: (row) => ({ seq: row.seq, id: row.id }),
+      // 消した印の行を回収した下限も含める（記事の maxSeq と同じ理由）
+      maxSeq: async () => {
+        const row = await db.get<{ value: number }>(sql`select max(
+          coalesce((select max(${clientSettings.seq}) from ${clientSettings} where ${clientSettings.userId} = ${userId}), 0),
+          coalesce((select ${settingHorizons.seq} from ${settingHorizons} where ${settingHorizons.userId} = ${userId}), 0)
+        ) as value`);
+        return row?.value ?? 0;
+      },
+    }),
+    cursor.settings,
+  );
+
   return {
     folders: f.items,
     subscriptions: s.items.map((row) => ({ ...row.subscription, feed: row.feed })),
     articles: a.items.map((row) => row.item),
-    cursor: { folders: f.next, subscriptions: s.next, articles: a.next },
-    hasMore: f.more || s.more || a.more,
+    settings: c.items.map((row): SyncSetting => {
+      const { deviceType, name } = row;
+      return row.deletedAt === null && row.value !== null
+        ? { deviceType, name, deleted: false, json: row.value }
+        : { deviceType, name, deleted: true };
+    }),
+    cursor: { folders: f.next, subscriptions: s.next, articles: a.next, settings: c.next },
+    hasMore: f.more || s.more || a.more || c.more,
   };
 }
 
 /**
- * カーソルの位置より後の、その人の受信箱の消した記録が、回収されているかもしれないか
- * （docs/decisions/retention.md の 5）。そうなら、クライアントには最初から同期し直してもらう。
+ * カーソルの位置より後の、その人の消した記録（受信箱）か消した印の行（設定）が、回収されている
+ * かもしれないか（docs/decisions/retention.md の 5、settings.md の 3）。そうなら、クライアントには
+ * 最初から同期し直してもらう。
  *
  * 変更を読んだ「あと」に呼ぶ。片付けは、回収の下限を引き上げてから記録を消すので、読んだときに
  * 記録が消えていたなら、そのあとで読む下限には、必ずそれが表れている。先に呼ぶと、確かめてから
@@ -415,10 +470,11 @@ export async function isCursorExpired(
   db: Database,
   input: { userId: string; cursor: SyncCursor },
 ): Promise<boolean> {
-  const { articles: at } = input.cursor;
   // 最初の同期の途中なら、送り終えたあと upTo から差分を取るので、upTo を位置として見る。
   // 始めたばかり（upTo を決めていない）なら、消した記録は要らない
-  const position = at.upTo === null ? at.seq : at.upTo;
-  if (position < 0) return false;
-  return position < (await readRemovalHorizon(db, input.userId));
+  const positionOf = (at: SyncPosition) => (at.upTo === null ? at.seq : at.upTo);
+  const articlesAt = positionOf(input.cursor.articles);
+  if (articlesAt >= 0 && articlesAt < (await readRemovalHorizon(db, input.userId))) return true;
+  const settingsAt = positionOf(input.cursor.settings);
+  return settingsAt >= 0 && settingsAt < (await readSettingHorizon(db, input.userId));
 }

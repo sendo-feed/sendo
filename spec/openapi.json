@@ -471,6 +471,59 @@
           "skipped"
         ]
       },
+      "Setting": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "description": "JSON の値（オブジェクト、配列、文字列、数、真偽、null）。Sendo は中身を解釈しない"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "SettingsPatchRequest": {
+        "type": "object",
+        "properties": {
+          "put": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 128,
+                  "pattern": "^[a-z][a-z0-9-]{0,31}\\.[\\x21-\\x7e]+$",
+                  "description": "`<クライアント>.<残り>` の形。公式リーダーは `reader.` で始める。128 文字まで、空白を除く印字できる ASCII",
+                  "example": "reader.theme"
+                },
+                "value": {
+                  "description": "JSON の値。JSON にして 8192 バイトまで、入れ子は 16 段まで。Sendo は中身を解釈しない"
+                }
+              },
+              "required": [
+                "name",
+                "value"
+              ]
+            },
+            "description": "置く項目。なければ作り、あれば値を替える"
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9-]{0,31}\\.[\\x21-\\x7e]+$",
+              "description": "`<クライアント>.<残り>` の形。公式リーダーは `reader.` で始める。128 文字まで、空白を除く印字できる ASCII",
+              "example": "reader.theme"
+            },
+            "description": "消す項目の名前。ない項目は、そのまま通す"
+          }
+        }
+      },
       "SyncChanges": {
         "type": "object",
         "properties": {
@@ -497,6 +550,12 @@
             "items": {
               "$ref": "#/components/schemas/SyncArticle"
             }
+          },
+          "settings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncSetting"
+            }
           }
         },
         "required": [
@@ -504,7 +563,8 @@
           "hasMore",
           "folders",
           "feeds",
-          "articles"
+          "articles",
+          "settings"
         ]
       },
       "SyncFolder": {
@@ -638,6 +698,67 @@
         },
         "required": [
           "id",
+          "deleted"
+        ]
+      },
+      "SyncSetting": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/SyncPutSetting"
+          },
+          {
+            "$ref": "#/components/schemas/SyncRemovedSetting"
+          }
+        ]
+      },
+      "SyncPutSetting": {
+        "type": "object",
+        "properties": {
+          "deviceType": {
+            "type": "string",
+            "description": "端末の種類（mobile ／ desktop）"
+          },
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "description": "JSON の値（オブジェクト、配列、文字列、数、真偽、null）。Sendo は中身を解釈しない"
+          },
+          "deleted": {
+            "type": "boolean",
+            "enum": [
+              false
+            ],
+            "description": "置いてある項目"
+          }
+        },
+        "required": [
+          "deviceType",
+          "name",
+          "deleted"
+        ]
+      },
+      "SyncRemovedSetting": {
+        "type": "object",
+        "properties": {
+          "deviceType": {
+            "type": "string",
+            "description": "端末の種類（mobile ／ desktop）"
+          },
+          "name": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "消した項目。手元から消す（既定に戻す）"
+          }
+        },
+        "required": [
+          "deviceType",
+          "name",
           "deleted"
         ]
       },
@@ -1893,10 +2014,130 @@
         }
       }
     },
+    "/settings/{deviceType}": {
+      "get": {
+        "summary": "設定の項目の一覧",
+        "description": "その端末の種類の、消していない項目をすべて返す。差分同期（/sync）を使うクライアントは、呼ばなくてよい。",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "mobile",
+                "desktop"
+              ],
+              "description": "端末の種類。どちらとして動くかは、クライアントが決める"
+            },
+            "required": true,
+            "description": "端末の種類。どちらとして動くかは、クライアントが決める",
+            "name": "deviceType",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "項目（名前の順）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Setting"
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "端末の種類が mobile ／ desktop でない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "設定の項目を置く ／ 消す",
+        "description": "その端末の種類の項目を、まとめて置く ／ 消す。何度送り直しても同じ結果になる。\n同じ項目をほかの端末も変えていたら、あとから受けたほうを採る。項目ごとに比べるので、別の項目の変更は互いに消さない。\n今と同じ値を置いても、ない項目を消しても、何も変わらない（同期でも届かない）。\n項目の数（1000）か、名前と値の合計（262144 バイト）を超えるなら、1 つも置かずに 409 を返す（remove は済んでいる）。\n結果は、次の同期（/sync の settings）で届く。",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "mobile",
+                "desktop"
+              ],
+              "description": "端末の種類。どちらとして動くかは、クライアントが決める"
+            },
+            "required": true,
+            "description": "端末の種類。どちらとして動くかは、クライアントが決める",
+            "name": "deviceType",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsPatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "置いた ／ 消した"
+          },
+          "400": {
+            "description": "名前の形が違う、値が大きすぎるか深すぎる、項目が多すぎる、同じ名前が 2 度ある、端末の種類が mobile ／ desktop でない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "項目の数か合計の上限を超える（settings_full）。項目を消せば置ける",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "本文が大きすぎる",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sync": {
       "get": {
         "summary": "前回の同期からの差分を取る",
-        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダと購読、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
+        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\nsettings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
         "parameters": [
           {
             "schema": {

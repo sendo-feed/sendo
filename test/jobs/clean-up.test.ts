@@ -60,7 +60,12 @@ describe("runCleanUp", () => {
       .bind(daysAgo(31).getTime())
       .run();
 
-    expect(await runCleanUp(platform)).toEqual({ inbox: 0, articles: 1, removals: 2 });
+    expect(await runCleanUp(platform)).toEqual({
+      inbox: 0,
+      articles: 1,
+      removals: 2,
+      settings: 0,
+    });
     expect(await count("SELECT count(*) AS n FROM articles")).toBe(1);
     expect(await count("SELECT count(*) AS n FROM user_article_removals")).toBe(0);
     expect(await readRemovalHorizon(platform.db, TEST_USER.id)).toBeGreaterThan(0);

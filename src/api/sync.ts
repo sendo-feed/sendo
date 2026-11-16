@@ -2,6 +2,7 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { imageSigner } from "../db/secrets";
 import {
   INITIAL_CURSOR,
+  INITIAL_POSITION,
   isCursorExpired,
   readChanges,
   type SyncCursor,
@@ -15,6 +16,7 @@ import {
   ErrorSchema,
   errorBody,
   FeedIconUrlSchema,
+  SettingValueSchema,
   toArticleResponse,
 } from "./schemas";
 
@@ -36,6 +38,9 @@ const CursorSchema = z.object({
   f: PositionSchema,
   s: PositionSchema,
   a: PositionSchema,
+  // 設定を足す前に作られたカーソルには、ない。そのときは、設定だけを最初から送る
+  // （全体を同期し直させない。docs/decisions/settings.md の 4）
+  c: PositionSchema.optional(),
 });
 
 const toTuple = (p: SyncPosition) => [p.seq, p.id, p.upTo, p.done] as const;
@@ -53,6 +58,7 @@ export function encodeSyncCursor(cursor: SyncCursor): string {
     f: toTuple(cursor.folders),
     s: toTuple(cursor.subscriptions),
     a: toTuple(cursor.articles),
+    c: toTuple(cursor.settings),
   });
   const bytes = new TextEncoder().encode(json);
   return btoa(String.fromCharCode(...bytes))
@@ -72,6 +78,7 @@ export function decodeSyncCursor(value: string): SyncCursor | null {
       folders: fromTuple(parsed.data.f),
       subscriptions: fromTuple(parsed.data.s),
       articles: fromTuple(parsed.data.a),
+      settings: parsed.data.c ? fromTuple(parsed.data.c) : INITIAL_POSITION,
     };
   } catch {
     return null;
@@ -116,15 +123,38 @@ const SyncArticleSchema = z
   ])
   .openapi("SyncArticle");
 
+const settingKey = {
+  deviceType: z.string().openapi({ description: "端末の種類（mobile ／ desktop）" }),
+  name: z.string(),
+};
+const SyncSettingSchema = z
+  .union([
+    z
+      .object({
+        ...settingKey,
+        value: SettingValueSchema,
+        deleted: z.literal(false).openapi({ description: "置いてある項目" }),
+      })
+      .openapi("SyncPutSetting"),
+    z
+      .object({
+        ...settingKey,
+        deleted: z.literal(true).openapi({ description: "消した項目。手元から消す（既定に戻す）" }),
+      })
+      .openapi("SyncRemovedSetting"),
+  ])
+  .openapi("SyncSetting");
+
 const syncRoute = createRoute({
   method: "get",
   path: "/sync",
   summary: "前回の同期からの差分を取る",
   description: [
-    "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダと購読、未読・スター・直近 30 日の記事）。",
+    "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。",
     "応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。",
     "配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。",
     "deleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。",
+    "settings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。",
     "cursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
   ].join("\n"),
   request: {
@@ -144,6 +174,7 @@ const syncRoute = createRoute({
               folders: z.array(SyncFolderSchema),
               feeds: z.array(SyncFeedSchema),
               articles: z.array(SyncArticleSchema),
+              settings: z.array(SyncSettingSchema),
             })
             .openapi("SyncChanges"),
         },
@@ -205,6 +236,16 @@ export function syncApi(platform: Platform) {
                 ? { id: item.id, deleted: true as const }
                 : { ...(await toArticleResponse(item.article, images)), deleted: false as const },
             ),
+          ),
+          settings: changes.settings.map((item) =>
+            item.deleted
+              ? { deviceType: item.deviceType, name: item.name, deleted: true as const }
+              : {
+                  deviceType: item.deviceType,
+                  name: item.name,
+                  value: JSON.parse(item.json) as unknown,
+                  deleted: false as const,
+                },
           ),
         },
         200,
