@@ -46,8 +46,11 @@ const TRACKING_ADDRESSES: readonly TrackingAddress[] = [
 /** 大きさの数（「1」「1.0」「.5」など）。単位と前後の空白は、除いてから当てる */
 const PIXEL_NUMBER = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
 
-/** style のうち、ここでは読み切れない書き方（コメント、エスケープ） */
-const UNREADABLE_STYLE = /\/\*|\\/;
+/**
+ * style のうち、ここでは読み切れない書き方。コメント、エスケープ、文字列（引用符）、関数や
+ * url()（かっこ）、ブロック。この中の「;」や「width:」を、宣言と取り違えないように
+ */
+const UNREADABLE_STYLE = /\/\*|["'\\(){}]/;
 
 /** 画像の幅か高さ。style に書いてあれば、属性より style を使う（ブラウザと同じ） */
 export type ImageLength = { value: string; from: "attribute" | "style" } | undefined;

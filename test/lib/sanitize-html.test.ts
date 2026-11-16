@@ -192,6 +192,11 @@ describe("sanitizeHtml の計測用の画像（トラッキングピクセル）
       // 読み切れない書き方（コメント、エスケープ）は、大きさが分からないものとして残す
       'style="width:1px;height:1px;/* x */"',
       'width="1" height="1" style="wid\\74h:640px"',
+      // 文字列や url() の中の「;」と「width:」を、宣言と取り違えない
+      `width="640" height="480" style='--example:";width:1px;height:1px;"'`,
+      `width="640" height="480" style="--example:';width:1px;height:1px;'"`,
+      'width="640" height="480" style="background:url(a;width:1px;height:1px)"',
+      'style="width:calc(1px);height:calc(1px)"',
     ]) {
       expect(kept(attributes), attributes).toBe(true);
     }
