@@ -7,7 +7,7 @@ import { CLEAN_UP_CATCH_UP } from "../../src/db/retention";
 import { articles, feeds, userArticles } from "../../src/db/schema";
 import { MAX_ITEMS } from "../../src/fetcher/parse-feed";
 import { ICON_CHECK_INTERVAL_MS, runFetchFeed } from "../../src/jobs/fetch-feed";
-import { MAX_FETCH_INTERVAL_MS, MAX_RETRY_AFTER_MS } from "../../src/jobs/fetch-interval";
+import { MAX_FETCH_INTERVAL_MS } from "../../src/jobs/fetch-interval";
 import type { Platform } from "../../src/platform";
 import { PNG } from "../fixtures/images";
 import { createTestPlatform, fakeFetch, subscribeFeed, TEST_USER, uniqueUrl } from "../helpers";
@@ -153,10 +153,10 @@ describe("runFetchFeed", () => {
       siteUrl: "https://blog.example/",
       etag: '"e1"',
       lastFetchedAt: NOW,
-      // 記事は 1 日前に 1 件、今（日付のない 2 件）。1 日 ÷ 3 件 ＝ 8 時間の半分
+      // 記事は 1 日前に 1 件、今（日付のない 2 件）。1 日 ÷ 3 件 ＝ 8 時間の 3 分の 1
       // （docs/decisions/jobs.md の 7）
-      nextFetchAt: new Date(NOW.getTime() + 4 * HOUR),
-      fetchIntervalMs: 4 * HOUR,
+      nextFetchAt: new Date(NOW.getTime() + (8 * HOUR) / 3),
+      fetchIntervalMs: (8 * HOUR) / 3,
       errorCount: 0,
       lastError: null,
     });
@@ -279,7 +279,7 @@ describe("runFetchFeed の取得の間隔（docs/decisions/jobs.md の 7）", ()
   const ago = (ms: number) => new Date(NOW.getTime() - ms);
 
   it("記事の出るペースから間隔を決め、フィードの行に記録する", async () => {
-    // 6 時間おきに 4 件：24 時間 ÷ 4 件 ＝ 6 時間の半分
+    // 6 時間おきに 4 件：24 時間 ÷ 4 件 ＝ 6 時間の 3 分の 1
     const { platform, feed } = await setup(
       () => new Response(rssWithDates([6, 12, 18, 24].map((h) => ago(h * HOUR)))),
     );
@@ -287,8 +287,8 @@ describe("runFetchFeed の取得の間隔（docs/decisions/jobs.md の 7）", ()
     await runFetchFeed(platform, feed.id);
 
     expect(await getFeed(platform.db, feed.id)).toMatchObject({
-      fetchIntervalMs: 3 * HOUR,
-      nextFetchAt: new Date(NOW.getTime() + 3 * HOUR),
+      fetchIntervalMs: 2 * HOUR,
+      nextFetchAt: new Date(NOW.getTime() + 2 * HOUR),
     });
   });
 
@@ -319,7 +319,7 @@ describe("runFetchFeed の取得の間隔（docs/decisions/jobs.md の 7）", ()
     const fake = fakeFetch(() => {
       if (!first) return new Response(null, { status: 304 });
       first = false;
-      return new Response(rssWithDates([ago(2 * HOUR), ago(4 * HOUR)]), {
+      return new Response(rssWithDates([ago(3 * HOUR), ago(6 * HOUR)]), {
         headers: { etag: '"e1"' },
       });
     });
@@ -335,14 +335,15 @@ describe("runFetchFeed の取得の間隔（docs/decisions/jobs.md の 7）", ()
     });
 
     await runFetchFeed(platform, feed.id);
+    // 6 時間 ÷ 2 件の 3 分の 1
     expect((await getFeed(platform.db, feed.id))?.fetchIntervalMs).toBe(HOUR);
 
-    // 20 時間後：24 時間 ÷ 2 件の半分
-    now = new Date(NOW.getTime() + 20 * HOUR);
+    // 18 時間後：24 時間 ÷ 2 件の 3 分の 1
+    now = new Date(NOW.getTime() + 18 * HOUR);
     expect(await runFetchFeed(platform, feed.id)).toEqual({ status: "not-modified" });
     expect(await getFeed(platform.db, feed.id)).toMatchObject({
-      fetchIntervalMs: 6 * HOUR,
-      nextFetchAt: new Date(now.getTime() + 6 * HOUR),
+      fetchIntervalMs: 4 * HOUR,
+      nextFetchAt: new Date(now.getTime() + 4 * HOUR),
     });
   });
 
@@ -399,12 +400,12 @@ describe("runFetchFeed の Retry-After（docs/decisions/jobs.md の 8）", () =>
     ).toEqual(new Date(NOW.getTime() + INTERVAL_MS * 2));
   });
 
-  it("長すぎる Retry-After は、7 日までにする", async () => {
+  it("長すぎる Retry-After は、取得の間隔の上限（1 日）までにする", async () => {
     expect(
       await nextFetchAtOf(
         () => new Response("", { status: 503, headers: { "retry-after": "999999999" } }),
       ),
-    ).toEqual(new Date(NOW.getTime() + MAX_RETRY_AFTER_MS));
+    ).toEqual(new Date(NOW.getTime() + MAX_FETCH_INTERVAL_MS));
   });
 });
 

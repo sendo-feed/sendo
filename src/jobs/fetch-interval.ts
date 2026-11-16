@@ -20,9 +20,6 @@ export const PACE_WINDOW_MS = 7 * DAY_MS;
 /** 記事の出るペースを見るのに使う記事の数の上限（新しい順） */
 export const PACE_SAMPLE = 50;
 
-/** Retry-After を守る長さの上限。これより長い値は、相手の設定の誤りとみなす */
-export const MAX_RETRY_AFTER_MS = 7 * DAY_MS;
-
 /** 取得の間隔の上限。設定の間隔（下限）が 1 日より長ければ、設定の間隔 */
 export function maxFetchInterval(minMs: number): number {
   return Math.max(MAX_FETCH_INTERVAL_MS, minMs);
@@ -41,7 +38,7 @@ export function currentFetchInterval(feed: Pick<Feed, "fetchIntervalMs">, minMs:
  *
  * - 期間（直近 7 日）に入る記事がなければ、上限
  * - あれば、いちばん古いものから今までの時間を件数で割ったものを記事の平均の間隔とみなし、
- *   その半分にする。公開日時が今より先の記事は、今に出たものとして数える
+ *   その 3 分の 1 にする。公開日時が今より先の記事は、今に出たものとして数える
  * - 下限（設定の間隔）と上限に収める
  */
 export function decideFetchInterval(
@@ -55,7 +52,7 @@ export function decideFetchInterval(
 
   const oldest = Math.min(now, ...times);
   const averageGap = (now - oldest) / times.length;
-  return clamp(Math.round(averageGap / 2), input.minMs, maxMs);
+  return clamp(Math.round(averageGap / 3), input.minMs, maxMs);
 }
 
 /** フィードの記事を DB から読んで、取得の間隔を決め直す */
@@ -83,9 +80,13 @@ export function backoffInterval(input: {
   return Math.min(input.intervalMs * 2 ** input.errorCount, maxFetchInterval(input.minMs));
 }
 
-/** 相手の Retry-After を、守る長さに収める。なければ 0 */
-export function retryAfterWait(retryAfterMs: number | undefined): number {
-  return retryAfterMs === undefined ? 0 : Math.min(Math.max(retryAfterMs, 0), MAX_RETRY_AFTER_MS);
+/**
+ * 相手の Retry-After を、守る長さに収める。なければ 0。上限は、取得の間隔の上限と同じ
+ * （1 日。設定の間隔が 1 日より長ければ、設定の間隔）
+ */
+export function retryAfterWait(retryAfterMs: number | undefined, minMs: number): number {
+  if (retryAfterMs === undefined) return 0;
+  return Math.min(Math.max(retryAfterMs, 0), maxFetchInterval(minMs));
 }
 
 function clamp(value: number, min: number, max: number): number {

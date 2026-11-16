@@ -182,7 +182,8 @@ export async function runFetchFeed(
     const backoff = backoffInterval({ intervalMs, errorCount, minMs: minIntervalMs });
     // 429 ／ 503 の Retry-After を守る（docs/decisions/jobs.md の 8）。待つ長さは、応答を受けた
     // 時刻から数える
-    const retryAfter = error instanceof FetchFeedError ? retryAfterWait(error.retryAfterMs) : 0;
+    const retryAfter =
+      error instanceof FetchFeedError ? retryAfterWait(error.retryAfterMs, minIntervalMs) : 0;
     const nextFetchAt = Math.max(
       startedAt.getTime() + backoff,
       platform.now().getTime() + retryAfter,
