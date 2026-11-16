@@ -47,7 +47,7 @@
     "@libsql/client": "0.18.0",
     "@modelcontextprotocol/server": "2.4.0",
     "drizzle-orm": "0.45.4",
-    "entities": "7.0.1",
+    "entities": "9.0.0",
     "feedsmith": "3.0.1",
     "hono": "4.13.14",
     "undici": "8.12.3",
