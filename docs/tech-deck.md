@@ -74,7 +74,7 @@ flowchart LR
 | LLM | OpenAI 互換で差し替え | Claude・OpenAI・Workers AI・Ollama |
 | 認証 | 自前の OpenID Connect ／ アクセストークン ／ OAuth 2.1（MCP） | ブラウザはセッションのクッキー、それ以外は Bearer（[decisions/accounts.md](decisions/accounts.md)）。Claude.ai などは Sendo が出す OAuth のトークンで /mcp につなぐ（[decisions/mcp.md](decisions/mcp.md)） |
 
-> テストは Vitest と Workers 用のテストプール。Rust は本体には使わず、ボトルネックが見えたら解析や抽出だけ Wasm にする選択肢を残す。
+> テストは Vitest と Workers 用のテストプール。コンテナ版の重い処理（全文抽出、画像の縮小、埋め込みなど）は Rust で書き、napi-rs で Node のプロセスに読み込む（[decisions/tech-stack.md](decisions/tech-stack.md)）。Cloudflare 版で Wasm にするかは、測ってから決める。
 
 ---
 
@@ -141,8 +141,9 @@ sendo/
 │   ├── db/                    # Drizzle スキーマ
 │   ├── platform/              # 緩衝層のインターフェース
 │   │   ├── cloudflare/        # Cloudflare 版の実装（D1・Queues・R2 など）
-│   │   └── node/              # コンテナ版の実装と入口（SQLite・ジョブの表・ファイル）
+│   │   └── node/              # コンテナ版の実装と入口（SQLite・ジョブの表・ファイル。Rust のモジュールを読み込む）
 │   └── lib/
+├── crates/                    # Rust（コンテナ版の重い処理と、napi-rs の結び）
 ├── migrations/                # 2 つの版で同じものを使う
 ├── test/
 ├── wrangler.jsonc             # Cloudflare 版の設定
