@@ -263,7 +263,8 @@ export async function fetchRobotsTxt(
         const { bytes, truncated } = await readPrefix(res.body, maxBytes);
         let text = new TextDecoder().decode(bytes);
         // 途中で切れた行は、意味が変わっているかもしれないので捨てる
-        if (truncated) text = text.slice(0, Math.max(text.lastIndexOf("\n"), 0));
+        if (truncated)
+          text = text.slice(0, Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r"), 0));
         return { status: "fetched", rules: parseRobotsTxt(text) };
       }
       await res.body?.cancel();

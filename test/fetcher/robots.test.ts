@@ -421,6 +421,20 @@ describe("fetchRobotsTxt", () => {
     expect(result).toEqual({ status: "fetched", rules: [{ allow: false, pattern: "/a" }] });
   });
 
+  it.each([
+    ["LF", "\n"],
+    ["CR", "\r"],
+    ["CRLF", "\r\n"],
+  ])("切れた最後の行だけを捨て、それより前の行は残す（%s）", async (_, eol) => {
+    const head = `User-agent: *${eol}Disallow: /private${eol}`;
+    const { fetch } = robotsFetch(() => new Response(`${head}# ${"x".repeat(1000)}${eol}`));
+    const result = await fetchRobotsTxt("https://example.com", {
+      fetch,
+      maxBytes: head.length + 100,
+    });
+    expect(result).toEqual({ status: "fetched", rules: [{ allow: false, pattern: "/private" }] });
+  });
+
   it("既定では 500KiB まで読む", async () => {
     const filler = `# ${"x".repeat(1021)}\n`.repeat(500); // 500KiB ちょうど
     const { fetch } = robotsFetch(() => new Response(`${filler}User-agent: *\nDisallow: /\n`));
