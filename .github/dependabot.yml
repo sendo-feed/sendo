@@ -19,6 +19,10 @@ updates:
         patterns: ["wrangler", "@cloudflare/*"]
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # Node の型は、動かす Node のメジャー（.node-version）と揃える。メジャーは Node を上げるときに手で上げる
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
@@ -46,6 +50,10 @@ updates:
       default-days: 14
     commit-message:
       prefix: build
+    ignore:
+      # Node のメジャーは .node-version と揃える（LTS だけを使う）。メジャーは手で上げる
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
 
   # Rust の依存（crates/）
   - package-ecosystem: cargo
