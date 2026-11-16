@@ -2,7 +2,7 @@
 # 使う人は compose.yaml で動かす。手元で作るときは docker build -t sendo .
 #
 # 土台のイメージは、ダイジェストで固定する（Dependabot が上げる）。Node のメジャーは .node-version と揃える
-FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS base
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS base
 # pnpm は package.json の packageManager の版を、corepack で入れる
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable
