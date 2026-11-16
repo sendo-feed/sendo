@@ -1,3 +1,4 @@
+import { extractPageContentOnce } from "../fetcher/page-content";
 import type { Platform } from "../platform";
 import { runCleanUp } from "./clean-up";
 import { runFetchFeed } from "./fetch-feed";
@@ -16,6 +17,15 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
     }
     case "clean-up": {
       console.info("cleaned up", await runCleanUp(platform));
+      return;
+    }
+    case "extract-page": {
+      // ページから抜けない版では積まないが、積まれていたら（版を移った直後など）捨てる
+      if (platform.pageContent === undefined) {
+        console.warn("dropping extract-page job; page content is not available on this edition");
+        return;
+      }
+      await extractPageContentOnce(platform, platform.pageContent, job.articleId);
       return;
     }
     case "import-feeds": {

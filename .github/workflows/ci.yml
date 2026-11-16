@@ -61,6 +61,14 @@ jobs:
             exit 1
           fi
 
+      # Rust（crates/）の整形、lint、テスト。版は rust-toolchain.toml のものを rustup が入れる
+      - name: Rust
+        run: pnpm check:rust
+
+      # コンテナ版のテスト（test/node/）が読み込む、Rust のネイティブのモジュールを作る
+      - name: Build native module
+        run: pnpm build:native
+
       - name: Test
         run: pnpm test
 

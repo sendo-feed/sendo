@@ -17,6 +17,7 @@ Sendo は、オープンソースのフィード集約サーバーです。
 
 - Node.js 22.12 以上（CI は [.node-version](.node-version) のバージョンで動かす）
 - pnpm（バージョンは [package.json](package.json) の `packageManager` で固定している）
+- Rust（コンテナ版の重い処理と、そのテストに使う。rustup を入れておけば、[rust-toolchain.toml](rust-toolchain.toml) の版が自動で使われる）
 
 pnpm は corepack で入れると、決められたバージョンが自動で使われます。
 
@@ -80,6 +81,9 @@ curl -X POST http://localhost:8787/api/v1/feeds \
 
 # 未読の記事を新しい順に読む（state=starred ならスター付き、folderId ／ feedId で絞り込める）
 curl -H "authorization: Bearer $TOKEN" "http://localhost:8787/api/v1/articles?state=unread&limit=10"
+
+# 記事の本文を読む。source=page で、記事のページから抜いた本文（コンテナ版だけ。使えるかは GET /api/v1/features）
+curl -H "authorization: Bearer $TOKEN" "http://localhost:8787/api/v1/articles/<記事の ID>/content?source=page"
 
 # 記事を既読にして、スターを付ける
 curl -X PATCH http://localhost:8787/api/v1/articles/<記事の ID> \
@@ -273,12 +277,14 @@ docker compose pull && docker compose up -d
 | コマンド | すること |
 |---|---|
 | `pnpm dev` | 手元でサーバーを動かす |
-| `pnpm check` | 型チェック、lint、テストをまとめて実行する（PR を出す前に） |
+| `pnpm check` | 型チェック、lint、Rust の検査、ネイティブのモジュールのビルド、テストをまとめて実行する（PR を出す前に） |
 | `pnpm typecheck` | 型チェック |
 | `pnpm lint` | lint と整形の確認（Biome） |
 | `pnpm format` | 整形して、直せる lint の指摘を直す |
 | `pnpm test` | テスト（Workers のランタイムの中で動く。コンテナ版の緩衝層は Node で動く） |
 | `pnpm build` | デプロイせずにバンドルだけ作って確かめる |
+| `pnpm check:rust` | Rust（`crates/`）の整形の確認、lint（clippy）、テスト |
+| `pnpm build:native` | Rust をネイティブのモジュール（`native/sendo.node`）にする（コンテナ版のテストの前に要る） |
 | `pnpm build:node` | コンテナ版のバンドル（`dist/node/sendo.mjs`）を作る |
 | `pnpm start:node` | コンテナ版を手元の Node で動かす（`DATA_DIR` にデータを置く） |
 | `pnpm cf-typegen` | `wrangler.jsonc` から型（`worker-configuration.d.ts`）を作り直す |
@@ -309,6 +315,7 @@ sendo/
 │   └── platform/       # 実行環境の緩衝層
 │       ├── cloudflare/ # Cloudflare 版の実装（D1・Queues など）
 │       └── node/       # コンテナ版の実装と入口（SQLite、ジョブの表など）
+├── crates/             # Rust（コンテナ版の重い処理と、napi-rs の結び）
 ├── migrations/         # マイグレーション。2 つの版で同じものを使う（pnpm db:generate で作る）
 ├── spec/openapi.json   # API の定義（pnpm openapi:generate で書き出す。sendo-reader が型を作る）
 ├── test/               # テスト（Vitest ＋ Workers のランタイム。test/node/ は Node）

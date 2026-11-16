@@ -2,7 +2,7 @@ name: Container
 
 # コンテナ版のイメージを作る（docs/decisions/container.md の 10）。
 # - main に入ったら、amd64 と arm64 で作り、GHCR（ghcr.io/sendo-feed/sendo）に main のタグで置く
-# - PR では、Dockerfile が壊れていないかを amd64 だけで確かめる（置かない）
+# - PR では、Dockerfile が壊れていないかを amd64 で確かめ、Rust のモジュールは arm64 向けにも作る（置かない）
 
 on:
   push:
@@ -16,6 +16,10 @@ on:
       - pnpm-workspace.yaml
       - src/**
       - migrations/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - .github/workflows/container.yml
 
 permissions:
@@ -63,6 +67,18 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,format=long
+
+      # PR では、Rust のモジュールの arm64 向けのクロスコンパイルも確かめる（イメージ全体を arm64 で
+      # 作るとエミュレーションで遅いので、Rust の段だけ。その段はビルドするマシンの CPU で動く）
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        if: github.event_name == 'pull_request'
+        with:
+          context: .
+          target: native
+          platforms: linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:

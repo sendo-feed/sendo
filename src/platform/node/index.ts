@@ -4,7 +4,7 @@
  */
 import path from "node:path";
 import type { Database } from "../../db";
-import type { Platform } from "..";
+import type { PageContentExtractor, Platform } from "..";
 import { readAuthConfig, readFetchConfig, readRetentionConfig } from "../config";
 import { createFileObjectStore } from "./file-store";
 import type { SqliteJobQueue } from "./job-queue";
@@ -34,9 +34,12 @@ export function createNodePlatform(input: {
   jobs: SqliteJobQueue;
   /** テストで差し替える */
   fetch?: typeof fetch;
+  /** 記事のページから本文を抜く（Rust のモジュール）。読み込めなければ渡さない */
+  pageContent?: PageContentExtractor | undefined;
 }): Platform {
   const settings = definedSettings(input.env);
   return {
+    ...(input.pageContent && { pageContent: input.pageContent }),
     db: input.db,
     jobs: input.jobs,
     content: createFileObjectStore(path.join(dataDirectory(input.env), "content")),

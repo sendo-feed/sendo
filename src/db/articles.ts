@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import type { Database } from ".";
 import { chunked } from "./chunk";
 import { DB_NOW_MS } from "./clock";
@@ -31,10 +32,13 @@ export function randomItemId(): number {
  * 途中で失敗しても、やり直せば残りが入り、入った分は重複しない（冪等）。
  * そのため、トランザクションに頼らずに済む。
  *
- * @returns 新しく入った記事の数
+ * @returns 新しく入った記事（ID と URL）
  */
-export async function insertArticles(db: Database, rows: readonly ArticleInput[]): Promise<number> {
-  let inserted = 0;
+export async function insertArticles(
+  db: Database,
+  rows: readonly ArticleInput[],
+): Promise<{ id: string; url: string | null }[]> {
+  const inserted: { id: string; url: string | null }[] = [];
   for (const chunk of chunked(rows, articles)) {
     const result = await db
       .insert(articles)
@@ -46,9 +50,17 @@ export async function insertArticles(db: Database, rows: readonly ArticleInput[]
         })),
       )
       .onConflictDoNothing({ target: [articles.feedId, articles.guid] })
-      .returning({ id: articles.id })
+      .returning({ id: articles.id, url: articles.url })
       .all();
-    inserted += result.length;
+    inserted.push(...result);
   }
   return inserted;
+}
+
+/** 記事の URL を引く。記事がなければ undefined */
+export async function getArticleUrl(
+  db: Database,
+  articleId: string,
+): Promise<{ url: string | null } | undefined> {
+  return db.select({ url: articles.url }).from(articles).where(eq(articles.id, articleId)).get();
 }

@@ -1,0 +1,15 @@
+# コンテナ版の重い処理（docs/decisions/tech-stack.md の 5）。処理の本体の crate と、
+# Node から呼ぶための結び（napi-rs）の crate を分ける
+[workspace]
+resolver = "3"
+members = ["crates/extract", "crates/node"]
+
+[workspace.package]
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

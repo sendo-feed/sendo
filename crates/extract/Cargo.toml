@@ -1,0 +1,11 @@
+[package]
+name = "sendo-extract"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "記事のページから本文を抜く（docs/decisions/content.md の 10〜14）"
+
+[dependencies]
+dom_smoothie = "=0.19.0"
+encoding_rs = "=0.8.44"

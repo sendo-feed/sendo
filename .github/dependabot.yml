@@ -46,3 +46,19 @@ updates:
       default-days: 14
     commit-message:
       prefix: build
+
+  # Rust の依存（crates/）
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Tokyo
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: build
+    groups:
+      # napi-rs の crate は揃えて上げる
+      napi:
+        patterns: ["napi", "napi-*"]

@@ -2,6 +2,8 @@
 # 手元の秘密や生成物を、ビルドの文脈に送らない
 node_modules
 dist
+target
+native
 .wrangler
 .git
 .github

@@ -69,6 +69,27 @@ export interface ObjectStore {
   delete(keys: readonly string[]): Promise<void>;
 }
 
+/** 記事のページから抜いた本文（サニタイズしていない HTML） */
+export interface ExtractedPage {
+  title: string;
+  html: string;
+  /** 本文の文字数（タグを除いたもの） */
+  textLength: number;
+}
+
+/**
+ * 記事のページのバイト列から本文を抜く（docs/decisions/content.md の 11、12）。コンテナ版だけが持つ
+ * （Rust の dom_smoothie を napi-rs で読み込む）。外への取得はしない。本文が見つからなければ null
+ */
+export interface PageContentExtractor {
+  extract(input: {
+    bytes: Uint8Array;
+    contentType: string | null;
+    /** ページの URL。本文の中のリンクと画像の URL の基準にする */
+    url: string;
+  }): Promise<ExtractedPage | null>;
+}
+
 /** アプリが実行環境から受け取るもの */
 export interface Platform {
   db: Database;
@@ -81,6 +102,12 @@ export interface Platform {
   auth: AuthConfig;
   fetchConfig: FetchConfig;
   retentionConfig: RetentionConfig;
+  /**
+   * 版によって有無が分かれる機能（docs/decisions/container.md の 2）。持っている版だけが渡す。
+   * アプリは、ここにあるかどうかで振る舞いを変え、版の名前では分岐しない
+   */
+  /** 記事のページから本文を抜く。コンテナ版だけ */
+  pageContent?: PageContentExtractor;
 }
 
 /** 取得の間隔の既定（分） */

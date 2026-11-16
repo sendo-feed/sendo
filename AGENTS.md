@@ -15,10 +15,11 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 ## 開発コマンド
 
 - `pnpm install`：依存を入れる。あわせて `worker-configuration.d.ts`（Workers の型）を生成する
-- `pnpm check`：型チェック、lint、テストをまとめて実行する。変更したら、コミットの前に必ず通す
+- `pnpm check`：型チェック、lint、Rust の検査（`pnpm check:rust`：rustfmt、clippy、cargo test）、ネイティブのモジュールのビルド、テストをまとめて実行する。変更したら、コミットの前に必ず通す
 - `pnpm format`：整形して、直せる lint の指摘を直す
 - `pnpm test`：テスト。2 つの版で動く処理は Workers のランタイム（workerd）の中で、コンテナ版の緩衝層（`test/node/`）は Node で動かす（Vitest の `workers` と `node` の 2 つのプロジェクト）
 - `pnpm build`：デプロイせずにバンドルだけ作る
+- `pnpm build:native`：Rust（`crates/`）を napi-rs のネイティブのモジュール（`native/sendo.node`）にする。コンテナ版と、そのテスト（`test/node/`）が読み込む
 - `pnpm build:node`：コンテナ版のバンドル（`dist/node/sendo.mjs`）を作る。`DATA_DIR=<ディレクトリ> pnpm start:node` で、手元でコンテナ版を動かせる。イメージは `docker build -t sendo .`
 - `wrangler.jsonc` を変えたら `pnpm cf-typegen` で型を作り直す
 - API（`src/api/`）を変えたら `pnpm openapi:generate` で `spec/openapi.json` を書き出し、一緒にコミットする。sendo-reader はこのファイルから型を作る（CI で食い違いを検査している）
@@ -29,7 +30,10 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 
 - `src/index.ts`：Worker の入口。env から実装を組み立てて渡すだけにする
 - `src/app.ts`：HTTP のルーティング。実行環境に依存させない
+- `crates/`：コンテナ版の重い処理（Rust。docs/decisions/tech-stack.md の 5）。処理の本体の crate（`extract/` など。`#![forbid(unsafe_code)]`）と、Node から呼ぶための結び（`node/`。napi-rs）を分ける。外への取得と DB には触らず、TypeScript の側からバイト列を受け取って結果を返す。重い処理は `AsyncTask` でスレッドプールに出す
 - `src/platform/`：実行環境の緩衝層のインターフェース。Cloudflare 版の実装は `src/platform/cloudflare/`、コンテナ版の実装と入口は `src/platform/node/` に置く（docs/decisions/container.md）。設定の読み方は、2 つの版で `config.ts` を共有する
+  - 版によって有無が分かれる機能（今は `pageContent`）は、`Platform` の省略できる項目にし、持っている版だけが渡す。アプリはその有無で振る舞いを変え、版の名前では分岐しない。ない版では、REST API は 501（`feature_unavailable`）を返し、`GET /api/v1/features` に載せる（docs/decisions/container.md の 2、3）
+  - Rust のネイティブのモジュールを読み込むのは `src/platform/node/native.ts` だけ
 - 機能のディレクトリ（`api/`、`fetcher/`、`jobs/` など）は `docs/tech-deck.md` の「6. ディレクトリ構成」に従う
 - `src/api/`：REST API。入力は zod のスキーマで検証し、OpenAPI の定義も同じスキーマから作る
   - 認証は `auth.ts` のミドルウェア（アクセストークンか、ブラウザのセッションのクッキー）。クッキーで認証した、状態を変えるリクエストは、同じオリジンのページからだけ受ける（CSRF 対策）
@@ -47,6 +51,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/fetcher/`：外部の URL の取得と解析。外部の URL は必ず `toFetchableUrl` を通す（SSRF 対策）
   - 画像は `fetch-image.ts` で取る。形式は先頭のバイトで確かめ、SVG は通さない。配信元へのリクエストはそこで新しく組み立て、読者のリクエストのヘッダーを渡さない
   - サムネイルは `thumbnail.ts` がフィードの中から採り、アイコンは `find-icon.ts` が探す（取得のジョブが 30 日に 1 回）
+  - 記事のページの本文は `page-content.ts`（docs/decisions/content.md の 10〜15）。コンテナ版では、取得の仕事が新しい記事ごとに `extract-page` の仕事を積み、`fetch-page.ts` でページを取り、緩衝層の `pageContent`（Rust）で抜く。開いたときにまだなければ、そのリクエストの中で抜く。サニタイズした HTML は、置き場ではなく `db/page-contents.ts` の表の行に入れる
 - `src/lib/sanitize-html.ts`：記事の本文（HTML）のサニタイズ。外部から来た HTML は、保存する前にも、返す前にも、必ずここを通す。通すタグと属性を足すときは、テスト（`test/lib/sanitize-html.test.ts`）も足す
 - `src/feeds/`：購読の手続き（URL からフィードを見つけて購読する）。REST API、Google Reader API、MCP で同じものを使う
 - `src/greader/`：Google Reader API 互換（docs/decisions/greader.md）。状態を変える操作は、REST API と同じ `db/`・`feeds/` の処理に任せ、ここで書き込みを組み立てない。記事の文字列は HTML にエスケープして返す

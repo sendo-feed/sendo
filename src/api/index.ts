@@ -2,6 +2,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import type { Platform } from "../platform";
 import { articlesApi } from "./articles";
 import { authenticate, SESSION_COOKIE } from "./auth";
+import { featuresApi } from "./features";
 import { feedsApi } from "./feeds";
 import { foldersApi } from "./folders";
 import { defaultHook } from "./hook";
@@ -54,6 +55,7 @@ export function createApi(platform: Platform) {
   const protectedApi = new OpenAPIHono({ defaultHook });
   protectedApi.use("*", authenticate(platform));
   protectedApi.route("/", meApi());
+  protectedApi.route("/", featuresApi(platform));
   protectedApi.route("/", feedsApi(platform));
   protectedApi.route("/", articlesApi(platform));
   protectedApi.route("/", foldersApi(platform));

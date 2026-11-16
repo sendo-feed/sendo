@@ -344,6 +344,25 @@ export const articles = sqliteTable(
 );
 
 /**
+ * 記事のページから抜いた本文（docs/decisions/content.md の 10〜15）。記事ごとに 1 行。コンテナ版だけが
+ * 書き、全員で共有する。記事の行は取り込んだあとは変えないので、あとから付く結果は、この表に持つ。
+ *
+ * - 抜けたとき：status は extracted、html にサニタイズした本文を入れる。あとから変えない
+ * - 抜けなかったとき：status は failed。開いたときの抜き取りは、1 日たてば取りにいき直す
+ * - 本文は置き場（R2 ／ ファイル）ではなく、この行に入れる（決定の 13）。記事の行が消えると、連鎖で消える
+ */
+export const pageContents = sqliteTable("page_contents", {
+  articleId: text("article_id")
+    .primaryKey()
+    .references(() => articles.id, { onDelete: "cascade" }),
+  status: text("status", { enum: ["extracted", "failed"] }).notNull(),
+  /** サニタイズした本文の HTML。抜けたときだけ */
+  html: text("html"),
+  /** 最後に取りにいった時刻 */
+  attemptedAt: integer("attempted_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+/**
  * 本文の置き場の名前の書き留め（docs/decisions/content.md の 4）。「この名前の本文は、どの記事の
  * 行にも入っていないかもしれない」という印。置き場と D1 を 1 つの文でまとめて書けないので、
  * 行のない本文が残りうる。それを、置き場を全部見て回らずに片付けるために持つ。
@@ -543,6 +562,7 @@ export const jobQueue = sqliteTable(
 );
 
 export type User = typeof users.$inferSelect;
+export type PageContent = typeof pageContents.$inferSelect;
 export type Identity = typeof identities.$inferSelect;
 export type AccessToken = typeof accessTokens.$inferSelect;
 export type Session = typeof sessions.$inferSelect;

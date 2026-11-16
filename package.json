@@ -13,6 +13,7 @@
     "dev": "wrangler dev",
     "build": "wrangler deploy --dry-run --outdir dist",
     "build:node": "esbuild src/platform/node/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --sourcemap --outfile=dist/node/sendo.mjs",
+    "build:native": "node scripts/build-native.mjs",
     "start:node": "node --enable-source-maps dist/node/sendo.mjs",
     "deploy": "node scripts/deploy.mjs",
     "cf-typegen": "wrangler types",
@@ -27,7 +28,8 @@
     "format": "biome check --write .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "pnpm typecheck && pnpm lint && pnpm test"
+    "check": "pnpm typecheck && pnpm lint && pnpm check:rust && pnpm build:native && pnpm test",
+    "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",

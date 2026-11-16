@@ -1,0 +1,4 @@
+# CI とイメージのビルドで、同じ版の Rust を使う
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]

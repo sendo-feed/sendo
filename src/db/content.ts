@@ -29,6 +29,12 @@ export async function findExistingGuids(
   return new Set(rows.map((row) => row.guid));
 }
 
+/**
+ * 置く本文の大きさの上限（サニタイズしたあとの UTF-8 のバイト数）。フィードの本文も、ページから
+ * 抜いた本文も同じ（docs/decisions/content.md の 2、10）。超えたら置かない
+ */
+export const MAX_CONTENT_BYTES = 256 * 1024;
+
 /** これから置く本文の名前を書き留める。本文を置く前に呼ぶ */
 export async function noteContentKeys(db: Database, keys: readonly string[]): Promise<void> {
   if (keys.length === 0) return;

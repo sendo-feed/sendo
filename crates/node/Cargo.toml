@@ -1,0 +1,18 @@
+[package]
+name = "sendo-node"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "sendo-extract などを、napi-rs で Node から呼ぶための結び"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sendo-extract = { path = "../extract" }
+napi = { version = "=3.16.1", default-features = false, features = ["napi4"] }
+napi-derive = "=3.7.0"
+
+[build-dependencies]
+napi-build = "=2.6.0"

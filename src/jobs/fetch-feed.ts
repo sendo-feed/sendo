@@ -1,5 +1,10 @@
 import { type ArticleInput, insertArticles } from "../db/articles";
-import { clearUsedContentNotes, findExistingGuids, noteContentKeys } from "../db/content";
+import {
+  clearUsedContentNotes,
+  findExistingGuids,
+  MAX_CONTENT_BYTES,
+  noteContentKeys,
+} from "../db/content";
 import { getFeed, recordFeedIcon, recordFetchFailure, recordFetchSuccess } from "../db/feeds";
 import { deliverNewArticles } from "../db/inbox";
 import {
@@ -32,8 +37,8 @@ export const ICON_CHECK_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
 /** 1 回の取得で本文を置く、新しい記事の数の上限（docs/decisions/content.md の 4） */
 export const MAX_CONTENTS_PER_FETCH = 30;
 
-/** 置く本文の大きさの上限（サニタイズしたあとの UTF-8 のバイト数）。超えたら、本文なしで取り込む */
-export const MAX_CONTENT_BYTES = 256 * 1024;
+/** 置く本文の大きさの上限。ページから抜いた本文と同じ（db/content.ts） */
+export { MAX_CONTENT_BYTES } from "../db/content";
 
 /** 失敗が続いたときに延ばす間隔の上限。設定の間隔がこれより長ければ、設定の間隔 */
 const MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
@@ -53,7 +58,10 @@ export type FetchFeedOutcome =
  * こちら側の予期しない例外だけにする。
  */
 export async function runFetchFeed(
-  platform: Pick<Platform, "db" | "content" | "fetch" | "now" | "fetchConfig" | "retentionConfig">,
+  platform: Pick<
+    Platform,
+    "db" | "content" | "fetch" | "now" | "fetchConfig" | "retentionConfig" | "jobs" | "pageContent"
+  >,
   feedId: string,
 ): Promise<FetchFeedOutcome> {
   const { db } = platform;
@@ -104,11 +112,14 @@ export async function runFetchFeed(
       items: parsed.items,
       rows,
     });
-    const inserted = await insertArticles(db, rows);
+    const insertedArticles = await insertArticles(db, rows);
     // 行に入った名前の書き留めを消す。入らなかった名前は残り、1 日 1 回の片付けが本文を消す
     await clearUsedContentNotes(db, contentKeys);
     // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
     await deliverNewArticles(db, { feedId: feed.id });
+    // ページから本文を抜ける版（コンテナ版）では、新しい記事ごとに、抜く仕事を積む
+    // （docs/decisions/content.md の 10）。ここで落ちて積めなくても、読者が開いたときに抜く
+    await enqueuePageContents(platform, insertedArticles);
 
     // 片付けた範囲までの記事のうち、どの受信箱にも残っておらず、フィードにもう載っていないものを
     // 消す。フィードに載っている記事を消すと、次の取得で新しい記事として入り直すため。
@@ -140,7 +151,7 @@ export async function runFetchFeed(
       { siteUrl: parsed.siteUrl, feedIconUrl: parsed.iconUrl },
       startedAt,
     );
-    return { status: "fetched", inserted };
+    return { status: "fetched", inserted: insertedArticles.length };
   } catch (error) {
     if (!(error instanceof FetchFeedError || error instanceof ParseFeedError)) throw error;
 
@@ -247,6 +258,18 @@ async function storeContents(
 function newContentKey(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   return `feed/${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** 新しく入った記事のうち、URL のあるものに、ページから本文を抜く仕事を積む。抜けない版では積まない */
+async function enqueuePageContents(
+  platform: Pick<Platform, "jobs" | "pageContent">,
+  inserted: readonly { id: string; url: string | null }[],
+): Promise<void> {
+  if (platform.pageContent === undefined) return;
+  const jobs = inserted
+    .filter((article) => article.url !== null)
+    .map((article) => ({ type: "extract-page" as const, articleId: article.id }));
+  if (jobs.length > 0) await platform.jobs.enqueue(jobs);
 }
 
 /**

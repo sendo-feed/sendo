@@ -6,7 +6,7 @@
  *   node dist/node/sendo.mjs token:create ...    アクセストークンを発行する
  *
  * 設定は環境変数で受ける。名前は Cloudflare 版と同じ（ALLOWED_EMAILS、PUBLIC_URL など）。
- * コンテナ版だけのものは、PORT（既定 8787）、DATA_DIR（既定 /data）、MIGRATIONS_DIR。
+ * コンテナ版だけのものは、PORT（既定 8787）、DATA_DIR（既定 /data）、MIGRATIONS_DIR、NATIVE_MODULE。
  */
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -20,11 +20,33 @@ import { parseOrigin } from "..";
 import { openDatabase } from "./database";
 import { createNodePlatform, dataDirectory, type NodeEnv, withPublicOrigin } from "./index";
 import { createSqliteJobQueue } from "./job-queue";
+import { createPageContentExtractor, loadNativeModule } from "./native";
 import { startScheduler } from "./scheduler";
 import { createTokenForEmail } from "./token";
 
 /** 止めるときに、動いている仕事を待つ上限 */
 const SHUTDOWN_TIMEOUT_MS = 30 * 1000;
+
+/** ネイティブのモジュール（Rust）の置き場。既定は、バンドル（dist/node/sendo.mjs）から見た ../../native */
+function nativeModulePath(env: NodeEnv): string {
+  return (
+    env.NATIVE_MODULE?.trim() || fileURLToPath(new URL("../../native/sendo.node", import.meta.url))
+  );
+}
+
+/**
+ * Rust の処理を読み込み、記事のページから本文を抜く実装を作る。読み込めなければ、ログに出して
+ * その機能なしで動く（GET /api/v1/features が false を返す）。イメージには必ず入っている
+ */
+function loadPageContentExtractor(env: NodeEnv) {
+  const file = nativeModulePath(env);
+  try {
+    return createPageContentExtractor(loadNativeModule(file));
+  } catch (error) {
+    console.error("could not load the native module; page content is disabled", { file, error });
+    return undefined;
+  }
+}
 
 /** マイグレーションの置き場。既定は、バンドル（dist/node/sendo.mjs）から見た ../../migrations */
 function migrationsDirectory(env: NodeEnv): string {
@@ -62,7 +84,12 @@ async function runServer(env: NodeEnv): Promise<void> {
   const port = readPort(env);
   const database = await prepareDatabase(env);
   const jobs = createSqliteJobQueue(database.db);
-  const platform = createNodePlatform({ env, db: database.db, jobs });
+  const platform = createNodePlatform({
+    env,
+    db: database.db,
+    jobs,
+    pageContent: loadPageContentExtractor(env),
+  });
   const app = createApp(platform);
 
   jobs.start((job) => runJob(platform, job));

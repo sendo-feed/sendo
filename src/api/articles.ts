@@ -13,6 +13,7 @@ import {
 } from "../db/inbox";
 import { imageSigner } from "../db/secrets";
 import { listSubscriptions } from "../db/subscriptions";
+import { loadPageContent } from "../fetcher/page-content";
 import { sanitizeHtmlWithImages } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
@@ -77,10 +78,12 @@ const contentRoute = createRoute({
   path: "/articles/{id}/content",
   summary: "記事の本文",
   description: [
-    "記事の本文（HTML）を返す。記事の hasContent が true のときだけ、取りにいく。",
+    "記事の本文（HTML）を返す。出どころは 2 つあり、source で選ぶ。",
+    "- feed（既定）：フィードに入っていた本文。記事の hasContent が true のときだけ、取りにいく。",
+    "- page：記事のページから抜いた本文。まだ抜いていなければ、このリクエストの中でページを取りにいって抜く（数秒かかることがある）。使える版だけ（GET /features の pageContent）。抜けなかったら 404（page_content_unavailable）で、1 日たつまで取りにいき直さない。",
     "HTML は Sendo がサニタイズしてある（決めたタグと属性だけ。スクリプトやスタイルはない）。それでも外部から来たデータなので、クライアントの側でも、信頼できない HTML として扱う。",
     "本文の中の画像は、中継を通る URL（/api/v1/images?…。オリジンは付けない）に書き換えてある。リンクは絶対の URL。",
-    "本文は記事を取り込んだときに決まり、あとから変わらないので、手元に置いてよい。",
+    "本文は、いったん返したらあとから変わらないので、手元に置いてよい。",
   ].join("\n"),
   request: {
     params: z.object({
@@ -89,6 +92,12 @@ const contentRoute = createRoute({
         .min(1)
         .max(64)
         .openapi({ param: { name: "id", in: "path" } }),
+    }),
+    query: z.object({
+      source: z.enum(["feed", "page"]).default("feed").openapi({
+        description:
+          "本文の出どころ。feed はフィードに入っていた本文、page は記事のページから抜いた本文",
+      }),
     }),
   },
   responses: {
@@ -99,8 +108,9 @@ const contentRoute = createRoute({
           schema: z
             .object({
               html: z.string().openapi({ description: "サニタイズした HTML" }),
-              source: z.enum(["feed"]).openapi({
-                description: "本文の出どころ。feed は、フィードに入っていた本文",
+              source: z.enum(["feed", "page"]).openapi({
+                description:
+                  "本文の出どころ。feed はフィードに入っていた本文、page は記事のページから抜いた本文",
               }),
             })
             .openapi("ArticleContent"),
@@ -108,7 +118,13 @@ const contentRoute = createRoute({
       },
     },
     404: {
-      description: "記事がない（not_found）か、その記事に本文がない（no_content）",
+      description:
+        "記事がない（not_found）か、その記事にフィードの本文がない（no_content）か、ページから本文を抜けなかった（page_content_unavailable）",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    501: {
+      description:
+        "この版では、ページから本文を抜けない（feature_unavailable。GET /features を見る）",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -236,11 +252,32 @@ export function articlesApi(platform: Platform) {
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook })
     .openapi(contentRoute, async (c) => {
       const { id } = c.req.valid("param");
+      const { source } = c.req.valid("query");
+      // ページから抜けない版では、記事を読む前に断る（docs/decisions/content.md の 11）
+      const extractor = platform.pageContent;
+      if (source === "page" && extractor === undefined) {
+        return c.json(
+          errorBody("feature_unavailable", "page content is not available on this edition"),
+          501,
+        );
+      }
       const article = await getInboxArticle(db, { userId: c.get("user").id, articleId: id });
       if (!article) return c.json(errorBody("not_found", "article does not exist"), 404);
-      const stored =
-        article.contentKey === null ? null : await platform.content.get(article.contentKey);
-      if (stored === null) return c.json(errorBody("no_content", "article has no content"), 404);
+      let stored: string | null;
+      if (source === "page" && extractor !== undefined) {
+        const result = await loadPageContent(platform, extractor, article);
+        if (result.status !== "ok") {
+          return c.json(
+            errorBody("page_content_unavailable", "could not extract the article page"),
+            404,
+          );
+        }
+        stored = result.html;
+      } else {
+        stored =
+          article.contentKey === null ? null : await platform.content.get(article.contentKey);
+        if (stored === null) return c.json(errorBody("no_content", "article has no content"), 404);
+      }
       // 保存の前にサニタイズしてあるが、今の決まりをもう一度当てる。あわせて、画像を中継の URL に
       // 書き換える（docs/decisions/content.md の 2、7）。URL は保存の前に絶対にしてあるので、
       // 基準の URL は使われない
@@ -248,7 +285,7 @@ export function articlesApi(platform: Platform) {
       const html = await sanitizeHtmlWithImages(stored, "about:blank", (url) =>
         images.toRelayUrl(url),
       );
-      return c.json({ html, source: "feed" as const }, 200);
+      return c.json({ html, source }, 200);
     })
     .openapi(updateRoute, async (c) => {
       const { id } = c.req.valid("param");

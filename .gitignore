@@ -4,6 +4,9 @@ node_modules/
 # ビルドと実行の生成物
 dist/
 .wrangler/
+# Rust のビルドの生成物と、Node から読み込むネイティブのモジュール（pnpm build:native）
+target/
+native/
 # コンテナ版を手元で動かしたときのデータ（DATA_DIR=./.data）
 .data/
 coverage/
