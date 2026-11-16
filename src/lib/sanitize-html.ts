@@ -64,7 +64,7 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
   /** 開いている（閉じタグを出していない）要素 */
   const open: string[] = [];
   /** 中身ごと落としている要素と、その入れ子の数 */
-  let dropping: { name: string; depth: number } | null = null;
+  let dropping: { name: string; depth: number; wantsLink: boolean } | null = null;
 
   const closeUntil = (name: string) => {
     const index = open.lastIndexOf(name);
@@ -79,6 +79,13 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       if (token.type === "tag" && token.name === dropping.name) {
         dropping.depth += token.closing ? -1 : 1;
         if (dropping.depth === 0) dropping = null;
+      } else if (dropping.wantsLink && token.type === "tag" && token.name === "source") {
+        // 動画・音声の行き先が、子の <source> に書いてある場合。最初に見つかった 1 つをリンクにする
+        const src = toUrl(parseAttributes(token.attributes).get("src"), baseUrl, HTTP);
+        if (src) {
+          parts.push(link(src), escapeHtml(src), "</a>");
+          dropping.wantsLink = false;
+        }
       }
       continue;
     }
@@ -96,14 +103,16 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
     }
 
     if (DROPPED_WITH_CONTENT.has(name)) {
+      let linked = false;
       if (REPLACED_WITH_LINK.has(name)) {
         const src = toUrl(parseAttributes(token.attributes).get("src"), baseUrl, HTTP);
         if (src) parts.push(link(src), escapeHtml(src), "</a>");
+        linked = src !== null;
       }
       // 自分で閉じる書き方（<embed ... />）や、閉じタグのない要素でも、あとの中身を巻き込まない
       // ように、中身を持たない要素は落とすだけにする
       if (name !== "embed" && !token.attributes.trimEnd().endsWith("/")) {
-        dropping = { name, depth: 1 };
+        dropping = { name, depth: 1, wantsLink: (name === "video" || name === "audio") && !linked };
       }
       continue;
     }

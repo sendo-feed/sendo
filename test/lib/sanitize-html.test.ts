@@ -93,6 +93,19 @@ describe("sanitizeHtml", () => {
       '<a href="https://blog.example.com/v.mp4" rel="noopener noreferrer nofollow">https://blog.example.com/v.mp4</a>',
     );
     expect(clean('<iframe src="javascript:alert(1)"></iframe>x')).toBe("x");
+    // 行き先が子の source に書いてある動画・音声。最初の 1 つだけをリンクにする
+    expect(
+      clean('<video controls><source src="/v.mp4"><source src="/v.webm">非対応</video>後'),
+    ).toBe(
+      '<a href="https://blog.example.com/v.mp4" rel="noopener noreferrer nofollow">https://blog.example.com/v.mp4</a>後',
+    );
+    expect(clean('<audio><source src="javascript:x"><source src="/a.mp3"></audio>')).toBe(
+      '<a href="https://blog.example.com/a.mp3" rel="noopener noreferrer nofollow">https://blog.example.com/a.mp3</a>',
+    );
+    // 親に src があれば、子の source は使わない
+    expect(clean('<video src="/v.mp4"><source src="/v.webm"></video>')).toBe(
+      '<a href="https://blog.example.com/v.mp4" rel="noopener noreferrer nofollow">https://blog.example.com/v.mp4</a>',
+    );
   });
 
   it("閉じていないタグを閉じ、開いていない閉じタグを落とす", () => {
