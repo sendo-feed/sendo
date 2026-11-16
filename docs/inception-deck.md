@@ -106,7 +106,7 @@ flowchart LR
   S --> O3
 ```
 
-技術スタック：TypeScript（Hono）で、第1版は Cloudflare 前提。緩衝層を挟んで後から移植できるようにする → [decisions/tech-stack.md](decisions/tech-stack.md)（提案中）
+技術スタック：TypeScript（Hono）で、無料で動く Cloudflare 版と、CPU を多く使う機能も載せるコンテナ版を、緩衝層を挟んで同じコードから作る → [decisions/tech-stack.md](decisions/tech-stack.md)（提案中）
 
 > 全体像。サーバーが本体で、リーダーは利用者の一つ。LLM 機能はすべてオプションで、なくても普通の RSS サーバーとして完結させる。
 
@@ -182,7 +182,7 @@ flowchart LR
 
 ## 11. 次に決めること
 
-1. テックスタック：TypeScript ＋ Hono、第1版は Cloudflare 前提 → [decisions/tech-stack.md](decisions/tech-stack.md)（提案中、2人で合意する）
+1. テックスタック：TypeScript ＋ Hono、Cloudflare 版とコンテナ版の 2 つ → [decisions/tech-stack.md](decisions/tech-stack.md)（提案中、2人で合意する）
 2. 役割分担：サーバーの層と、MCP・LLM の層
 3. ライセンス：[ MIT ／ Apache-2.0 ／ AGPL-3.0 ]
 4. Phase 1 の期日：[ 　年　月　日 ]

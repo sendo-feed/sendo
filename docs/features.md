@@ -76,15 +76,15 @@
 
 - **LLM はオプション**：LLM 関連の機能はすべてオプションにする。LLM を設定しなくても、普通の RSS サーバーとして完結する。
 - **重い処理は非同期**：取得ジョブ、全文抽出、LLM 処理はキューで非同期に流し、API の応答を重くしない。
-- **第1版は Cloudflare 前提、移植の余地を残す**：デプロイ先は各自で用意する前提だが、第1版は Cloudflare（Workers・D1・Queues）の上で作る。Cloudflare 固有の部分は緩衝層に閉じ込め、1つのバイナリや Docker で動かす形、SQLite（個人用）と Postgres（複数ユーザー用）の切り替えは、移植するときに足す（[decisions/tech-stack.md](decisions/tech-stack.md)）。
+- **2 つの版**：デプロイ先は各自で用意する前提。無料プランで動く Cloudflare 版（Workers・D1・Queues）と、CPU を多く使う機能も載せるコンテナ版（Node ＋ SQLite）を、同じコードから作る。どちらの版に載せるかは、機能を作るときに測って決める（[decisions/tech-stack.md](decisions/tech-stack.md)、[decisions/container.md](decisions/container.md)）。
 
-### Cloudflare での実現（案）
+### 2 つの版での実現（案）
 
-| 機能 | 第1版（Cloudflare） | 移植するときの候補 |
+| 機能 | Cloudflare 版 | コンテナ版 |
 |---|---|---|
-| 取得・全文抽出・LLM 処理のキュー | Queues | SQLite のジョブ表 |
-| 定期的な取得 | Cron Triggers | Node 側のスケジューラ |
-| 全文検索 | D1 の FTS5 | SQLite の FTS5 ／ Postgres の全文検索 |
-| 意味検索 | Vectorize | sqlite-vec ／ pgvector |
+| 取得・全文抽出・LLM 処理のキュー | Queues | SQLite のジョブの表 |
+| 定期的な取得 | Cron Triggers | 同じプロセスのタイマー |
+| 全文検索 | D1 の FTS5 | SQLite の FTS5 |
+| 意味検索 | Vectorize | sqlite-vec |
 | メールマガジンの受信 | Email Workers（Email Routing） | SMTP の受信サーバー |
 | 認証 | 自前の OpenID Connect（Google など）とセッション、アクセストークン（[decisions/accounts.md](decisions/accounts.md)） | 同じ（実行環境に依存しない） |

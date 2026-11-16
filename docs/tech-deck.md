@@ -12,7 +12,7 @@
 
 | # | 方針 | 内容 |
 |---|---|---|
-| 01 | Cloudflare ネイティブ | 第1版は Workers・D1・Queues・Cron で完結させる。Cloudflare 固有の部分は緩衝層（`src/platform/`）に閉じ込め、Node や Docker への逃げ道は残す（[decisions/tech-stack.md](decisions/tech-stack.md)） |
+| 01 | 2 つの版 | 無料で動く Cloudflare 版（Workers・D1・Queues・Cron）と、CPU を多く使う機能も載せるコンテナ版（Node ＋ SQLite）を、同じコードから作る。実行環境に固有の部分は緩衝層（`src/platform/`）に閉じ込める（[decisions/tech-stack.md](decisions/tech-stack.md)、[decisions/container.md](decisions/container.md)） |
 | 02 | API を土台に、3つの入口 | REST API を正とし、CLI・Skill とリモート MCP を薄く乗せる。記事本文は信頼できないデータとして扱う |
 | 03 | ローカルファーストのクライアント | 画面はネットワークを待たない。起動時に差分を1回で同期する |
 | 04 | 既存のリーダーとつながる | Google Reader API 互換で Reeder Classic や NetNewsWire から読める |
@@ -63,10 +63,10 @@ flowchart LR
 
 | 領域 | 選定（案） | メモ |
 |---|---|---|
-| ランタイム | Cloudflare Workers | 個人利用は無料枠に収まる想定 |
+| ランタイム | Cloudflare Workers ／ Node（コンテナ版） | Cloudflare 版は無料枠に収まる想定 |
 | 言語・FW | TypeScript ＋ Hono | MCP SDK が成熟。Node・Bun でも動く |
 | API 定義 | zod-openapi（コードから生成） | 生成した OpenAPI を reader が取り込む |
-| DB | D1（SQLite）＋ Drizzle | Postgres 対応は Cloudflare 以外向けに後で |
+| DB | D1 ／ SQLite のファイル（コンテナ版）＋ Drizzle | Postgres は今は支えない |
 | 非同期処理 | Cron Triggers ＋ Queues | 取得・全文抽出・LLM 処理を分ける |
 | 全文抽出 | Readability ＋ linkedom | Workers 上で DOM を扱う |
 | 検索 | FTS5（D1）／ Vectorize | 意味検索は Phase 3 |
@@ -191,7 +191,7 @@ sendo-reader/
 
 1. ~~UI：Svelte 5 か React か（ネイティブの方針しだい）~~ → sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md) で決めた（Svelte 5 ＋ Vite の SPA。SvelteKit は使わない）
 2. ~~ネイティブ：Capacitor か Expo か~~ → sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md) で決めた（Web のビルドを、あとで Capacitor で包む）
-3. Cloudflare 以外（Docker・Postgres）をどこまで支えるか
+3. ~~Cloudflare 以外（Docker・Postgres）をどこまで支えるか~~ → [decisions/container.md](decisions/container.md) で決めた（コンテナ版を Cloudflare 版と並べて作る。Postgres は今は支えない）
 4. ~~MCP の書き込み権限（OAuth スコープ）と、記事本文のインジェクション対策~~ → [decisions/mcp.md](decisions/mcp.md) で決めた（範囲は read と write、記事は構造化した JSON で信頼できないデータとして返す）
 5. ライセンス：[ MIT ／ Apache-2.0 ／ AGPL-3.0 ]
 6. ~~sendo-reader のツール：Void（Cloudflare）と Vite+ を使うか。Void の UI のアダプタは React と Vue なので、1 と一緒に決める~~ → sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md) で決めた（どちらも使わない。pnpm・Biome・Vitest で sendo と揃え、TypeScript だけは svelte-check に合わせて 6 系）
