@@ -265,6 +265,50 @@ describe("withPublicOrigin", () => {
     expect(new URL(url).pathname).toBe("//evil.example.com/api/v1/auth/logout");
   });
 
+  it("sendo-reader の中継を通ったログインも、戻り先と OAuth の発行者が PUBLIC_URL のオリジンになる", async () => {
+    // sendo-reader のコンテナは、パスとクエリだけを保って compose の中の sendo に送る
+    // （sendo-reader の docs/decisions/container.md の 2・4）
+    const database = await openTestDatabase();
+    try {
+      const reader = "https://reader.example.com";
+      const platform = createNodePlatform({
+        env: {
+          DATA_DIR: path.join(database.directory, "data"),
+          GOOGLE_CLIENT_ID: "client-id",
+          GOOGLE_CLIENT_SECRET: "client-secret",
+          PUBLIC_URL: reader,
+          READER_URL: reader,
+        },
+        db: database.db,
+        jobs: createSqliteJobQueue(database.db),
+        fetch: fakeFetch,
+      });
+      const app = createApp(platform);
+      const handler = withPublicOrigin((request) => app.fetch(request), reader);
+
+      const login = await handler(
+        new Request("http://sendo:8787/api/v1/auth/google/login?returnTo=%2Fsettings"),
+      );
+      expect(login.status).toBe(302);
+      const location = new URL(login.headers.get("location") ?? "");
+      expect(location.searchParams.get("redirect_uri")).toBe(
+        `${reader}/api/v1/auth/google/callback`,
+      );
+      expect(login.headers.get("set-cookie")).toMatch(/^__Host-sendo_login=/);
+
+      const metadata = await handler(
+        new Request("http://sendo:8787/.well-known/oauth-authorization-server"),
+      );
+      expect(await metadata.json()).toMatchObject({
+        issuer: reader,
+        authorization_endpoint: `${reader}/oauth/authorize`,
+        token_endpoint: `${reader}/oauth/token`,
+      });
+    } finally {
+      await database.cleanup();
+    }
+  });
+
   it("PUBLIC_URL がなければ、そのまま渡す", async () => {
     const handler = withPublicOrigin(echo, undefined);
     const res = await handler(new Request("http://localhost:8787/healthz"));

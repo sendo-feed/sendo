@@ -48,6 +48,14 @@ describe("ログインの設定", () => {
       }).oauth,
     ).toEqual({ issuer: "https://sendo.example.com", readerOrigin: "https://reader.example.com" });
     expect(readAuthConfig({ PUBLIC_URL: "https://sendo.example.com" }).oauth).toBeUndefined();
+    // コンテナ版で sendo-reader と並べるときは、2 つとも reader のオリジンにする
+    // （sendo-reader の docs/decisions/container.md の 2）
+    expect(
+      readAuthConfig({
+        PUBLIC_URL: "https://reader.example.com",
+        READER_URL: "https://reader.example.com",
+      }).oauth,
+    ).toEqual({ issuer: "https://reader.example.com", readerOrigin: "https://reader.example.com" });
     expect(readAuthConfig({ PUBLIC_URL: "", READER_URL: "" }).oauth).toBeUndefined();
 
     const error = vi.spyOn(console, "error").mockImplementation(() => {});

@@ -1,21 +1,38 @@
-# コンテナ版を動かす（docs/decisions/container.md、README の「コンテナ版」）。
+# コンテナ版を動かす（docs/decisions/container.md、README の「コンテナ版で動かす」）。
 # このファイルと .env（.env.example を写して書く）を置いたディレクトリで、
 #
 #   docker compose up -d                 動かす
 #   docker compose pull && docker compose up -d   上流の更新を取り込む
 #
-# TLS は、手前に置くリバースプロキシ（Caddy など）で終える。ここでは、同じマシンからだけつなげるように
-# 127.0.0.1 に出す
+# 外に出すのは reader（sendo-reader）だけ。reader が画面を返し、Sendo のパス（/api、/mcp、OAuth、
+# Google Reader API など）を、この compose の中の sendo に中継する。外からは reader のオリジン 1 つに
+# 見えるので、.env の PUBLIC_URL と READER_URL には、どちらもそのオリジンを入れる。
+#
+# TLS は、手前に置くリバースプロキシ（Caddy など）や Cloudflare Tunnel で終える。ここでは、同じマシンから
+# だけつなげるように 127.0.0.1 に出す
 services:
   sendo:
     image: ghcr.io/sendo-feed/sendo:main
     restart: unless-stopped
     env_file: .env
-    ports:
-      - "127.0.0.1:8787:8787"
+    # ポートは外に出さない。reader が compose の中のネットワークで呼ぶ。
+    # 画面を使わない（リーダーアプリや MCP だけで使う）なら、下の reader を消し、ここに
+    #   ports:
+    #     - "127.0.0.1:8787:8787"
+    # を足して、PUBLIC_URL を Sendo のオリジンにする（READER_URL は空にする）
     volumes:
       # SQLite のファイル（sendo.db）と記事の本文（content/）。これを残せば、データは消えない
       - sendo-data:/data
+
+  reader:
+    image: ghcr.io/sendo-feed/sendo-reader:main
+    restart: unless-stopped
+    # sendo が動き出してから（ヘルスチェックが通ってから）始める
+    depends_on:
+      sendo:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
 
 volumes:
   sendo-data:

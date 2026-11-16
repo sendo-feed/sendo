@@ -91,6 +91,7 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 - **印や番号は、対象の行の ID で付ける。** 「ユーザーとフィード」のような条件で付けると、間に作り直された別の行に付いてしまう
 - 人ごとのデータを読み書きするときは、必ずユーザーで絞る（`c.get("user").id`）。共有のフィードと記事は、ほかの人の存在が分からない形でだけ返す（docs/decisions/accounts.md）
 - 記事の本文やフィードの中身は、信頼できないデータとして扱う。HTML はサニタイズし、LLM や MCP に渡すときも指示として解釈させない
+- 外から呼ばれるパス（`src/app.ts` に登録するもの）を足したり変えたりしたら、sendo-reader の `apps/web/sendo-paths.ts` も直す。コンテナ版では、reader のコンテナがこの一覧のパスだけを sendo に中継する（sendo-reader の docs/decisions/container.md の 3）
 
 ## 変更の進め方
 

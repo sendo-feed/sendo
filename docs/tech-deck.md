@@ -56,6 +56,8 @@ flowchart LR
 ```
 
 > 自前のリーダーは reader Worker 経由で sendo とつながり、ブラウザからは同一オリジンに見える。外部のリーダーや AI エージェントは sendo に直接つながる。
+>
+> コンテナ版（[decisions/container.md](decisions/container.md)）では、reader のコンテナが画面を返し、sendo のパスをすべて中継する。外に出るのは reader のオリジン 1 つで、外部のリーダーや AI エージェントも reader のコンテナを通って sendo につながる。
 
 ---
 
@@ -83,8 +85,8 @@ flowchart LR
 | 領域 | 選定（案） | メモ |
 |---|---|---|
 | UI | Svelte 5 ＋ Vite（SPA） | SvelteKit と Void は使わない（sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md)） |
-| ビルド・配信 | Vite ＋ Workers Static Assets | Pages は使わない |
-| サーバー接続 | reader Worker → Service binding | 同一オリジンで CORS 不要。外部の sendo にも直結可 |
+| ビルド・配信 | Vite ＋ Workers Static Assets（コンテナ版は Node のサーバー） | Pages は使わない |
+| サーバー接続 | reader Worker → Service binding（コンテナ版は reader のコンテナ → compose の中の sendo） | 同一オリジンで CORS 不要（sendo-reader の [decisions/container.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)） |
 | PWA | vite-plugin-pwa（Workbox） | アプリの外枠をキャッシュして即起動 |
 | ローカル DB | SQLite（Web は Wasm ＋ OPFS） | 全プラットフォームで同じスキーマ |
 | 同期 | packages/core | 起動時に差分を1リクエストで取得、楽観的更新 |

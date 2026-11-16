@@ -156,7 +156,7 @@ claude mcp add --transport http sendo http://localhost:8787/mcp --header "Author
 
 #### OAuth でつなぐ
 
-Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader に置きます（[決定](docs/decisions/mcp.md)の 3〜7）。使うには、Cloudflare の画面の変数に 2 つのオリジンを入れます（[設定を変える](#設定を変える)。2 つともなければ OAuth は使えません）。手元では `pnpm dev --var PUBLIC_URL:http://localhost:8787 --var READER_URL:http://localhost:5173` のように入れます。
+Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader に置きます（[決定](docs/decisions/mcp.md)の 3〜7）。使うには、Cloudflare の画面の変数に 2 つのオリジンを入れます（[設定を変える](#設定を変える)。2 つともなければ OAuth は使えません）。コンテナ版では `.env` に入れ、2 つとも sendo-reader のオリジンにします（[コンテナ版で動かす](#コンテナ版で動かす)）。手元では `pnpm dev --var PUBLIC_URL:http://localhost:8787 --var READER_URL:http://localhost:5173` のように入れます。
 
 | 名前 | 入れるもの |
 |---|---|
@@ -243,32 +243,36 @@ GitHub の fork の画面で「Sync fork」→「Update branch」を押します
 
 ## コンテナ版で動かす
 
-上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo`）を、Docker Compose で動かします。fork もビルドも要りません（[決定](docs/decisions/container.md)の 10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。
+上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo` と、画面の `ghcr.io/sendo-feed/sendo-reader`）を、Docker Compose で並べて動かします。fork もビルドも要りません（[決定](docs/decisions/container.md)の 7、10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。
+
+外に出すのは sendo-reader のコンテナだけです。sendo-reader が画面を返し、Sendo のパス（`/api`、`/mcp`、OAuth、Google Reader API など）を、compose の中の Sendo に中継します。外からは sendo-reader のオリジン 1 つに見えるので、ブラウザのログイン、リーダーアプリ、MCP のどれも、このオリジンを使います（[sendo-reader の決定](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)）。
 
 1. [compose.yaml](compose.yaml) と [.env.example](.env.example) を、置き場にするディレクトリに写す。`.env.example` は `.env` という名前にして、設定を書く（名前と意味は Cloudflare 版と同じ）
-2. 動かす
+   - `PUBLIC_URL` と `READER_URL`：どちらも、外から開く sendo-reader のオリジン（例：`https://reader.example.com`）。`PUBLIC_URL` は欠かせません。ないと、ブラウザのログインの戻り先が合いません。2 つとも入れると、OAuth（[OAuth でつなぐ](#oauth-でつなぐ)）も使えます
+   - `ALLOWED_EMAILS`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`：ブラウザでログインするとき（[ブラウザでログインする](#ブラウザでログインするgoogle)）。Google の「承認済みのリダイレクト URI」には `https://reader.example.com/api/v1/auth/google/callback` を入れる
+2. 手前にリバースプロキシ（Caddy など）か Cloudflare Tunnel を置いて TLS を終え、sendo-reader のコンテナ（`127.0.0.1:8080`）に向ける
+3. 動かす
 
    ```sh
    docker compose up -d
    ```
 
-3. アクセストークンを発行する（ブラウザでログインしないで使うとき）
+4. `https://reader.example.com` を開き、Google でログインする。ブラウザでログインしないで使うときは、アクセストークンを発行する
 
    ```sh
    docker compose exec sendo node dist/node/sendo.mjs token:create --email you@example.com
    # MCP 用なら --mcp（状態を変えるツールも使うなら --mcp --write）
    ```
 
-`compose.yaml` は、同じマシンの `127.0.0.1:8787` にだけ出します。外から使うときは、手前にリバースプロキシ（Caddy など）を置いて TLS を終え、`.env` の `PUBLIC_URL` にそのオリジン（例：`https://sendo.example.com`）を入れてください。リクエストの URL がそのオリジンにそろい、Google のログインの戻り先や OAuth が正しく動きます。
+リーダーアプリのサーバー（[リーダーアプリで読む](#リーダーアプリで読むgoogle-reader-api)）も、MCP の URL（`https://reader.example.com/mcp`）も、sendo-reader のオリジンにします。
 
-上流の更新は、次で取り込みます。マイグレーションは、起動するときに当たります。
+画面を使わず、リーダーアプリや MCP だけで使うときは、`compose.yaml` の `reader` を消して Sendo のポートを出し（`compose.yaml` のコメント）、`PUBLIC_URL` を Sendo のオリジンにします。`READER_URL` は空にします（OAuth は使えず、MCP 用のトークンでつなぎます）。
+
+上流の更新は、次で取り込みます。Sendo と sendo-reader が一緒に新しくなります。マイグレーションは、起動するときに当たります。
 
 ```sh
 docker compose pull && docker compose up -d
 ```
-
-> [!NOTE]
-> リポジトリを公開するまでは、イメージも非公開です。取ってくるには、`docker login ghcr.io` で、`read:packages` の権限を持つ GitHub のトークンを使ってログインしてください。
 
 手元でイメージを作るときは `docker build -t sendo .` で、作らずに Node で動かすときは `pnpm build:node` のあとに `DATA_DIR=./.data pnpm start:node` です。
 
