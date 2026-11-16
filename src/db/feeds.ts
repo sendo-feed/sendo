@@ -119,6 +119,8 @@ export async function recordFetchSuccess(
   input: {
     now: Date;
     nextFetchAt: Date;
+    /** 決め直した取得の間隔（docs/decisions/jobs.md の 7） */
+    fetchIntervalMs: number;
     etag: string | null;
     lastModified: string | null;
     title?: string | null;
@@ -134,6 +136,7 @@ export async function recordFetchSuccess(
       lastModified: input.lastModified,
       lastFetchedAt: input.now,
       nextFetchAt: input.nextFetchAt,
+      fetchIntervalMs: input.fetchIntervalMs,
       errorCount: 0,
       lastError: null,
       ...(input.title !== undefined && { title: input.title }),

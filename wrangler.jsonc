@@ -59,8 +59,9 @@
   // keep_vars で、画面の変数をデプロイで消さない。何も入れなければ、コードの既定値で動く。
   // 手元では pnpm dev --var <名前>:<値> で入れる
   //
-  // - FETCH_INTERVAL_MINUTES：フィードを取得する間隔（分）。10 以上の整数で、既定は 30。回せるフィードの
-  //   数は、プランとこの間隔で決まる（README の「取得の間隔」、docs/decisions/jobs.md）
+  // - FETCH_INTERVAL_MINUTES：フィードを取得する間隔の下限（分）。10 以上の整数で、既定は 30。実際の
+  //   間隔は、フィードごとに記事の出るペースから決まる（1 日まで）。回せるフィードの数は、プランと
+  //   この間隔で決まる（README の「取得の間隔」、docs/decisions/jobs.md）
   // - ARTICLE_RETENTION_DAYS：スターのない記事を、取り込んでから消すまでの日数。30 以上の整数で、
   //   既定は 90。未読でも消す（docs/decisions/retention.md）。長くすると、D1 の容量を多く使う
   // - PUBLIC_URL、READER_URL：OAuth（Claude.ai や ChatGPT から MCP につなぐ）を使うときに入れる。

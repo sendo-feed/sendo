@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, desc, eq, gt } from "drizzle-orm";
 import type { Database } from ".";
 import { chunked } from "./chunk";
 import { DB_NOW_MS } from "./clock";
@@ -63,4 +63,23 @@ export async function getArticleUrl(
   articleId: string,
 ): Promise<{ url: string | null } | undefined> {
   return db.select({ url: articles.url }).from(articles).where(eq(articles.id, articleId)).get();
+}
+
+/**
+ * フィードの記事のうち、公開日時が since より後のものの公開日時を、新しい順に limit 件まで返す。
+ * 取得の間隔を決めるのに使う（docs/decisions/jobs.md の 7）。索引（フィード × 公開日時）で引くので、
+ * 読む行は limit 件まで
+ */
+export async function recentPublishedTimes(
+  db: Database,
+  input: { feedId: string; since: Date; limit: number },
+): Promise<Date[]> {
+  const rows = await db
+    .select({ publishedAt: articles.publishedAt })
+    .from(articles)
+    .where(and(eq(articles.feedId, input.feedId), gt(articles.publishedAt, input.since)))
+    .orderBy(desc(articles.publishedAt))
+    .limit(input.limit)
+    .all();
+  return rows.map((row) => row.publishedAt);
 }

@@ -9,6 +9,8 @@ export type FetchFeedOptions = {
   timeoutMs?: number;
   maxBytes?: number;
   maxRedirects?: number;
+  /** Retry-After の日付を、応答に Date がないときに比べる時刻。省くと今 */
+  now?: Date;
 };
 
 export type FetchFeedResult =
@@ -30,6 +32,11 @@ export class FetchFeedError extends Error {
     readonly code: FetchFeedErrorCode,
     message: string,
     readonly status?: number,
+    /**
+     * 429 ／ 503 の応答の Retry-After が伝えた、待ってほしい長さ（ミリ秒。docs/decisions/jobs.md の 8）。
+     * なければ、読めなければ、過ぎた時刻なら undefined。上限はかけていない
+     */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
   }
@@ -87,7 +94,19 @@ export async function fetchFeed(url: string, options: FetchFeedOptions): Promise
       }
       if (!res.ok) {
         await res.body?.cancel();
-        throw new FetchFeedError("http_status", `unexpected status ${res.status}`, res.status);
+        const retryAfterMs =
+          res.status === 429 || res.status === 503
+            ? parseRetryAfter(res.headers.get("retry-after"), {
+                date: res.headers.get("date"),
+                now: options.now ?? new Date(),
+              })
+            : undefined;
+        throw new FetchFeedError(
+          "http_status",
+          `unexpected status ${res.status}`,
+          res.status,
+          retryAfterMs,
+        );
       }
 
       const bytes = await readLimited(res.body, res.headers.get("content-length"), maxBytes);
@@ -105,6 +124,35 @@ export async function fetchFeed(url: string, options: FetchFeedOptions): Promise
     if (signal.aborted) throw new FetchFeedError("timeout", `timed out after ${timeoutMs}ms`);
     throw new FetchFeedError("network", error instanceof Error ? error.message : String(error));
   }
+}
+
+/**
+ * Retry-After（RFC 9110 の 10.2.3）を、待ってほしい長さ（ミリ秒）にする。
+ *
+ * - 秒数（0 以上の整数）と、HTTP の日付の両方を読む
+ * - 日付は、応答の Date との差で読む（相手と時計がずれていても、待つ長さは相手の意図どおりになる）。
+ *   Date がない、または読めなければ、now との差で読む
+ * - 負の値、読めない値、過ぎた時刻（長さが 0 以下）は undefined
+ */
+export function parseRetryAfter(
+  value: string | null,
+  input: { date: string | null; now: Date },
+): number | undefined {
+  const text = value?.trim();
+  if (!text) return undefined;
+
+  if (/^\d+$/.test(text)) {
+    const ms = Number(text) * 1000;
+    return ms > 0 && Number.isFinite(ms) ? ms : undefined;
+  }
+  // 日付には曜日と月の名前が入る。数だけの値（"-1" など）を、Date.parse に年として読ませない
+  if (!/[a-z]/i.test(text)) return undefined;
+  const at = Date.parse(text);
+  if (Number.isNaN(at)) return undefined;
+  const sent = input.date ? Date.parse(input.date) : Number.NaN;
+  const base = Number.isNaN(sent) ? input.now.getTime() : sent;
+  const ms = at - base;
+  return ms > 0 ? ms : undefined;
 }
 
 function guard(url: string | URL): URL {

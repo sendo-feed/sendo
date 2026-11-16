@@ -7,12 +7,15 @@ import { CLEAN_UP_CATCH_UP } from "../../src/db/retention";
 import { articles, feeds, userArticles } from "../../src/db/schema";
 import { MAX_ITEMS } from "../../src/fetcher/parse-feed";
 import { ICON_CHECK_INTERVAL_MS, runFetchFeed } from "../../src/jobs/fetch-feed";
+import { MAX_FETCH_INTERVAL_MS, MAX_RETRY_AFTER_MS } from "../../src/jobs/fetch-interval";
+import type { Platform } from "../../src/platform";
 import { PNG } from "../fixtures/images";
 import { createTestPlatform, fakeFetch, subscribeFeed, TEST_USER, uniqueUrl } from "../helpers";
 
 const NOW = new Date("2026-11-14T00:00:00Z");
 /** 設定した取得の間隔。既定（30 分）と違う値にして、設定が使われることを確かめる */
 const INTERVAL_MS = 45 * 60 * 1000;
+const HOUR = 60 * 60 * 1000;
 
 const RSS = `<?xml version="1.0"?>
 <rss version="2.0"><channel>
@@ -150,7 +153,10 @@ describe("runFetchFeed", () => {
       siteUrl: "https://blog.example/",
       etag: '"e1"',
       lastFetchedAt: NOW,
-      nextFetchAt: new Date(NOW.getTime() + INTERVAL_MS),
+      // 記事は 1 日前に 1 件、今（日付のない 2 件）。1 日 ÷ 3 件 ＝ 8 時間の半分
+      // （docs/decisions/jobs.md の 7）
+      nextFetchAt: new Date(NOW.getTime() + 4 * HOUR),
+      fetchIntervalMs: 4 * HOUR,
       errorCount: 0,
       lastError: null,
     });
@@ -255,6 +261,153 @@ describe("runFetchFeed", () => {
   });
 });
 
+/** 公開日時を決めた記事を並べた RSS */
+function rssWithDates(dates: readonly Date[]): string {
+  const items = dates
+    .map(
+      (date, i) =>
+        `<item><title>${i}</title><link>https://blog.example/${i}</link><pubDate>${date.toUTCString()}</pubDate></item>`,
+    )
+    .join("");
+  return `<rss version="2.0"><channel><title>b</title>${items}</channel></rss>`;
+}
+
+const setFetchInterval = (platform: Platform, feedId: string, ms: number) =>
+  platform.db.update(feeds).set({ fetchIntervalMs: ms }).where(eq(feeds.id, feedId)).run();
+
+describe("runFetchFeed の取得の間隔（docs/decisions/jobs.md の 7）", () => {
+  const ago = (ms: number) => new Date(NOW.getTime() - ms);
+
+  it("記事の出るペースから間隔を決め、フィードの行に記録する", async () => {
+    // 6 時間おきに 4 件：24 時間 ÷ 4 件 ＝ 6 時間の半分
+    const { platform, feed } = await setup(
+      () => new Response(rssWithDates([6, 12, 18, 24].map((h) => ago(h * HOUR)))),
+    );
+
+    await runFetchFeed(platform, feed.id);
+
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({
+      fetchIntervalMs: 3 * HOUR,
+      nextFetchAt: new Date(NOW.getTime() + 3 * HOUR),
+    });
+  });
+
+  it("直近 7 日に記事がなければ、1 日おきにする", async () => {
+    const { platform, feed } = await setup(
+      () => new Response(rssWithDates([ago(30 * 24 * HOUR), ago(60 * 24 * HOUR)])),
+    );
+
+    await runFetchFeed(platform, feed.id);
+
+    expect((await getFeed(platform.db, feed.id))?.nextFetchAt).toEqual(
+      new Date(NOW.getTime() + MAX_FETCH_INTERVAL_MS),
+    );
+  });
+
+  it("記事が多くても、設定の間隔より短くしない", async () => {
+    const minutes = Array.from({ length: 40 }, (_, i) => ago(i * 60 * 1000));
+    const { platform, feed } = await setup(() => new Response(rssWithDates(minutes)));
+
+    await runFetchFeed(platform, feed.id);
+
+    expect((await getFeed(platform.db, feed.id))?.fetchIntervalMs).toBe(INTERVAL_MS);
+  });
+
+  it("304 のときも、記事が出ないまま時間がたった分だけ間隔を延ばす", async () => {
+    let now = NOW;
+    let first = true;
+    const fake = fakeFetch(() => {
+      if (!first) return new Response(null, { status: 304 });
+      first = false;
+      return new Response(rssWithDates([ago(2 * HOUR), ago(4 * HOUR)]), {
+        headers: { etag: '"e1"' },
+      });
+    });
+    const { platform } = createTestPlatform({
+      fetch: fake.fetch,
+      now: () => now,
+      fetchConfig: { intervalMs: INTERVAL_MS },
+    });
+    const { feed } = await insertFeed(platform.db, {
+      id: crypto.randomUUID(),
+      url: uniqueUrl(),
+      now,
+    });
+
+    await runFetchFeed(platform, feed.id);
+    expect((await getFeed(platform.db, feed.id))?.fetchIntervalMs).toBe(HOUR);
+
+    // 20 時間後：24 時間 ÷ 2 件の半分
+    now = new Date(NOW.getTime() + 20 * HOUR);
+    expect(await runFetchFeed(platform, feed.id)).toEqual({ status: "not-modified" });
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({
+      fetchIntervalMs: 6 * HOUR,
+      nextFetchAt: new Date(now.getTime() + 6 * HOUR),
+    });
+  });
+
+  it("失敗したときは、フィードの今の間隔をもとに延ばす", async () => {
+    const { platform, feed } = await setup(() => new Response("oops", { status: 500 }));
+    await setFetchInterval(platform, feed.id, 3 * HOUR);
+
+    await runFetchFeed(platform, feed.id);
+
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({
+      errorCount: 1,
+      nextFetchAt: new Date(NOW.getTime() + 6 * HOUR),
+      // 失敗では、決めた間隔を変えない
+      fetchIntervalMs: 3 * HOUR,
+    });
+  });
+});
+
+describe("runFetchFeed の Retry-After（docs/decisions/jobs.md の 8）", () => {
+  const nextFetchAtOf = async (response: () => Response) => {
+    const { platform, feed } = await setup(response);
+    expect(await runFetchFeed(platform, feed.id)).toMatchObject({ status: "failed" });
+    const saved = await getFeed(platform.db, feed.id);
+    expect(saved?.errorCount).toBe(1);
+    return saved?.nextFetchAt;
+  };
+
+  it("429 の Retry-After より前に、次の取得をしない", async () => {
+    // 延ばす間隔（45 分 × 2）より長い 2 時間を待つ
+    expect(
+      await nextFetchAtOf(
+        () => new Response("", { status: 429, headers: { "retry-after": "7200" } }),
+      ),
+    ).toEqual(new Date(NOW.getTime() + 2 * HOUR));
+  });
+
+  it("503 の Retry-After の日付を守る", async () => {
+    const response = () =>
+      new Response("", {
+        status: 503,
+        headers: {
+          date: NOW.toUTCString(),
+          "retry-after": new Date(NOW.getTime() + 5 * HOUR).toUTCString(),
+        },
+      });
+    expect(await nextFetchAtOf(response)).toEqual(new Date(NOW.getTime() + 5 * HOUR));
+  });
+
+  it("Retry-After が延ばす間隔より短ければ、延ばす間隔にする", async () => {
+    expect(
+      await nextFetchAtOf(
+        () => new Response("", { status: 429, headers: { "retry-after": "60" } }),
+      ),
+    ).toEqual(new Date(NOW.getTime() + INTERVAL_MS * 2));
+  });
+
+  it("長すぎる Retry-After は、7 日までにする", async () => {
+    expect(
+      await nextFetchAtOf(
+        () => new Response("", { status: 503, headers: { "retry-after": "999999999" } }),
+      ),
+    ).toEqual(new Date(NOW.getTime() + MAX_RETRY_AFTER_MS));
+  });
+});
+
 describe("runFetchFeed の古い記事の片付け（docs/decisions/retention.md）", () => {
   const DAY = 24 * 60 * 60 * 1000;
   const daysAgo = (days: number) => new Date(NOW.getTime() - days * DAY);
@@ -332,6 +485,18 @@ describe("runFetchFeed の古い記事の片付け（docs/decisions/retention.md
     // 片付けた位置を記録する。進める幅は、取得の間隔の CLEAN_UP_CATCH_UP 倍まで
     expect((await getFeed(platform.db, feed.id))?.cleanedUntil).toEqual(
       new Date(daysAgo(95).getTime() - 60_000 + CLEAN_UP_CATCH_UP * INTERVAL_MS),
+    );
+  });
+
+  it("片付けの位置を進める幅は、フィードの今の間隔をもとにする", async () => {
+    // 1 日おきに取得するフィードでも、取り込みに追いつけるように
+    const { platform, feed } = await setupOld(() => new Response(null, { status: 304 }));
+    await setFetchInterval(platform, feed.id, DAY);
+
+    await runFetchFeed(platform, feed.id);
+
+    expect((await getFeed(platform.db, feed.id))?.cleanedUntil).toEqual(
+      new Date(daysAgo(95).getTime() - 60_000 + CLEAN_UP_CATCH_UP * DAY),
     );
   });
 

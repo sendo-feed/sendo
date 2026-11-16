@@ -25,10 +25,16 @@ import {
 } from "../fetcher/parse-feed";
 import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
+import {
+  backoffInterval,
+  currentFetchInterval,
+  nextFetchInterval,
+  retryAfterWait,
+} from "./fetch-interval";
 
 /*
- * 取得の間隔は設定（platform.fetchConfig）から受け取る。いまはすべてのフィードで同じ。
- * フィードごとの調整は後で足す（docs/decisions/jobs.md の「見直す条件」）。
+ * 取得の間隔は、フィードごとに記事の出るペースから決める。設定の間隔（platform.fetchConfig）は、
+ * その下限（docs/decisions/jobs.md の 6、7。決め方は fetch-interval.ts）。
  */
 
 /** フィードのアイコンを探し直す間隔（docs/decisions/images.md の 8） */
@@ -39,9 +45,6 @@ export const MAX_CONTENTS_PER_FETCH = 30;
 
 /** 置く本文の大きさの上限。ページから抜いた本文と同じ（db/content.ts） */
 export { MAX_CONTENT_BYTES } from "../db/content";
-
-/** 失敗が続いたときに延ばす間隔の上限。設定の間隔がこれより長ければ、設定の間隔 */
-const MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
 
 export type FetchFeedOutcome =
   | { status: "fetched"; inserted: number }
@@ -65,14 +68,17 @@ export async function runFetchFeed(
   feedId: string,
 ): Promise<FetchFeedOutcome> {
   const { db } = platform;
-  const { intervalMs } = platform.fetchConfig;
+  const minIntervalMs = platform.fetchConfig.intervalMs;
   const feed = await getFeed(db, feedId);
   if (!feed) return { status: "missing" };
 
   const startedAt = platform.now();
+  // 前回の取得で決めた間隔。片付けの幅と、失敗したときに延ばす間隔のもとにする
+  const intervalMs = currentFetchInterval(feed, minIntervalMs);
 
   // 期間を過ぎた記事を、受信箱から片付ける。取得の結果によらない。片付けた位置は、取得の結果と
-  // 一緒に記録する（記録の前に落ちても、やり直せば同じ範囲をもう一度片付けるだけ）
+  // 一緒に記録する（記録の前に落ちても、やり直せば同じ範囲をもう一度片付けるだけ）。進める幅は、
+  // このフィードの取得の間隔に合わせる（間隔の長いフィードでも、取り込みに追いつくように）
   const cleanUp = planFeedCleanUp(feed, {
     now: startedAt,
     retentionMs: platform.retentionConfig.articleMs,
@@ -86,14 +92,22 @@ export async function runFetchFeed(
       fetch: platform.fetch,
       etag: feed.etag,
       lastModified: feed.lastModified,
+      now: startedAt,
     });
 
     if (result.status === "not-modified") {
       // 前回の取得が、受信箱に配る途中で落ちていた場合に備えて、配り直しを試みる
       await deliverNewArticles(db, { feedId: feed.id });
+      // 新しい記事がなくても、時間がたった分だけペースは落ちているので、間隔を決め直す
+      const nextIntervalMs = await nextFetchInterval(db, {
+        feedId: feed.id,
+        now: startedAt,
+        minMs: minIntervalMs,
+      });
       await recordFetchSuccess(db, feed.id, {
         now: startedAt,
-        nextFetchAt: new Date(startedAt.getTime() + intervalMs),
+        nextFetchAt: new Date(startedAt.getTime() + nextIntervalMs),
+        fetchIntervalMs: nextIntervalMs,
         etag: feed.etag,
         lastModified: feed.lastModified,
         cleanedUntil: cleanUp?.until,
@@ -133,10 +147,17 @@ export async function runFetchFeed(
       });
     }
 
+    // 今回入った記事も含めて、間隔を決め直す
+    const nextIntervalMs = await nextFetchInterval(db, {
+      feedId: feed.id,
+      now: startedAt,
+      minMs: minIntervalMs,
+    });
     // 記事を入れ終えてから、取得済みとして記録する。途中で落ちても、次の取得でやり直せる
     await recordFetchSuccess(db, feed.id, {
       now: startedAt,
-      nextFetchAt: new Date(startedAt.getTime() + intervalMs),
+      nextFetchAt: new Date(startedAt.getTime() + nextIntervalMs),
+      fetchIntervalMs: nextIntervalMs,
       etag: result.etag,
       lastModified: result.lastModified,
       title: parsed.title,
@@ -156,13 +177,20 @@ export async function runFetchFeed(
     if (!(error instanceof FetchFeedError || error instanceof ParseFeedError)) throw error;
 
     const errorCount = feed.errorCount + 1;
-    // 上限は、設定の間隔より短くしない（1 日より長い間隔にしたとき、失敗中のフィードのほうが
-    // 頻繁に取得されないように）
-    const backoff = Math.min(intervalMs * 2 ** errorCount, Math.max(MAX_BACKOFF_MS, intervalMs));
+    // フィードの今の間隔を、失敗の回数で延ばす。上限は取得の間隔の上限と同じ（設定の間隔が 1 日より
+    // 長いとき、失敗中のフィードのほうが頻繁に取得されないように）
+    const backoff = backoffInterval({ intervalMs, errorCount, minMs: minIntervalMs });
+    // 429 ／ 503 の Retry-After を守る（docs/decisions/jobs.md の 8）。待つ長さは、応答を受けた
+    // 時刻から数える
+    const retryAfter = error instanceof FetchFeedError ? retryAfterWait(error.retryAfterMs) : 0;
+    const nextFetchAt = Math.max(
+      startedAt.getTime() + backoff,
+      platform.now().getTime() + retryAfter,
+    );
     const message = `${error.name}: ${error.message}`;
     await recordFetchFailure(db, feed.id, {
       now: startedAt,
-      nextFetchAt: new Date(startedAt.getTime() + backoff),
+      nextFetchAt: new Date(nextFetchAt),
       errorCount,
       error: message,
       cleanedUntil: cleanUp?.until,
