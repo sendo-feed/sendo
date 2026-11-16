@@ -103,8 +103,10 @@ describe("GET /api/v1/images", () => {
       // 別の URL に、ほかの URL の署名を付ける（署名した URL に、クエリでデータを足す）
       withUrl(`${SOURCE}&leak=secret`),
       withUrl("https://attacker.example/collect?d=secret"),
-      // 署名を変える、短くする、空にする、形の違うものにする
-      withUrl(SOURCE, `${sig.slice(0, -1)}${sig.endsWith("A") ? "B" : "A"}`),
+      // 署名を変える、短くする、空にする、形の違うものにする。変えるのは先頭の文字にする。
+      // 最後の文字は 6 ビットのうち 2 ビットしか使わない（16 バイトを base64url にすると 22 文字で、
+      // 4 ビット余る）ので、A を B に変えても同じバイト列になり、署名が合ってしまう
+      withUrl(SOURCE, `${sig.startsWith("A") ? "B" : "A"}${sig.slice(1)}`),
       withUrl(SOURCE, sig.slice(0, 10)),
       withUrl(SOURCE, ""),
       withUrl(SOURCE, "!!!"),
