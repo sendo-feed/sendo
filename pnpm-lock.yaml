@@ -24,8 +24,8 @@ importers:
         specifier: 0.45.4
         version: 0.45.4(@libsql/client@0.18.0)
       entities:
-        specifier: 7.0.1
-        version: 7.0.1
+        specifier: 9.0.0
+        version: 9.0.0
       feedsmith:
         specifier: 3.0.1
         version: 3.0.1
@@ -1331,6 +1331,10 @@ packages:
     resolution: {integrity: sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==}
     engines: {node: '>=0.12'}
 
+  entities@9.0.0:
+    resolution: {integrity: sha512-oJFNDJg3kTPwAD1cNn2+WmUq4wFoo09npc3Ydf1D7ED4smRiWrsKnaLxykrTWgyGEcusc87P5dxlAleol9kpkg==}
+    engines: {node: '>=20.19.0'}
+
   error-stack-parser-es@1.0.5:
     resolution: {integrity: sha512-5qucVt2XcuGMcEGgWI7i+yZpmpByQ8J1lHhcL7PwqCwu9FPP3VUXzT4ltHe5i2z9dePwEHcDVOAfSnHsOlCXRA==}
 
@@ -2514,6 +2518,8 @@ snapshots:
       '@libsql/client': 0.18.0
 
   entities@7.0.1: {}
+
+  entities@9.0.0: {}
 
   error-stack-parser-es@1.0.5: {}
 
