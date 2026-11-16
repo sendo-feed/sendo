@@ -186,11 +186,46 @@ describe("照合", () => {
     expect(allowed("User-agent: *\nDisallow: /a*b*c$\n", "/aXbYcZ")).toBe(true);
   });
 
+  // workerd の中では、同期の処理の間は時計が進まない。遅ければ、テストの全体が遅くなって分かる
   it("* がたくさんあっても、時間がかからない", () => {
     const txt = `User-agent: *\nDisallow: /${"*a".repeat(200)}$\n`;
-    const started = Date.now();
     expect(allowed(txt, `/${"a".repeat(5000)}b`)).toBe(true);
-    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("長い URL と長いパターンでも、URL とパターンの長さの和ほどの手間で照合する", () => {
+    // 後戻りする照合では、掛け算の手間（数十秒）がかかる組み合わせ
+    const long = `/${"a".repeat(80_000)}`;
+    expect(allowed(`User-agent: *\nDisallow: /*${"a".repeat(40_000)}b$\n`, long)).toBe(true);
+    expect(allowed(`User-agent: *\nDisallow: /*${"a".repeat(40_000)}b\n`, long)).toBe(true);
+    // String.prototype.indexOf でも遅くなる組み合わせ
+    const middle = `${"a".repeat(20_000)}b${"a".repeat(20_000)}`;
+    expect(allowed(`User-agent: *\nDisallow: /*${middle}\n`, long)).toBe(true);
+    expect(allowed(`User-agent: *\nDisallow: /*${middle}\n`, `/x${middle}`)).toBe(false);
+  });
+
+  it("照合の手間が上限を超えたら、許可しない（ログに出す）", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rule = `Disallow: /${"*a".repeat(20)}*b\n`;
+    const txt = `User-agent: *\n${rule.repeat(Math.floor((500 * 1024) / rule.length))}`;
+    const rules = parseRobotsTxt(txt, "Sendo");
+    expect(isAllowedByRules(rules, new URL(`https://example.com/${"a".repeat(80_000)}`))).toBe(
+      false,
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "robots.txt is too complex to match; treating as disallowed",
+      { origin: "https://example.com" },
+    );
+    warn.mockRestore();
+  });
+
+  it("規則の多いふつうの robots.txt は、上限に届かない", () => {
+    const txt = `User-agent: *\n${Array.from(
+      { length: 1000 },
+      (_, i) => `Disallow: /p${i}/*.php$\nAllow: /p${i}/*ok*`,
+    ).join("\n")}`;
+    const path = `/p999/${"x".repeat(500)}/ok.php?utm_source=${"y".repeat(500)}`;
+    expect(allowed(txt, path)).toBe(true);
+    expect(allowed(txt, "/p999/a.php")).toBe(false);
   });
 
   it("クエリも照合に含める", () => {

@@ -83,20 +83,49 @@ function agentToken(value: string): string | null {
 }
 
 /**
+ * 1 つの URL の照合で、文字を比べてよい回数。robots.txt（500KiB まで）も URL も相手が決めるので、
+ * 極端な組み合わせで、プロセスを長く止めないようにする（照合は同期の処理で、途中で止められない）。
+ * ふつうの robots.txt（規則が数百、URL が数百文字）なら、この 1 割にも届かない
+ */
+export const MAX_MATCH_STEPS = 2_000_000;
+
+class TooComplexError extends Error {}
+
+/** 比べた回数を数え、上限を超えたら TooComplexError を投げる */
+class Budget {
+  #left = MAX_MATCH_STEPS;
+  spend(steps: number): void {
+    this.#left -= steps;
+    if (this.#left < 0) throw new TooComplexError();
+  }
+}
+
+/**
  * URL を規則で照合する。いちばん長く一致した規則を使い、Allow と Disallow が同じ長さなら Allow。
- * どれにも当たらなければ許可。`/robots.txt` そのものは、いつも許可
+ * どれにも当たらなければ許可。`/robots.txt` そのものは、いつも許可。
+ *
+ * 照合の手間が上限（MAX_MATCH_STEPS）を超えたら、許可しない（届かないときと同じ、控えめなほう）
  */
 export function isAllowedByRules(rules: readonly RobotsRule[], url: URL): boolean {
   if (url.pathname === "/robots.txt") return true;
   const target = normalizePath(`${url.pathname}${url.search}`);
+  const budget = new Budget();
   let allow = -1;
   let disallow = -1;
-  for (const rule of rules) {
-    const length = rule.pattern.length;
-    if (length <= (rule.allow ? allow : disallow)) continue;
-    if (!matches(rule.pattern, target)) continue;
-    if (rule.allow) allow = length;
-    else disallow = length;
+  try {
+    for (const rule of rules) {
+      const length = rule.pattern.length;
+      if (length <= (rule.allow ? allow : disallow)) continue;
+      if (!matches(rule.pattern, target, budget)) continue;
+      if (rule.allow) allow = length;
+      else disallow = length;
+    }
+  } catch (error) {
+    if (!(error instanceof TooComplexError)) throw error;
+    console.warn("robots.txt is too complex to match; treating as disallowed", {
+      origin: url.origin,
+    });
+    return false;
   }
   return allow >= disallow;
 }
@@ -105,32 +134,54 @@ export function isAllowedByRules(rules: readonly RobotsRule[], url: URL): boolea
  * パターンの照合。`*` は任意の文字の並び、末尾の `$` は URL の終わり。`$` がなければ、先頭からの
  * 一致（後ろに何が続いてもよい）。
  *
- * 後戻りは、最後の `*` の位置からだけにする（正規表現にすると、`*` が多いパターンで遅くなる）
+ * `*` で区切った断片を、左から順に、いちばん手前で見つける（`*` だけのパターンでは、それで正しく
+ * 決まる）。断片は KMP で探すので、1 つの規則の手間は、URL とパターンの長さの和に収まる
+ * （後戻りする照合や正規表現、String.prototype.indexOf では、掛け算になることがある）
  */
-function matches(pattern: string, target: string): boolean {
+function matches(pattern: string, target: string, budget: Budget): boolean {
   const anchored = pattern.endsWith("$");
-  const body = anchored ? pattern.slice(0, -1) : `${pattern}*`;
+  const parts = (anchored ? pattern.slice(0, -1) : pattern).split("*");
+  const first = parts[0] ?? "";
+  budget.spend(first.length + 1);
+  if (!target.startsWith(first)) return false;
+  if (parts.length === 1) return !anchored || target.length === first.length;
 
-  let p = 0;
-  let t = 0;
-  let star = -1;
-  let resume = 0;
-  while (t < target.length) {
-    if (p < body.length && body[p] === "*") {
-      star = p++;
-      resume = t;
-    } else if (p < body.length && body[p] === target[t]) {
-      p++;
-      t++;
-    } else if (star !== -1) {
-      p = star + 1;
-      t = ++resume;
-    } else {
-      return false;
-    }
+  const last = parts[parts.length - 1] ?? "";
+  let position = first.length;
+  for (const part of parts.slice(1, -1)) {
+    if (part === "") continue;
+    const found = find(part, target, position, budget);
+    if (found === -1) return false;
+    position = found + part.length;
   }
-  while (p < body.length && body[p] === "*") p++;
-  return p === body.length;
+  // 最後の断片は、$ があれば URL の終わりに、なければどこかにあればよい
+  if (anchored) {
+    budget.spend(last.length + 1);
+    return target.length - last.length >= position && target.endsWith(last);
+  }
+  return find(last, target, position, budget) !== -1;
+}
+
+/** target の from から後ろで、needle がはじめて現れる位置（KMP）。なければ -1 */
+function find(needle: string, target: string, from: number, budget: Budget): number {
+  const m = needle.length;
+  if (m === 0) return from;
+  if (target.length - from < m) return -1;
+  budget.spend(2 * m);
+  const failure = new Int32Array(m);
+  for (let i = 1, k = 0; i < m; i++) {
+    while (k > 0 && needle[i] !== needle[k]) k = failure[k - 1] ?? 0;
+    if (needle[i] === needle[k]) k++;
+    failure[i] = k;
+  }
+  // 探す側は、行き来を含めて target の残りの 2 倍までしか比べない
+  budget.spend(2 * (target.length - from));
+  for (let i = from, k = 0; i < target.length; i++) {
+    while (k > 0 && target[i] !== needle[k]) k = failure[k - 1] ?? 0;
+    if (target[i] === needle[k]) k++;
+    if (k === m) return i - m + 1;
+  }
+  return -1;
 }
 
 /** RFC 3986 の、エンコードしなくてよい文字 */
