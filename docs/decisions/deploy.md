@@ -3,13 +3,13 @@
 - 状態：提案中
 - 関連：[ユーザーと認証](accounts.md)（セルフホスト）、[仕事の流し方](jobs.md)（取得の間隔）、[古い記事の片付け](retention.md)（記事を残す期間）、[MCP サーバー](mcp.md)（OAuth のオリジン）、[テックスタック](tech-stack.md)
 
-Sendo はセルフホストで、使う人がそれぞれ自分の Cloudflare アカウントにデプロイする（[ユーザーと認証](accounts.md)）。何人もが同じリポジトリから、自分の設定でデプロイし、上流の更新を取り込み続けられる形を決める。2026-11-15 に、fork と Workers Builds で実際にデプロイして確かめた。
+Sendo はセルフホストで、使う人がそれぞれ自分の Cloudflare アカウントにデプロイする（[ユーザーと認証](accounts.md)）。何人もが同じリポジトリから、自分の設定でデプロイし、上流の更新を取り込み続けられる形を決める。2026-11-15 に、fork と Workers Builds で実際にデプロイして確かめた。2026-11-16 に、上流の更新を自動で取り込む Worker を試し、sendo と sendo-reader の fork が数分で追従するのを確かめた。
 
 ## 決定
 
 1. **各自が GitHub で fork し、Cloudflare の Workers Builds でつなぐ。** fork の `main` に push すると、Cloudflare がビルドしてデプロイする。
    - Cloudflare の GitHub App の「Repository access」に、fork を入れる。入れていないと、画面から始めたビルドは動くのに、push ではビルドが始まらない
-   - 上流の更新は、GitHub の「Sync fork」で取り込む。取り込んだ push で、そのままデプロイされる
+   - 上流の更新は、GitHub の「Sync fork」で取り込む。取り込んだ push で、そのままデプロイされる。自動で取り込みたい人は、sendo-updater を足す（7）
    - Worker の名前は `sendo` のままにする。`wrangler.jsonc` の `name` と違うとビルドが失敗し、sendo-reader もこの名前で呼ぶ
    - 手元から `wrangler deploy` することも、これまでどおりできる
 2. **デプロイの手順は `package.json` の `deploy` に書き、Workers Builds のデプロイのコマンドは `pnpm run deploy` にする。**
@@ -28,6 +28,13 @@ Sendo はセルフホストで、使う人がそれぞれ自分の Cloudflare �
    - `secrets.required` の秘密がないと、1 回目のビルドは止まる。それでも Worker と D1 と Queues はできているので、画面の「変数とシークレット」に入れて、ビルドをやり直す
    - 型は「シークレット」にする。「変数」では必須の確認を通らず、デプロイでも消える
 6. **`wrangler.jsonc` に `workers_dev: true` と `preview_urls: false` を書く。**
+7. **上流の更新を自動で取り込みたい人は、`sendo-feed/sendo-updater` も fork し、Workers Builds でデプロイする。** 使うかどうかは各自が選ぶ。使わなければ、これまでどおり「Sync fork」で取り込む。
+   - sendo-updater は Worker で、Cron Triggers で毎分動く。各自の fork（sendo、sendo-reader、sendo-updater 自身）が上流の `main` に遅れていれば、merge-upstream（「Sync fork」と同じ API）で取り込む。取り込んだ push で、そのままデプロイされる
+   - 毎回、GitHub の今の状態（上流との差分）から判断し、状態を持たない
+   - sendo-reader は、sendo が上流に追いつき、sendo の `main` の先頭で Workers Builds のチェックが成功してから取り込む
+   - 競合で取り込めなければ、上書きせずに止まり、手で直すのを待つ
+   - GitHub のトークンは、fine-grained personal access token にする。対象を各自の fork に絞り、Contents と Workflows の書き込みだけを与える。sendo-updater の Worker の秘密に置き、GitHub には置かない
+   - fork の持ち主（GitHub のユーザーか組織）は、画面の変数に置く（4 と同じ）
 
 ## 理由
 
@@ -52,6 +59,20 @@ Sendo はセルフホストで、使う人がそれぞれ自分の Cloudflare �
 - **`workers_dev` と `preview_urls` を書く**
   - 画面が作った Worker は、どちらもオフで始まる。書かないと、デプロイのたびに違いの警告が出て、既定のオンで上書きされる
   - Workers Builds は、`main` 以外のブランチを push すると、その版を上げる。プレビューの URL がオンだと、その版を、本番の D1 と秘密につながったまま外から呼べてしまう
+- **自動の取り込みを、Cloudflare の Worker にする**
+  - GitHub Actions の `schedule` は当てにならない。2026-11-16 に、fork に毎時取り込むワークフローを足したが、定刻の実行は一度も作られなかった。無効にして有効に戻しても、cron を変えて登録し直しても、作られなかった。同じ症状の報告が 2026-08 から続いていて、GitHub の回答はない
+  - Actions で取り込むと、上流がワークフローのファイルを変えた更新を取り込めない。Actions の `GITHUB_TOKEN` は Workflows の権限を持てず、merge-upstream が 422 で止まる。上流の CI のワークフローは、Dependabot の更新でも変わる
+  - fork では Actions が止まっていて、有効にする手間がかかる（代替案の「GitHub Actions からデプロイする」と同じ）
+  - Cron Triggers は、sendo と同じ Cloudflare のアカウントで動く。sendo と同じく fork と Workers Builds で入れられ、sendo-updater 自身も上流に追従する
+  - 毎分、上流との差分から判断するので、取りこぼしても次の分に追いつく。上流の変更は数分でデプロイまで届く
+- **sendo-updater を、sendo とは別の Worker にする**
+  - fork に書き込めるトークンを、外から呼ばれ、信頼できないフィードの中身を扱う sendo の Worker に置かない
+  - sendo-reader だけを更新したいときも、sendo のデプロイと切り離せる
+- **sendo-reader を、sendo のデプロイが成功してから取り込む**：API を足したとき、sendo-reader が先に出ると、まだない API を呼ぶ。時刻をずらすだけでは、ビルドの時間や失敗で順番が崩れる。2026-11-16 には、sendo のデプロイが R2 を有効にしていないことで止まり、sendo-reader はそれを待って、sendo を直した1分後に取り込まれた
+- **トークンの権限**
+  - Contents の書き込みは、merge-upstream に要る。Workflows の書き込みは、上流がワークフローを変えた更新を取り込むのに要る
+  - このトークンがあれば、fork の `main` に書き込め、そのままデプロイに届く。ただ、置き場所は Cloudflare の秘密だけで、sendo-updater には外から呼ばれる入口がない。Cloudflare のアカウントを取られれば、どのみちデプロイは乗っ取られるので、それより大きな穴は増えない
+  - トークンを作る手間は、自動で取り込みたい人だけにかかる。「Sync fork」で取り込む人は、これまでどおりトークンが要らない
 
 ## 検討した代替案
 
@@ -67,6 +88,12 @@ Sendo はセルフホストで、使う人がそれぞれ自分の Cloudflare �
   - それでも、自分の sendo の URL が公開の fork に載るので、セキュリティを理由にとらない
 - **人ごとの設定を、秘密として入れる**：デプロイで消えないが、値が画面で見えなくなる。秘密でないものを秘密に置くのは紛らわしい。
 - **人ごとの設定を D1 に置き、画面から変える**：画面と API が要る。今は 4 つで、変えるのはデプロイする人だけ。
+- **各自の fork の GitHub Actions で、定刻に取り込む**：仕組みは一番小さい。ただ、`schedule` が当てにならず、ワークフローの変更を取り込めず、fork で Actions を有効にする手間もかかる（理由を参照）。
+- **sendo-updater から、fork の取り込みのワークフローを起動する（workflow_dispatch）**
+  - トークンは Actions の権限だけで済み、取り込みの失敗も GitHub から知らされる
+  - ただ、上流に取り込みのワークフローを置き、各自が fork で Actions を有効にする必要がある。ワークフローの変更を取り込むには、結局、別に Workflows の権限のトークンが要る
+- **上流の push を webhook で受けて取り込む**：遅れはさらに縮む。ただ、webhook は上流の持ち主が設定するもので、各自の sendo-updater の URL を上流は知らない。外から呼ばれる入口と、署名の確かめも要る。
+- **取り込みを sendo の Worker の Cron Triggers に入れる**：リポジトリは増えない。ただ、fork に書き込めるトークンを、外から呼ばれる sendo の Worker に置くことになる（理由を参照）。
 
 ## 見直す条件
 
@@ -74,3 +101,4 @@ Sendo はセルフホストで、使う人がそれぞれ自分の Cloudflare �
 - Cloudflare が、fork なしで上流のリポジトリを追えるようになったとき。または、Deploy ボタンで作ったリポジトリに上流の更新を取り込めるようになったとき。
 - 前の版のコードと両立できないマイグレーションが、どうしても要るとき。
 - Cloudflare 以外のデプロイ先を作るとき（[テックスタック](tech-stack.md)）。
+- GitHub が fork を上流に自動で追従させる仕組みを持ったとき。または、Actions の `schedule` が当てになり、`GITHUB_TOKEN` でワークフローの変更も取り込めるようになったとき。sendo-updater をやめられる。
