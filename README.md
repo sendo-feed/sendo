@@ -228,6 +228,10 @@ fork の `wrangler.jsonc` には書かないでください。fork は公開さ�
 
 GitHub の fork の画面で「Sync fork」→「Update branch」を押します。上流の変更が fork の `main` に入り、その push でデプロイされます（マイグレーションも当たります）。
 
+自動で取り込みたいときは、[sendo-updater](https://github.com/sendo-feed/sendo-updater) も fork してデプロイします。毎分、自分の sendo と sendo-reader の fork を上流と比べ、遅れていれば取り込みます（sendo-reader は、sendo のデプロイが成功してから）。入れ方は sendo-updater の README にあります（[決定](docs/decisions/deploy.md)の 7）。
+
+上流の更新によっては、Cloudflare の画面での準備（R2 を使えるようにする、など）が要ります。取り込んだあとのデプロイが止まったら、Workers Builds のログと、上の「初めてのデプロイ」を見て、準備してからビルドをやり直してください。
+
 ## コマンド
 
 | コマンド | すること |
