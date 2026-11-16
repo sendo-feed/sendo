@@ -52,7 +52,9 @@ export type SettingInput = {
  * - 置く：なければ作り、あれば値を替えて新しい番号を振る（消した印は外す）。今と同じ値なら
  *   何も変えない（番号も振らない）
  * - 置いたあとの項目の数か合計が上限を超えるなら、1 つも置かない（"full"）。上限は、置く文の中で
- *   確かめる（先に数えてから置くと、その間に別のリクエストが入って上限を超える）
+ *   確かめる（先に数えてから置くと、その間に別のリクエストが入って上限を超える）。応答も、
+ *   置く文が行を書いたかどうかで決める（あとから読み直して決めると、その間のほかの端末の変更で
+ *   食い違う）
  *
  * 消すのを先にするのは、同じリクエストで消した分を、上限の計算から外すため。置くのを断っても、
  * 消した分は消えたままになる
@@ -84,14 +86,31 @@ export async function applySettings(
   if (input.put.length === 0) return "applied";
 
   // 置く項目も 1 つの変数で渡す。値は、JSON の中に JSON のまま入れ、`->` で JSON の文字列として取り出す
-  const items = `[${input.put
-    .map(
-      ({ name, json }) =>
-        `{"name":${JSON.stringify(name)},"size":${settingSize(name, json)},"value":${json}}`,
-    )
-    .join(",")}]`;
+  const toItems = (put: readonly SettingInput[]) =>
+    `[${put
+      .map(
+        ({ name, json }) =>
+          `{"name":${JSON.stringify(name)},"size":${settingSize(name, json)},"value":${json}}`,
+      )
+      .join(",")}]`;
+
+  // 今と同じ値の項目は、置かない（番号を振らず、書き込みもしない）。ここで読むのは、置かなくて
+  // よい項目を外すためだけで、上限を守っているのは下の置く文。読んだあとにほかの端末が変えた
+  // 項目は、そのままになる（このリクエストを先に受けたのと同じ結果）
+  const unchanged = await db.all<{ name: string }>(sql`
+    select s.name as name
+    from json_each(${toItems(input.put)}) as j
+    join client_settings as s
+      on s.user_id = ${userId} and s.device_type = ${deviceType}
+      and s.name = json_extract(j.value, '$.name')
+    where s.deleted_at is null and s.value = (j.value -> '$.value')
+  `);
+  const skip = new Set(unchanged.map((row) => row.name));
+  const put = input.put.filter((item) => !skip.has(item.name));
+  if (put.length === 0) return "applied";
+
   // 上限は、この文で置かない項目（今ある、消していない項目のうち、名前が重ならないもの）と、
-  // この文で置く項目を足して確かめる
+  // この文で置く項目を足して確かめる。超えるなら 1 行も書かないので、書いた行があるかで分かる
   const others = sql`
     from client_settings as s
     where s.user_id = ${userId} and s.device_type = ${deviceType} and s.deleted_at is null
@@ -101,7 +120,7 @@ export async function applySettings(
       select json_extract(j.value, '$.name') as name,
         j.value -> '$.value' as value,
         json_extract(j.value, '$.size') as size
-      from json_each(${items}) as j
+      from json_each(${toItems(put)}) as j
     )
     insert into client_settings
       (id, user_id, device_type, name, value, size, seq, updated_at, deleted_at)
@@ -114,23 +133,9 @@ export async function applySettings(
     on conflict (user_id, device_type, name) do update set
       value = excluded.value, size = excluded.size, seq = excluded.seq,
       updated_at = excluded.updated_at, deleted_at = null
-      where client_settings.deleted_at is not null or client_settings.value is not excluded.value
     returning name
   `);
-  if (written.length === input.put.length) return "applied";
-
-  // 書かなかった項目がある。今と同じ値だった（何も変えない）のか、上限で断ったのかを見分ける。
-  // 置こうとした項目がすべてその値で入っていれば、置けている。ここは応答を決めるためだけに読む
-  // （上限を守っているのは、上の文）
-  const row = await db.get<{ n: number }>(sql`
-    select count(*) as n
-    from json_each(${items}) as j
-    join client_settings as s
-      on s.user_id = ${userId} and s.device_type = ${deviceType}
-      and s.name = json_extract(j.value, '$.name')
-    where s.deleted_at is null and s.value = (j.value -> '$.value')
-  `);
-  return (row?.n ?? 0) === input.put.length ? "applied" : "full";
+  return written.length > 0 ? "applied" : "full";
 }
 
 /** その人のその種類の、消していない項目（名前の順） */

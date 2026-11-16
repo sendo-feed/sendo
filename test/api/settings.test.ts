@@ -247,6 +247,44 @@ describe("設定を置く ／ 消す", () => {
   });
 });
 
+describe("設定の同期：同じ番号の途中のカーソル", () => {
+  it("まとめて消した項目の途中まで受け取ったカーソルも、回収のあとは最初から同期し直させる", async () => {
+    let now = new Date("2026-03-01T00:00:00Z");
+    const { platform, patch, sync, user } = await setUp(() => now);
+    const names = ["reader.a", "reader.b", "reader.c"];
+    await patch("mobile", { put: names.map((name) => ({ name, value: 1 })) });
+    const first = await sync();
+    // 1 回のリクエストで消すと、消した印の行は同じ番号になる
+    await patch("mobile", { remove: names });
+    const rows = await platform.db
+      .select()
+      .from(clientSettings)
+      .where(eq(clientSettings.userId, user.id))
+      .orderBy(clientSettings.id)
+      .all();
+    expect(new Set(rows.map((row) => row.seq)).size).toBe(1);
+
+    // 1 つ目の消した印まで受け取った位置のカーソルを作る（ページの境目が、同じ番号の途中に来た場合）
+    const decoded = JSON.parse(atob(first.cursor.replaceAll("-", "+").replaceAll("_", "/")));
+    decoded.c = [rows[0]?.seq, rows[0]?.id, null, false];
+    const middle = btoa(JSON.stringify(decoded))
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replace(/=+$/, "");
+    expect((await sync(middle)).settings).toHaveLength(2);
+    // その番号をすべて受け取ったカーソル
+    const done = (await sync(first.cursor)).cursor;
+
+    now = new Date(now.getTime() + 31 * DAY);
+    expect((await runCleanUp(platform)).settings).toBeGreaterThanOrEqual(3);
+
+    const res = await requestApp(platform, `/api/v1/sync?cursor=${middle}`, { token: user.token });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("invalid_cursor");
+    expect((await sync(done)).settings).toEqual([]);
+  });
+});
+
 describe("設定の入力の確かめ", () => {
   it.each([
     ["端末の種類が違う", "tablet", { put: [{ name: "reader.a", value: 1 }] }],

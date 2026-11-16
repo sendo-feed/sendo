@@ -475,6 +475,15 @@ export async function isCursorExpired(
   const positionOf = (at: SyncPosition) => (at.upTo === null ? at.seq : at.upTo);
   const articlesAt = positionOf(input.cursor.articles);
   if (articlesAt >= 0 && articlesAt < (await readRemovalHorizon(db, input.userId))) return true;
-  const settingsAt = positionOf(input.cursor.settings);
-  return settingsAt >= 0 && settingsAt < (await readSettingHorizon(db, input.userId));
+
+  const { settings: at } = input.cursor;
+  const settingsAt = positionOf(at);
+  if (settingsAt < 0) return false;
+  const horizon = await readSettingHorizon(db, input.userId);
+  // 設定は、1 回のリクエストで消した項目が同じ番号になる（受信箱の消した記録は、1 つずつ別の番号）。
+  // 差分の位置がその番号の途中かもしれず（続きのあるページの終わり）、その番号まで回収されて
+  // いたら、続きの消した印の行はもうない。送り切った位置（done）なら、同じ番号の行は 1 つの文で
+  // 書かれているので、すべて送ってある
+  const midway = at.upTo === null && at.id !== null && !at.done;
+  return settingsAt < horizon || (midway && settingsAt === horizon);
 }
