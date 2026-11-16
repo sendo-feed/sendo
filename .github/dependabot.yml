@@ -34,3 +34,15 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # コンテナ版の土台のイメージ（Dockerfile の FROM のダイジェスト）
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Tokyo
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: build

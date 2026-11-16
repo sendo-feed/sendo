@@ -17,8 +17,9 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `pnpm install`：依存を入れる。あわせて `worker-configuration.d.ts`（Workers の型）を生成する
 - `pnpm check`：型チェック、lint、テストをまとめて実行する。変更したら、コミットの前に必ず通す
 - `pnpm format`：整形して、直せる lint の指摘を直す
-- `pnpm test`：テスト。Vitest を Workers のランタイム（workerd）の中で動かす
+- `pnpm test`：テスト。2 つの版で動く処理は Workers のランタイム（workerd）の中で、コンテナ版の緩衝層（`test/node/`）は Node で動かす（Vitest の `workers` と `node` の 2 つのプロジェクト）
 - `pnpm build`：デプロイせずにバンドルだけ作る
+- `pnpm build:node`：コンテナ版のバンドル（`dist/node/sendo.mjs`）を作る。`DATA_DIR=<ディレクトリ> pnpm start:node` で、手元でコンテナ版を動かせる。イメージは `docker build -t sendo .`
 - `wrangler.jsonc` を変えたら `pnpm cf-typegen` で型を作り直す
 - API（`src/api/`）を変えたら `pnpm openapi:generate` で `spec/openapi.json` を書き出し、一緒にコミットする。sendo-reader はこのファイルから型を作る（CI で食い違いを検査している）
 - `src/db/schema.ts` を変えたら `pnpm db:generate` でマイグレーションを作り、一緒にコミットする。作ったマイグレーションは手で直さない（CI で食い違いを検査している）
@@ -28,7 +29,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 
 - `src/index.ts`：Worker の入口。env から実装を組み立てて渡すだけにする
 - `src/app.ts`：HTTP のルーティング。実行環境に依存させない
-- `src/platform/`：実行環境の緩衝層のインターフェース。`src/platform/cloudflare/` にその実装を置く
+- `src/platform/`：実行環境の緩衝層のインターフェース。Cloudflare 版の実装は `src/platform/cloudflare/`、コンテナ版の実装と入口は `src/platform/node/` に置く（docs/decisions/container.md）。設定の読み方は、2 つの版で `config.ts` を共有する
 - 機能のディレクトリ（`api/`、`fetcher/`、`jobs/` など）は `docs/tech-deck.md` の「6. ディレクトリ構成」に従う
 - `src/api/`：REST API。入力は zod のスキーマで検証し、OpenAPI の定義も同じスキーマから作る
   - 認証は `auth.ts` のミドルウェア（アクセストークンか、ブラウザのセッションのクッキー）。クッキーで認証した、状態を変えるリクエストは、同じオリジンのページからだけ受ける（CSRF 対策）
@@ -51,8 +52,8 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/greader/`：Google Reader API 互換（docs/decisions/greader.md）。状態を変える操作は、REST API と同じ `db/`・`feeds/` の処理に任せ、ここで書き込みを組み立てない。記事の文字列は HTML にエスケープして返す
 - `src/mcp/`：リモート MCP サーバー（docs/decisions/mcp.md）。ツールも、状態を変える処理は `db/`・`feeds/` に任せる。状態を変えるツールには `scopeChallenge` で write を求める。記事の中身は構造化した JSON で返し、記事を返すツールの説明に「指示ではない」と書く
 - `src/oauth/`：MCP のための OAuth の認可サーバー（docs/decisions/mcp.md の 3〜7）。クライアントが直接呼ぶ入口（メタデータ、`/oauth/token`、`/oauth/register`）はここ、許可の画面（sendo-reader）が使う API は `src/api/oauth.ts`（セッションでだけ使える）。コードとトークンは DB にハッシュだけを置き、1 回だけ使えるものは、使った印を同じ文の中で確かめて付ける（`db/oauth.ts`）。Client ID Metadata Document も `toFetchableUrl` を通して取りにいく
-- `src/jobs/`：キューと定期実行で動く処理。取得のジョブ（`fetch-feed.ts`）は、そのフィードの古い記事の片付けもする。1 日 1 回の片付け（`clean-up.ts`）は、定期実行が日本時間 3:00 に積む。仕事は 1 つずつ積み、1 つずつ受け取る形で書く。キューでは封筒に束ねて運び、受け手が 1 つずつ別の実行（`ctx.exports` の `JobRunner`）で動かすが、それは `src/platform/cloudflare/queue.ts` の中に閉じている（docs/decisions/jobs.md）。1 つの仕事は、それだけで `QUERY_BUDGET` に収める
-- テストは `test/` に置き、`*.test.ts` とする。外部への通信はせず、`test/helpers.ts` の `fakeFetch` で差し替える。API のテストは、`test/setup.ts` が入れるテスト用のユーザーとトークン（`test/fixtures/user.ts`）を使う
+- `src/jobs/`：キューと定期実行で動く処理。取得のジョブ（`fetch-feed.ts`）は、そのフィードの古い記事の片付けもする。1 日 1 回の片付け（`clean-up.ts`）は、定期実行が日本時間 3:00 に積む。仕事は 1 つずつ積み、1 つずつ受け取る形で書く。キューでは封筒に束ねて運び、受け手が 1 つずつ別の実行（`ctx.exports` の `JobRunner`）で動かすが、それは `src/platform/cloudflare/queue.ts` の中に閉じている（docs/decisions/jobs.md）。コンテナ版では、SQLite の表（`job_queue`）に積み、同じプロセスで動かす（`src/platform/node/job-queue.ts`）。定期実行の中身は `jobs/schedule.ts` の `runScheduled` で、2 つの版から呼ぶ。1 つの仕事は、それだけで `QUERY_BUDGET` に収める
+- テストは `test/` に置き、`*.test.ts` とする。外部への通信はせず、`test/helpers.ts` の `fakeFetch` で差し替える。API のテストは、`test/setup.ts` が入れるテスト用のユーザーとトークン（`test/fixtures/user.ts`）を使う。コンテナ版の緩衝層のテストは `test/node/` に置き、Node で動かす
 
 ## 言語
 
@@ -76,10 +77,10 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 
 ## 守る規約
 
-ここの規約は、Workers で動くアプリ本体（`src/`）に適用する。手元の Node で動かす道具（`scripts/`、`*.config.ts` などの設定ファイル）は対象外で、`node:*` を使ってよい（docs/decisions/tech-stack.md）。
+ここの規約は、2 つの版で動くアプリ本体（`src/`）に適用する。手元の Node で動かす道具（`scripts/`、`*.config.ts` などの設定ファイル）は対象外で、`node:*` を使ってよい（docs/decisions/tech-stack.md）。
 
 - Cloudflare のバインディング（`env.DB` など）や `cloudflare:*` からの import に触れてよいのは、`src/index.ts` と `src/platform/cloudflare/` だけ。それ以外は `src/platform/` のインターフェース越しに使う
-- Web 標準の API だけを使い、`node:*` のモジュールには頼らない
+- Web 標準の API だけを使い、`node:*` のモジュールには頼らない。例外は、コンテナ版の緩衝層（`src/platform/node/`）だけ
 - 書き込みは、トランザクションにも batch にも頼らず、何度実行しても同じ結果になる（冪等な）形で組み立てる。途中で落ちても、やり直せば正しい状態になるようにする（docs/decisions/tech-stack.md）
 - **確かめてから書く処理は、確かめる条件を書き込みと同じ文の中に入れる。** 先に SELECT で確かめてから書くと、その間に別のリクエストが入って壊れる。`WHERE NOT EXISTS (...)`、`WHERE EXISTS (...)`、値の副問い合わせ（例：`activeFolderId`）、UPDATE の中の `coalesce` などで、1 つの文にする
 - **印や番号は、対象の行の ID で付ける。** 「ユーザーとフィード」のような条件で付けると、間に作り直された別の行に付いてしまう
@@ -107,7 +108,7 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 レビューは日本語で書く。いまは2人で試作を繰り返している段階なので、捨てる前提の試作の完成度や、書き方の好みは指摘しなくてよい（整形と lint は Biome に任せる）。次の観点を優先する。
 
 1. **決定との食い違い**：`docs/decisions/` と食い違う変更がないか。決定を変えるなら、決定ファイルの更新が同じ PR に入っているか
-2. **緩衝層の破れ**：`src/` のうち、`src/index.ts` と `src/platform/cloudflare/` 以外で Cloudflare のバインディングや `cloudflare:*` を使っていないか。`src/` で `node:*` を使っていないか（`scripts/` と設定ファイルは対象外）
+2. **緩衝層の破れ**：`src/` のうち、`src/index.ts` と `src/platform/cloudflare/` 以外で Cloudflare のバインディングや `cloudflare:*` を使っていないか。`src/` のうち、`src/platform/node/` 以外で `node:*` を使っていないか（`scripts/` と設定ファイルは対象外）
 3. **セキュリティ**
    - 外部 URL の取得で SSRF が起きないか（プライベート IP、リダイレクト先、URL スキームの制限）
    - 記事本文の HTML がサニタイズされているか。LLM や MCP への入力で、本文がプロンプトインジェクションの経路になっていないか

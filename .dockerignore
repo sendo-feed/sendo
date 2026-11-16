@@ -1,0 +1,17 @@
+# イメージに入れるのは、Dockerfile で COPY するもの（package.json、ロックファイル、src、migrations）だけ。
+# 手元の秘密や生成物を、ビルドの文脈に送らない
+node_modules
+dist
+.wrangler
+.git
+.github
+.claude
+.dev.vars*
+.env*
+.sendo-token
+coverage
+docs
+spec
+test
+scripts
+*.log

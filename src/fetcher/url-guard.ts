@@ -4,10 +4,10 @@
  * ホスト名が内部向けのものや、IP アドレスが内部・予約済みの範囲のものを拒む。
  * リダイレクトの行き先にも、取得のたびに同じ確認をかける（fetch-feed.ts）。
  *
- * ここではホスト名の文字列しか見ない。名前解決の結果（DNS リバインディング）までは
- * 確かめられないので、Cloudflare 以外に移植するときは、接続する IP アドレスを
- * 確かめる仕組みを platform 側に足す必要がある。Cloudflare の Workers からは、
- * 内部のネットワークにはそもそも届かない。
+ * ここではホスト名の文字列しか見ない。名前解決の結果（DNS リバインディング）は、緩衝層の fetch が
+ * 確かめる。Cloudflare 版の Workers からは、内部のネットワークにはそもそも届かない。コンテナ版は、
+ * 接続する IP アドレスを isPrivateIpAddress で確かめる（src/platform/node/safe-fetch.ts、
+ * docs/decisions/container.md の 8）。
  */
 
 export class UrlNotAllowedError extends Error {
@@ -79,6 +79,26 @@ export function isPrivateHost(hostname: string): boolean {
   // 点のないホスト名（例：intranet）は、公開のインターネットの名前ではない
   if (!host.includes(".")) return true;
   return false;
+}
+
+/**
+ * 名前解決で得た IP アドレス（IPv4 の 1.2.3.4、IPv6 の ::1 など。IPv6 は角かっこなし）が、
+ * 内部・予約済みの範囲かどうか。IP アドレスの形でなければ、内部とみなす。
+ * IPv6 は、URL のパーサーで正規化してから判断する（::ffff:127.0.0.1 のような書き方も揃う）
+ */
+export function isPrivateIpAddress(address: string): boolean {
+  if (address.includes(":")) {
+    let hostname: string;
+    try {
+      hostname = new URL(`http://[${address}]/`).hostname;
+    } catch {
+      return true;
+    }
+    const ipv6 = parseIpv6(hostname.slice(1, -1));
+    return ipv6 === null || isPrivateIpv6(ipv6);
+  }
+  const ipv4 = parseIpv4(address);
+  return ipv4 === null || isPrivateIpv4(ipv4);
 }
 
 /** 拒む IPv4 の範囲（[先頭のアドレス, プレフィックス長]） */

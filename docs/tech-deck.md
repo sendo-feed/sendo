@@ -140,17 +140,19 @@ sendo/
 │   ├── notify/                # Web Push・APNs・FCM
 │   ├── db/                    # Drizzle スキーマ
 │   ├── platform/              # 緩衝層のインターフェース
-│   │   └── cloudflare/        # D1・Queues・R2 などの実装
+│   │   ├── cloudflare/        # Cloudflare 版の実装（D1・Queues・R2 など）
+│   │   └── node/              # コンテナ版の実装と入口（SQLite・ジョブの表・ファイル）
 │   └── lib/
-├── migrations/                # D1
+├── migrations/                # 2 つの版で同じものを使う
 ├── test/
-├── wrangler.jsonc
+├── wrangler.jsonc             # Cloudflare 版の設定
+├── Dockerfile                 # コンテナ版のイメージ
 ├── AGENTS.md                  # エージェント共通の指示・レビュー観点
 ├── CLAUDE.md                  # AGENTS.md を読み込む
 └── README.md
 ```
 
-> 1つの Worker に fetch（API・MCP）、scheduled（Cron）、queue（Queues）の3つの入口がある。`src/` は機能ごとに分け、入口は `index.ts` に集める。Cloudflare のバインディングに触れてよいのは `index.ts` と `platform/cloudflare/` だけ。
+> Cloudflare 版は、1つの Worker に fetch（API・MCP）、scheduled（Cron）、queue（Queues）の3つの入口があり、`index.ts` に集める。コンテナ版の入口は `platform/node/main.ts` で、HTTP、タイマー、ジョブの表を 1 つのプロセスで動かす。`src/` は機能ごとに分ける。Cloudflare のバインディングに触れてよいのは `index.ts` と `platform/cloudflare/` だけ、`node:*` を使ってよいのは `platform/node/` だけ。
 
 ---
 

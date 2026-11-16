@@ -46,7 +46,7 @@
   },
   "overrides": [
     {
-      "includes": ["src/**"],
+      "includes": ["src/**", "!src/platform/node/**"],
       "linter": {
         "rules": {
           "correctness": {

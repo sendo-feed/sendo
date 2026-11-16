@@ -12,6 +12,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "build": "wrangler deploy --dry-run --outdir dist",
+    "build:node": "esbuild src/platform/node/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --sourcemap --outfile=dist/node/sendo.mjs",
+    "start:node": "node --enable-source-maps dist/node/sendo.mjs",
     "deploy": "node scripts/deploy.mjs",
     "cf-typegen": "wrangler types",
     "openapi:generate": "tsx scripts/generate-openapi.ts",
@@ -20,7 +22,7 @@
     "db:migrate": "wrangler d1 migrations apply DB --remote",
     "token:create": "node scripts/create-token.mjs",
     "postinstall": "wrangler types",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p test && tsc --noEmit -p scripts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/platform/node && tsc --noEmit -p test && tsc --noEmit -p test/node && tsc --noEmit -p scripts",
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest run",
@@ -33,18 +35,22 @@
     "@modelcontextprotocol/client": "2.4.0",
     "@types/node": "24.19.2",
     "drizzle-kit": "0.31.11",
+    "esbuild": "0.28.2",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vitest": "5.0.5",
     "wrangler": "4.156.0"
   },
   "dependencies": {
+    "@hono/node-server": "2.1.6",
     "@hono/zod-openapi": "1.6.3",
+    "@libsql/client": "0.18.0",
     "@modelcontextprotocol/server": "2.4.0",
     "drizzle-orm": "0.45.4",
     "entities": "7.0.1",
     "feedsmith": "3.0.1",
     "hono": "4.13.14",
+    "undici": "8.12.3",
     "zod": "4.6.7"
   }
 }

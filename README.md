@@ -175,7 +175,12 @@ Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader
 
 ## デプロイ
 
-自分の Cloudflare アカウントに、GitHub の fork からデプロイします。fork の `main` に push するたびに、Cloudflare（Workers Builds）がビルドしてデプロイします（[決定](docs/decisions/deploy.md)）。Cloudflare の無料プランで動きます。
+Sendo には 2 つの版があり、同じコードから作っています（[決定](docs/decisions/container.md)）。
+
+- **Cloudflare 版**：自分の Cloudflare アカウントの無料プランで動きます。サーバーは要りません。載せるのは、無料プランで動く範囲の機能です（この節）
+- **コンテナ版**：自分のサーバー（手元の PC、自宅のサーバー、VPS など）で、Docker で動かします。CPU を多く使う機能も含めて、すべての機能を載せます。fork は要りません（[コンテナ版で動かす](#コンテナ版で動かす)）
+
+Cloudflare 版は、自分の Cloudflare アカウントに、GitHub の fork からデプロイします。fork の `main` に push するたびに、Cloudflare（Workers Builds）がビルドしてデプロイします（[決定](docs/decisions/deploy.md)）。Cloudflare の無料プランで動きます。
 
 ### 初めてのデプロイ
 
@@ -232,6 +237,37 @@ GitHub の fork の画面で「Sync fork」→「Update branch」を押します
 
 上流の更新によっては、Cloudflare の画面での準備（R2 を使えるようにする、など）が要ります。取り込んだあとのデプロイが止まったら、Workers Builds のログと、上の「初めてのデプロイ」を見て、準備してからビルドをやり直してください。
 
+## コンテナ版で動かす
+
+上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo`）を、Docker Compose で動かします。fork もビルドも要りません（[決定](docs/decisions/container.md)の 10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。
+
+1. [compose.yaml](compose.yaml) と [.env.example](.env.example) を、置き場にするディレクトリに写す。`.env.example` は `.env` という名前にして、設定を書く（名前と意味は Cloudflare 版と同じ）
+2. 動かす
+
+   ```sh
+   docker compose up -d
+   ```
+
+3. アクセストークンを発行する（ブラウザでログインしないで使うとき）
+
+   ```sh
+   docker compose exec sendo node dist/node/sendo.mjs token:create --email you@example.com
+   # MCP 用なら --mcp（状態を変えるツールも使うなら --mcp --write）
+   ```
+
+`compose.yaml` は、同じマシンの `127.0.0.1:8787` にだけ出します。外から使うときは、手前にリバースプロキシ（Caddy など）を置いて TLS を終え、`.env` の `PUBLIC_URL` にそのオリジン（例：`https://sendo.example.com`）を入れてください。リクエストの URL がそのオリジンにそろい、Google のログインの戻り先や OAuth が正しく動きます。
+
+上流の更新は、次で取り込みます。マイグレーションは、起動するときに当たります。
+
+```sh
+docker compose pull && docker compose up -d
+```
+
+> [!NOTE]
+> リポジトリを公開するまでは、イメージも非公開です。取ってくるには、`docker login ghcr.io` で、`read:packages` の権限を持つ GitHub のトークンを使ってログインしてください。
+
+手元でイメージを作るときは `docker build -t sendo .` で、作らずに Node で動かすときは `pnpm build:node` のあとに `DATA_DIR=./.data pnpm start:node` です。
+
 ## コマンド
 
 | コマンド | すること |
@@ -241,8 +277,10 @@ GitHub の fork の画面で「Sync fork」→「Update branch」を押します
 | `pnpm typecheck` | 型チェック |
 | `pnpm lint` | lint と整形の確認（Biome） |
 | `pnpm format` | 整形して、直せる lint の指摘を直す |
-| `pnpm test` | テスト（Workers のランタイムの中で動く） |
+| `pnpm test` | テスト（Workers のランタイムの中で動く。コンテナ版の緩衝層は Node で動く） |
 | `pnpm build` | デプロイせずにバンドルだけ作って確かめる |
+| `pnpm build:node` | コンテナ版のバンドル（`dist/node/sendo.mjs`）を作る |
+| `pnpm start:node` | コンテナ版を手元の Node で動かす（`DATA_DIR` にデータを置く） |
 | `pnpm cf-typegen` | `wrangler.jsonc` から型（`worker-configuration.d.ts`）を作り直す |
 | `pnpm openapi:generate` | API の定義を `spec/openapi.json` に書き出す（API を変えたらコミットする） |
 | `pnpm db:generate` | `src/db/schema.ts` からマイグレーションの SQL を作る |
@@ -269,22 +307,24 @@ sendo/
 │   ├── jobs/           # キューと定期実行で動く処理
 │   ├── opml/           # OPML の読み書き
 │   └── platform/       # 実行環境の緩衝層
-│       └── cloudflare/ # D1・Queues などの実装
-├── migrations/         # D1 のマイグレーション（pnpm db:generate で作る）
+│       ├── cloudflare/ # Cloudflare 版の実装（D1・Queues など）
+│       └── node/       # コンテナ版の実装と入口（SQLite、ジョブの表など）
+├── migrations/         # マイグレーション。2 つの版で同じものを使う（pnpm db:generate で作る）
 ├── spec/openapi.json   # API の定義（pnpm openapi:generate で書き出す。sendo-reader が型を作る）
-├── test/               # テスト（Vitest ＋ Workers のランタイム）
+├── test/               # テスト（Vitest ＋ Workers のランタイム。test/node/ は Node）
 ├── docs/
 │   ├── decisions/      # 今の決定
 │   ├── inception-deck.md
 │   ├── tech-deck.md
 │   └── features.md
-├── wrangler.jsonc      # Cloudflare Workers の設定
+├── wrangler.jsonc      # Cloudflare 版の設定
+├── Dockerfile          # コンテナ版のイメージ（compose.yaml で動かす）
 └── biome.json          # lint と整形の設定
 ```
 
 機能を足すときのディレクトリの分け方は、[技術構成](docs/tech-deck.md#6-ディレクトリ構成sendo)にあります。
 
-Cloudflare 固有の機能（`cloudflare:*`）に触れてよいのは `src/index.ts` と `src/platform/cloudflare/` だけで、`src/` では Node.js の組み込みモジュール（`node:*`）を使いません。どちらも lint で検査しています（[決定](docs/decisions/tech-stack.md)）。
+Cloudflare 固有の機能（`cloudflare:*`）に触れてよいのは `src/index.ts` と `src/platform/cloudflare/` だけで、Node.js の組み込みモジュール（`node:*`）を使ってよいのは `src/platform/node/` だけです。どちらも lint で検査しています（[決定](docs/decisions/tech-stack.md)）。
 
 ## 文書
 

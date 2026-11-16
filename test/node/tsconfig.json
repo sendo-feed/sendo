@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // コンテナ版の緩衝層のテストは Node で動かすので、Node の型を使う
+    "types": ["node"],
+    "lib": ["es2024"]
+  },
+  "include": ["./**/*.ts", "../../src/platform/node"],
+  "exclude": []
+}

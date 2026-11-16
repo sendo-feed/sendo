@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { parseEmailList, parseOrigin } from "../../src/platform";
-import { readAuthConfig } from "../../src/platform/cloudflare";
+import { readAuthConfig } from "../../src/platform/config";
 
 describe("ログインの設定", () => {
   it("許可するメールは、カンマか空白で区切り、小文字にそろえる", () => {

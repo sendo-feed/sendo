@@ -62,3 +62,20 @@ export async function enqueueDailyCleanUp(
   await platform.jobs.enqueue([{ type: "clean-up" }]);
   return true;
 }
+
+/**
+ * 定期実行（MIN_FETCH_INTERVAL_MINUTES おき）の中身。Cloudflare 版は Cron Triggers の scheduled から、
+ * コンテナ版はプロセスの中のタイマーから呼ぶ
+ *
+ * @param scheduledTime 定期実行が予定された時刻
+ */
+export async function runScheduled(
+  platform: Pick<Platform, "db" | "jobs" | "now">,
+  scheduledTime: Date,
+): Promise<void> {
+  if (await enqueueDailyCleanUp(platform, scheduledTime)) {
+    console.info("enqueued daily clean-up");
+  }
+  const count = await enqueueDueFeeds(platform);
+  if (count > 0) console.info("enqueued due feeds", { count });
+}

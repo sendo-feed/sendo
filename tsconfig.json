@@ -19,5 +19,7 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "worker-configuration.d.ts"]
+  "include": ["src", "worker-configuration.d.ts"],
+  // コンテナ版の緩衝層は、Node の型で別に確かめる（src/platform/node/tsconfig.json）
+  "exclude": ["src/platform/node"]
 }

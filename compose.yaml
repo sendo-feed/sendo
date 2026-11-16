@@ -1,0 +1,21 @@
+# コンテナ版を動かす（docs/decisions/container.md、README の「コンテナ版」）。
+# このファイルと .env（.env.example を写して書く）を置いたディレクトリで、
+#
+#   docker compose up -d                 動かす
+#   docker compose pull && docker compose up -d   上流の更新を取り込む
+#
+# TLS は、手前に置くリバースプロキシ（Caddy など）で終える。ここでは、同じマシンからだけつなげるように
+# 127.0.0.1 に出す
+services:
+  sendo:
+    image: ghcr.io/sendo-feed/sendo:main
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      # SQLite のファイル（sendo.db）と記事の本文（content/）。これを残せば、データは消えない
+      - sendo-data:/data
+
+volumes:
+  sendo-data:

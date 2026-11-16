@@ -4,6 +4,8 @@ node_modules/
 # ビルドと実行の生成物
 dist/
 .wrangler/
+# コンテナ版を手元で動かしたときのデータ（DATA_DIR=./.data）
+.data/
 coverage/
 
 # wrangler types の生成物（pnpm install のときに生成する）

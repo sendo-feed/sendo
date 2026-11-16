@@ -521,6 +521,27 @@ export const appSecrets = sqliteTable("app_secrets", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
+/**
+ * コンテナ版の仕事の表（docs/decisions/container.md の 6）。Cloudflare 版は Queues を使うので、
+ * D1 では空のまま。スキーマを 2 つの版で 1 組にするため、ここに置く（決定の 5）。
+ *
+ * 取り出すときに attempts を増やし、run_at を借りの期限まで先へ送る。終われば行を消し、失敗したら
+ * run_at を少し先へ送ってやり直す。プロセスが途中で落ちても、借りの期限が過ぎればまた取り出される
+ */
+export const jobQueue = sqliteTable(
+  "job_queue",
+  {
+    id: text("id").primaryKey(),
+    /** 仕事（src/jobs/job.ts の Job）の JSON。取り出したあとで確かめる */
+    job: text("job").notNull(),
+    /** 取り出した回数 */
+    attempts: integer("attempts").notNull().default(0),
+    /** この時刻を過ぎたら取り出してよい */
+    runAt: integer("run_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [index("job_queue_run_at_idx").on(table.runAt)],
+);
+
 export type User = typeof users.$inferSelect;
 export type Identity = typeof identities.$inferSelect;
 export type AccessToken = typeof accessTokens.$inferSelect;

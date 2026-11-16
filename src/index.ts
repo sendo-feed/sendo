@@ -9,7 +9,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { createApp } from "./app";
 import { runJob } from "./jobs";
 import { type Job, jobSchema } from "./jobs/job";
-import { enqueueDailyCleanUp, enqueueDueFeeds } from "./jobs/schedule";
+import { runScheduled } from "./jobs/schedule";
 import { createCloudflarePlatform, handleQueueBatch } from "./platform/cloudflare";
 
 /**
@@ -31,12 +31,7 @@ export default {
   },
 
   async scheduled(controller, env) {
-    const platform = createCloudflarePlatform(env);
-    if (await enqueueDailyCleanUp(platform, new Date(controller.scheduledTime))) {
-      console.info("enqueued daily clean-up");
-    }
-    const count = await enqueueDueFeeds(platform);
-    if (count > 0) console.info("enqueued due feeds", { count });
+    await runScheduled(createCloudflarePlatform(env), new Date(controller.scheduledTime));
   },
 
   async queue(batch, env, ctx) {

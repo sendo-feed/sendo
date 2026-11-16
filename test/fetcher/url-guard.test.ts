@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { toFetchableUrl, UrlNotAllowedError } from "../../src/fetcher/url-guard";
+import {
+  isPrivateIpAddress,
+  toFetchableUrl,
+  UrlNotAllowedError,
+} from "../../src/fetcher/url-guard";
 
 function reasonOf(url: string): string | null {
   try {
@@ -76,6 +80,38 @@ describe("toFetchableUrl", () => {
     "内部の範囲のすぐ外は通す: %s",
     (url) => {
       expect(reasonOf(url)).toBeNull();
+    },
+  );
+});
+
+describe("isPrivateIpAddress", () => {
+  it.each([
+    "127.0.0.1",
+    "10.1.2.3",
+    "169.254.169.254",
+    "192.168.0.1",
+    "0.0.0.0",
+    "::1",
+    "::",
+    "::ffff:127.0.0.1",
+    "::ffff:7f00:1",
+    "fd00::1",
+    "FE80::1",
+  ])("名前解決で得た内部のアドレスを拒む: %s", (address) => {
+    expect(isPrivateIpAddress(address)).toBe(true);
+  });
+
+  it.each(["93.184.216.34", "8.8.8.8", "2606:2800:220:1:248:1893:25c8:1946", "::ffff:8.8.8.8"])(
+    "公開のアドレスは通す: %s",
+    (address) => {
+      expect(isPrivateIpAddress(address)).toBe(false);
+    },
+  );
+
+  it.each(["", "localhost", "1.2.3", "300.1.1.1", "::g", "[::1]"])(
+    "IP アドレスの形でなければ、内部とみなす: %s",
+    (address) => {
+      expect(isPrivateIpAddress(address)).toBe(true);
     },
   );
 });

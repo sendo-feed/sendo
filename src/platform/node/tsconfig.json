@@ -1,0 +1,11 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    // コンテナ版は Node で動くので、Workers の型ではなく Node の型で確かめる。ここから使うアプリ本体
+    // （src/ のほかの部分）も、Workers に固有の型に頼っていないかを、あわせて確かめられる
+    "types": ["node"],
+    "lib": ["es2024"]
+  },
+  "include": ["./**/*.ts"],
+  "exclude": []
+}

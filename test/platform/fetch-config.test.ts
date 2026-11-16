@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { parseArticleRetentionDays, parseFetchIntervalMinutes } from "../../src/platform";
-import { readFetchConfig, readRetentionConfig } from "../../src/platform/cloudflare";
+import { readFetchConfig, readRetentionConfig } from "../../src/platform/config";
 
 const MINUTE = 60 * 1000;
 
