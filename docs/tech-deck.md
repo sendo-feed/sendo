@@ -68,7 +68,7 @@ flowchart LR
 | API 定義 | zod-openapi（コードから生成） | 生成した OpenAPI を reader が取り込む |
 | DB | D1 ／ SQLite のファイル（コンテナ版）＋ Drizzle | Postgres は今は支えない |
 | 非同期処理 | Cron Triggers ＋ Queues | 取得・全文抽出・LLM 処理を分ける |
-| 全文抽出 | Readability ＋ linkedom | Workers 上で DOM を扱う |
+| 全文抽出 | dom_smoothie（Readability の Rust 版） | コンテナ版だけ。napi-rs で読み込む（[decisions/content.md](decisions/content.md)） |
 | 検索 | FTS5（D1）／ Vectorize | 意味検索は Phase 3 |
 | エージェント連携 | リモート MCP ＋ CLI・Skill | MCP は仕様 2026-07-28 準拠で /mcp に直接載せる |
 | LLM | OpenAI 互換で差し替え | Claude・OpenAI・Workers AI・Ollama |
