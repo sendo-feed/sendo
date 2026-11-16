@@ -162,6 +162,13 @@
       "when": 1794833505588,
       "tag": "0022_page_contents",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1794840458864,
+      "tag": "0023_feed_fetch_interval",
+      "breakpoints": true
     }
   ]
 }

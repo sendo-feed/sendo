@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { decode, FetchFeedError, fetchFeed, USER_AGENT } from "../../src/fetcher/fetch-feed";
+import {
+  decode,
+  FetchFeedError,
+  fetchFeed,
+  parseRetryAfter,
+  USER_AGENT,
+} from "../../src/fetcher/fetch-feed";
 import { fakeFetch } from "../helpers";
 
 async function errorCode(promise: Promise<unknown>): Promise<string> {
@@ -130,6 +136,59 @@ describe("fetchFeed", () => {
     };
 
     expect(await errorCode(fetchFeed("https://example.com/f", { fetch }))).toBe("network");
+  });
+});
+
+describe("Retry-After（docs/decisions/jobs.md の 8）", () => {
+  const NOW = new Date("2026-11-14T00:00:00Z");
+
+  async function retryAfterOf(response: Response): Promise<number | undefined> {
+    const { fetch } = fakeFetch(() => response);
+    const error = await fetchFeed("https://example.com/f", { fetch, now: NOW }).catch(
+      (e: unknown) => e,
+    );
+    if (!(error instanceof FetchFeedError)) throw new Error("expected FetchFeedError");
+    return error.retryAfterMs;
+  }
+
+  it("429 の秒数を、待つ長さにする", async () => {
+    expect(
+      await retryAfterOf(new Response("", { status: 429, headers: { "retry-after": "120" } })),
+    ).toBe(120_000);
+  });
+
+  it("503 の日付は、応答の Date との差で読む", async () => {
+    // 相手の時計が 1 時間進んでいても、待つ長さは 3 時間
+    const response = new Response("", {
+      status: 503,
+      headers: {
+        date: "Sat, 14 Nov 2026 01:00:00 GMT",
+        "retry-after": "Sat, 14 Nov 2026 04:00:00 GMT",
+      },
+    });
+    expect(await retryAfterOf(response)).toBe(3 * 60 * 60 * 1000);
+  });
+
+  it("429 ／ 503 のほかの応答では読まない", async () => {
+    expect(
+      await retryAfterOf(new Response("", { status: 500, headers: { "retry-after": "120" } })),
+    ).toBeUndefined();
+  });
+
+  it("Date がなければ（読めなければ）、今との差で読む", () => {
+    const value = "Sat, 14 Nov 2026 00:30:00 GMT";
+    expect(parseRetryAfter(value, { date: null, now: NOW })).toBe(30 * 60 * 1000);
+    expect(parseRetryAfter(value, { date: "broken", now: NOW })).toBe(30 * 60 * 1000);
+  });
+
+  it("負の値、読めない値、過ぎた時刻は、なかったものとする", () => {
+    for (const value of [null, "", "-1", "0", "1.5", "soon", "Fri, 13 Nov 2026 00:00:00 GMT"]) {
+      expect(parseRetryAfter(value, { date: null, now: NOW }), String(value)).toBeUndefined();
+    }
+  });
+
+  it("長い値もそのまま返す（上限は取得のジョブがかける）", () => {
+    expect(parseRetryAfter(" 31536000 ", { date: null, now: NOW })).toBe(31_536_000_000);
   });
 });
 

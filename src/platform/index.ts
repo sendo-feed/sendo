@@ -46,7 +46,10 @@ export interface AuthConfig {
 
 /** フィードの取得の設定（docs/decisions/jobs.md の 6） */
 export interface FetchConfig {
-  /** 取得の間隔（ミリ秒）。失敗が続いたときは、これを元に延ばす */
+  /**
+   * 取得の間隔の下限（ミリ秒）。フィードごとの間隔は、記事の出るペースから、これより短くならない
+   * ように決める（docs/decisions/jobs.md の 7）
+   */
   intervalMs: number;
 }
 

@@ -234,6 +234,12 @@ export const feeds = sqliteTable(
     lastFetchedAt: integer("last_fetched_at", { mode: "timestamp_ms" }),
     /** この時刻を過ぎたら、定期実行で取得のキューに積む（購読している人がいるときだけ） */
     nextFetchAt: integer("next_fetch_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * 取得の間隔（ミリ秒。docs/decisions/jobs.md の 7）。取得に成功するたびに、記事の出るペースから
+     * 決め直す。null なら、まだ決めていない（設定の間隔を使う）。書くのは取得の記録の UPDATE の中だけ
+     * にし、索引は付けない（D1 の書き込みの行数を増やさないため）
+     */
+    fetchIntervalMs: integer("fetch_interval_ms"),
     /** 続けて失敗した回数。間隔を延ばすのに使い、成功したら 0 に戻す */
     errorCount: integer("error_count").notNull().default(0),
     lastError: text("last_error"),

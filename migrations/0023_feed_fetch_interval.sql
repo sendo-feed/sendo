@@ -1,0 +1,1 @@
+ALTER TABLE `feeds` ADD `fetch_interval_ms` integer;
