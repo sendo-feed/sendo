@@ -8,6 +8,7 @@ import {
   MIN_ARTICLE_RETENTION_DAYS,
   MIN_FETCH_INTERVAL_MINUTES,
   type OAuthServerConfig,
+  type ObjectStore,
   type Platform,
   parseArticleRetentionDays,
   parseEmailList,
@@ -36,11 +37,28 @@ export function createCloudflarePlatform(workerEnv: Env): Platform {
   return {
     db: drizzle(env.DB, { schema }),
     jobs: createQueueJobQueue(env.JOBS),
+    content: createR2ObjectStore(env.CONTENT),
     fetch: (input, init) => fetch(input, init),
     now: () => new Date(),
     auth: readAuthConfig(env),
     fetchConfig: readFetchConfig(env),
     retentionConfig: readRetentionConfig(env),
+  };
+}
+
+/** R2 のバケットを、オブジェクトの置き場として使う */
+export function createR2ObjectStore(bucket: R2Bucket): ObjectStore {
+  return {
+    async put(key, text) {
+      await bucket.put(key, text, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
+    },
+    async get(key) {
+      const object = await bucket.get(key);
+      return object === null ? null : object.text();
+    },
+    async delete(keys) {
+      if (keys.length > 0) await bucket.delete([...keys]);
+    },
   };
 }
 

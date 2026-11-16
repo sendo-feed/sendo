@@ -1,6 +1,6 @@
 import { decodeHTML } from "entities";
 import { type AnyFeed, parseFeed as parseAnyFeed } from "feedsmith";
-import { stripTags } from "../lib/html";
+import { escapeHtml, stripTags } from "../lib/html";
 import { pickThumbnail, toImageUrl } from "./thumbnail";
 
 export { stripTags };
@@ -27,6 +27,11 @@ export type ParsedItem = {
   publishedAt: Date | null;
   /** サムネイルのもとの URL（http ／ https だけ）。フィードの中になければ null */
   thumbnailUrl: string | null;
+  /**
+   * フィードに入っていた本文の HTML（docs/decisions/content.md の 1）。なければ null。
+   * まだサニタイズしていない。保存する ／ 返す前に、必ず lib/sanitize-html.ts を通す
+   */
+  contentHtml: string | null;
 };
 
 export class ParseFeedError extends Error {
@@ -41,9 +46,9 @@ const MAX_TITLE_LENGTH = 500;
 /**
  * フィードの本文を解析する。
  *
- * 記事の本文は外部から来る信頼できないデータなので、HTML のままは持たない。
- * タイトルと要約はタグを除いたプレーンテキストにし、URL は http ／ https だけを通す。
- * 本文の全文（HTML）は、サニタイズと合わせて Phase 2 の全文抽出で扱う。
+ * 記事の本文は外部から来る信頼できないデータなので、タイトルと要約はタグを除いたプレーン
+ * テキストにし、URL は http ／ https だけを通す。本文の HTML（contentHtml）は、もとのまま返す。
+ * 使う側が、保存する前にサニタイズする（docs/decisions/content.md の 2）。
  *
  * @param baseUrl 相対 URL を解決するときの基準（フィードを取得した URL）
  */
@@ -87,6 +92,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
             images: [item.itunes?.image],
             html: [item.content?.encoded, item.description],
           }),
+          contentHtml: nonBlank(item.content?.encoded ?? item.description),
         })),
       };
     }
@@ -113,6 +119,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
               .filter((text) => text?.type === "html" || text?.type === "xhtml")
               .map((text) => text?.value),
           }),
+          contentHtml: atomHtml(entry.content) ?? atomHtml(entry.summary),
         })),
       };
     }
@@ -133,6 +140,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
             media: item.media,
             html: [item.content?.encoded, item.description],
           }),
+          contentHtml: nonBlank(item.content?.encoded ?? item.description),
         })),
       };
     }
@@ -160,6 +168,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
             images: [item.image, item.banner_image],
             html: [item.content_html],
           }),
+          contentHtml: nonBlank(item.content_html),
         })),
       };
     }
@@ -170,6 +179,18 @@ function alternateLink(
   links: ReadonlyArray<{ href?: string; rel?: string }> | undefined,
 ): string | undefined {
   return (links?.find((link) => (link.rel ?? "alternate") === "alternate") ?? links?.[0])?.href;
+}
+
+/** 空白だけなら null。中身には手を加えない */
+function nonBlank(value: string | undefined): string | null {
+  return value !== undefined && value.trim() !== "" ? value : null;
+}
+
+/** Atom の text 要素を HTML にする。type が html ／ xhtml ならそのまま、プレーンテキストならエスケープする */
+function atomHtml(value: { value?: string; type?: string } | undefined): string | null {
+  const text = nonBlank(value?.value);
+  if (text === null) return null;
+  return value?.type === "html" || value?.type === "xhtml" ? text : escapeHtml(text);
 }
 
 function nonEmpty(value: string | undefined): string | null {

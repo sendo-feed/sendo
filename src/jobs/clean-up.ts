@@ -1,3 +1,4 @@
+import { CONTENT_NOTE_GRACE_MS, deleteContentNotes, readOldContentNotes } from "../db/content";
 import {
   collectRemovals,
   REMOVAL_RETENTION_MS,
@@ -30,13 +31,21 @@ export const SWEEP_BATCH = 500;
  * 1 回の片付けで、それぞれを消す文の数の上限。受信箱の行は、1 行消すのに 5 行書く（消した記録を
  * 含む）ので少なめにする。合わせて QUERY_BUDGET に収まる
  */
-export const SWEEP_ROUNDS = { inbox: 2, articles: 4, removals: 10, settings: 2 } as const;
+export const SWEEP_ROUNDS = {
+  inbox: 2,
+  articles: 4,
+  removals: 10,
+  settings: 2,
+  contents: 4,
+} as const;
 
 export type CleanUpOutcome = {
   inbox: number;
   articles: number;
   removals: number;
   settings: number;
+  /** 置き場から消した本文の数 */
+  contents: number;
 };
 
 /** 消し切るか、文の数の上限に届くまで、消すのを繰り返す */
@@ -50,8 +59,36 @@ async function repeat(rounds: number, step: () => Promise<number>): Promise<numb
   return total;
 }
 
+/**
+ * before より前の書き留めを見て、どの記事の行にも入っていない名前の本文を置き場から消し、
+ * 書き留めを消す。行に入っている名前は、書き留めだけを消す。
+ *
+ * 本文を消してから、書き留めを消す。間で落ちても、書き留めが残っているので、次の片付けで
+ * もう一度消す（ない本文を消しても、何も起きない）
+ *
+ * @returns 置き場から消した本文の数
+ */
+async function sweepContents(
+  platform: Pick<Platform, "db" | "content">,
+  before: Date,
+): Promise<number> {
+  let removed = 0;
+  for (let round = 0; round < SWEEP_ROUNDS.contents; round++) {
+    const notes = await readOldContentNotes(platform.db, { before, limit: SWEEP_BATCH });
+    const unused = notes.filter((note) => !note.used).map((note) => note.key);
+    await platform.content.delete(unused);
+    await deleteContentNotes(
+      platform.db,
+      notes.map((note) => note.key),
+    );
+    removed += unused.length;
+    if (notes.length < SWEEP_BATCH) break;
+  }
+  return removed;
+}
+
 export async function runCleanUp(
-  platform: Pick<Platform, "db" | "now" | "retentionConfig">,
+  platform: Pick<Platform, "db" | "content" | "now" | "retentionConfig">,
 ): Promise<CleanUpOutcome> {
   const { db } = platform;
   const now = platform.now().getTime();
@@ -77,5 +114,9 @@ export async function runCleanUp(
     collectDeletedSettings(db, { limit: SWEEP_BATCH }),
   );
 
-  return { inbox, articles, removals, settings };
+  // 行のない本文を、書き留めから片付ける（docs/decisions/content.md の 4）。上で消した記事の本文は、
+  // トリガーが今書き留めたばかりなので、次の日に片付く
+  const contents = await sweepContents(platform, new Date(now - CONTENT_NOTE_GRACE_MS));
+
+  return { inbox, articles, removals, settings, contents };
 }

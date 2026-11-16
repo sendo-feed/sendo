@@ -326,14 +326,41 @@ export const articles = sqliteTable(
      * ほかの人が購読しているフィードの記事の数が分からないようにするため
      */
     itemId: integer("item_id").notNull().default(0),
+    /**
+     * フィードに入っていた本文の、置き場での名前（docs/decisions/content.md の 3）。本文がなければ
+     * null。取り込むときに決まり、あとから変えない。名前は置くたびに乱数で決め、二度使わない。
+     * API には、名前ではなく、本文があるかどうかだけを出す
+     */
+    contentKey: text("content_key"),
   },
   (t) => [
+    // 本文のある記事だけを索引に入れる（片付けが、名前から記事の行があるかを引く）
+    uniqueIndex("articles_content_key_idx").on(t.contentKey).where(sql`content_key is not null`),
     uniqueIndex("articles_feed_id_guid_idx").on(t.feedId, t.guid),
     uniqueIndex("articles_item_id_idx").on(t.itemId),
     index("articles_feed_id_created_at_idx").on(t.feedId, t.createdAt),
     index("articles_feed_id_published_at_idx").on(t.feedId, t.publishedAt),
   ],
 );
+
+/**
+ * 本文の置き場の名前の書き留め（docs/decisions/content.md の 4）。「この名前の本文は、どの記事の
+ * 行にも入っていないかもしれない」という印。置き場と D1 を 1 つの文でまとめて書けないので、
+ * 行のない本文が残りうる。それを、置き場を全部見て回らずに片付けるために持つ。
+ *
+ * - 取り込むとき：本文を置く前に書き、記事の行に入ったら消す（db/content.ts）
+ * - 記事の行が消えたとき：表に付けたトリガーが、削除と同じ文の中で書く
+ *   （migrations/0020_article_content_note_trigger.sql）
+ * - 1 日 1 回の片付けが、1 時間より前の書き留めを見て、どの行にも入っていない名前の本文を消す
+ */
+export const contentNotes = sqliteTable("content_notes", {
+  key: text("key").primaryKey(),
+  /**
+   * 書き留めた時刻。取得のジョブが動いている間のものを片付けないために使う。索引は付けない
+   * （行は片付けですぐ消えるので少なく、索引の分の書き込みのほうが高くつく）
+   */
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
 
 /**
  * ユーザーの受信箱。購読しているフィードの記事が、人ごとに 1 行ずつ入る。既読とスターはここに持つ。

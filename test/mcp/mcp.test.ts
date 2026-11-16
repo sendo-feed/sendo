@@ -160,7 +160,30 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       name: "get_article",
       arguments: { id: a2 },
     })) as Structured<{ article: { id: string; read: boolean } }>;
-    expect(article.structuredContent?.article).toMatchObject({ id: a2, read: false });
+    expect(article.structuredContent?.article).toMatchObject({
+      id: a2,
+      read: false,
+      content: null,
+    });
+  });
+
+  it("get_article は、本文をタグのないプレーンテキストにして返す", async () => {
+    const { platform, token, a1 } = await setup();
+    await platform.content.put(
+      `feed/${a1}`,
+      "<p>本文 &amp; <strong>強調</strong></p><p>次の段落</p>",
+    );
+    await env.DB.prepare("UPDATE articles SET content_key = ? WHERE id = ?")
+      .bind(`feed/${a1}`, a1)
+      .run();
+    const { client } = await connect(platform, token, era);
+
+    const article = (await client.callTool({
+      name: "get_article",
+      arguments: { id: a1 },
+    })) as Structured<{ article: { content: string | null } }>;
+
+    expect(article.structuredContent?.article.content).toBe("本文 & 強調 次の段落");
   });
 
   it("read だけのトークンで状態を変えるツールを呼ぶと、403 insufficient_scope（scope は read write）", async () => {

@@ -3,6 +3,7 @@ import { dbNow } from "../db/clock";
 import {
   type ArticleCursor,
   countUnreadByFeed,
+  getInboxArticle,
   listInbox,
   MAX_MARK_READ_IDS,
   type MarkReadBoundary,
@@ -12,6 +13,7 @@ import {
 } from "../db/inbox";
 import { imageSigner } from "../db/secrets";
 import { listSubscriptions } from "../db/subscriptions";
+import { sanitizeHtmlWithImages } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
@@ -68,6 +70,48 @@ const listRoute = createRoute({
 const error = (description: string) => ({
   description,
   content: { "application/json": { schema: ErrorSchema } },
+});
+
+const contentRoute = createRoute({
+  method: "get",
+  path: "/articles/{id}/content",
+  summary: "記事の本文",
+  description: [
+    "記事の本文（HTML）を返す。記事の hasContent が true のときだけ、取りにいく。",
+    "HTML は Sendo がサニタイズしてある（決めたタグと属性だけ。スクリプトやスタイルはない）。それでも外部から来たデータなので、クライアントの側でも、信頼できない HTML として扱う。",
+    "本文の中の画像は、中継を通る URL（/api/v1/images?…。オリジンは付けない）に書き換えてある。リンクは絶対の URL。",
+    "本文は記事を取り込んだときに決まり、あとから変わらないので、手元に置いてよい。",
+  ].join("\n"),
+  request: {
+    params: z.object({
+      id: z
+        .string()
+        .min(1)
+        .max(64)
+        .openapi({ param: { name: "id", in: "path" } }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "本文",
+      content: {
+        "application/json": {
+          schema: z
+            .object({
+              html: z.string().openapi({ description: "サニタイズした HTML" }),
+              source: z.enum(["feed"]).openapi({
+                description: "本文の出どころ。feed は、フィードに入っていた本文",
+              }),
+            })
+            .openapi("ArticleContent"),
+        },
+      },
+    },
+    404: {
+      description: "記事がない（not_found）か、その記事に本文がない（no_content）",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
 });
 
 const updateRoute = createRoute({
@@ -190,6 +234,22 @@ const unreadCountsRoute = createRoute({
 export function articlesApi(platform: Platform) {
   const { db } = platform;
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook })
+    .openapi(contentRoute, async (c) => {
+      const { id } = c.req.valid("param");
+      const article = await getInboxArticle(db, { userId: c.get("user").id, articleId: id });
+      if (!article) return c.json(errorBody("not_found", "article does not exist"), 404);
+      const stored =
+        article.contentKey === null ? null : await platform.content.get(article.contentKey);
+      if (stored === null) return c.json(errorBody("no_content", "article has no content"), 404);
+      // 保存の前にサニタイズしてあるが、今の決まりをもう一度当てる。あわせて、画像を中継の URL に
+      // 書き換える（docs/decisions/content.md の 2、7）。URL は保存の前に絶対にしてあるので、
+      // 基準の URL は使われない
+      const images = imageSigner(db);
+      const html = await sanitizeHtmlWithImages(stored, "about:blank", (url) =>
+        images.toRelayUrl(url),
+      );
+      return c.json({ html, source: "feed" as const }, 200);
+    })
     .openapi(updateRoute, async (c) => {
       const { id } = c.req.valid("param");
       const body = c.req.valid("json");

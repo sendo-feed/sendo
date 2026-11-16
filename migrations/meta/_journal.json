@@ -134,6 +134,20 @@
       "when": 1794793928260,
       "tag": "0018_client_settings_seq_floor_trigger",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1794805804508,
+      "tag": "0019_article_content",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1794805805831,
+      "tag": "0020_article_content_note_trigger",
+      "breakpoints": true
     }
   ]
 }

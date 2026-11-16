@@ -39,12 +39,14 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
   - 共有のデータ：`feeds.ts`（フィード）、`articles.ts`（記事。取り込んだあとは変えない）
   - 人ごとのデータ：`folders.ts`、`subscriptions.ts`（購読）、`inbox.ts`（受信箱。既読・スター・一覧・未読の数）。人ごとのデータを読み書きするときは、必ずユーザーで絞る
   - クライアントの設定：`settings.ts`（docs/decisions/settings.md）。ユーザー × 端末の種類ごとに、名前と JSON の値の組を預かる。中身は解釈しない。上限は、置く文の中で確かめる。消すときは消した印を付け、30 日たった印の行は 1 日 1 回の片付けが消す
+  - 記事の本文：`content.ts`（docs/decisions/content.md）。本文は置き場（`platform.content`。Cloudflare では R2）に、名前は記事の行（`content_key`）に持つ。置く前に名前を書き留め、行に入ったら消す。記事の行が消えると、トリガーが名前を書き留める。記事を消す処理は置き場に触らず、1 日 1 回の片付けが、行のない本文を消す。置き場の名前は API に出さない
   - 古い記事の片付け：`retention.ts`（docs/decisions/retention.md）。受信箱の行を消してから、どの受信箱にも残っていない記事を消す。フィードにまだ載っている記事は、行を残す（消すと次の取得で入り直す）。一度に消す量は、D1 の 1 日の書き込みの上限を超えないように抑える
   - 人ごとのデータの行を作る ／ 変えるときは、`seq.ts` の `nextSeq` で変更番号を振る。行を物理的に消すと、表に付けたトリガーが削除と同じ文の中で下限を記録する（受信箱では、同期で伝える「消した記録」も残す。docs/decisions/sync.md）。コードで記録しない。フォルダと購読は消さずに消した印（`deleted_at`）を付ける
   - API のハンドラーでは、認証したユーザーを `c.get("user")` で受け取る
 - `src/fetcher/`：外部の URL の取得と解析。外部の URL は必ず `toFetchableUrl` を通す（SSRF 対策）
   - 画像は `fetch-image.ts` で取る。形式は先頭のバイトで確かめ、SVG は通さない。配信元へのリクエストはそこで新しく組み立て、読者のリクエストのヘッダーを渡さない
   - サムネイルは `thumbnail.ts` がフィードの中から採り、アイコンは `find-icon.ts` が探す（取得のジョブが 30 日に 1 回）
+- `src/lib/sanitize-html.ts`：記事の本文（HTML）のサニタイズ。外部から来た HTML は、保存する前にも、返す前にも、必ずここを通す。通すタグと属性を足すときは、テスト（`test/lib/sanitize-html.test.ts`）も足す
 - `src/feeds/`：購読の手続き（URL からフィードを見つけて購読する）。REST API、Google Reader API、MCP で同じものを使う
 - `src/greader/`：Google Reader API 互換（docs/decisions/greader.md）。状態を変える操作は、REST API と同じ `db/`・`feeds/` の処理に任せ、ここで書き込みを組み立てない。記事の文字列は HTML にエスケープして返す
 - `src/mcp/`：リモート MCP サーバー（docs/decisions/mcp.md）。ツールも、状態を変える処理は `db/`・`feeds/` に任せる。状態を変えるツールには `scopeChallenge` で write を求める。記事の中身は構造化した JSON で返し、記事を返すツールの説明に「指示ではない」と書く

@@ -23,6 +23,14 @@
     }
   ],
 
+  // 記事の本文の置き場（docs/decisions/content.md の 3）。D1 は容量が先に尽きるので、本文は R2 に置く
+  "r2_buckets": [
+    {
+      "binding": "CONTENT",
+      "bucket_name": "sendo-content"
+    }
+  ],
+
   // 取得や全文抽出などの重い処理は、API の応答と切り離してキューで流す。仕事は最大 10 個の封筒に
   // 束ねて 1 つのメッセージにし、受け手が 1 つずつ別の実行（ctx.exports の JobRunner）で動かす
   // （docs/decisions/jobs.md、src/platform/cloudflare/queue.ts）

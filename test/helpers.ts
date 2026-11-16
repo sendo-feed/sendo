@@ -13,6 +13,7 @@ import {
   DEFAULT_FETCH_INTERVAL_MINUTES,
   type Platform,
 } from "../src/platform";
+import { createR2ObjectStore } from "../src/platform/cloudflare";
 import { TEST_TOKEN as API_TOKEN, TEST_USER } from "./fixtures/user";
 
 export { API_TOKEN, TEST_USER };
@@ -50,6 +51,7 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
         enqueued.push(...jobs);
       },
     },
+    content: createR2ObjectStore(env.CONTENT),
     fetch: async () => {
       throw new Error("network access is not allowed in tests; pass a fake fetch");
     },

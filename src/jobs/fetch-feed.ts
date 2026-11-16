@@ -1,4 +1,5 @@
 import { type ArticleInput, insertArticles } from "../db/articles";
+import { clearUsedContentNotes, findExistingGuids, noteContentKeys } from "../db/content";
 import { getFeed, recordFeedIcon, recordFetchFailure, recordFetchSuccess } from "../db/feeds";
 import { deliverNewArticles } from "../db/inbox";
 import {
@@ -10,7 +11,15 @@ import {
 import type { Feed } from "../db/schema";
 import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
 import { findFeedIcon } from "../fetcher/find-icon";
-import { MAX_ITEMS, type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
+import {
+  htmlToText,
+  MAX_ITEMS,
+  MAX_SUMMARY_LENGTH,
+  type ParsedItem,
+  ParseFeedError,
+  parseFeed,
+} from "../fetcher/parse-feed";
+import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
 
 /*
@@ -20,6 +29,12 @@ import type { Platform } from "../platform";
 
 /** フィードのアイコンを探し直す間隔（docs/decisions/images.md の 8） */
 export const ICON_CHECK_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** 1 回の取得で本文を置く、新しい記事の数の上限（docs/decisions/content.md の 4） */
+export const MAX_CONTENTS_PER_FETCH = 30;
+
+/** 置く本文の大きさの上限（サニタイズしたあとの UTF-8 のバイト数）。超えたら、本文なしで取り込む */
+export const MAX_CONTENT_BYTES = 256 * 1024;
 
 /** 失敗が続いたときに延ばす間隔の上限。設定の間隔がこれより長ければ、設定の間隔 */
 const MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
@@ -39,7 +54,7 @@ export type FetchFeedOutcome =
  * こちら側の予期しない例外だけにする。
  */
 export async function runFetchFeed(
-  platform: Pick<Platform, "db" | "fetch" | "now" | "fetchConfig" | "retentionConfig">,
+  platform: Pick<Platform, "db" | "content" | "fetch" | "now" | "fetchConfig" | "retentionConfig">,
   feedId: string,
 ): Promise<FetchFeedOutcome> {
   const { db } = platform;
@@ -83,7 +98,16 @@ export async function runFetchFeed(
 
     const parsed = parseFeed(result.body, result.url);
     const rows = await Promise.all(parsed.items.map((item) => toArticle(feed.id, item, startedAt)));
+    // 新しい記事の本文を、記事の行を入れる前に置く（docs/decisions/content.md の 4）
+    const contentKeys = await storeContents(platform, {
+      feedId: feed.id,
+      feedUrl: result.url,
+      items: parsed.items,
+      rows,
+    });
     const inserted = await insertArticles(db, rows);
+    // 行に入った名前の書き留めを消す。入らなかった名前は残り、1 日 1 回の片付けが本文を消す
+    await clearUsedContentNotes(db, contentKeys);
     // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
     await deliverNewArticles(db, { feedId: feed.id });
 
@@ -166,6 +190,61 @@ async function refreshIcon(
     iconUrl = feed.iconUrl;
   }
   await recordFeedIcon(platform.db, feed.id, { iconUrl, now });
+}
+
+/**
+ * 新しい記事の、フィードに入っていた本文をサニタイズして置き場に置き、置いた名前を rows に入れる
+ * （docs/decisions/content.md の 1、2、4）。
+ *
+ * - 置くのは、要約に収まらなかった本文（文字が要約の長さを超える）か、画像・リンク・コード・表
+ *   などを含む本文だけ。サニタイズしたあとで MAX_CONTENT_BYTES を超える本文は置かない
+ * - 置く前に名前を書き留める。名前は乱数で、二度使わない。落ちてやり直すと、新しい名前で置き直し、
+ *   前の本文は、書き留めから片付けられる
+ * - すでにある記事かどうかは、置く手間を省くために読むだけ。読んだあとで別の取得が同じ記事を
+ *   入れても、こちらの行が入らず、置いた本文が片付けられるだけ
+ *
+ * @returns 置いた本文の名前
+ */
+async function storeContents(
+  platform: Pick<Platform, "db" | "content">,
+  input: { feedId: string; feedUrl: string; items: ParsedItem[]; rows: ArticleInput[] },
+): Promise<string[]> {
+  const { db } = platform;
+  const withContent = input.rows.flatMap((row, index) => {
+    const html = input.items[index]?.contentHtml;
+    return html ? [{ row, html }] : [];
+  });
+  if (withContent.length === 0) return [];
+
+  const existing = await findExistingGuids(db, {
+    feedId: input.feedId,
+    guids: withContent.map(({ row }) => row.guid),
+  });
+  const encoder = new TextEncoder();
+  const contents: { row: ArticleInput; key: string; html: string }[] = [];
+  // サニタイズは CPU を使うので、見るのも上限の数までにする
+  for (const { row, html } of withContent
+    .filter(({ row }) => !existing.has(row.guid))
+    .slice(0, MAX_CONTENTS_PER_FETCH)) {
+    const sanitized = sanitizeHtml(html, row.url ?? input.feedUrl);
+    const text = htmlToText(sanitized, Number.POSITIVE_INFINITY) ?? "";
+    if ([...text].length <= MAX_SUMMARY_LENGTH && !hasMarkupBeyondText(sanitized)) continue;
+    if (encoder.encode(sanitized).length > MAX_CONTENT_BYTES) continue;
+    contents.push({ row, key: newContentKey(), html: sanitized });
+  }
+  if (contents.length === 0) return [];
+
+  const keys = contents.map(({ key }) => key);
+  await noteContentKeys(db, keys);
+  await Promise.all(contents.map(({ key, html }) => platform.content.put(key, html)));
+  for (const { row, key } of contents) row.contentKey = key;
+  return keys;
+}
+
+/** 本文の置き場の名前。置くたびに乱数で決める */
+function newContentKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return `feed/${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
 /**

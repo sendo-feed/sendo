@@ -65,6 +65,7 @@ describe("runCleanUp", () => {
       articles: 1,
       removals: 2,
       settings: 0,
+      contents: 0,
     });
     expect(await count("SELECT count(*) AS n FROM articles")).toBe(1);
     expect(await count("SELECT count(*) AS n FROM user_article_removals")).toBe(0);

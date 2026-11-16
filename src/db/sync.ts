@@ -385,6 +385,7 @@ export async function readChanges(
         publishedAt,
         createdAt,
         itemId,
+        contentKey: row.contentKey,
         readAt: row.readAt,
         starredAt: row.starredAt,
         receivedAt,

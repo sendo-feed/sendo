@@ -190,6 +190,7 @@ Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader
    | ビルドのコマンド | 空のまま（`pnpm run build` が入っていてもよい） |
    | デプロイのコマンド | `pnpm run deploy`（`run` を付ける。`pnpm deploy` は pnpm 自身のコマンド） |
 
+   - 記事の本文を R2 に置くので、先に Cloudflare の画面の「R2」で、R2 を使えるようにしておく。バケット（`sendo-content`）は、D1 や Queues と同じくデプロイのときに作られる。作られずにデプロイが止まったら、`pnpm exec wrangler r2 bucket create sendo-content` で作ってから、やり直す
 4. 1 回目のビルドは、秘密がなくて止まる。D1 と Queues はもうできている。Worker の「設定」→「変数とシークレット」に、型を「**シークレット**」にして、次の 3 つを入れる（型を「変数」にすると、必須の確認を通らず、デプロイでも消える）
    - `ALLOWED_EMAILS`：ユーザーになれるメール（カンマか空白で区切る）
    - `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`：Google の OAuth クライアント（[ブラウザでログインする](#ブラウザでログインするgoogle)）。リダイレクト URI に入れる sendo-reader のオリジンは、`https://<sendo-reader の Worker の名前>.<自分のサブドメイン>.workers.dev` になる。まだなければ、仮の値を入れておき、あとで入れ直してよい

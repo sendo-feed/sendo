@@ -188,6 +188,26 @@
           "folderId"
         ]
       },
+      "ArticleContent": {
+        "type": "object",
+        "properties": {
+          "html": {
+            "type": "string",
+            "description": "サニタイズした HTML"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "feed"
+            ],
+            "description": "本文の出どころ。feed は、フィードに入っていた本文"
+          }
+        },
+        "required": [
+          "html",
+          "source"
+        ]
+      },
       "Article": {
         "type": "object",
         "properties": {
@@ -232,6 +252,10 @@
             "description": "記事のサムネイル。中継を通る画像の URL（/api/v1/images?url=…&sig=… の形のパス。オリジンは付かない）で、そのまま <img src> に入れる。クライアントは組み立てたり書き換えたりしない。なければ null",
             "example": "/api/v1/images?url=https%3A%2F%2Fexample.com%2Fa.png&sig=0123456789abcdefghijkl"
           },
+          "hasContent": {
+            "type": "boolean",
+            "description": "本文（HTML）があるか。あれば、GET /articles/{id}/content で取れる。記事を取り込んだときに決まり、あとから変わらない"
+          },
           "publishedAt": {
             "type": "string",
             "format": "date-time"
@@ -266,6 +290,7 @@
           "summary",
           "author",
           "thumbnailUrl",
+          "hasContent",
           "publishedAt",
           "receivedAt",
           "readAt",
@@ -1418,6 +1443,46 @@
           },
           "404": {
             "description": "フィードがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/articles/{id}/content": {
+      "get": {
+        "summary": "記事の本文",
+        "description": "記事の本文（HTML）を返す。記事の hasContent が true のときだけ、取りにいく。\nHTML は Sendo がサニタイズしてある（決めたタグと属性だけ。スクリプトやスタイルはない）。それでも外部から来たデータなので、クライアントの側でも、信頼できない HTML として扱う。\n本文の中の画像は、中継を通る URL（/api/v1/images?…。オリジンは付けない）に書き換えてある。リンクは絶対の URL。\n本文は記事を取り込んだときに決まり、あとから変わらないので、手元に置いてよい。",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "本文",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArticleContent"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "記事がない（not_found）か、その記事に本文がない（no_content）",
             "content": {
               "application/json": {
                 "schema": {

@@ -74,6 +74,10 @@ export const ArticleSchema = z
     }),
     author: z.string().nullable(),
     thumbnailUrl: relayImageUrl("記事のサムネイル"),
+    hasContent: z.boolean().openapi({
+      description:
+        "本文（HTML）があるか。あれば、GET /articles/{id}/content で取れる。記事を取り込んだときに決まり、あとから変わらない",
+    }),
     publishedAt: dateTime,
     receivedAt: dateTime.openapi({ description: "受信箱に入った時刻（サーバーの DB の時計）" }),
     readAt: dateTime.nullable().openapi({ description: "既読にした時刻。未読なら null" }),
@@ -114,6 +118,7 @@ export async function toArticleResponse(
     summary: article.summary,
     author: article.author,
     thumbnailUrl: await images.toRelayUrl(article.thumbnailUrl),
+    hasContent: article.contentKey !== null,
     publishedAt: article.publishedAt.toISOString(),
     receivedAt: article.receivedAt.toISOString(),
     readAt: article.readAt?.toISOString() ?? null,

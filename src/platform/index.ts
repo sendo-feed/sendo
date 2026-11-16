@@ -56,10 +56,25 @@ export interface RetentionConfig {
   articleMs: number;
 }
 
+/**
+ * オブジェクトの置き場（docs/decisions/content.md の 3）。記事の本文を置く。置く、読む、消すだけを
+ * 使う。Cloudflare では R2。移植するときは、ローカルのファイルや S3 互換の置き場に替える
+ */
+export interface ObjectStore {
+  /** 置く。同じ名前があれば上書きする */
+  put(key: string, text: string): Promise<void>;
+  /** 読む。なければ null */
+  get(key: string): Promise<string | null>;
+  /** 消す。ない名前は、そのまま通す。1 回に 1,000 個まで */
+  delete(keys: readonly string[]): Promise<void>;
+}
+
 /** アプリが実行環境から受け取るもの */
 export interface Platform {
   db: Database;
   jobs: JobQueue;
+  /** 記事の本文の置き場 */
+  content: ObjectStore;
   /** 外部の URL を取得する。SSRF の確認は呼ぶ側（fetcher/）で行う */
   fetch: typeof fetch;
   now: () => Date;
