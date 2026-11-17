@@ -129,17 +129,17 @@ flowchart LR
 
 ## 8. 期間を見極める
 
-| フェーズ | 内容 | 目安 |
-|---|---|---|
-| **Phase 1：MVP** | 取得と保存、REST API、Google Reader API 互換、MCP サーバー、OPML | [ 　週間 ] |
-| **Phase 2：Feedly 有料版の代わり** | 全文抽出、全文検索、フィルタとルール、通知、RSS のないサイトのフィード化 | [ 　週間 ] |
-| **Phase 3：LLM 活用** | 要約とダイジェスト、自動分類、関連度スコア、クラスタリング、意味検索 | [ 　週間 ] |
+| フェーズ | 内容 | 状態（2026-11-17） | 目安 |
+|---|---|---|---|
+| **Phase 1：MVP** | 取得と保存、REST API、Google Reader API 互換、MCP サーバー、OPML | 完了 | — |
+| **Phase 2：Feedly 有料版の代わり** | 全文抽出、全文検索、フィルタとルール、通知、RSS のないサイトのフィード化 | 進行中。全文抽出はコンテナ版で実装済み | [ 　週間 ] |
+| **Phase 3：LLM 活用** | 要約とダイジェスト、自動分類、関連度スコア、クラスタリング、意味検索 | 未着手 | [ 　週間 ] |
 
-**最初のゴール：Feedly の OPML を移して、毎日 Sendo で読む**
+**最初のゴールは達成：Feedly の OPML の移行を終え、sendo-reader で毎日読んでいる。**
 
 各フェーズの機能の詳細は [features.md](features.md) にある。
 
-> 期間の目安は空欄。まずは自分たちが毎日使える状態（ドッグフーディング）を最初のゴールにする案。
+> Phase 1 の完了条件と継続する検証は features.md に記載している。これからの期間の目安は空欄。
 
 ---
 
@@ -185,7 +185,7 @@ flowchart LR
 1. テックスタック：TypeScript ＋ Hono、Cloudflare 版とコンテナ版の 2 つ → [decisions/tech-stack.md](decisions/tech-stack.md)（提案中、2人で合意する）
 2. 役割分担：サーバーの層と、MCP・LLM の層
 3. ライセンス：[ MIT ／ Apache-2.0 ／ AGPL-3.0 ]
-4. Phase 1 の期日：[ 　年　月　日 ]
+4. Phase 2 の優先順位と期日：[ 　年　月　日 ]（Phase 1 は完了）
 5. README・CONTRIBUTING・.claude/ の整備
 
 > ここで決まったことは、sendo リポジトリの docs/decisions/ にテーマごとのファイルとして残す（[decisions/documentation.md](decisions/documentation.md)）。
