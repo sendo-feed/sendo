@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { Database } from ".";
+import { DB_NOW_MS } from "./clock";
 
 /** 書き込みと同時にトリガーが集計した使用量。未集計の本文があれば削除しない */
 export async function readStorageUsage(
@@ -58,14 +59,22 @@ export async function readEvictionCandidates(
 export async function evictArticles(
   db: Database,
   ids: readonly string[],
+  reclaimToken?: string,
 ): Promise<{ inbox: number; articles: number }> {
   if (ids.length === 0) return { inbox: 0, articles: 0 };
+  const owned =
+    reclaimToken === undefined
+      ? sql`1`
+      : sql`exists (
+    select 1 from storage_usage where id = 1 and reclaim_token = ${reclaimToken}
+      and reclaim_until > ${DB_NOW_MS} and bytes > limit_bytes * 0.8
+  )`;
   const chosen = sql`a.id in (select value from json_each(${JSON.stringify(ids)}))`;
   const inbox = await db.all<{ id: string }>(sql`delete from user_articles
-    where article_id in (select a.id from articles a where ${chosen} and ${evictable})
+    where article_id in (select a.id from articles a where ${chosen} and ${evictable} and ${owned})
     returning article_id as id`);
   const articles = await db.all<{ id: string }>(sql`delete from articles
-    where id in (select a.id from articles a where ${chosen} and ${evictable}
+    where id in (select a.id from articles a where ${chosen} and ${evictable} and ${owned}
       and not exists (select 1 from user_articles u where u.article_id = a.id))
     returning id`);
   return { inbox: inbox.length, articles: articles.length };

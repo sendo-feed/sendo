@@ -67,7 +67,7 @@ beforeEach(async () => {
   await env.DB.exec("DELETE FROM content_notes");
   await env.DB.exec("DELETE FROM content_sizes");
   await env.DB.exec(
-    "UPDATE storage_usage SET limit_bytes = 268435456, reclaiming = 0, eviction_batches = 0, eviction_day = -1 WHERE id = 1",
+    "UPDATE storage_usage SET limit_bytes = 268435456, reclaiming = 0, eviction_batches = 0, eviction_day = -1, reclaim_token = null, reclaim_until = 0 WHERE id = 1",
   );
 });
 
@@ -306,5 +306,101 @@ describe("受信箱の配布と容量上限", () => {
     await deliverNewArticles(platform.db, { feedId: feed.id });
     expect(await platform.db.select().from(userArticles)).toHaveLength(1);
     expect((await readStorageUsage(platform.db)).bytes).toBe(usage.bytes + 512);
+  });
+});
+
+describe("容量回収の並行実行", () => {
+  it("先行する回収が候補を読む間、別の回収は同じ不足量を計画しない", async () => {
+    const { platform } = createTestPlatform();
+    await seed(
+      platform,
+      Array.from({ length: 20 }, (_, i) => `a${i}`),
+    );
+    const usage = await readStorageUsage(platform.db);
+    platform.retentionConfig.maxBytes = Math.ceil(usage.bytes / 0.95);
+    let release = () => {};
+    let notify = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      notify = resolve;
+    });
+    let pause = true;
+    const db = new Proxy(platform.db, {
+      get(target, prop) {
+        if (prop === "all")
+          return async (query: Parameters<typeof target.all>[0]) => {
+            if (pause) {
+              pause = false;
+              notify();
+              await held;
+            }
+            return target.all(query);
+          };
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const first = reclaimStorage({ ...platform, db });
+    await entered;
+    try {
+      expect(await reclaimStorage(platform)).toEqual({ inbox: 0, articles: 0 });
+    } finally {
+      release();
+    }
+    const result = await first;
+    expect(result.articles).toBeGreaterThan(0);
+    expect(result.articles).toBeLessThan(20);
+    expect((await reclaimStorage(platform)).articles).toBe(0);
+  });
+
+  it("所有権を失った実行は、候補を持っていても削除を続けない", async () => {
+    const { platform } = createTestPlatform();
+    await seed(platform, ["old"]);
+    await platform.db.run(sql`update storage_usage set reclaim_token = 'new-owner',
+      reclaim_until = cast(unixepoch('subsec') * 1000 as integer) + 60000, limit_bytes = 1`);
+    expect(await evictArticles(platform.db, ["old"], "old-owner")).toEqual({
+      inbox: 0,
+      articles: 0,
+    });
+    await platform.db.run(sql`update storage_usage set reclaim_until = 0`);
+    expect(await evictArticles(platform.db, ["old"], "new-owner")).toEqual({
+      inbox: 0,
+      articles: 0,
+    });
+    expect(await articleIds(platform)).toEqual(["old"]);
+  });
+});
+
+describe("本文の容量不足からの再試行", () => {
+  it("本文を予約できない記事は保存済みにせず、容量を増やすと本文ごと取り込む", async () => {
+    const html = `<p>${"x".repeat(10000)}</p>`;
+    const { fetch } = fakeFetch(
+      () =>
+        new Response(
+          `<rss version="2.0"><channel><title>test</title><item><guid>body</guid><title>title</title><description><![CDATA[${html}]]></description></item></channel></rss>`,
+          { headers: { etag: '"body"' } },
+        ),
+    );
+    const { platform } = createTestPlatform({ fetch });
+    const feed = await subscribeFeed(platform, {});
+    platform.retentionConfig.maxBytes = 4096;
+    expect(await runFetchFeed(platform, feed.id)).toEqual({ status: "storage-full" });
+    expect(await articleIds(platform)).toEqual([]);
+    expect(
+      (
+        await platform.db.get<{ etag: string | null }>(
+          sql`select etag from feeds where id = ${feed.id}`,
+        )
+      )?.etag,
+    ).toBeNull();
+    platform.retentionConfig.maxBytes = 32 * 1024;
+    expect(await runFetchFeed(platform, feed.id)).toEqual({ status: "fetched", inserted: 1 });
+    const row = (await platform.db.select().from(articles))[0];
+    expect(row?.contentKey).toBeTruthy();
+    expect(await platform.content.get(row?.contentKey ?? "")).toBe(html);
+    await runFetchFeed(platform, feed.id);
+    expect(await articleIds(platform)).toHaveLength(1);
   });
 });

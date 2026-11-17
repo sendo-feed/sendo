@@ -113,15 +113,18 @@ export async function runFetchFeed(
       return { status: "storage-full" };
     }
     // 新しい記事の本文を、記事の行を入れる前に置く（docs/decisions/content.md の 4）
-    const contentKeys = await storeContents(platform, {
+    const storedContents = await storeContents(platform, {
       feedId: feed.id,
       feedUrl: result.url,
       items: parsed.items,
       rows,
     });
-    const insertedArticles = await insertArticles(db, rows);
+    const insertedArticles = await insertArticles(
+      db,
+      rows.filter((row) => !storedContents.deferredIds.has(row.id)),
+    );
     // 行に入った名前の書き留めを消す。入らなかった名前は残り、1 日 1 回の片付けが本文を消す
-    await clearUsedContentNotes(db, contentKeys);
+    await clearUsedContentNotes(db, storedContents.keys);
     // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
     await deliverNewArticles(db, { feedId: feed.id });
     // ページから本文を抜ける版（コンテナ版）では、新しい記事ごとに、抜く仕事を積む
@@ -245,18 +248,18 @@ async function refreshIcon(
  * - すでにある記事かどうかは、置く手間を省くために読むだけ。読んだあとで別の取得が同じ記事を
  *   入れても、こちらの行が入らず、置いた本文が片付けられるだけ
  *
- * @returns 置いた本文の名前
+ * @returns 置いた本文の名前と、容量不足で記事ごと再試行する ID
  */
 async function storeContents(
   platform: Pick<Platform, "db" | "content">,
   input: { feedId: string; feedUrl: string; items: ParsedItem[]; rows: ArticleInput[] },
-): Promise<string[]> {
+): Promise<{ keys: string[]; deferredIds: Set<string> }> {
   const { db } = platform;
   const withContent = input.rows.flatMap((row, index) => {
     const html = input.items[index]?.contentHtml;
     return html ? [{ row, html }] : [];
   });
-  if (withContent.length === 0) return [];
+  if (withContent.length === 0) return { keys: [], deferredIds: new Set() };
 
   const existing = await findExistingGuids(db, {
     feedId: input.feedId,
@@ -277,7 +280,7 @@ async function storeContents(
     if (encoder.encode(sanitized).length > MAX_CONTENT_BYTES) continue;
     contents.push({ row, key: newContentKey(), html: sanitized });
   }
-  if (contents.length === 0) return [];
+  if (contents.length === 0) return { keys: [], deferredIds: new Set() };
 
   const keys = contents.map(({ key }) => key);
   await noteContentKeys(db, keys);
@@ -291,7 +294,10 @@ async function storeContents(
   const stored = contents.filter(({ key }) => reserved.has(key));
   await Promise.all(stored.map(({ key, html }) => platform.content.put(key, html)));
   for (const { row, key } of stored) row.contentKey = key;
-  return keys;
+  return {
+    keys: stored.map(({ key }) => key),
+    deferredIds: new Set(contents.filter(({ key }) => !reserved.has(key)).map(({ row }) => row.id)),
+  };
 }
 
 /** 本文の置き場の名前。置くたびに乱数で決める */

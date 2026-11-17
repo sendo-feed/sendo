@@ -602,4 +602,7 @@ export const storageUsage = sqliteTable("storage_usage", {
   reclaiming: integer("reclaiming", { mode: "boolean" }).notNull().default(false),
   evictionDay: integer("eviction_day").notNull().default(-1),
   evictionBatches: integer("eviction_batches").notNull().default(0),
+  /** 回収の所有権。期限切れの実行は、削除する文でもトークンを確かめて止める */
+  reclaimToken: text("reclaim_token"),
+  reclaimUntil: integer("reclaim_until").notNull().default(0),
 });
