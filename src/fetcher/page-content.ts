@@ -38,6 +38,10 @@ const inflight = new Map<string, { task: Promise<PageContentResult>; ticket: Gat
 /** 同じホストへの取得の間隔（決定の 17） */
 export const SAME_HOST_INTERVAL_MS = 1000;
 
+// サイト紹介やコメント欄の案内だけを抜いた結果を、本文として保存しないための下限。
+// サニタイズ後の文字を数える。HTML の長さや、抜く処理が返す文字数は使わない。
+const MIN_PAGE_TEXT_LENGTH = 100;
+
 /** 同じホストへの取得を、1 本ずつにする（決定の 17） */
 const hostGate = new HostGate({ intervalMs: SAME_HOST_INTERVAL_MS });
 
@@ -180,8 +184,10 @@ async function extract(
 
   // 抜いた HTML は、外から来たもの。保存する前にサニタイズする（決定の 2）
   const html = sanitizeHtml(extracted.html, page.url);
-  if ((htmlToText(html, Number.POSITIVE_INFINITY) ?? "").trim() === "") {
-    console.warn("the extracted content is empty after sanitizing", detail);
+  const text = htmlToText(html, Number.POSITIVE_INFINITY) ?? "";
+  const textLength = [...text].length;
+  if (textLength < MIN_PAGE_TEXT_LENGTH) {
+    console.warn("the extracted content is too short after sanitizing", { ...detail, textLength });
     return null;
   }
   if (new TextEncoder().encode(html).length > MAX_CONTENT_BYTES) {
