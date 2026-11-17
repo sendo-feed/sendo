@@ -21,6 +21,7 @@ import { sanitizeHtml } from "../lib/sanitize-html";
 import type { PageContentExtractor, Platform } from "../platform";
 import { FetchPageError, fetchPage } from "./fetch-page";
 import { type GatePriority, GateTicket, HostGate } from "./host-gate";
+import { resolvePageImages } from "./page-images";
 import { htmlToText } from "./parse-feed";
 import { RobotsCache } from "./robots";
 
@@ -185,7 +186,7 @@ async function extract(
   }
 
   // 抜いた HTML は、外から来たもの。保存する前にサニタイズする（決定の 2）
-  const html = sanitizeHtml(extracted.html, page.url);
+  let html = sanitizeHtml(extracted.html, page.url);
   const text = htmlToText(html, Number.POSITIVE_INFINITY) ?? "";
   const textLength = [...text].length;
   if (textLength < MIN_PAGE_TEXT_LENGTH) {
@@ -195,6 +196,20 @@ async function extract(
   if (new TextEncoder().encode(html).length > MAX_CONTENT_BYTES) {
     console.warn("the extracted content is too large", detail);
     return null;
+  }
+  if (extractor.images) {
+    const original = html;
+    html = await resolvePageImages(html, page.url, extractor.images, {
+      fetch: platform.fetch,
+      isAllowed: (target, fetcher, signal) =>
+        robots.isAllowed(target, { fetch: fetcher, now: platform.now(), signal }),
+      run: (url, task) => {
+        if (!URL.canParse(url)) return task();
+        return hostGate.run(new URL(url).hostname, ticket, task);
+      },
+    });
+    html = sanitizeHtml(html, page.url);
+    if (new TextEncoder().encode(html).byteLength > MAX_CONTENT_BYTES) html = original;
   }
   return html;
 }

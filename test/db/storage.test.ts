@@ -498,3 +498,23 @@ describe("記事と受信箱を含む容量予約", () => {
     expect((await platform.db.select().from(articles))[0]?.reservedInboxBytes).toBe(0);
   });
 });
+
+describe("履歴が多いフィードの配布", () => {
+  it("配布済みの履歴が増えても、予約を解放する読み取りは履歴全件にならない", async () => {
+    const { platform } = createTestPlatform();
+    const feed = await subscribeFeed(platform, {});
+    await env.DB.prepare(`WITH RECURSIVE n(i) AS (
+      SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000
+    ) INSERT INTO articles (id, feed_id, guid, published_at, created_at, item_id)
+      SELECT 'history-' || i, ?, 'history-' || i, 0, 0, i FROM n`)
+      .bind(feed.id)
+      .run();
+    await deliverNewArticles(platform.db, { feedId: feed.id });
+    const result = await env.DB.prepare(
+      "UPDATE feeds SET delivered_until = delivered_until + 1 WHERE id = ?",
+    )
+      .bind(feed.id)
+      .run();
+    expect(result.meta.rows_read).toBeLessThan(25);
+  });
+});

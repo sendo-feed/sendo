@@ -234,3 +234,9 @@ Google Reader API のクライアント（Reeder、NetNewsWire）と MCP は、r
 - [Static Assets の料金と制限](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)
 - [Service bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/)
 - [Cloudflare Images の料金](https://developers.cloudflare.com/images/pricing/)
+
+### コンテナ版の本文中の画像ページ
+
+本文の取得はコンテナ版だけで行うため、Cloudflare の D1・Queues・Workers の上の見積もりには加算しない。本文として残した画像のリンク先を調べる分、コンテナ側では記事 1 件あたり最大 36 リクエスト（robots.txt とリダイレクトを含む）と、画像・画像ページの本体が合計 25MiB 増える。robots.txt の本体は別枠で、1 オリジン 500KiB まで（既存のキャッシュを使う）。画像の照合を始めてから 15 秒で取得の期限を切り、画像リンクは 12 個まで調べる。候補がない記事では追加取得はない。
+
+画像のバイト列を永続化する領域は増やさない。サニタイズ済み HTML の画像 URL を必要に応じて拡大版に替え、既存の画像中継で配る。画像のデコードは Rust で 1 枚の縦横それぞれ 10,000px・総画素数 4,000 万・割り当て 200MiB までに制限する。サムネイルと候補の 2 枚を照合するので、同時に処理する記事数と画像の実寸によって CPU・メモリが増える。ここは上限であり、平均通信量と CPU は運用後に計測して見直す。

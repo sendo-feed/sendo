@@ -298,6 +298,8 @@ type CacheEntry = { result: RobotsTxt; expiresAt: number };
  * robots.txt の結果を、オリジン（スキーム、ホスト、ポート）ごとに、プロセスのメモリに置く。
  * コンテナ版は 1 つのプロセスで動く（docs/decisions/container.md の 7）ので、DB には置かない
  */
+type RobotsContext = { fetch: typeof fetch; now: Date; signal?: AbortSignal };
+
 export class RobotsCache {
   readonly #entries = new Map<string, CacheEntry>();
   readonly #inflight = new Map<string, Promise<RobotsTxt>>();
@@ -308,9 +310,11 @@ export class RobotsCache {
   }
 
   /** URL を取りにいってよいか。オリジンの結果がなければ（古ければ）取りにいく */
-  async isAllowed(url: URL, context: { fetch: typeof fetch; now: Date }): Promise<boolean> {
+  async isAllowed(url: URL, context: RobotsContext): Promise<boolean> {
+    if (context.signal?.aborted) return false;
     if (url.pathname === "/robots.txt") return true;
     const result = await this.#get(url.origin, context);
+    if (context.signal?.aborted) return false;
     switch (result.status) {
       case "fetched":
         return isAllowedByRules(result.rules, url);
@@ -321,7 +325,7 @@ export class RobotsCache {
     }
   }
 
-  async #get(origin: string, context: { fetch: typeof fetch; now: Date }): Promise<RobotsTxt> {
+  async #get(origin: string, context: RobotsContext): Promise<RobotsTxt> {
     const cached = this.#entries.get(origin);
     if (cached && cached.expiresAt > context.now.getTime()) return cached.result;
 
@@ -330,6 +334,9 @@ export class RobotsCache {
     if (running) return running;
     const task = fetchRobotsTxt(origin, { fetch: context.fetch })
       .then((result) => {
+        // 取得元の障害と、呼び出し側だけの期限・予算切れを区別する。
+        // 中断された画像探索の結果は、別の記事へ持ち越さない。
+        if (context.signal?.aborted) return result;
         if (result.status === "unreachable") {
           console.warn("could not fetch robots.txt; treating as disallowed", {
             origin,
@@ -339,8 +346,11 @@ export class RobotsCache {
         this.#put(origin, result, context.now);
         return result;
       })
-      .finally(() => this.#inflight.delete(origin));
-    this.#inflight.set(origin, task);
+      .finally(() => {
+        if (!context.signal) this.#inflight.delete(origin);
+      });
+    // 呼び出し側の中断に依存する仕事を、通常の本文取得へ共有しない。
+    if (!context.signal) this.#inflight.set(origin, task);
     return task;
   }
 

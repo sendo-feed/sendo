@@ -183,6 +183,13 @@
       "when": 1794912086413,
       "tag": "0025_storage_accounting",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1794912501633,
+      "tag": "0026_sloppy_the_watchers",
+      "breakpoints": true
     }
   ]
 }

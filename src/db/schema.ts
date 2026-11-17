@@ -346,6 +346,9 @@ export const articles = sqliteTable(
     index("articles_feed_id_published_at_idx").on(t.feedId, t.publishedAt),
     index("articles_created_at_id_idx").on(t.createdAt, t.id),
     index("articles_feed_id_current_idx").on(t.feedId, t.inCurrentFeed),
+    index("articles_pending_delivery_idx")
+      .on(t.feedId, t.createdAt)
+      .where(sql`reserved_inbox_bytes > 0`),
   ],
 );
 

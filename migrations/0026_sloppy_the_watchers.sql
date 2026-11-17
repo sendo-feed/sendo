@@ -1,0 +1,1 @@
+CREATE INDEX `articles_pending_delivery_idx` ON `articles` (`feed_id`,`created_at`) WHERE reserved_inbox_bytes > 0;
