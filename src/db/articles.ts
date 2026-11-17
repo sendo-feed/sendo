@@ -1,4 +1,5 @@
-import { and, desc, eq, gt } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { MAX_ITEMS } from "../fetcher/parse-feed";
 import type { Database } from ".";
 import { chunked } from "./chunk";
 import { DB_NOW_MS } from "./clock";
@@ -39,12 +40,13 @@ export async function insertArticles(
   rows: readonly ArticleInput[],
 ): Promise<{ id: string; url: string | null }[]> {
   const inserted: { id: string; url: string | null }[] = [];
-  for (const chunk of chunked(rows, articles)) {
+  for (const chunk of chunked(rows, articles, 1)) {
     const result = await db
       .insert(articles)
       .values(
         chunk.map((row) => ({
           ...row,
+          inCurrentFeed: row.inCurrentFeed === false ? sql`0` : sql`1`,
           createdAt: row.createdAt ?? DB_NOW_MS,
           itemId: row.itemId ?? randomItemId(),
         })),
@@ -82,4 +84,25 @@ export async function recentPublishedTimes(
     .limit(input.limit)
     .all();
   return rows.map((row) => row.publishedAt);
+}
+
+/** フィードの現在の記事。上限で解析を打ち切った場合には、外れたとは判定しない */
+export async function recordCurrentFeed(
+  db: Database,
+  feedId: string,
+  guids: readonly string[],
+  parsedCount: number,
+): Promise<void> {
+  const guidsJson = JSON.stringify(guids);
+  // 掲載中だけの索引と guid の索引を使い、何年分の記事があっても履歴全体を読み直さない。
+  await db.run(sql`update articles set in_current_feed = (
+    guid in (select value from json_each(${guidsJson}))
+  ) where id in (
+    select id from articles where feed_id = ${feedId} and in_current_feed = 1
+      and ${parsedCount < MAX_ITEMS ? 1 : 0} = 1
+      and guid not in (select value from json_each(${guidsJson}))
+    union all
+    select id from articles where feed_id = ${feedId}
+      and guid in (select value from json_each(${guidsJson})) and in_current_feed = 0
+  )`);
 }

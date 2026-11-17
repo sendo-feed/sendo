@@ -55,8 +55,8 @@ export interface FetchConfig {
 
 /** 古い記事の片付けの設定（docs/decisions/retention.md の 1） */
 export interface RetentionConfig {
-  /** スターのない記事を、取り込んでから消すまでの期間（ミリ秒） */
-  articleMs: number;
+  /** 記事と本文を保管する容量の上限（バイト。行と索引の分は見積もり） */
+  maxBytes: number;
 }
 
 /**
@@ -122,14 +122,10 @@ export const DEFAULT_FETCH_INTERVAL_MINUTES = 30;
  */
 export const MIN_FETCH_INTERVAL_MINUTES = 10;
 
-/** 記事を残す期間の既定（日） */
-export const DEFAULT_ARTICLE_RETENTION_DAYS = 90;
-
-/**
- * 記事を残す期間の下限（日）。最初の同期と、購読を始めたときの補充が直近 30 日の記事を扱うので、
- * これより短いと、補充した記事が次の片付けですぐに消える（docs/decisions/retention.md）
- */
-export const MIN_ARTICLE_RETENTION_DAYS = 30;
+/** Cloudflare 版の保存容量の既定（MiB）。コンテナ版は緩衝層で 10 GiB を渡す */
+export const DEFAULT_STORAGE_LIMIT_MIB = 256;
+export const NODE_STORAGE_LIMIT_MIB = 10 * 1024;
+export const MIN_STORAGE_LIMIT_MIB = 16;
 
 /** 下限以上の整数の設定を読む。空なら undefined（既定を使う）。下限以上の整数でなければ例外 */
 function parseIntegerSetting(
@@ -154,9 +150,13 @@ export function parseFetchIntervalMinutes(value: string | undefined): number | u
   return parseIntegerSetting(value, MIN_FETCH_INTERVAL_MINUTES, "fetch interval (minutes)");
 }
 
-/** 記事を残す期間（日）の設定を読む。読み方は parseFetchIntervalMinutes と同じ */
-export function parseArticleRetentionDays(value: string | undefined): number | undefined {
-  return parseIntegerSetting(value, MIN_ARTICLE_RETENTION_DAYS, "article retention (days)");
+/** 保存容量（MiB）。誤設定で意図せず記事を消さないよう、整数の範囲も確かめる */
+export function parseStorageLimitMiB(value: string | undefined): number | undefined {
+  const mib = parseIntegerSetting(value, MIN_STORAGE_LIMIT_MIB, "storage limit (MiB)");
+  if (mib !== undefined && !Number.isSafeInteger(mib * 1024 * 1024)) {
+    throw new RangeError("storage limit is too large");
+  }
+  return mib;
 }
 
 /**

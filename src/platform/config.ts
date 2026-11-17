@@ -4,16 +4,15 @@
  */
 import {
   type AuthConfig,
-  DEFAULT_ARTICLE_RETENTION_DAYS,
   DEFAULT_FETCH_INTERVAL_MINUTES,
+  DEFAULT_STORAGE_LIMIT_MIB,
   type FetchConfig,
-  MIN_ARTICLE_RETENTION_DAYS,
   MIN_FETCH_INTERVAL_MINUTES,
   type OAuthServerConfig,
-  parseArticleRetentionDays,
   parseEmailList,
   parseFetchIntervalMinutes,
   parseOrigin,
+  parseStorageLimitMiB,
   type RetentionConfig,
 } from ".";
 
@@ -37,17 +36,15 @@ export function readFetchConfig(env: { FETCH_INTERVAL_MINUTES?: string }): Fetch
 /**
  * 古い記事の片付けの設定を読む（docs/decisions/retention.md の 1）。読み方は readFetchConfig と同じ
  */
-export function readRetentionConfig(env: { ARTICLE_RETENTION_DAYS?: string }): RetentionConfig {
-  let days = DEFAULT_ARTICLE_RETENTION_DAYS;
-  try {
-    days = parseArticleRetentionDays(env.ARTICLE_RETENTION_DAYS) ?? days;
-  } catch (error) {
-    console.error(
-      `ARTICLE_RETENTION_DAYS must be an integer of at least ${MIN_ARTICLE_RETENTION_DAYS}; using ${days}`,
-      error,
-    );
+export function readRetentionConfig(
+  env: { STORAGE_LIMIT_MIB?: string; ARTICLE_RETENTION_DAYS?: string },
+  defaultMiB = DEFAULT_STORAGE_LIMIT_MIB,
+): RetentionConfig {
+  if (env.ARTICLE_RETENTION_DAYS?.trim()) {
+    console.warn("ARTICLE_RETENTION_DAYS is no longer used; set STORAGE_LIMIT_MIB instead");
   }
-  return { articleMs: days * 24 * 60 * 60 * 1000 };
+  const mib = parseStorageLimitMiB(env.STORAGE_LIMIT_MIB) ?? defaultMiB;
+  return { maxBytes: mib * 1024 * 1024 };
 }
 
 /** 認証の設定に使う名前 */

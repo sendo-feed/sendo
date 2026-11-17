@@ -1,16 +1,12 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { insertArticles } from "../../src/db/articles";
 import { getFeed, insertFeed } from "../../src/db/feeds";
-import { deliverNewArticles, setArticleState } from "../../src/db/inbox";
-import { CLEAN_UP_CATCH_UP } from "../../src/db/retention";
-import { articles, feeds, userArticles } from "../../src/db/schema";
-import { MAX_ITEMS } from "../../src/fetcher/parse-feed";
+import { articles, feeds } from "../../src/db/schema";
 import { ICON_CHECK_INTERVAL_MS, runFetchFeed } from "../../src/jobs/fetch-feed";
 import { MAX_FETCH_INTERVAL_MS } from "../../src/jobs/fetch-interval";
 import type { Platform } from "../../src/platform";
 import { PNG } from "../fixtures/images";
-import { createTestPlatform, fakeFetch, subscribeFeed, TEST_USER, uniqueUrl } from "../helpers";
+import { createTestPlatform, fakeFetch, uniqueUrl } from "../helpers";
 
 const NOW = new Date("2026-11-14T00:00:00Z");
 /** 設定した取得の間隔。既定（30 分）と違う値にして、設定が使われることを確かめる */
@@ -406,155 +402,5 @@ describe("runFetchFeed の Retry-After（docs/decisions/jobs.md の 8）", () =>
         () => new Response("", { status: 503, headers: { "retry-after": "999999999" } }),
       ),
     ).toEqual(new Date(NOW.getTime() + MAX_FETCH_INTERVAL_MS));
-  });
-});
-
-describe("runFetchFeed の古い記事の片付け（docs/decisions/retention.md）", () => {
-  const DAY = 24 * 60 * 60 * 1000;
-  const daysAgo = (days: number) => new Date(NOW.getTime() - days * DAY);
-
-  /**
-   * 購読したフィードに、95 日前に取り込んだ記事を 2 つ入れる。listed は RSS に載っている記事
-   * （guid が "1"）、gone はもう載っていない記事。片付けの位置は、その少し前まで進んでいる
-   */
-  async function setupOld(respond: Parameters<typeof fakeFetch>[0]) {
-    const fake = fakeFetch(respond);
-    const { platform } = createTestPlatform({
-      fetch: fake.fetch,
-      now: () => NOW,
-      fetchConfig: { intervalMs: INTERVAL_MS },
-    });
-    const feed = await subscribeFeed(platform, { now: daysAgo(200) });
-    await insertArticles(
-      platform.db,
-      ["1", "gone"].map((guid) => ({
-        id: `${feed.id}-${guid}`,
-        feedId: feed.id,
-        guid,
-        url: null,
-        title: guid,
-        summary: null,
-        author: null,
-        publishedAt: daysAgo(95),
-        createdAt: daysAgo(95),
-      })),
-    );
-    await deliverNewArticles(platform.db, { feedId: feed.id });
-    await platform.db
-      .update(feeds)
-      .set({ cleanedUntil: new Date(daysAgo(95).getTime() - 60_000) })
-      .where(eq(feeds.id, feed.id))
-      .run();
-    const inbox = async () =>
-      (
-        await platform.db
-          .select({ guid: articles.guid })
-          .from(userArticles)
-          .innerJoin(articles, eq(articles.id, userArticles.articleId))
-          .where(and(eq(userArticles.userId, TEST_USER.id), eq(userArticles.feedId, feed.id)))
-          .all()
-      )
-        .map((row) => row.guid)
-        .sort();
-    const guids = async () =>
-      (
-        await platform.db
-          .select({ guid: articles.guid })
-          .from(articles)
-          .where(eq(articles.feedId, feed.id))
-          .all()
-      )
-        .map((row) => row.guid)
-        .sort();
-    return { platform, feed, inbox, guids };
-  }
-
-  it("期間を過ぎた記事を受信箱から消し、フィードに載っていない記事の行を消す", async () => {
-    const { platform, feed, inbox, guids } = await setupOld(() => new Response(RSS));
-    expect(await inbox()).toEqual(["1", "gone"]);
-
-    await runFetchFeed(platform, feed.id);
-
-    // 今回取り込んだ 2 件だけが受信箱に残る
-    expect(await inbox()).toEqual(["https://blog.example/2", expect.stringMatching(/^sha256:/)]);
-    // RSS に載っている "1" は、行を残す
-    expect(await guids()).toEqual([
-      "1",
-      "https://blog.example/2",
-      expect.stringMatching(/^sha256:/),
-    ]);
-    // 片付けた位置を記録する。進める幅は、取得の間隔の CLEAN_UP_CATCH_UP 倍まで
-    expect((await getFeed(platform.db, feed.id))?.cleanedUntil).toEqual(
-      new Date(daysAgo(95).getTime() - 60_000 + CLEAN_UP_CATCH_UP * INTERVAL_MS),
-    );
-  });
-
-  it("片付けの位置を進める幅は、フィードの今の間隔をもとにする", async () => {
-    // 1 日おきに取得するフィードでも、取り込みに追いつけるように
-    const { platform, feed } = await setupOld(() => new Response(null, { status: 304 }));
-    await setFetchInterval(platform, feed.id, DAY);
-
-    await runFetchFeed(platform, feed.id);
-
-    expect((await getFeed(platform.db, feed.id))?.cleanedUntil).toEqual(
-      new Date(daysAgo(95).getTime() - 60_000 + CLEAN_UP_CATCH_UP * DAY),
-    );
-  });
-
-  it("行を残した記事は、次の取得で入り直さない", async () => {
-    const { platform, feed, inbox } = await setupOld(() => new Response(RSS));
-    await runFetchFeed(platform, feed.id);
-
-    expect(await runFetchFeed(platform, feed.id)).toEqual({ status: "fetched", inserted: 0 });
-    expect(await inbox()).not.toContain("1");
-  });
-
-  it("304 でも、取得に失敗しても、受信箱は片付ける", async () => {
-    for (const response of [
-      () => new Response(null, { status: 304 }),
-      () => new Response("oops", { status: 500 }),
-    ]) {
-      const { platform, feed, inbox, guids } = await setupOld(response);
-
-      await runFetchFeed(platform, feed.id);
-
-      expect(await inbox()).toEqual([]);
-      // フィードに載っているかが分からないので、記事の行は消さない
-      expect(await guids()).toEqual(["1", "gone"]);
-      expect((await getFeed(platform.db, feed.id))?.cleanedUntil?.getTime()).toBeGreaterThan(
-        daysAgo(95).getTime(),
-      );
-    }
-  });
-
-  it("解析の上限まで記事が載っているフィードでは、記事の行を消さない", async () => {
-    // 上限より後ろに、まだ載っているかもしれないため
-    const items = Array.from(
-      { length: MAX_ITEMS },
-      (_, i) => `<item><title>t${i}</title><link>https://blog.example/${i}</link></item>`,
-    ).join("");
-    const { platform, feed, inbox, guids } = await setupOld(
-      () => new Response(`<rss version="2.0"><channel><title>b</title>${items}</channel></rss>`),
-    );
-
-    await runFetchFeed(platform, feed.id);
-
-    expect(await inbox()).not.toContain("gone");
-    expect(await guids()).toContain("gone");
-  });
-
-  it("スターを付けた記事は、受信箱にも記事の表にも残す", async () => {
-    const { platform, feed, inbox, guids } = await setupOld(() => new Response(RSS));
-    await setArticleState(platform.db, {
-      userId: TEST_USER.id,
-      articleId: `${feed.id}-gone`,
-      starred: true,
-      now: NOW,
-    });
-
-    await runFetchFeed(platform, feed.id);
-
-    expect(await inbox()).toContain("gone");
-    expect(await guids()).toContain("gone");
   });
 });

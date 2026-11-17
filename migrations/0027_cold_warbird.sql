@@ -1,0 +1,1 @@
+CREATE INDEX `articles_feed_id_current_idx` ON `articles` (`feed_id`,`in_current_feed`);

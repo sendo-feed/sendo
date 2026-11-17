@@ -1,28 +1,18 @@
-import { type ArticleInput, insertArticles } from "../db/articles";
+import { type ArticleInput, insertArticles, recordCurrentFeed } from "../db/articles";
 import {
   clearUsedContentNotes,
   findExistingGuids,
   MAX_CONTENT_BYTES,
   noteContentKeys,
+  reserveContents,
 } from "../db/content";
 import { getFeed, recordFeedIcon, recordFetchFailure, recordFetchSuccess } from "../db/feeds";
 import { deliverNewArticles } from "../db/inbox";
-import {
-  CLEAN_UP_CATCH_UP,
-  deleteExpiredArticles,
-  planFeedCleanUp,
-  removeExpiredFromInbox,
-} from "../db/retention";
 import type { Feed } from "../db/schema";
+import { isStorageLimitError, readStorageUsage } from "../db/storage";
 import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
 import { findFeedIcon } from "../fetcher/find-icon";
-import {
-  htmlToText,
-  MAX_ITEMS,
-  type ParsedItem,
-  ParseFeedError,
-  parseFeed,
-} from "../fetcher/parse-feed";
+import { htmlToText, type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
 import {
@@ -31,6 +21,7 @@ import {
   nextFetchInterval,
   retryAfterWait,
 } from "./fetch-interval";
+import { canStoreArticles, measureExistingContents, reportStorageFull } from "./storage";
 
 /*
  * 取得の間隔は、フィードごとに記事の出るペースから決める。設定の間隔（platform.fetchConfig）は、
@@ -50,7 +41,8 @@ export type FetchFeedOutcome =
   | { status: "fetched"; inserted: number }
   | { status: "not-modified" }
   | { status: "failed"; error: string }
-  | { status: "missing" };
+  | { status: "missing" }
+  | { status: "storage-full" };
 
 /**
  * フィードを1つ取得して、新しい記事を保存する。あわせて、古い記事を片付ける
@@ -76,16 +68,8 @@ export async function runFetchFeed(
   // 前回の取得で決めた間隔。片付けの幅と、失敗したときに延ばす間隔のもとにする
   const intervalMs = currentFetchInterval(feed, minIntervalMs);
 
-  // 期間を過ぎた記事を、受信箱から片付ける。取得の結果によらない。片付けた位置は、取得の結果と
-  // 一緒に記録する（記録の前に落ちても、やり直せば同じ範囲をもう一度片付けるだけ）。進める幅は、
-  // このフィードの取得の間隔に合わせる（間隔の長いフィードでも、取り込みに追いつくように）
-  const cleanUp = planFeedCleanUp(feed, {
-    now: startedAt,
-    retentionMs: platform.retentionConfig.articleMs,
-    stepMs: CLEAN_UP_CATCH_UP * intervalMs,
-  });
-  if (cleanUp) await removeExpiredFromInbox(db, { feedId: feed.id, window: cleanUp });
-  const cleanedUntil = cleanUp?.until ?? feed.cleanedUntil;
+  await measureExistingContents(platform);
+  const canStore = await canStoreArticles(platform);
 
   try {
     const result = await fetchFeed(feed.url, {
@@ -110,7 +94,6 @@ export async function runFetchFeed(
         fetchIntervalMs: nextIntervalMs,
         etag: feed.etag,
         lastModified: feed.lastModified,
-        cleanedUntil: cleanUp?.until,
       });
       // フィードの中身は読んでいないので、フィード自身のアイコンは分からない。サイトから探す
       await refreshIcon(platform, feed, { siteUrl: feed.siteUrl, feedIconUrl: null }, startedAt);
@@ -119,6 +102,16 @@ export async function runFetchFeed(
 
     const parsed = parseFeed(result.body, result.url);
     const rows = await Promise.all(parsed.items.map((item) => toArticle(feed.id, item, startedAt)));
+    await recordCurrentFeed(
+      db,
+      feed.id,
+      rows.map((row) => row.guid),
+      parsed.items.length,
+    );
+    if (!canStore) {
+      await platform.jobs.enqueue([{ type: "clean-up" }]);
+      return { status: "storage-full" };
+    }
     // 新しい記事の本文を、記事の行を入れる前に置く（docs/decisions/content.md の 4）
     const contentKeys = await storeContents(platform, {
       feedId: feed.id,
@@ -135,16 +128,23 @@ export async function runFetchFeed(
     // （docs/decisions/content.md の 10）。ここで落ちて積めなくても、読者が開いたときに抜く
     await enqueuePageContents(platform, insertedArticles);
 
-    // 片付けた範囲までの記事のうち、どの受信箱にも残っておらず、フィードにもう載っていないものを
-    // 消す。フィードに載っている記事を消すと、次の取得で新しい記事として入り直すため。
-    // 解析は MAX_ITEMS 件で打ち切るので、そこまで届いたら、後ろにまだ載っているかもしれない。
-    // そのときは記事の行を消さない（受信箱からは消える。行は、件数が減ったときに消える）
-    if (cleanedUntil && parsed.items.length < MAX_ITEMS) {
-      await deleteExpiredArticles(db, {
-        feedId: feed.id,
-        until: cleanedUntil,
-        currentGuids: rows.map((row) => row.guid),
-      });
+    // フィードに今載っているかは、解析できたときだけ記録する。打ち切った場合は、
+    // 見えなかった記事を「外れた」と扱わない（MAX_ITEMS 件での打ち切りも含む）。
+    const existing =
+      insertedArticles.length === rows.length
+        ? null
+        : await findExistingGuids(db, {
+            feedId: feed.id,
+            guids: rows.map((row) => row.guid),
+          });
+    const usage = await readStorageUsage(db);
+    if (existing !== null && existing.size < new Set(rows.map((row) => row.guid)).size) {
+      reportStorageFull(platform, usage);
+      await platform.jobs.enqueue([{ type: "clean-up" }]);
+      return { status: "storage-full" };
+    }
+    if (usage.bytes >= platform.retentionConfig.maxBytes * 0.9) {
+      await platform.jobs.enqueue([{ type: "clean-up" }]);
     }
 
     // 今回入った記事も含めて、間隔を決め直す
@@ -162,7 +162,6 @@ export async function runFetchFeed(
       lastModified: result.lastModified,
       title: parsed.title,
       siteUrl: parsed.siteUrl,
-      cleanedUntil: cleanUp?.until,
     });
     // フィードの名前やサイトの URL が変わると、購読の変更番号はトリガーが進める
     // （migrations/0003_received_seq_and_feed_trigger.sql。同期でクライアントに伝わる）
@@ -174,6 +173,11 @@ export async function runFetchFeed(
     );
     return { status: "fetched", inserted: insertedArticles.length };
   } catch (error) {
+    if (isStorageLimitError(error)) {
+      reportStorageFull(platform);
+      await platform.jobs.enqueue([{ type: "clean-up" }]);
+      return { status: "storage-full" };
+    }
     if (!(error instanceof FetchFeedError || error instanceof ParseFeedError)) throw error;
 
     const errorCount = feed.errorCount + 1;
@@ -194,7 +198,6 @@ export async function runFetchFeed(
       nextFetchAt: new Date(nextFetchAt),
       errorCount,
       error: message,
-      cleanedUntil: cleanUp?.until,
     });
     return { status: "failed", error: message };
   }
@@ -278,8 +281,16 @@ async function storeContents(
 
   const keys = contents.map(({ key }) => key);
   await noteContentKeys(db, keys);
-  await Promise.all(contents.map(({ key, html }) => platform.content.put(key, html)));
-  for (const { row, key } of contents) row.contentKey = key;
+  const reserved = await reserveContents(
+    db,
+    contents.map(({ key, html }) => ({
+      key,
+      bytes: encoder.encode(html).length,
+    })),
+  );
+  const stored = contents.filter(({ key }) => reserved.has(key));
+  await Promise.all(stored.map(({ key, html }) => platform.content.put(key, html)));
+  for (const { row, key } of stored) row.contentKey = key;
   return keys;
 }
 

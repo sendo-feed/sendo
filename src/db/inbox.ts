@@ -25,7 +25,7 @@ import { nextSeq } from "./seq";
  */
 
 /** 受信箱の記事。共有の記事の本体と、その人の既読・スター */
-export type InboxArticle = Article & {
+export type InboxArticle = Omit<Article, "inCurrentFeed"> & {
   readAt: Date | null;
   starredAt: Date | null;
   /** 受信箱に入った時刻（DB の時計） */

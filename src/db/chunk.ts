@@ -27,9 +27,10 @@ export const RESERVED_PARAMETERS = 10;
  *
  * @param table 複数行をまとめて INSERT するときの表。全部の列が変数になると見積もって、
  *   1 行あたりの列の数で割る。null なら IN 句などで 1 件 1 変数として数える
+ * @param unboundColumns SQL のリテラルで渡し、変数を使わない列の数
  */
-export function chunked<T>(items: readonly T[], table: Table | null): T[][] {
-  const perItem = table === null ? 1 : Object.keys(getTableColumns(table)).length;
+export function chunked<T>(items: readonly T[], table: Table | null, unboundColumns = 0): T[][] {
+  const perItem = table === null ? 1 : Object.keys(getTableColumns(table)).length - unboundColumns;
   const size = Math.max(1, Math.floor((MAX_BOUND_PARAMETERS - RESERVED_PARAMETERS) / perItem));
   const chunks: T[][] = [];
   for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));

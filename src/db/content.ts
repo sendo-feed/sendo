@@ -88,7 +88,25 @@ export async function readOldContentNotes(
 export async function deleteContentNotes(db: Database, keys: readonly string[]): Promise<void> {
   if (keys.length === 0) return;
   await db.run(sql`
+    delete from content_sizes
+    where key in (select value from json_each(${JSON.stringify(keys)}))
+      and not exists (select 1 from articles where articles.content_key = content_sizes.key)
+  `);
+  await db.run(sql`
     delete from content_notes
     where key in (select value from json_each(${JSON.stringify(keys)}))
   `);
+}
+
+/** 本文を置く前に容量を確保する。上限の確認は INSERT のトリガーと同じ文の中 */
+export async function reserveContents(
+  db: Database,
+  rows: readonly { key: string; bytes: number }[],
+): Promise<Set<string>> {
+  if (rows.length === 0) return new Set();
+  const reserved = await db.all<{ key: string }>(sql`insert into content_sizes (key, bytes)
+    select json_extract(value, '$.key'), json_extract(value, '$.bytes')
+    from json_each(${JSON.stringify(rows)}) where true
+    on conflict do nothing returning key`);
+  return new Set(reserved.map(({ key }) => key));
 }

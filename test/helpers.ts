@@ -9,8 +9,8 @@ import { subscribeMany } from "../src/db/subscriptions";
 import { createAccessToken } from "../src/db/tokens";
 import type { Job } from "../src/jobs/job";
 import {
-  DEFAULT_ARTICLE_RETENTION_DAYS,
   DEFAULT_FETCH_INTERVAL_MINUTES,
+  DEFAULT_STORAGE_LIMIT_MIB,
   type Platform,
 } from "../src/platform";
 import { createR2ObjectStore } from "../src/platform/cloudflare";
@@ -58,7 +58,7 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
     now: () => new Date(),
     auth: { allowedEmails: new Set(), google: undefined, oauth: undefined },
     fetchConfig: { intervalMs: DEFAULT_FETCH_INTERVAL_MINUTES * 60 * 1000 },
-    retentionConfig: { articleMs: DEFAULT_ARTICLE_RETENTION_DAYS * 24 * 60 * 60 * 1000 },
+    retentionConfig: { maxBytes: DEFAULT_STORAGE_LIMIT_MIB * 1024 * 1024 },
     ...overrides,
   };
   return {

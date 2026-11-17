@@ -14,6 +14,7 @@ export { createQueueJobQueue, handleQueueBatch, type JobRunner } from "./queue";
 type SettingName =
   | "FETCH_INTERVAL_MINUTES"
   | "ARTICLE_RETENTION_DAYS"
+  | "STORAGE_LIMIT_MIB"
   | "PUBLIC_URL"
   | "READER_URL";
 
