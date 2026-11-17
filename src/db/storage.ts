@@ -60,6 +60,7 @@ export async function readEvictionCandidates(
     2048 + ${metadata} + a.reserved_inbox_bytes + a.reserved_inbox_bytes
     + coalesce((select bytes + article_bytes + 256 from content_sizes where key = a.content_key), 0)
     + coalesce((select length(cast(html as blob)) + 256 from page_contents where article_id = a.id), 0)
+    + (select count(*) * 512 from article_languages where article_id = a.id)
     + (select count(*) * 512 from user_articles u where u.article_id = a.id)
     - (select count(*) * 256 from user_articles u where u.article_id = a.id
       and not exists (select 1 from user_article_removals r where r.user_id = u.user_id and r.article_id = u.article_id))

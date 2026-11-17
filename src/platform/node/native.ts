@@ -5,7 +5,13 @@
  * モジュールは pnpm build:native で native/sendo.node に作る（イメージでは /app/native/sendo.node）。
  */
 import { createRequire } from "node:module";
-import type { ExtractedPage, PageContentExtractor, PageImageLink } from "..";
+import type {
+  ExtractedPage,
+  LanguageDetectionResult,
+  LanguageDetector,
+  PageContentExtractor,
+  PageImageLink,
+} from "..";
 
 interface MediaResult {
   links: PageImageLink[];
@@ -17,6 +23,8 @@ interface MediaResult {
 
 /** crates/node が出す関数（napi-rs が名前を camelCase にする） */
 export interface NativeModule {
+  languageDetectorInfo(): { detector: string; pipelineRevision: number };
+  detectArticleLanguage(html: string): Promise<LanguageDetectionResult>;
   pageImageLinks(html: string, url: string): Promise<MediaResult>;
   pageImageCandidates(
     bytes: Uint8Array,
@@ -35,6 +43,13 @@ export interface NativeModule {
     contentType: string | null,
     url: string,
   ): Promise<ExtractedPage | null>;
+}
+
+export function createLanguageDetector(native: NativeModule): LanguageDetector {
+  return {
+    ...native.languageDetectorInfo(),
+    detect: (html) => native.detectArticleLanguage(html),
+  };
 }
 
 /** ネイティブのモジュールを読み込む。なければ例外 */

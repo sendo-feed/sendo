@@ -40,6 +40,18 @@ export async function enqueueDueFeeds(
 /** 1 日 1 回の片付けを積む時刻（UTC の時）。日本時間の 3 時 */
 export const CLEAN_UP_HOUR_UTC = 18;
 
+/** 未処理分は次回も拾えるので、投入の失敗で取得や起動を止めない */
+export async function enqueueLanguageDetection(
+  platform: Pick<Platform, "jobs" | "languageDetection">,
+): Promise<void> {
+  if (!platform.languageDetection) return;
+  try {
+    await platform.jobs.enqueue([{ type: "detect-article-languages" }]);
+  } catch (error) {
+    console.warn("could not enqueue language detection; retrying at the next schedule", { error });
+  }
+}
+
 /**
  * 定期実行の時刻が、1 日 1 回の片付けの時刻なら、片付けの仕事を積む（docs/decisions/retention.md の 4）。
  *
@@ -70,7 +82,7 @@ export async function enqueueDailyCleanUp(
  * @param scheduledTime 定期実行が予定された時刻
  */
 export async function runScheduled(
-  platform: Pick<Platform, "db" | "jobs" | "now">,
+  platform: Pick<Platform, "db" | "jobs" | "now" | "languageDetection">,
   scheduledTime: Date,
 ): Promise<void> {
   if (await enqueueDailyCleanUp(platform, scheduledTime)) {
@@ -78,4 +90,5 @@ export async function runScheduled(
   }
   const count = await enqueueDueFeeds(platform);
   if (count > 0) console.info("enqueued due feeds", { count });
+  await enqueueLanguageDetection(platform);
 }

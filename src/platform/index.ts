@@ -115,6 +115,21 @@ export interface PageContentExtractor {
   }): Promise<ExtractedPage | null>;
 }
 
+export interface LanguageDetectionResult {
+  language: string;
+  status: "detected" | "insufficient" | "uncertain";
+  score: number;
+  margin: number;
+  inputHash: string;
+}
+
+/** LLM や外部への通信を使わず、本文の自然文を判定する */
+export interface LanguageDetector {
+  detector: string;
+  pipelineRevision: number;
+  detect(html: string): Promise<LanguageDetectionResult>;
+}
+
 /** アプリが実行環境から受け取るもの */
 export interface Platform {
   db: Database;
@@ -133,6 +148,8 @@ export interface Platform {
    */
   /** 記事のページから本文を抜く。コンテナ版だけ */
   pageContent?: PageContentExtractor;
+  /** 記事の主言語を調べる。コンテナ版だけ */
+  languageDetection?: LanguageDetector;
 }
 
 /** 取得の間隔の既定（分） */

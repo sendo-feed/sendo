@@ -371,12 +371,12 @@ describe("開いたときに抜く（API）", () => {
     expect(t.pageFetches()).toBe(0);
 
     const features = await requestApp(t.platform, "/api/v1/features", { token: t.user.token });
-    expect(await features.json()).toEqual({ pageContent: false });
+    expect(await features.json()).toEqual({ pageContent: false, languageDetection: false });
   });
 
   it("抜く処理を持つ版（コンテナ版）では、使える機能の一覧で true", async () => {
     const t = await setUp();
     const features = await requestApp(t.platform, "/api/v1/features", { token: t.user.token });
-    expect(await features.json()).toEqual({ pageContent: true });
+    expect(await features.json()).toEqual({ pageContent: true, languageDetection: false });
   });
 });

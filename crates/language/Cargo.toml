@@ -1,0 +1,13 @@
+[package]
+name = "sendo-language"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "翻訳の前に記事の主言語を判定する"
+
+[dependencies]
+dom_query = "=0.24.0"
+lingua = "=1.8.0"
+regex = "=1.13.1"
+sha2 = "=0.10.9"

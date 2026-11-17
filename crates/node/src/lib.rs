@@ -11,6 +11,59 @@ use napi::{Env, Error, Result, Status, Task};
 use napi_derive::napi;
 use sendo_extract::{ExtractError, Extracted};
 
+#[napi(object)]
+pub struct LanguageDetectorInfo {
+    pub detector: String,
+    pub pipeline_revision: u32,
+}
+
+#[napi]
+pub fn language_detector_info() -> LanguageDetectorInfo {
+    LanguageDetectorInfo {
+        detector: sendo_language::DETECTOR.into(),
+        pipeline_revision: sendo_language::PIPELINE_REVISION,
+    }
+}
+
+#[napi(object)]
+pub struct ArticleLanguage {
+    pub language: String,
+    pub status: String,
+    pub score: f64,
+    pub margin: f64,
+    pub input_hash: String,
+}
+
+pub struct LanguageTask {
+    html: String,
+}
+
+impl Task for LanguageTask {
+    type Output = sendo_language::Detection;
+    type JsValue = ArticleLanguage;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        catch_unwind(AssertUnwindSafe(|| sendo_language::detect(&self.html)))
+            .map_err(|_| Error::new(Status::GenericFailure, "language detection panicked"))?
+            .map_err(|error| Error::new(Status::InvalidArg, error))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(ArticleLanguage {
+            language: output.language,
+            status: output.status,
+            score: output.score,
+            margin: output.margin,
+            input_hash: output.input_hash,
+        })
+    }
+}
+
+#[napi]
+pub fn detect_article_language(html: String) -> AsyncTask<LanguageTask> {
+    AsyncTask::new(LanguageTask { html })
+}
+
 /// 記事のページから抜いた本文（サニタイズしていない HTML）
 #[napi(object)]
 pub struct ExtractedPage {
