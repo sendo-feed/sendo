@@ -125,13 +125,16 @@ describe("主言語の背景判定と保存", () => {
     expect(languageDetection.detect).toHaveBeenCalledTimes(12);
   });
 
-  it("先頭の本文が読めなくても後ろの記事を処理し、本文が戻れば再判定する", async () => {
+  it("本文がnullでも読み取り例外でも後ろの記事へ進み、復旧すれば再判定する", async () => {
     const languageDetection = detector();
     const { platform, enqueued } = createTestPlatform({ languageDetection });
     const ids = Array.from({ length: 11 }, (_, n) => `body${String(n).padStart(2, "0")}`);
     await seed(platform, ids, true);
     const get = vi.spyOn(platform.content, "get").mockResolvedValue(null);
-    get.mockImplementation(async (key) => (key === "feed/body10" ? "<p>最後の本文</p>" : null));
+    get.mockImplementation(async (key) => {
+      if (key === "feed/body05") throw Object.assign(new Error("read failure"), { code: "EIO" });
+      return key === "feed/body10" ? "<p>最後の本文</p>" : null;
+    });
     await runJob(platform, job);
     const next = enqueued[0];
     if (!next) throw new Error("missing continuation");
@@ -141,6 +144,7 @@ describe("主言語の背景判定と保存", () => {
     get.mockResolvedValue("<p>復旧した本文</p>");
     await runJob(platform, job);
     expect(await getArticleLanguage(platform.db, "body00", "feed")).toBeDefined();
+    expect(await getArticleLanguage(platform.db, "body05", "feed")).toBeDefined();
   });
 
   it("同じ版は更新せず、新しい版のあとに古い保存が来ても戻さない", async () => {

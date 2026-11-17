@@ -47,12 +47,17 @@ export async function detectArticleLanguages(
         .where(eq(articles.id, articleId))
         .get();
       if (!article) continue;
-      html =
-        source === "feed"
-          ? article.contentKey === null
-            ? null
-            : await platform.content.get(article.contentKey)
-          : `<p>${escapeHtml(article.title ?? "")} ${escapeHtml(article.summary ?? "")}</p>`;
+      if (source === "feed") {
+        try {
+          html =
+            article.contentKey === null ? null : await platform.content.get(article.contentKey);
+        } catch (error) {
+          console.warn("could not read article language input", { articleId, source, error });
+          continue;
+        }
+      } else {
+        html = `<p>${escapeHtml(article.title ?? "")} ${escapeHtml(article.summary ?? "")}</p>`;
+      }
     }
     // 本文の置き場が一時的に読めない場合、空の入力として判定済みにしない。
     if (html === null) continue;
