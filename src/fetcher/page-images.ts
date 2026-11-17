@@ -21,7 +21,7 @@ type Resource = {
 
 type Options = {
   fetch: typeof fetch;
-  isAllowed: (url: URL, fetcher: typeof fetch) => Promise<boolean>;
+  isAllowed: (url: URL, fetcher: typeof fetch, signal: AbortSignal) => Promise<boolean>;
   /** 記事ページと同じ HostGate に並ぶ。robots とリダイレクトもこの中で行う */
   run: <T>(url: string, task: () => Promise<T>) => Promise<T>;
 };
@@ -90,7 +90,7 @@ export async function resolvePageImages(
         fetch: resourceFetch,
         signal,
         maxBytes: Math.min(remainingBytes, PAGE_IMAGE_LIMITS.resourceBytes),
-        isAllowed: (target) => options.isAllowed(target, fetcher),
+        isAllowed: (target) => options.isAllowed(target, fetcher, signal),
       };
       const result = await fetchImageOrPage(target, opts);
       const bytes =

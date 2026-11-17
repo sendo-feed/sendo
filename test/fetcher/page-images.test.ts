@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fetchImageOrPage } from "../../src/fetcher/fetch-image";
 import { PAGE_IMAGE_LIMITS, resolvePageImages } from "../../src/fetcher/page-images";
+import { RobotsCache } from "../../src/fetcher/robots";
 import type { PageImageProcessor } from "../../src/platform";
 import { fakeFetch } from "../helpers";
 
@@ -171,5 +172,34 @@ describe("本文の画像ページ", () => {
       body,
     );
     expect(f.calls).toHaveLength(5);
+  });
+  it("robots のリダイレクト中に回数の予算が尽きても、別の記事を拒否する結果を残さない", async () => {
+    const cache = new RobotsCache();
+    const p = processor();
+    p.links = async () =>
+      Array.from({ length: 12 }, (_, i) => ({
+        thumbnail: `https://t-${i}.example/thumb.png`,
+        target: `https://v-${i}.example/view`,
+      }));
+    p.compare = async () => ({ eligible: true, matches: false });
+    const f = fakeFetch((url) =>
+      url.pathname.startsWith("/robots")
+        ? new Response(null, { status: 302, headers: { location: "/robots-next.txt" } })
+        : image(),
+    );
+    await resolvePageImages(body, "https://news.example/post", p, {
+      ...options(f.fetch),
+      isAllowed: (url, fetcher, signal) =>
+        cache.isAllowed(url, { fetch: fetcher, now: new Date(), signal }),
+    });
+    expect(f.calls).toHaveLength(PAGE_IMAGE_LIMITS.requests);
+    const healthy = fakeFetch(() => new Response(null, { status: 404 }));
+    expect(
+      await cache.isAllowed(new URL("https://v-2.example/next-article"), {
+        fetch: healthy.fetch,
+        now: new Date(),
+      }),
+    ).toBe(true);
+    expect(healthy.calls).toHaveLength(1);
   });
 });

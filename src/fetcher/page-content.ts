@@ -196,17 +196,18 @@ async function extract(
     return null;
   }
   if (extractor.images) {
+    const original = html;
     html = await resolvePageImages(html, page.url, extractor.images, {
       fetch: platform.fetch,
-      isAllowed: (target, fetcher) =>
-        robots.isAllowed(target, { fetch: fetcher, now: platform.now() }),
+      isAllowed: (target, fetcher, signal) =>
+        robots.isAllowed(target, { fetch: fetcher, now: platform.now(), signal }),
       run: (url, task) => {
         if (!URL.canParse(url)) return task();
         return hostGate.run(new URL(url).hostname, ticket, task);
       },
     });
     html = sanitizeHtml(html, page.url);
-    if (new TextEncoder().encode(html).byteLength > MAX_CONTENT_BYTES) return null;
+    if (new TextEncoder().encode(html).byteLength > MAX_CONTENT_BYTES) html = original;
   }
   return html;
 }

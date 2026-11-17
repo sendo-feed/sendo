@@ -591,3 +591,30 @@ describe("RobotsCache", () => {
     expect(calls).toHaveLength(4);
   });
 });
+
+describe("探索側の中断と共有キャッシュ", () => {
+  it("中断した探索の仕事に、通常の本文取得を合流させない", async () => {
+    const cache = new RobotsCache();
+    const controller = new AbortController();
+    let stop: (() => void) | undefined;
+    const interrupted = fakeFetch(async () => {
+      await new Promise<void>((resolve) => {
+        stop = resolve;
+      });
+      throw new Error("local budget exhausted");
+    });
+    const target = new URL("https://image.example/article");
+    const scoped = cache.isAllowed(target, {
+      fetch: interrupted.fetch,
+      now: new Date(),
+      signal: controller.signal,
+    });
+    const healthy = fakeFetch(() => new Response(null, { status: 404 }));
+    expect(await cache.isAllowed(target, { fetch: healthy.fetch, now: new Date() })).toBe(true);
+    controller.abort();
+    stop?.();
+    expect(await scoped).toBe(false);
+    expect(await cache.isAllowed(target, { fetch: healthy.fetch, now: new Date() })).toBe(true);
+    expect(healthy.calls).toHaveLength(1);
+  });
+});
