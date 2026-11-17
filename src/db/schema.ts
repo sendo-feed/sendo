@@ -334,6 +334,8 @@ export const articles = sqliteTable(
     contentKey: text("content_key"),
     /** 直近の完全なフィードに載っているか。容量による削除で入り直すことを防ぐ */
     inCurrentFeed: integer("in_current_feed", { mode: "boolean" }).notNull().default(true),
+    /** 配布を終えるまで確保する受信箱の容量。本文の有無によらず取り込みと同じ文で確保する */
+    reservedInboxBytes: integer("reserved_inbox_bytes").notNull().default(0),
   },
   (t) => [
     // 本文のある記事だけを索引に入れる（片付けが、名前から記事の行があるかを引く）
@@ -588,6 +590,8 @@ export const contentSizes = sqliteTable(
   {
     key: text("key").primaryKey(),
     bytes: integer("bytes"),
+    /** 本文と一緒に確保する記事情報と受信箱の分。記事を入れる同じ文で引き渡す */
+    articleBytes: integer("article_bytes").notNull().default(0),
   },
   (t) => [index("content_sizes_unmeasured_idx").on(t.bytes).where(sql`bytes is null`)],
 );

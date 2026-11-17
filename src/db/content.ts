@@ -101,11 +101,17 @@ export async function deleteContentNotes(db: Database, keys: readonly string[]):
 /** 本文を置く前に容量を確保する。上限の確認は INSERT のトリガーと同じ文の中 */
 export async function reserveContents(
   db: Database,
-  rows: readonly { key: string; bytes: number }[],
+  rows: readonly { key: string; bytes: number; articleBytes?: number; feedId?: string }[],
 ): Promise<Set<string>> {
   if (rows.length === 0) return new Set();
-  const reserved = await db.all<{ key: string }>(sql`insert into content_sizes (key, bytes)
-    select json_extract(value, '$.key'), json_extract(value, '$.bytes')
+  const reserved = await db.all<{
+    key: string;
+  }>(sql`insert into content_sizes (key, bytes, article_bytes)
+    select json_extract(value, '$.key'), json_extract(value, '$.bytes'),
+      coalesce(json_extract(value, '$.articleBytes'), 0) + case
+        when json_extract(value, '$.feedId') is null then 0
+        else 512 * (select count(*) from subscriptions s
+          where s.feed_id = json_extract(value, '$.feedId') and s.deleted_at is null) end
     from json_each(${JSON.stringify(rows)}) where true
     on conflict do nothing returning key`);
   return new Set(reserved.map(({ key }) => key));

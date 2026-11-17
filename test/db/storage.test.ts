@@ -297,6 +297,11 @@ describe("受信箱の配布と容量上限", () => {
     await insertArticles(platform.db, [
       { id: "pending", feedId: feed.id, guid: "pending", publishedAt: NOW },
     ]);
+    // 移行した旧記事のように、配布の予約を持たないケース。
+    await platform.db
+      .update(articles)
+      .set({ reservedInboxBytes: 0 })
+      .where(eq(articles.id, "pending"));
     const usage = await readStorageUsage(platform.db);
     await configureStorage(platform.db, usage.bytes + 100);
     await expect(deliverNewArticles(platform.db, { feedId: feed.id })).rejects.toThrow();
@@ -402,5 +407,94 @@ describe("本文の容量不足からの再試行", () => {
     expect(await platform.content.get(row?.contentKey ?? "")).toBe(html);
     await runFetchFeed(platform, feed.id);
     expect(await articleIds(platform)).toHaveLength(1);
+  });
+});
+
+describe("削除目標の容量見積もり", () => {
+  it("日本語の長いタイトルも容量に含め、必要以上の件数を消さない", async () => {
+    const { platform } = createTestPlatform();
+    await seed(
+      platform,
+      Array.from({ length: 20 }, (_, i) => `a${i}`),
+    );
+    await platform.db.update(articles).set({ title: "あ".repeat(5000) });
+    const usage = await readStorageUsage(platform.db);
+    platform.retentionConfig.maxBytes = Math.ceil(usage.bytes / 0.95);
+    const result = await reclaimStorage(platform);
+    expect(result.articles).toBeGreaterThan(0);
+    expect(result.articles).toBeLessThan(5);
+    expect(await articleIds(platform)).toContain("a19");
+  });
+});
+
+describe("記事と受信箱を含む容量予約", () => {
+  it("本文だけで容量を使い切らず、保存できる記事を受信箱まで届ける", async () => {
+    const html = `<p>${"x".repeat(6900)}</p>`;
+    const items = ["one", "two"]
+      .map(
+        (id) =>
+          `<item><guid>${id}</guid><title>${id}</title><description><![CDATA[${html}]]></description></item>`,
+      )
+      .join("");
+    const { fetch } = fakeFetch(
+      () =>
+        new Response(`<rss version="2.0"><channel><title>test</title>${items}</channel></rss>`, {
+          headers: { etag: '"bundle"' },
+        }),
+    );
+    const { platform } = createTestPlatform({ fetch });
+    const feed = await subscribeFeed(platform, {});
+    platform.retentionConfig.maxBytes = 16 * 1024;
+    expect(await runFetchFeed(platform, feed.id)).toEqual({ status: "storage-full" });
+    expect(await articleIds(platform)).toHaveLength(1);
+    expect(await platform.db.select().from(userArticles)).toHaveLength(1);
+    expect((await readStorageUsage(platform.db)).bytes).toBeLessThanOrEqual(16 * 1024);
+    expect((await platform.db.select().from(articles))[0]?.reservedInboxBytes).toBe(0);
+    platform.retentionConfig.maxBytes = 32 * 1024;
+    expect(await runFetchFeed(platform, feed.id)).toEqual({ status: "fetched", inserted: 1 });
+    expect(await platform.db.select().from(userArticles)).toHaveLength(2);
+    for (const row of await platform.db.select().from(articles)) {
+      expect(await platform.content.get(row.contentKey ?? "")).toBe(html);
+    }
+  });
+
+  it("本文のない記事も、受信箱の分まで確保してから取り込む", async () => {
+    const items = Array.from(
+      { length: 20 },
+      (_, i) => `<item><guid>a${i}</guid><title>title</title></item>`,
+    ).join("");
+    const { fetch } = fakeFetch(
+      () => new Response(`<rss version="2.0"><channel><title>test</title>${items}</channel></rss>`),
+    );
+    const { platform } = createTestPlatform({ fetch });
+    const feed = await subscribeFeed(platform, {});
+    platform.retentionConfig.maxBytes = 16 * 1024;
+    expect(await runFetchFeed(platform, feed.id)).toEqual({ status: "storage-full" });
+    const saved = await articleIds(platform);
+    expect(saved.length).toBeGreaterThan(0);
+    expect(saved.length).toBeLessThan(20);
+    expect(await platform.db.select().from(userArticles)).toHaveLength(saved.length);
+    expect((await readStorageUsage(platform.db)).bytes).toBeLessThanOrEqual(16 * 1024);
+  });
+
+  it("記事保存後に中断しても、確保した受信箱を上限内で配り直す", async () => {
+    const { fetch } = fakeFetch(
+      () =>
+        new Response(
+          '<rss version="2.0"><channel><title>test</title><item><guid>pending</guid><title>title</title></item></channel></rss>',
+        ),
+    );
+    const { platform } = createTestPlatform({ fetch });
+    const feed = await subscribeFeed(platform, {});
+    await insertArticles(platform.db, [
+      { id: "pending", feedId: feed.id, guid: "pending", publishedAt: NOW },
+    ]);
+    const before = await readStorageUsage(platform.db);
+    platform.retentionConfig.maxBytes = before.bytes;
+    expect((await platform.db.select().from(articles))[0]?.reservedInboxBytes).toBe(512);
+    await runFetchFeed(platform, feed.id);
+    expect(await platform.db.select().from(userArticles)).toHaveLength(1);
+    expect((await readStorageUsage(platform.db)).bytes).toBe(before.bytes);
+    expect((await platform.db.select().from(articles))[0]?.reservedInboxBytes).toBe(0);
   });
 });

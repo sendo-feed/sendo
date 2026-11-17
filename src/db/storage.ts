@@ -40,9 +40,29 @@ export async function readEvictionCandidates(
   limit: number,
   desiredBytes = Number.POSITIVE_INFINITY,
 ): Promise<string[]> {
+  // トリガーの集計と同じ文字列のバイト数を使い、長い日本語の項目を固定 2 KiB と見積もらない。
+  const fields = [
+    "id",
+    "feed_id",
+    "guid",
+    "url",
+    "title",
+    "summary",
+    "author",
+    "thumbnail_url",
+    "content_key",
+  ];
+  const metadata = sql.join(
+    fields.map((field) => sql`coalesce(length(cast(a.${sql.identifier(field)} as blob)), 0)`),
+    sql` + `,
+  );
   const rows = await db.all<{ id: string; bytes: number }>(sql`select a.id,
-    2048 + coalesce((select bytes from content_sizes where key = a.content_key), 0)
+    2048 + ${metadata} + a.reserved_inbox_bytes + a.reserved_inbox_bytes
+    + coalesce((select bytes + article_bytes + 256 from content_sizes where key = a.content_key), 0)
     + coalesce((select length(cast(html as blob)) + 256 from page_contents where article_id = a.id), 0)
+    + (select count(*) * 512 from user_articles u where u.article_id = a.id)
+    - (select count(*) * 256 from user_articles u where u.article_id = a.id
+      and not exists (select 1 from user_article_removals r where r.user_id = u.user_id and r.article_id = u.article_id))
     as bytes from articles a
     where ${evictable} order by a.created_at, a.id limit ${limit}`);
   const ids: string[] = [];

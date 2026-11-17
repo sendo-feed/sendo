@@ -1,4 +1,9 @@
-import { type ArticleInput, insertArticles, recordCurrentFeed } from "../db/articles";
+import {
+  type ArticleInput,
+  estimateArticleBytes,
+  insertArticles,
+  recordCurrentFeed,
+} from "../db/articles";
 import {
   clearUsedContentNotes,
   findExistingGuids,
@@ -109,6 +114,8 @@ export async function runFetchFeed(
       parsed.items.length,
     );
     if (!canStore) {
+      // 前回の取り込みが配布の前で落ちていても、確保済みの受信箱の容量で配り切れる。
+      await deliverNewArticles(db, { feedId: feed.id });
       await platform.jobs.enqueue([{ type: "clean-up" }]);
       return { status: "storage-full" };
     }
@@ -286,9 +293,11 @@ async function storeContents(
   await noteContentKeys(db, keys);
   const reserved = await reserveContents(
     db,
-    contents.map(({ key, html }) => ({
+    contents.map(({ key, html, row }) => ({
       key,
       bytes: encoder.encode(html).length,
+      articleBytes: estimateArticleBytes({ ...row, contentKey: key }),
+      feedId: row.feedId,
     })),
   );
   const stored = contents.filter(({ key }) => reserved.has(key));

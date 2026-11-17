@@ -11,7 +11,9 @@ import { articles, type NewArticle } from "./schema";
  */
 
 /** 記事を入れるときの値。createdAt を省くと、DB の時計で INSERT した時刻になる */
-export type ArticleInput = Omit<NewArticle, "createdAt"> & { createdAt?: Date };
+export type ArticleInput = Omit<NewArticle, "createdAt" | "reservedInboxBytes"> & {
+  createdAt?: Date;
+};
 
 /** アイテムの ID の上限（含まない）。D1 から JavaScript の数で受け取っても丸められない範囲 */
 export const ITEM_ID_LIMIT = 2 ** 53;
@@ -40,13 +42,14 @@ export async function insertArticles(
   rows: readonly ArticleInput[],
 ): Promise<{ id: string; url: string | null }[]> {
   const inserted: { id: string; url: string | null }[] = [];
-  for (const chunk of chunked(rows, articles, 1)) {
+  for (const chunk of chunked(rows, articles, 2)) {
     const result = await db
       .insert(articles)
       .values(
         chunk.map((row) => ({
           ...row,
           inCurrentFeed: row.inCurrentFeed === false ? sql`0` : sql`1`,
+          reservedInboxBytes: sql`0`,
           createdAt: row.createdAt ?? DB_NOW_MS,
           itemId: row.itemId ?? randomItemId(),
         })),
@@ -105,4 +108,23 @@ export async function recordCurrentFeed(
     select id from articles where feed_id = ${feedId}
       and guid in (select value from json_each(${guidsJson})) and in_current_feed = 0
   )`);
+}
+
+/** 集計トリガーと同じ、記事情報の UTF-8 と行・索引の見積もり。本文の予約で先に確保する */
+export function estimateArticleBytes(row: ArticleInput): number {
+  const encoder = new TextEncoder();
+  return (
+    2048 +
+    [
+      row.id,
+      row.feedId,
+      row.guid,
+      row.url,
+      row.title,
+      row.summary,
+      row.author,
+      row.thumbnailUrl,
+      row.contentKey,
+    ].reduce<number>((bytes, value) => bytes + encoder.encode(value ?? "").length, 0)
+  );
 }

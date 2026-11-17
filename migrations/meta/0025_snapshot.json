@@ -1,6 +1,6 @@
 {
-  "id": "17d992f9-74d4-401b-96f9-688241976ee3",
-  "prevId": "043dca0a-2957-4f82-a4e4-64b7c2593f2d",
+  "id": "ff659778-7b21-4afb-a58a-abfa43365110",
+  "prevId": "d9c3a81e-ffc8-4bf6-87db-361569d384ad",
   "version": "6",
   "dialect": "sqlite",
   "tables": {
@@ -227,6 +227,14 @@
           "notNull": true,
           "autoincrement": false,
           "default": true
+        },
+        "reserved_inbox_bytes": {
+          "name": "reserved_inbox_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
         }
       },
       "indexes": {
@@ -274,6 +282,14 @@
           "columns": [
             "created_at",
             "id"
+          ],
+          "isUnique": false
+        },
+        "articles_feed_id_current_idx": {
+          "name": "articles_feed_id_current_idx",
+          "columns": [
+            "feed_id",
+            "in_current_feed"
           ],
           "isUnique": false
         }
@@ -442,9 +458,26 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "article_bytes": {
+          "name": "article_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
         }
       },
-      "indexes": {},
+      "indexes": {
+        "content_sizes_unmeasured_idx": {
+          "name": "content_sizes_unmeasured_idx",
+          "columns": [
+            "bytes"
+          ],
+          "where": "bytes is null",
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -1354,6 +1387,45 @@
           "notNull": true,
           "autoincrement": false,
           "default": 268435456
+        },
+        "reclaiming": {
+          "name": "reclaiming",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "eviction_day": {
+          "name": "eviction_day",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": -1
+        },
+        "eviction_batches": {
+          "name": "eviction_batches",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "reclaim_token": {
+          "name": "reclaim_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "reclaim_until": {
+          "name": "reclaim_until",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
         }
       },
       "indexes": {},

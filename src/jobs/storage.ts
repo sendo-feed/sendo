@@ -77,7 +77,7 @@ export async function reclaimStorage(
     if (usage.unmeasured > 0 || !usage.reclaiming) return { inbox: 0, articles: 0 };
     const pending = await platform.db.get<{
       bytes: number;
-    }>(sql`select coalesce(sum(s.bytes), 0) as bytes
+    }>(sql`select coalesce(sum(s.bytes + s.article_bytes + 256), 0) as bytes
       from content_notes n join content_sizes s on s.key = n.key
       where not exists (select 1 from articles a where a.content_key = n.key)`);
     const desiredBytes =
