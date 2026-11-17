@@ -80,11 +80,33 @@ export interface ExtractedPage {
   textLength: number;
 }
 
+/** 本文中の画像と、その画像だけを含むリンク */
+export interface PageImageLink {
+  thumbnail: string;
+  target: string;
+}
+
+/** 画像の解析は Rust、取得は fetcher が担当する */
+export interface PageImageProcessor {
+  links(html: string, url: string): Promise<PageImageLink[]>;
+  candidates(input: {
+    bytes: Uint8Array;
+    contentType: string | null;
+    url: string;
+  }): Promise<string[]>;
+  compare(
+    thumbnail: Uint8Array,
+    candidate: Uint8Array | null,
+  ): Promise<{ eligible: boolean; matches: boolean }>;
+  replace(html: string, link: PageImageLink, replacement: string): Promise<string>;
+}
+
 /**
  * 記事のページのバイト列から本文を抜く（docs/decisions/content.md の 11、12）。コンテナ版だけが持つ
- * （Rust の dom_smoothie を napi-rs で読み込む）。外への取得はしない。本文が見つからなければ null
+ * （Rust の処理を napi-rs で読み込む）。外への取得はしない。本文が見つからなければ null
  */
 export interface PageContentExtractor {
+  images?: PageImageProcessor;
   extract(input: {
     bytes: Uint8Array;
     contentType: string | null;

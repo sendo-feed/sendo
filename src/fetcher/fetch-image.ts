@@ -1,4 +1,6 @@
+import { readLimited, TooLargeError } from "../lib/read-limited";
 import { USER_AGENT } from "./fetch-feed";
+import type { FetchedPage } from "./fetch-page";
 import { toFetchableUrl, UrlNotAllowedError } from "./url-guard";
 
 /*
@@ -12,6 +14,9 @@ export type FetchImageOptions = {
   timeoutMs?: number;
   maxBytes?: number;
   maxRedirects?: number;
+  /** ページ内の画像を探すときだけ robots.txt を確かめる */
+  isAllowed?: (url: URL) => Promise<boolean>;
+  signal?: AbortSignal;
 };
 
 export type FetchedImage = {
@@ -24,6 +29,7 @@ export type FetchedImage = {
 };
 
 export type FetchImageErrorCode =
+  | "robots_disallowed"
   | "blocked_url"
   | "http_status"
   | "not_an_image"
@@ -93,13 +99,40 @@ export function sniffImageType(head: Uint8Array): ImageContentType | null {
  * - 時間（本体を読み終えるまで）と大きさに上限を置く
  */
 export async function fetchImage(url: string, options: FetchImageOptions): Promise<FetchedImage> {
+  const resource = await fetchResource(url, options, false);
+  if ("bytes" in resource) throw new FetchImageError("not_an_image", "unexpected HTML");
+  return resource;
+}
+
+/** 本文の画像のリンク先を 1 段だけ調べる。HTML は 3MiB まで。 */
+export function fetchImageOrPage(
+  url: string,
+  options: FetchImageOptions,
+): Promise<FetchedImage | FetchedPage> {
+  return fetchResource(url, options, true);
+}
+
+async function fetchResource(
+  url: string,
+  options: FetchImageOptions,
+  allowHtml: boolean,
+): Promise<FetchedImage | FetchedPage> {
   const { timeoutMs, maxBytes, maxRedirects } = { ...DEFAULTS, ...options };
-  const signal = AbortSignal.timeout(timeoutMs);
-  const headers = { accept: "image/*", "user-agent": USER_AGENT };
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout;
+  const headers = {
+    accept: allowHtml ? "image/*,text/html;q=0.9,application/xhtml+xml;q=0.9" : "image/*",
+    "user-agent": USER_AGENT,
+  };
 
   let current = guard(url);
   try {
     for (let redirects = 0; ; redirects++) {
+      signal.throwIfAborted();
+      if (options.isAllowed && !(await options.isAllowed(current))) {
+        throw new FetchImageError("robots_disallowed", "disallowed by robots.txt");
+      }
+      signal.throwIfAborted();
       const res = await options.fetch(current, { headers, redirect: "manual", signal });
 
       if ([301, 302, 303, 307, 308].includes(res.status)) {
@@ -117,6 +150,20 @@ export async function fetchImage(url: string, options: FetchImageOptions): Promi
         throw new FetchImageError("http_status", `unexpected status ${res.status}`);
       }
 
+      const declaredType = res.headers.get("content-type");
+      if (
+        allowHtml &&
+        ["text/html", "application/xhtml+xml"].includes(
+          declaredType?.split(";")[0]?.trim().toLowerCase() ?? "",
+        )
+      ) {
+        const bytes = await readLimited(
+          res.body,
+          res.headers.get("content-length"),
+          Math.min(maxBytes, 3 * 1024 * 1024),
+        );
+        return { url: current.href, contentType: declaredType, bytes };
+      }
       const declared = parseLength(res.headers.get("content-length"));
       if (declared !== null && declared > maxBytes) {
         await res.body?.cancel();
@@ -140,6 +187,7 @@ export async function fetchImage(url: string, options: FetchImageOptions): Promi
     }
   } catch (error) {
     if (error instanceof FetchImageError) throw error;
+    if (error instanceof TooLargeError) throw new FetchImageError("too_large", error.message);
     if (signal.aborted) throw new FetchImageError("timeout", `timed out after ${timeoutMs}ms`);
     throw new FetchImageError("network", error instanceof Error ? error.message : String(error));
   }
