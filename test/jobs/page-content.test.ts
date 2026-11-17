@@ -17,10 +17,11 @@ import { createTestPlatform, createUser, fakeFetch, requestApp, subscribeFeed } 
  */
 
 const PAGE_HTML = "<html><body><article><p>ページの本文</p></article></body></html>";
+const ARTICLE_TEXT = "抜いた本文には、記事の内容が段落ごとに書かれています。".repeat(6);
 
-const rss = (...links: string[]) =>
+const rss = (links: string[], description = "要約") =>
   `<rss version="2.0"><channel><title>Blog</title><link>https://blog.example/</link>
-    ${links.map((link, i) => `<item><title>記事 ${i}</title><link>${link}</link><guid>${i}</guid><description>要約</description></item>`).join("")}
+    ${links.map((link, i) => `<item><title>記事 ${i}</title><link>${link}</link><guid>${i}</guid><description><![CDATA[${description}]]></description></item>`).join("")}
   </channel></rss>`;
 
 /** 抜いたことにする処理。受け取った URL を記録する */
@@ -35,19 +36,21 @@ function fakeExtractor(html: string | null) {
   return { extractor, calls };
 }
 
-async function setUp(options: { extracted?: string | null; pageContent?: boolean } = {}) {
+async function setUp(
+  options: { extracted?: string | null; pageContent?: boolean; feedContent?: string } = {},
+) {
   const user = await createUser();
   let now = new Date();
   const link = `https://${crypto.randomUUID()}.example.com/posts/1`;
   const page = fakeExtractor(
     options.extracted === undefined
-      ? '<p onclick="x()">抜いた本文<script>alert(1)</script></p><img src="/a.png">'
+      ? `<p onclick="x()">${ARTICLE_TEXT}<script>alert(1)</script></p><img src="/a.png">`
       : options.extracted,
   );
   const fetched = fakeFetch((url) =>
     url.href === link
       ? new Response(PAGE_HTML, { headers: { "content-type": "text/html; charset=utf-8" } })
-      : new Response(rss(link)),
+      : new Response(rss([link], options.feedContent)),
   );
   const overrides: Partial<Platform> = {
     fetch: fetched.fetch,
@@ -122,7 +125,7 @@ describe("抜いている間に記事が消えたとき", () => {
   });
 
   it.each([
-    ["抜けた", "<p>本文</p>"],
+    ["抜けた", `<p>${ARTICLE_TEXT}</p>`],
     ["抜けなかった", null],
   ])("%s結果を書かずに終える（仕事は例外にしない）", async (_, html) => {
     const t = await setUp();
@@ -135,7 +138,7 @@ describe("抜いている間に記事が消えたとき", () => {
 
   it("開いたときに抜いていたら、404（page_content_unavailable）を返す（500 にしない）", async () => {
     const t = await setUp();
-    const platform = { ...t.platform, pageContent: deletingExtractor(t, "<p>本文</p>") };
+    const platform = { ...t.platform, pageContent: deletingExtractor(t, `<p>${ARTICLE_TEXT}</p>`) };
     const res = await requestApp(platform, `/api/v1/articles/${t.article.id}/content?source=page`, {
       token: t.user.token,
     });
@@ -201,6 +204,80 @@ describe("取り込んだときに抜く", () => {
     await t.platform.db.delete(articles).where(eq(articles.id, t.article.id)).run();
     await runJob(t.platform, { type: "extract-page", articleId: t.article.id });
     expect(t.pageFetches()).toBe(0);
+  });
+});
+
+describe("抜いた本文の長さ", () => {
+  it.each([
+    [
+      "サイトの紹介文だけ",
+      "<p>ニュースを紹介するサイトです。公式アカウントもフォローしてください。</p>",
+    ],
+    [
+      "コメント欄の案内だけ",
+      "<p>この記事へのコメント（アプリに投稿されたコメントを表示しています）</p>",
+    ],
+    ["文字参照で長く見える", `<p>${"&#x6587;".repeat(60)}</p>`],
+    ["タグと属性で長く見える", `<p title="${"説明".repeat(100)}">案内</p>`],
+    ["サニタイズでほとんど消える", `<p>案内</p><script>${"文字".repeat(100)}</script>`],
+    ["補助平面の文字も1文字で数える", `<p>${"𠮷".repeat(60)}</p>`],
+    ["99文字の本文", `<p>${"文".repeat(99)}</p>`],
+    ["空の本文", "<p> \n &nbsp; </p>"],
+  ])("%sなら成功として保存せず、仕事ではやり直さない", async (_, html) => {
+    const t = await setUp({ extracted: html });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await runJob(t.platform, { type: "extract-page", articleId: t.article.id });
+      await runJob(t.platform, { type: "extract-page", articleId: t.article.id });
+      expect(await getPageContent(t.platform.db, t.article.id)).toMatchObject({
+        status: "failed",
+        html: null,
+      });
+      expect(t.pageFetches()).toBe(1);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("100文字の日本語の本文は、文字参照を戻してから数えて保存する", async () => {
+    const t = await setUp({ extracted: `<p>${"&#x6587;".repeat(100)}</p>` });
+    await runJob(t.platform, { type: "extract-page", articleId: t.article.id });
+    expect(await getPageContent(t.platform.db, t.article.id)).toMatchObject({
+      status: "extracted",
+    });
+  });
+
+  it("短すぎたら404を返し、フィードの本文は残す。1日後に開けば取り直せる", async () => {
+    const feedContent = `<p>${ARTICLE_TEXT.repeat(4)}</p>`;
+    const t = await setUp({
+      extracted: "<p>サイトの紹介</p>",
+      feedContent,
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const path = `/api/v1/articles/${t.article.id}/content`;
+    try {
+      const page = await requestApp(t.platform, `${path}?source=page`, { token: t.user.token });
+      expect(page.status).toBe(404);
+      expect(await page.json()).toMatchObject({ error: { code: "page_content_unavailable" } });
+
+      const feed = await requestApp(t.platform, path, { token: t.user.token });
+      expect(feed.status).toBe(200);
+      expect(await feed.json()).toMatchObject({ source: "feed", html: feedContent });
+
+      await requestApp(t.platform, `${path}?source=page`, { token: t.user.token });
+      expect(t.pageFetches()).toBe(1);
+      t.advance(24 * 60 * 60 * 1000 + 1000);
+      t.platform.pageContent = fakeExtractor(`<p>${ARTICLE_TEXT}</p>`).extractor;
+      const retry = await requestApp(t.platform, `${path}?source=page`, { token: t.user.token });
+      expect(retry.status).toBe(200);
+      expect(await getPageContent(t.platform.db, t.article.id)).toMatchObject({
+        status: "extracted",
+      });
+      expect(t.pageFetches()).toBe(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

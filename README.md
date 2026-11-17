@@ -113,6 +113,8 @@ curl -H "authorization: Bearer $TOKEN" -o sendo.opml http://localhost:8787/api/v
 
 API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読めます。
 
+ページから抜いた本文は、サニタイズしてタグと文字参照を処理したあとの文字数が 100 文字未満なら、取得失敗として扱います。サイト紹介やコメント欄の案内だけを本文として保存するのを減らすためです。短い正規の記事も対象になるので、そのときはフィードの本文か要約を使ってください。`source=page` は 404（`page_content_unavailable`）を返し、1 日たってから呼ぶと取りにいき直します。
+
 ### ブラウザでログインする（Google）
 
 ブラウザ（sendo-reader）からは、Google でログインしてセッションのクッキーで使います。手元では、試すときだけ設定すれば足ります（なければ `pnpm dev` が警告を出すだけ）。デプロイには 3 つとも要ります（`wrangler.jsonc` の `secrets.required`。ないとデプロイが止まる。[初めてのデプロイ](#初めてのデプロイ)）。

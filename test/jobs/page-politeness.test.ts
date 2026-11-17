@@ -21,7 +21,8 @@ const rss = (...links: string[]) =>
 
 const extractor: PageContentExtractor = {
   async extract() {
-    return { title: "記事", html: "<p>抜いた本文</p>", textLength: 5 };
+    const text = "抜いた本文には、記事の内容が段落ごとに書かれています。".repeat(6);
+    return { title: "記事", html: `<p>${text}</p>`, textLength: text.length };
   },
 };
 
