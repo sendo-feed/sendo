@@ -56,6 +56,33 @@ const ArticleSchema = z.object({
   starred: z.boolean(),
 });
 
+const UnreadQuerySchema = z
+  .object({
+    feedId: z.string().min(1).max(64).optional().describe("このフィードの記事だけ"),
+    folderId: z.string().min(1).max(64).optional().describe("このフォルダの記事だけ"),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_UNREAD)
+      .optional()
+      .describe(`数（既定 20、最大 ${MAX_UNREAD}）`),
+    cursor: z.string().max(512).optional().describe("前の結果の nextCursor。期間も同じ値を渡す"),
+    since: z.iso
+      .datetime({ offset: true })
+      .optional()
+      .describe("公開日時の下限（含む）。タイムゾーン付きの ISO 8601 日時"),
+    until: z.iso
+      .datetime({ offset: true })
+      .optional()
+      .describe("公開日時の上限（含まない）。タイムゾーン付きの ISO 8601 日時"),
+  })
+  .refine(
+    ({ since, until }) =>
+      since === undefined || until === undefined || Date.parse(since) < Date.parse(until),
+    { message: "since must be before until", path: ["until"] },
+  );
+
 function toArticle(article: InboxArticle, feedTitle: string | null): z.infer<typeof ArticleSchema> {
   return {
     id: article.id,
@@ -119,6 +146,85 @@ export function createMcpServer(platform: Platform, authInfo: AuthInfo | undefin
       (await listSubscriptions(db, userId)).map((s) => [s.feed.id, s.feed.title ?? s.feed.url]),
     );
 
+  const readFeeds = async () => {
+    const subscriptions = await listSubscriptions(db, userId);
+    const unread = await countUnreadByFeed(db, userId);
+    return {
+      feeds: subscriptions.map((s) => ({
+        id: s.feed.id,
+        title: s.feed.title,
+        url: s.feed.url,
+        siteUrl: s.feed.siteUrl,
+        folder: s.folderName,
+        unread: unread.get(s.feed.id) ?? 0,
+      })),
+    };
+  };
+
+  const readUnread = async (query: z.infer<typeof UnreadQuerySchema>) => {
+    const page = await listInbox(db, {
+      userId,
+      feedId: query.feedId,
+      folderId: query.folderId,
+      state: "unread",
+      limit: query.limit ?? 20,
+      cursor: query.cursor === undefined ? undefined : decodeCursor(query.cursor),
+      since: query.since === undefined ? undefined : new Date(query.since),
+      until: query.until === undefined ? undefined : new Date(query.until),
+    });
+    const titles = await feedTitles();
+    return {
+      articles: page.items.map((a) => toArticle(a, titles.get(a.feedId) ?? null)),
+      nextCursor: page.next === null ? null : encodeCursor(page.next),
+    };
+  };
+
+  server.registerResource(
+    "feeds",
+    "sendo://feeds",
+    {
+      title: "購読の一覧",
+      description: `購読をフォルダと未読の数と一緒に返す。${UNTRUSTED}`,
+      mimeType: "application/json",
+    },
+    async (uri) => ({
+      contents: [
+        { uri: uri.href, mimeType: "application/json", text: JSON.stringify(await readFeeds()) },
+      ],
+    }),
+  );
+
+  server.registerResource(
+    "unread_today",
+    "sendo://unread/today",
+    {
+      title: "今日の未読（日本時間）",
+      description: `今日（Asia/Tokyo）の公開日時の未読を新しい順に最大 ${MAX_UNREAD} 件返す。続きは get_unread に nextCursor を cursor として、since と until もそのまま渡す。${UNTRUSTED}`,
+      mimeType: "application/json",
+    },
+    async (uri) => {
+      const dayMs = 24 * 60 * 60 * 1000;
+      const offsetMs = 9 * 60 * 60 * 1000;
+      const start = Math.floor((platform.now().getTime() + offsetMs) / dayMs) * dayMs - offsetMs;
+      const since = new Date(start).toISOString();
+      const until = new Date(start + dayMs).toISOString();
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify({
+              timeZone: "Asia/Tokyo",
+              since,
+              until,
+              ...(await readUnread({ since, until, limit: MAX_UNREAD })),
+            }),
+          },
+        ],
+      };
+    },
+  );
+
   server.registerTool(
     "list_feeds",
     {
@@ -138,61 +244,25 @@ export function createMcpServer(platform: Platform, authInfo: AuthInfo | undefin
       }),
       annotations: { readOnlyHint: true },
     },
-    async () => {
-      const subscriptions = await listSubscriptions(db, userId);
-      const unread = await countUnreadByFeed(db, userId);
-      return result({
-        feeds: subscriptions.map((s) => ({
-          id: s.feed.id,
-          title: s.feed.title,
-          url: s.feed.url,
-          siteUrl: s.feed.siteUrl,
-          folder: s.folderName,
-          unread: unread.get(s.feed.id) ?? 0,
-        })),
-      });
-    },
+    async () => result(await readFeeds()),
   );
 
   server.registerTool(
     "get_unread",
     {
       title: "未読の記事",
-      description: `未読の記事を新しい順に返す。フィードかフォルダで絞れる。続きがあれば nextCursor を cursor に渡す。${UNTRUSTED}`,
-      inputSchema: z.object({
-        feedId: z.string().min(1).max(64).optional().describe("このフィードの記事だけ"),
-        folderId: z.string().min(1).max(64).optional().describe("このフォルダの記事だけ"),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(MAX_UNREAD)
-          .optional()
-          .describe(`数（既定 20、最大 ${MAX_UNREAD}）`),
-        cursor: z.string().max(512).optional().describe("前の結果の nextCursor"),
-      }),
+      description: `未読の記事を新しい順に返す。フィード、フォルダ、公開日時の期間（since 以上、until 未満）で絞れる。続きがあれば nextCursor を cursor に渡し、絞り込みも同じ値を渡す。${UNTRUSTED}`,
+      inputSchema: UnreadQuerySchema,
       outputSchema: z.object({
         articles: z.array(ArticleSchema),
         nextCursor: z.string().nullable(),
       }),
       annotations: { readOnlyHint: true },
     },
-    async ({ feedId, folderId, limit, cursor }) => {
-      const after = cursor === undefined ? undefined : decodeCursor(cursor);
-      if (cursor !== undefined && after === undefined) return failure("cursor is invalid");
-      const page = await listInbox(db, {
-        userId,
-        feedId,
-        folderId,
-        state: "unread",
-        limit: limit ?? 20,
-        cursor: after,
-      });
-      const titles = await feedTitles();
-      return result({
-        articles: page.items.map((a) => toArticle(a, titles.get(a.feedId) ?? null)),
-        nextCursor: page.next === null ? null : encodeCursor(page.next),
-      });
+    async (query) => {
+      if (query.cursor !== undefined && decodeCursor(query.cursor) === undefined)
+        return failure("cursor is invalid");
+      return result(await readUnread(query));
     },
   );
 

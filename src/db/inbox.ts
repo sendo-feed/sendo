@@ -4,6 +4,7 @@ import {
   desc,
   eq,
   getTableColumns,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -224,6 +225,9 @@ export async function listInbox(
     state?: ArticleState | undefined;
     limit: number;
     cursor?: ArticleCursor | undefined;
+    /** 公開日時の範囲。since 以上、until 未満 */
+    since?: Date | undefined;
+    until?: Date | undefined;
   },
 ): Promise<{ items: InboxArticle[]; next: ArticleCursor | null }> {
   const conditions: SQL[] = [eq(ua.userId, input.userId)];
@@ -231,6 +235,8 @@ export async function listInbox(
   if (input.folderId !== undefined) conditions.push(inFolder(input.userId, input.folderId));
   if (input.state === "unread") conditions.push(isNull(ua.readAt));
   if (input.state === "starred") conditions.push(isNotNull(ua.starredAt));
+  if (input.since !== undefined) conditions.push(gte(ua.publishedAt, input.since));
+  if (input.until !== undefined) conditions.push(lt(ua.publishedAt, input.until));
   if (input.cursor !== undefined) {
     const at = new Date(input.cursor.publishedAt);
     const after = or(

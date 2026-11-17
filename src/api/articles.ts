@@ -21,24 +21,36 @@ import { defaultHook } from "./hook";
 import { ArticleSchema, ErrorSchema, errorBody, toArticleResponse } from "./schemas";
 import { decodeSyncCursor } from "./sync";
 
-const ListQuerySchema = z.object({
-  feedId: z.string().min(1).optional().openapi({ description: "このフィードの記事だけにする" }),
-  folderId: z
-    .string()
-    .min(1)
-    .optional()
-    .openapi({ description: "このフォルダのフィードの記事だけにする" }),
-  state: z
-    .enum(["all", "unread", "starred"])
-    .default("all")
-    .openapi({ description: "unread なら未読だけ、starred ならスター付きだけ" }),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z
-    .string()
-    .max(512)
-    .optional()
-    .openapi({ description: "前のページの nextCursor。最初のページでは付けない" }),
-});
+const ListQuerySchema = z
+  .object({
+    feedId: z.string().min(1).optional().openapi({ description: "このフィードの記事だけにする" }),
+    folderId: z
+      .string()
+      .min(1)
+      .optional()
+      .openapi({ description: "このフォルダのフィードの記事だけにする" }),
+    state: z
+      .enum(["all", "unread", "starred"])
+      .default("all")
+      .openapi({ description: "unread なら未読だけ、starred ならスター付きだけ" }),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    cursor: z
+      .string()
+      .max(512)
+      .optional()
+      .openapi({ description: "前のページの nextCursor。最初のページでは付けない" }),
+    since: z.iso.datetime({ offset: true }).optional().openapi({
+      description: "公開日時の下限（この日時を含む）。タイムゾーン付きの ISO 8601 日時",
+    }),
+    until: z.iso.datetime({ offset: true }).optional().openapi({
+      description: "公開日時の上限（この日時を含まない）。続きのページでも同じ期間を指定する",
+    }),
+  })
+  .refine(
+    ({ since, until }) =>
+      since === undefined || until === undefined || Date.parse(since) < Date.parse(until),
+    { message: "since must be before until", path: ["until"] },
+  );
 
 const listRoute = createRoute({
   method: "get",
@@ -375,6 +387,8 @@ export function articlesApi(platform: Platform) {
         state: query.state,
         limit: query.limit,
         cursor,
+        since: query.since === undefined ? undefined : new Date(query.since),
+        until: query.until === undefined ? undefined : new Date(query.until),
       });
       const images = imageSigner(db);
       return c.json(

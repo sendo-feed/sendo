@@ -91,6 +91,49 @@ describe("GET /api/v1/articles", () => {
     expect(seen).toEqual(["b1", "a4", "a3", "a2", "b0", "a1", "a0"]);
   });
 
+  it("公開日時を開始以上・終了未満で絞り、同じ期間でページを送れる", async () => {
+    const { platform, ids } = await seed();
+    const query = new URLSearchParams({
+      since: "2026-11-01T10:00:00+09:00",
+      until: "2026-11-01T12:00:00+09:00",
+      feedId: ids.a ?? "",
+      state: "unread",
+      limit: "1",
+    });
+    const seen: string[] = [];
+    for (let page = 0; page < 5; page++) {
+      const res = await requestApp(platform, `/api/v1/articles?${query}`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { items: { id: string }[]; nextCursor: string | null };
+      seen.push(...body.items.map((item) => item.id));
+      if (body.nextCursor === null) break;
+      query.set("cursor", body.nextCursor);
+    }
+    expect(seen).toEqual(["a3", "a2", "a1"]);
+    for (const [key, value, expected] of [
+      ["since", "2026-11-01T04:00:00Z", ["b1"]],
+      ["until", "2026-11-01T01:00:00Z", ["a0"]],
+    ] as const) {
+      const body = (await (
+        await requestApp(platform, `/api/v1/articles?${new URLSearchParams({ [key]: value })}`)
+      ).json()) as { items: { id: string }[] };
+      expect(body.items.map((item) => item.id)).toEqual(expected);
+    }
+  });
+
+  it("不正な日時・タイムゾーンのない日時・空か逆順の期間は 400", async () => {
+    const { platform } = createTestPlatform();
+    for (const period of [
+      { since: "2026-02-30T00:00:00Z" },
+      { until: "2026-11-01T00:00:00" },
+      { since: "2026-11-01T00:00:00Z", until: "2026-11-01T00:00:00Z" },
+      { since: "2026-11-01T10:00:00+09:00", until: "2026-11-01T00:00:00Z" },
+    ]) {
+      const res = await requestApp(platform, `/api/v1/articles?${new URLSearchParams(period)}`);
+      expect(res.status).toBe(400);
+    }
+  });
+
   it("1970 年より前の記事をまたいでも、ページを送れる", async () => {
     await env.DB.exec("DELETE FROM feeds");
     const { platform } = createTestPlatform();

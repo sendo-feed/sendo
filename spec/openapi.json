@@ -1747,6 +1747,28 @@
             "description": "前のページの nextCursor。最初のページでは付けない",
             "name": "cursor",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "公開日時の下限（この日時を含む）。タイムゾーン付きの ISO 8601 日時"
+            },
+            "required": false,
+            "description": "公開日時の下限（この日時を含む）。タイムゾーン付きの ISO 8601 日時",
+            "name": "since",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "公開日時の上限（この日時を含まない）。続きのページでも同じ期間を指定する"
+            },
+            "required": false,
+            "description": "公開日時の上限（この日時を含まない）。続きのページでも同じ期間を指定する",
+            "name": "until",
+            "in": "query"
           }
         ],
         "responses": {

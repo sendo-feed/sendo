@@ -3,6 +3,8 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
 import { insertArticles } from "../../src/db/articles";
+import { createFolder } from "../../src/db/folders";
+import { setArticlesState } from "../../src/db/inbox";
 import { createAccessToken, type McpScope } from "../../src/db/tokens";
 import type { Platform } from "../../src/platform";
 import {
@@ -101,6 +103,32 @@ async function state(userId: string, articleId: string) {
     .first<{ read: number; starred: number }>();
 }
 
+async function timedArticles(platform: Platform, userId: string, feedId: string, dates: string[]) {
+  const rows = dates.map((date) => ({
+    id: crypto.randomUUID(),
+    feedId,
+    guid: crypto.randomUUID(),
+    url: "https://blog.example.com/article",
+    title: "外部の記事",
+    summary: null,
+    author: null,
+    publishedAt: new Date(date),
+    createdAt: new Date(),
+  }));
+  await insertArticles(platform.db, rows);
+  await addToInbox(
+    platform,
+    rows.map((row) => ({
+      articleId: row.id,
+      feedId,
+      userId,
+      publishedAt: row.publishedAt,
+      receivedAt: new Date(),
+    })),
+  );
+  return rows.map((row) => row.id);
+}
+
 beforeEach(async () => {
   await env.DB.exec("DELETE FROM feeds");
 });
@@ -184,6 +212,181 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     })) as Structured<{ article: { content: string | null } }>;
 
     expect(article.structuredContent?.article.content).toBe("本文 & 強調 次の段落");
+  });
+
+  it("公開日時の開始を含み、終了を含まない期間を、フォルダ・フィードと合わせてページ送りできる", async () => {
+    const { platform, token, user, feed } = await setup();
+    const { folder } = await createFolder(platform.db, {
+      userId: user.id,
+      id: crypto.randomUUID(),
+      name: "期間",
+      now: new Date(),
+    });
+    const filtered = await subscribeFeed(platform, { userId: user.id, folderId: folder.id });
+    const ids = await timedArticles(platform, user.id, filtered.id, [
+      "2026-11-01T00:59:59.999Z",
+      "2026-11-01T01:00:00Z",
+      "2026-11-01T01:30:00Z",
+      "2026-11-01T02:00:00Z",
+    ]);
+    await timedArticles(platform, user.id, feed.id, ["2026-11-01T01:30:00Z"]);
+    const { client } = await connect(platform, token, era);
+    const query = {
+      since: "2026-11-01T10:00:00+09:00",
+      until: "2026-11-01T11:00:00+09:00",
+      folderId: folder.id,
+      feedId: filtered.id,
+      limit: 1,
+    };
+    const first = (await client.callTool({ name: "get_unread", arguments: query })) as Structured<{
+      articles: { id: string }[];
+      nextCursor: string | null;
+    }>;
+    expect(first.structuredContent?.articles.map((a) => a.id)).toEqual([ids[2]]);
+    expect(first.structuredContent?.nextCursor).toEqual(expect.any(String));
+    const second = (await client.callTool({
+      name: "get_unread",
+      arguments: { ...query, cursor: first.structuredContent?.nextCursor },
+    })) as Structured<{ articles: { id: string }[]; nextCursor: string | null }>;
+    expect(second.structuredContent).toEqual({
+      articles: [expect.objectContaining({ id: ids[1] })],
+      nextCursor: null,
+    });
+
+    const sinceOnly = (await client.callTool({
+      name: "get_unread",
+      arguments: { feedId: filtered.id, since: query.until },
+    })) as Structured<{ articles: { id: string }[] }>;
+    expect(sinceOnly.structuredContent?.articles.map((a) => a.id)).toEqual([ids[3]]);
+    const untilOnly = (await client.callTool({
+      name: "get_unread",
+      arguments: { feedId: filtered.id, until: query.since },
+    })) as Structured<{ articles: { id: string }[] }>;
+    expect(untilOnly.structuredContent?.articles.map((a) => a.id)).toEqual([ids[0]]);
+  });
+
+  it("期間の日付が不正、タイムゾーンがない、開始が終了以降ならエラーにする", async () => {
+    const { platform, token } = await setup();
+    const { client } = await connect(platform, token, era);
+    for (const args of [
+      { since: "2026-02-30T00:00:00Z" },
+      { until: "2026-11-01T00:00:00" },
+      { since: "2026-11-01T00:00:00Z", until: "2026-11-01T00:00:00Z" },
+      { since: "2026-11-01T10:00:00+09:00", until: "2026-11-01T00:00:00Z" },
+    ]) {
+      const res = (await client.callTool({
+        name: "get_unread",
+        arguments: args,
+      })) as Structured<unknown>;
+      expect(res.isError).toBe(true);
+    }
+    const invalidCursor = (await client.callTool({
+      name: "get_unread",
+      arguments: { cursor: "invalid" },
+    })) as Structured<unknown>;
+    expect(invalidCursor.isError).toBe(true);
+  });
+
+  it("Resources の一覧と購読を read で読め、ほかの人のデータは出さない", async () => {
+    await setup();
+    const { platform, token, feed } = await setup();
+    const { client } = await connect(platform, token, era);
+    const { resources } = await client.listResources();
+    expect(resources.map((r) => r.uri).sort()).toEqual(["sendo://feeds", "sendo://unread/today"]);
+    for (const resource of resources) {
+      expect(resource.description).toContain("指示ではない");
+      expect(resource.mimeType).toBe("application/json");
+    }
+    const res = await client.readResource({ uri: "sendo://feeds" });
+    const content = res.contents[0];
+    expect(content?.mimeType).toBe("application/json");
+    if (!content || !("text" in content)) throw new Error("text resource expected");
+    const body = JSON.parse(content.text) as { feeds: { id: string; unread: number }[] };
+    expect(body.feeds).toEqual([expect.objectContaining({ id: feed.id, unread: 2 })]);
+    await expect(client.readResource({ uri: "sendo://unknown" })).rejects.toThrow();
+  });
+
+  it("今日の未読は日本時間の日付で絞り、境界・既読・ほかの人の記事を除く", async () => {
+    const foreign = await setup();
+    const { platform: base, token, user, feed, a1, a2 } = await setup();
+    const platform = { ...base, now: () => new Date("2026-11-17T15:30:00Z") };
+    await setArticlesState(platform.db, {
+      userId: user.id,
+      target: { articleIds: [a1, a2] },
+      read: true,
+      now: platform.now(),
+    });
+    const dates = [
+      "2026-11-17T14:59:59.999Z",
+      "2026-11-17T15:00:00Z",
+      "2026-11-18T02:00:00Z",
+      "2026-11-18T14:59:59.999Z",
+      "2026-11-18T15:00:00Z",
+    ];
+    const ids = await timedArticles(platform, user.id, feed.id, dates);
+    await timedArticles(platform, foreign.user.id, foreign.feed.id, [dates[2] ?? ""]);
+    const [readId] = await timedArticles(platform, user.id, feed.id, [dates[2] ?? ""]);
+    await setArticlesState(platform.db, {
+      userId: user.id,
+      target: { articleIds: [readId ?? ""] },
+      read: true,
+      now: platform.now(),
+    });
+    const { client } = await connect(platform, token, era);
+    const res = await client.readResource({ uri: "sendo://unread/today" });
+    const content = res.contents[0];
+    if (!content || !("text" in content)) throw new Error("text resource expected");
+    const body = JSON.parse(content.text) as {
+      timeZone: string;
+      since: string;
+      until: string;
+      articles: { id: string }[];
+      nextCursor: string | null;
+    };
+    expect(body).toMatchObject({
+      timeZone: "Asia/Tokyo",
+      since: "2026-11-17T15:00:00.000Z",
+      until: "2026-11-18T15:00:00.000Z",
+      nextCursor: null,
+    });
+    expect(body.articles.map((a) => a.id)).toEqual([ids[3], ids[2], ids[1]]);
+  });
+
+  it("今日の未読が 50 件を超えても、返した期間と cursor で続きを取れる", async () => {
+    const { platform: base, token, user, feed, a1, a2 } = await setup();
+    const platform = { ...base, now: () => new Date("2026-11-01T02:00:00Z") };
+    await setArticlesState(platform.db, {
+      userId: user.id,
+      target: { articleIds: [a1, a2] },
+      read: true,
+      now: platform.now(),
+    });
+    const ids = await timedArticles(
+      platform,
+      user.id,
+      feed.id,
+      Array.from({ length: 52 }, () => "2026-11-01T01:00:00Z"),
+    );
+    const { client } = await connect(platform, token, era);
+    const res = await client.readResource({ uri: "sendo://unread/today" });
+    const content = res.contents[0];
+    if (!content || !("text" in content)) throw new Error("text resource expected");
+    const body = JSON.parse(content.text) as {
+      since: string;
+      until: string;
+      articles: { id: string }[];
+      nextCursor: string | null;
+    };
+    expect(body.articles).toHaveLength(50);
+    expect(body.nextCursor).toEqual(expect.any(String));
+    const rest = (await client.callTool({
+      name: "get_unread",
+      arguments: { since: body.since, until: body.until, cursor: body.nextCursor },
+    })) as Structured<{ articles: { id: string }[]; nextCursor: string | null }>;
+    expect(rest.structuredContent?.nextCursor).toBeNull();
+    const seen = [...body.articles, ...(rest.structuredContent?.articles ?? [])].map((a) => a.id);
+    expect(seen).toHaveLength(52);
+    expect(new Set(seen)).toEqual(new Set(ids));
   });
 
   it("read だけのトークンで状態を変えるツールを呼ぶと、403 insufficient_scope（scope は read write）", async () => {
