@@ -65,3 +65,142 @@ pub fn extract_page_content(
         url,
     })
 }
+
+#[napi(object)]
+pub struct PageImageLink {
+    pub thumbnail: String,
+    pub target: String,
+}
+
+#[napi(object)]
+#[derive(Default)]
+pub struct MediaResult {
+    pub links: Vec<PageImageLink>,
+    pub candidates: Vec<String>,
+    pub eligible: bool,
+    pub matches: bool,
+    pub html: String,
+}
+
+enum MediaInput {
+    Links {
+        html: String,
+        url: String,
+    },
+    Candidates {
+        bytes: Vec<u8>,
+        content_type: Option<String>,
+        url: String,
+    },
+    Compare {
+        thumbnail: Vec<u8>,
+        candidate: Option<Vec<u8>>,
+    },
+    Replace {
+        html: String,
+        thumbnail: String,
+        target: String,
+        replacement: String,
+    },
+}
+
+pub struct MediaTask {
+    input: MediaInput,
+}
+impl Task for MediaTask {
+    type Output = MediaResult;
+    type JsValue = MediaResult;
+    fn compute(&mut self) -> Result<Self::Output> {
+        use sendo_extract::media;
+        catch_unwind(AssertUnwindSafe(|| {
+            let mut result = MediaResult::default();
+            match &self.input {
+                MediaInput::Links { html, url } => {
+                    result.links = media::image_links(html, url)
+                        .into_iter()
+                        .map(|link| PageImageLink {
+                            thumbnail: link.thumbnail,
+                            target: link.target,
+                        })
+                        .collect()
+                }
+                MediaInput::Candidates {
+                    bytes,
+                    content_type,
+                    url,
+                } => {
+                    result.candidates = media::image_candidates(bytes, content_type.as_deref(), url)
+                }
+                MediaInput::Compare {
+                    thumbnail,
+                    candidate,
+                } => {
+                    result.eligible = media::eligible_thumbnail(thumbnail);
+                    result.matches = candidate
+                        .as_ref()
+                        .is_some_and(|candidate| media::is_larger_image(thumbnail, candidate));
+                }
+                MediaInput::Replace {
+                    html,
+                    thumbnail,
+                    target,
+                    replacement,
+                } => result.html = media::replace_image(html, thumbnail, target, replacement),
+            }
+            result
+        }))
+        .map_err(|_| Error::new(Status::GenericFailure, "image processing panicked"))
+    }
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[napi]
+pub fn page_image_links(html: String, url: String) -> AsyncTask<MediaTask> {
+    AsyncTask::new(MediaTask {
+        input: MediaInput::Links { html, url },
+    })
+}
+#[napi]
+pub fn page_image_candidates(
+    bytes: Uint8Array,
+    content_type: Option<String>,
+    url: String,
+) -> AsyncTask<MediaTask> {
+    AsyncTask::new(MediaTask {
+        input: MediaInput::Candidates {
+            bytes: bytes.to_vec(),
+            content_type,
+            url,
+        },
+    })
+}
+#[napi]
+pub fn compare_page_images(
+    thumbnail: Uint8Array,
+    candidate: Option<Uint8Array>,
+) -> AsyncTask<MediaTask> {
+    AsyncTask::new(MediaTask {
+        input: MediaInput::Compare {
+            thumbnail: thumbnail.to_vec(),
+            candidate: candidate.map(|bytes| bytes.to_vec()),
+        },
+    })
+}
+#[napi]
+pub fn replace_page_image(
+    html: String,
+    thumbnail: String,
+    target: String,
+    replacement: String,
+) -> AsyncTask<MediaTask> {
+    AsyncTask::new(MediaTask {
+        input: MediaInput::Replace {
+            html,
+            thumbnail,
+            target,
+            replacement,
+        },
+    })
+}

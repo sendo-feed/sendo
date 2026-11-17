@@ -207,6 +207,38 @@ describe("取り込んだときに抜く", () => {
   });
 });
 
+describe("画像を拡大したあとの本文", () => {
+  it("長い画像 URL で上限を超えても、元の画像を残して本文を保存する", async () => {
+    const original = `<p>${ARTICLE_TEXT}</p><a href="https://photos.example/view"><img src="https://photos.example/thumb.png"></a>`;
+    const t = await setUp({ extracted: original });
+    t.page.extractor.images = {
+      links: async () => [
+        { thumbnail: "https://photos.example/thumb.png", target: "https://photos.example/view" },
+      ],
+      candidates: async () => [],
+      compare: async () => ({ eligible: true, matches: true }),
+      replace: async () =>
+        `<p>${ARTICLE_TEXT}</p><img src="https://photos.example/${"a".repeat(256 * 1024)}.png">`,
+    };
+    const png = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    const fetchPage = t.platform.fetch;
+    const images = fakeFetch((url) =>
+      url.pathname === "/robots.txt" ? new Response(null, { status: 404 }) : new Response(png),
+    );
+    t.platform.fetch = (input, init) =>
+      String(input).startsWith("https://photos.example/")
+        ? images.fetch(input, init)
+        : fetchPage(input, init);
+    await runJob(t.platform, { type: "extract-page", articleId: t.article.id });
+    const row = await getPageContent(t.platform.db, t.article.id);
+    expect(row?.status).toBe("extracted");
+    expect(row?.html).toContain('src="https://photos.example/thumb.png"');
+    expect(row?.html).toContain(ARTICLE_TEXT);
+  });
+});
+
 describe("抜いた本文の長さ", () => {
   it.each([
     [

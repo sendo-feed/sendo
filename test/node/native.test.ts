@@ -47,4 +47,32 @@ describe("Rust のモジュール（記事のページから本文を抜く）",
       }),
     ).rejects.toThrow();
   });
+  it("本文の画像リンク、HTML の候補、置き換えを Rust の仕事として呼べる", async () => {
+    const images = extractor.images;
+    if (!images) throw new Error("missing image processor");
+    const html =
+      "<p>前</p><a href='https://photo.example/view'><img src='https://photo.example/thumb.jpg' width='100' height='80'></a><p>後</p>";
+    const links = await images.links(html, "https://news.example/post");
+    expect(links).toEqual([
+      { thumbnail: "https://photo.example/thumb.jpg", target: "https://photo.example/view" },
+    ]);
+    expect(
+      await images.candidates({
+        bytes: new TextEncoder().encode("<img src='./full.jpg' width='800' height='600'>"),
+        contentType: "text/html",
+        url: "https://photo.example/view",
+      }),
+    ).toEqual(["https://photo.example/full.jpg"]);
+    expect(await images.compare(new Uint8Array([0]), null)).toMatchObject({
+      eligible: false,
+      matches: false,
+    });
+    const link = links[0];
+    if (!link) throw new Error("missing image link");
+    const replaced = await images.replace(html, link, "https://photo.example/full.jpg");
+    expect(replaced).toContain('href="https://photo.example/view"');
+    expect(replaced).toContain('src="https://photo.example/full.jpg"');
+    expect(replaced.indexOf("前")).toBeLessThan(replaced.indexOf("full.jpg"));
+    expect(replaced.indexOf("full.jpg")).toBeLessThan(replaced.indexOf("後"));
+  });
 });

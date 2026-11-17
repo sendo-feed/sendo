@@ -1,9 +1,13 @@
 //! 記事のページから本文を抜く（docs/decisions/content.md の 10〜14）。
 //!
 //! 外への取得と DB には触らない（docs/decisions/tech-stack.md の 5）。TypeScript の側が取ってきた
-//! バイト列を受け取り、文字コードを決めて、Readability（dom_smoothie）で本文を抜いて返す。
+//! バイト列を受け取り、文字コードを決め、画像を正規化し、元の DOM から本文領域を選んで返す。
 //! 返す HTML はサニタイズしていない。サニタイズは TypeScript の側で行う（content.md の 2）。
 #![forbid(unsafe_code)]
+
+mod blocks;
+pub mod media;
+mod normalize;
 
 use encoding_rs::{Encoding, UTF_8};
 
@@ -51,18 +55,13 @@ pub fn extract(
     url: &str,
 ) -> Result<Extracted, ExtractError> {
     let html = decode(bytes, content_type);
-    let mut readability = dom_smoothie::Readability::new(html, Some(url), None)
-        .map_err(|error| ExtractError::InvalidInput(error.to_string()))?;
-    let article = readability.parse().map_err(|_| ExtractError::NoContent)?;
-    let text_length = article.text_content.trim().chars().count();
-    if text_length == 0 {
-        return Err(ExtractError::NoContent);
+    let base =
+        url::Url::parse(url).map_err(|error| ExtractError::InvalidInput(error.to_string()))?;
+    if !matches!(base.scheme(), "http" | "https") {
+        return Err(ExtractError::InvalidInput("expected an HTTP URL".into()));
     }
-    Ok(Extracted {
-        title: article.title.trim().to_string(),
-        html: article.content.to_string(),
-        text_length,
-    })
+    let normalized = normalize::normalize(&html, url);
+    blocks::extract(&normalized, url)
 }
 
 /// 文字コードを決めて、文字列にする。
