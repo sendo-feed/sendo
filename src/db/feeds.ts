@@ -125,8 +125,6 @@ export async function recordFetchSuccess(
     lastModified: string | null;
     title?: string | null;
     siteUrl?: string | null;
-    /** 古い記事を片付けた位置（docs/decisions/retention.md）。片付けなかったら省く */
-    cleanedUntil?: Date | undefined;
   },
 ): Promise<void> {
   await db
@@ -141,7 +139,6 @@ export async function recordFetchSuccess(
       lastError: null,
       ...(input.title !== undefined && { title: input.title }),
       ...(input.siteUrl !== undefined && { siteUrl: input.siteUrl }),
-      ...(input.cleanedUntil !== undefined && { cleanedUntil: input.cleanedUntil }),
     })
     .where(eq(feeds.id, id));
 }
@@ -169,8 +166,6 @@ export async function recordFetchFailure(
     nextFetchAt: Date;
     errorCount: number;
     error: string;
-    /** 古い記事を片付けた位置（docs/decisions/retention.md）。片付けなかったら省く */
-    cleanedUntil?: Date | undefined;
   },
 ): Promise<void> {
   await db
@@ -180,7 +175,6 @@ export async function recordFetchFailure(
       nextFetchAt: input.nextFetchAt,
       errorCount: input.errorCount,
       lastError: input.error,
-      ...(input.cleanedUntil !== undefined && { cleanedUntil: input.cleanedUntil }),
     })
     .where(eq(feeds.id, id));
 }

@@ -16,6 +16,7 @@ import {
   recordExtractedPageContent,
   recordFailedPageContent,
 } from "../db/page-contents";
+import { canStoreArticles } from "../jobs/storage";
 import { sanitizeHtml } from "../lib/sanitize-html";
 import type { PageContentExtractor, Platform } from "../platform";
 import { FetchPageError, fetchPage } from "./fetch-page";
@@ -27,7 +28,7 @@ import { RobotsCache } from "./robots";
 /** 返す本文。html は保存したもの（サニタイズ済み）。返す前に、もう一度サニタイズする */
 export type PageContentResult = { status: "ok"; html: string } | { status: "unavailable" };
 
-type PageContentPlatform = Pick<Platform, "db" | "fetch" | "now">;
+type PageContentPlatform = Pick<Platform, "db" | "fetch" | "now" | "retentionConfig">;
 
 /**
  * 同じ記事を、同じプロセスで同時に抜かないようにする（抜く仕事と、開いたときの抜き取りが重なった
@@ -114,6 +115,7 @@ async function extractAndRecord(
   article: { id: string; url: string },
   ticket: GateTicket,
 ): Promise<PageContentResult> {
+  if (!(await canStoreArticles(platform))) return { status: "unavailable" };
   const html = await extract(platform, extractor, article, ticket);
   if (html === null) {
     await recordFailedPageContent(platform.db, { articleId: article.id, now: platform.now() });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseArticleRetentionDays, parseFetchIntervalMinutes } from "../../src/platform";
+import { parseFetchIntervalMinutes, parseStorageLimitMiB } from "../../src/platform";
 import { readFetchConfig, readRetentionConfig } from "../../src/platform/config";
 
 const MINUTE = 60 * 1000;
@@ -29,27 +29,19 @@ describe("取得の設定", () => {
   });
 });
 
-describe("古い記事の片付けの設定", () => {
-  const DAY = 24 * 60 * 60 * 1000;
-
-  it("記事を残す期間は、30 以上の整数（日）だけを受ける。空なら既定に任せる", () => {
-    expect(parseArticleRetentionDays("30")).toBe(30);
-    expect(parseArticleRetentionDays(" 365 ")).toBe(365);
-    expect(parseArticleRetentionDays(undefined)).toBeUndefined();
-    for (const value of ["29", "0", "-90", "90.5", "forever"]) {
-      expect(() => parseArticleRetentionDays(value), value).toThrow(RangeError);
-    }
-  });
-
-  it("env の ARTICLE_RETENTION_DAYS を読む。なければ 90 日、形が正しくなければログに出して 90 日", () => {
-    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    expect(readRetentionConfig({ ARTICLE_RETENTION_DAYS: "180" })).toEqual({
-      articleMs: 180 * DAY,
+describe("保存容量の設定", () => {
+  it("MiB の整数を受け、未指定は版の既定を使う", () => {
+    expect(parseStorageLimitMiB(" 20480 ")).toBe(20480);
+    expect(parseStorageLimitMiB(undefined)).toBeUndefined();
+    expect(readRetentionConfig({})).toEqual({ maxBytes: 256 * 1024 * 1024 });
+    expect(readRetentionConfig({}, 10240)).toEqual({ maxBytes: 10 * 1024 ** 3 });
+    expect(readRetentionConfig({ STORAGE_LIMIT_MIB: "20480" })).toEqual({
+      maxBytes: 20 * 1024 ** 3,
     });
-    expect(readRetentionConfig({})).toEqual({ articleMs: 90 * DAY });
-    expect(readRetentionConfig({ ARTICLE_RETENTION_DAYS: "7" })).toEqual({ articleMs: 90 * DAY });
-    expect(errors).toHaveBeenCalledOnce();
-    errors.mockRestore();
+  });
+  it("誤設定では小さい既定値へ戻さず、削除を始める前に例外にする", () => {
+    for (const value of ["0", "15", "-1", "16.5", "Infinity", "1e3", "9007199254740992"]) {
+      expect(() => readRetentionConfig({ STORAGE_LIMIT_MIB: value }), value).toThrow(RangeError);
+    }
   });
 });

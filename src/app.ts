@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { createApi } from "./api";
 import { errorBody } from "./api/schemas";
+import { isStorageLimitError } from "./db/storage";
 import { greaderApp } from "./greader";
 import { mcpApp } from "./mcp";
 import { oauthApp } from "./oauth";
@@ -26,6 +27,10 @@ export function createApp(platform: Platform) {
   app.notFound((c) => c.json(errorBody("not_found", "Not Found"), 404));
 
   app.onError((err, c) => {
+    if (isStorageLimitError(err)) {
+      console.warn("storage_limit_reached");
+      return c.json(errorBody("storage_full", "Storage capacity reached"), 503);
+    }
     console.error(err);
     return c.json(errorBody("internal_error", "Internal Server Error"), 500);
   });

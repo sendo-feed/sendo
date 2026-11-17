@@ -249,12 +249,6 @@ export const feeds = sqliteTable(
      */
     deliveredUntil: integer("delivered_until", { mode: "timestamp_ms" }),
     /**
-     * 古い記事を、どこまで片付けたか（記事の created_at。docs/decisions/retention.md）。
-     * 取得のたびに、取得の間隔の数倍の幅までずつ進める。null なら、まだ片付けていない
-     * （フィードを登録した時刻から始める）
-     */
-    cleanedUntil: integer("cleaned_until", { mode: "timestamp_ms" }),
-    /**
      * アイコンの URL（docs/decisions/images.md の 8）。実際に取得して、画像と確かめられたものだけを置く。
      * 変わると、トリガーが購読の変更番号を進める（migrations/0016_feed_icon_trigger.sql）。
      * API では、中継を通る URL にして返す
@@ -338,6 +332,10 @@ export const articles = sqliteTable(
      * API には、名前ではなく、本文があるかどうかだけを出す
      */
     contentKey: text("content_key"),
+    /** 直近の完全なフィードに載っているか。容量による削除で入り直すことを防ぐ */
+    inCurrentFeed: integer("in_current_feed", { mode: "boolean" }).notNull().default(true),
+    /** 配布を終えるまで確保する受信箱の容量。本文の有無によらず取り込みと同じ文で確保する */
+    reservedInboxBytes: integer("reserved_inbox_bytes").notNull().default(0),
   },
   (t) => [
     // 本文のある記事だけを索引に入れる（片付けが、名前から記事の行があるかを引く）
@@ -346,6 +344,11 @@ export const articles = sqliteTable(
     uniqueIndex("articles_item_id_idx").on(t.itemId),
     index("articles_feed_id_created_at_idx").on(t.feedId, t.createdAt),
     index("articles_feed_id_published_at_idx").on(t.feedId, t.publishedAt),
+    index("articles_created_at_id_idx").on(t.createdAt, t.id),
+    index("articles_feed_id_current_idx").on(t.feedId, t.inCurrentFeed),
+    index("articles_pending_delivery_idx")
+      .on(t.feedId, t.createdAt)
+      .where(sql`reserved_inbox_bytes > 0`),
   ],
 );
 
@@ -583,3 +586,30 @@ export type Subscription = typeof subscriptions.$inferSelect;
 export type Article = typeof articles.$inferSelect;
 export type NewArticle = typeof articles.$inferInsert;
 export type UserArticle = typeof userArticles.$inferSelect;
+
+/** 本文を置く前の容量の確保。実際に消し終えるまで残す。null は既存本文の未集計 */
+export const contentSizes = sqliteTable(
+  "content_sizes",
+  {
+    key: text("key").primaryKey(),
+    bytes: integer("bytes"),
+    /** 本文と一緒に確保する記事情報と受信箱の分。記事を入れる同じ文で引き渡す */
+    articleBytes: integer("article_bytes").notNull().default(0),
+  },
+  (t) => [index("content_sizes_unmeasured_idx").on(t.bytes).where(sql`bytes is null`)],
+);
+
+/** トリガーが書き込みと同時に更新する、記事の保管量。id = 1 の 1 行だけ */
+export const storageUsage = sqliteTable("storage_usage", {
+  id: integer("id").primaryKey(),
+  bytes: integer("bytes").notNull().default(0),
+  limitBytes: integer("limit_bytes")
+    .notNull()
+    .default(256 * 1024 * 1024),
+  reclaiming: integer("reclaiming", { mode: "boolean" }).notNull().default(false),
+  evictionDay: integer("eviction_day").notNull().default(-1),
+  evictionBatches: integer("eviction_batches").notNull().default(0),
+  /** 回収の所有権。期限切れの実行は、削除する文でもトークンを確かめて止める */
+  reclaimToken: text("reclaim_token"),
+  reclaimUntil: integer("reclaim_until").notNull().default(0),
+});

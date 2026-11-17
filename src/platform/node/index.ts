@@ -4,7 +4,7 @@
  */
 import path from "node:path";
 import type { Database } from "../../db";
-import type { PageContentExtractor, Platform } from "..";
+import { NODE_STORAGE_LIMIT_MIB, type PageContentExtractor, type Platform } from "..";
 import { readAuthConfig, readFetchConfig, readRetentionConfig } from "../config";
 import { createFileObjectStore } from "./file-store";
 import type { SqliteJobQueue } from "./job-queue";
@@ -47,7 +47,7 @@ export function createNodePlatform(input: {
     now: () => new Date(),
     auth: readAuthConfig(settings),
     fetchConfig: readFetchConfig(settings),
-    retentionConfig: readRetentionConfig(settings),
+    retentionConfig: readRetentionConfig(settings, NODE_STORAGE_LIMIT_MIB),
   };
 }
 

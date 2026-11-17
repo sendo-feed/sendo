@@ -1,4 +1,5 @@
-import { and, desc, eq, gt } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { MAX_ITEMS } from "../fetcher/parse-feed";
 import type { Database } from ".";
 import { chunked } from "./chunk";
 import { DB_NOW_MS } from "./clock";
@@ -10,7 +11,9 @@ import { articles, type NewArticle } from "./schema";
  */
 
 /** 記事を入れるときの値。createdAt を省くと、DB の時計で INSERT した時刻になる */
-export type ArticleInput = Omit<NewArticle, "createdAt"> & { createdAt?: Date };
+export type ArticleInput = Omit<NewArticle, "createdAt" | "reservedInboxBytes"> & {
+  createdAt?: Date;
+};
 
 /** アイテムの ID の上限（含まない）。D1 から JavaScript の数で受け取っても丸められない範囲 */
 export const ITEM_ID_LIMIT = 2 ** 53;
@@ -39,12 +42,14 @@ export async function insertArticles(
   rows: readonly ArticleInput[],
 ): Promise<{ id: string; url: string | null }[]> {
   const inserted: { id: string; url: string | null }[] = [];
-  for (const chunk of chunked(rows, articles)) {
+  for (const chunk of chunked(rows, articles, 2)) {
     const result = await db
       .insert(articles)
       .values(
         chunk.map((row) => ({
           ...row,
+          inCurrentFeed: row.inCurrentFeed === false ? sql`0` : sql`1`,
+          reservedInboxBytes: sql`0`,
           createdAt: row.createdAt ?? DB_NOW_MS,
           itemId: row.itemId ?? randomItemId(),
         })),
@@ -82,4 +87,44 @@ export async function recentPublishedTimes(
     .limit(input.limit)
     .all();
   return rows.map((row) => row.publishedAt);
+}
+
+/** フィードの現在の記事。上限で解析を打ち切った場合には、外れたとは判定しない */
+export async function recordCurrentFeed(
+  db: Database,
+  feedId: string,
+  guids: readonly string[],
+  parsedCount: number,
+): Promise<void> {
+  const guidsJson = JSON.stringify(guids);
+  // 掲載中だけの索引と guid の索引を使い、何年分の記事があっても履歴全体を読み直さない。
+  await db.run(sql`update articles set in_current_feed = (
+    guid in (select value from json_each(${guidsJson}))
+  ) where id in (
+    select id from articles where feed_id = ${feedId} and in_current_feed = 1
+      and ${parsedCount < MAX_ITEMS ? 1 : 0} = 1
+      and guid not in (select value from json_each(${guidsJson}))
+    union all
+    select id from articles where feed_id = ${feedId}
+      and guid in (select value from json_each(${guidsJson})) and in_current_feed = 0
+  )`);
+}
+
+/** 集計トリガーと同じ、記事情報の UTF-8 と行・索引の見積もり。本文の予約で先に確保する */
+export function estimateArticleBytes(row: ArticleInput): number {
+  const encoder = new TextEncoder();
+  return (
+    2048 +
+    [
+      row.id,
+      row.feedId,
+      row.guid,
+      row.url,
+      row.title,
+      row.summary,
+      row.author,
+      row.thumbnailUrl,
+      row.contentKey,
+    ].reduce<number>((bytes, value) => bytes + encoder.encode(value ?? "").length, 0)
+  );
 }

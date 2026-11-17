@@ -4,31 +4,16 @@ import {
   deleteContentNotes,
   readOldContentNotes,
 } from "../db/content";
-import {
-  collectRemovals,
-  REMOVAL_RETENTION_MS,
-  raiseRemovalHorizons,
-  sweepExpiredInbox,
-  sweepUnsubscribedArticles,
-} from "../db/retention";
+import { collectRemovals, REMOVAL_RETENTION_MS, raiseRemovalHorizons } from "../db/retention";
 import {
   collectDeletedSettings,
   DELETED_SETTING_RETENTION_MS,
   raiseSettingHorizons,
 } from "../db/settings";
 import type { Platform } from "../platform";
+import { measureExistingContents, reclaimStorage } from "./storage";
 
-/*
- * 1 日 1 回の片付け（docs/decisions/retention.md の 4、5）。定期実行が 1 日 1 回積む。
- *
- * 購読されているフィードの記事は、取得のジョブが片付ける。ここでは、その残り（範囲を過ぎてから
- * スターが外された記事、誰も購読していないフィードの記事）と、受信箱の消した記録、設定の消した印の
- * 行（docs/decisions/settings.md の 3）を片付ける。
- *
- * どれも 1 つの文で消す数に上限を置き、文の数にも上限を置く。残りは次の日に回す。1 日に書く行の
- * 数を抑えるため（D1 の無料枠は 1 日 10 万行で、超えるとその日はすべてのクエリが失敗する）。
- */
-
+/** 同期の削除記録、設定、行のない本文を回収し、容量が圧迫していれば古い記事も片付ける */
 /** 1 つの文で消す行の数 */
 export const SWEEP_BATCH = 500;
 
@@ -37,11 +22,9 @@ export const SWEEP_BATCH = 500;
  * 含む）ので少なめにする。合わせて QUERY_BUDGET に収まる
  */
 export const SWEEP_ROUNDS = {
-  inbox: 2,
-  articles: 4,
-  removals: 10,
+  removals: 3,
   settings: 2,
-  contents: 4,
+  contents: 2,
 } as const;
 
 export type CleanUpOutcome = {
@@ -102,15 +85,8 @@ export async function runCleanUp(
 ): Promise<CleanUpOutcome> {
   const { db } = platform;
   const now = platform.now().getTime();
-  const expired = new Date(now - platform.retentionConfig.articleMs);
-
-  // 受信箱を先に片付ける。記事は、どの受信箱にも残っていないものだけを消せる
-  const inbox = await repeat(SWEEP_ROUNDS.inbox, () =>
-    sweepExpiredInbox(db, { before: expired, limit: SWEEP_BATCH }),
-  );
-  const articles = await repeat(SWEEP_ROUNDS.articles, () =>
-    sweepUnsubscribedArticles(db, { before: expired, limit: SWEEP_BATCH }),
-  );
+  await measureExistingContents(platform);
+  const { inbox, articles } = await reclaimStorage(platform);
 
   // 回収の下限を先に引き上げてから、消した記録を消す
   await raiseRemovalHorizons(db, { before: new Date(now - REMOVAL_RETENTION_MS) });

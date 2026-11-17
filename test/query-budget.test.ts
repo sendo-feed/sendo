@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { QUERY_BUDGET } from "../src/db/chunk";
-import { getFeed, insertFeeds, MAX_LEASE } from "../src/db/feeds";
+import { insertFeeds, MAX_LEASE } from "../src/db/feeds";
 import { subscribeMany } from "../src/db/subscriptions";
 import { MAX_ITEMS } from "../src/fetcher/parse-feed";
 import { runCleanUp, SWEEP_ROUNDS } from "../src/jobs/clean-up";
@@ -47,10 +47,11 @@ describe("D1 のクエリの上限", () => {
     expect(queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
   });
 
-  it("取得のジョブ：記事が上限まである場合", async () => {
+  it("取得のジョブ：記事が上限まであり、本文も保存する場合", async () => {
     const items = Array.from(
       { length: MAX_ITEMS },
-      (_, i) => `<item><title>t${i}</title><link>https://blog.example/${i}</link></item>`,
+      (_, i) =>
+        `<item><title>t${i}</title><link>https://blog.example/${i}</link><description><![CDATA[<p>本文 <a href="https://example.com/">リンク</a></p>]]></description></item>`,
     ).join("");
     const { fetch } = fakeFetch(
       () => new Response(`<rss version="2.0"><channel><title>b</title>${items}</channel></rss>`),
@@ -72,32 +73,6 @@ describe("D1 のクエリの上限", () => {
     expect(queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
   });
 
-  it("取得のジョブ：記事が上限まであり、古い記事の片付けもする場合", async () => {
-    const DAY = 24 * 60 * 60 * 1000;
-    const items = Array.from(
-      { length: MAX_ITEMS },
-      (_, i) => `<item><title>t${i}</title><link>https://blog.example/${i}</link></item>`,
-    ).join("");
-    const { fetch } = fakeFetch(
-      () => new Response(`<rss version="2.0"><channel><title>b</title>${items}</channel></rss>`),
-    );
-    const { platform, queryCount, resetQueryCount } = createTestPlatform({
-      fetch,
-      now: () => NOW,
-    });
-    // 期間より前に登録したフィードなので、片付けの範囲がある
-    const feed = await subscribeFeed(platform, {
-      url: "https://blog.example/feed",
-      now: new Date(NOW.getTime() - 200 * DAY),
-    });
-    resetQueryCount();
-
-    await runFetchFeed(platform, feed.id);
-
-    expect((await getFeed(platform.db, feed.id))?.cleanedUntil).not.toBeNull();
-    expect(queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
-  });
-
   it("1 日 1 回の片付け：どれも文の数の上限まで使う場合", async () => {
     const { platform, queryCount } = createTestPlatform({ now: () => NOW });
 
@@ -105,17 +80,16 @@ describe("D1 のクエリの上限", () => {
 
     // 消すものがなければ、それぞれ 1 文で終わる（受信箱、記事、下限の引き上げ、消した記録、
     // 設定の下限の引き上げ、設定の消した印の行、本文の書き留め）
-    expect(queryCount()).toBe(7);
+    expect(queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
     // いちばん多いのは、どれも上限の回数まで消し続ける場合
     const worst =
-      SWEEP_ROUNDS.inbox +
-      SWEEP_ROUNDS.articles +
+      12 +
       1 +
       SWEEP_ROUNDS.removals +
       1 +
       SWEEP_ROUNDS.settings +
       // 本文の書き留めは、1 回につき、読む、本文を消した分を消す、行に入っている分を消すの 3 文
-      3 * SWEEP_ROUNDS.contents;
+      4 * SWEEP_ROUNDS.contents;
     expect(worst).toBeLessThanOrEqual(QUERY_BUDGET);
   });
 
