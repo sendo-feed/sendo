@@ -1,7 +1,7 @@
 # デプロイ
 
 - 状態：提案中
-- 関連：[ユーザーと認証](accounts.md)（セルフホスト）、[仕事の流し方](jobs.md)（取得の間隔）、[古い記事の片付け](retention.md)（記事を残す期間）、[MCP サーバー](mcp.md)（OAuth のオリジン）、[テックスタック](tech-stack.md)、[コンテナ版](container.md)
+- 関連：[ユーザーと認証](accounts.md)（セルフホスト）、[仕事の流し方](jobs.md)（取得の間隔）、[古い記事の片付け](retention.md)（保存容量）、[MCP サーバー](mcp.md)（OAuth のオリジン）、[テックスタック](tech-stack.md)、[コンテナ版](container.md)
 
 Sendo はセルフホストで、使う人がそれぞれ自分の環境にデプロイする（[ユーザーと認証](accounts.md)）。ここで決めるのは、Cloudflare 版を自分の Cloudflare アカウントにデプロイする形。コンテナ版は、上流が作ったイメージを fork せずに使う（[コンテナ版](container.md)の 10）。何人もが同じリポジトリから、自分の設定でデプロイし、上流の更新を取り込み続けられる形を決める。2026-11-15 に、fork と Workers Builds で実際にデプロイして確かめた。2026-11-16 に、上流の更新を自動で取り込む Worker を試し、sendo と sendo-reader の fork が数分で追従するのを確かめた。
 
@@ -21,8 +21,8 @@ Sendo はセルフホストで、使う人がそれぞれ自分の環境にデ�
    - 初めてのデプロイで、Wrangler が名前のとおりに作る。2 回目からは、デプロイ済みの Worker から受け継ぐ
    - マイグレーションも、手元の `pnpm token:create --remote` も、ID なしで同じ D1 を見つける
 4. **人ごとの設定は、Cloudflare の画面の「変数」に置き、`wrangler.jsonc` の `vars` には書かない。** `wrangler.jsonc` を `keep_vars: true` にして、デプロイで消えないようにする。
-   - 対象は、`PUBLIC_URL` と `READER_URL`（[MCP サーバー](mcp.md)の 4）、`FETCH_INTERVAL_MINUTES`（[仕事の流し方](jobs.md)の 6）、`ARTICLE_RETENTION_DAYS`（[古い記事の片付け](retention.md)の 1）
-   - 既定値はコードに持つ。何も入れなければ、取得は 30 分おき、記事は 90 日で、OAuth は使わない
+   - 対象は、`PUBLIC_URL` と `READER_URL`（[MCP サーバー](mcp.md)の 4）、`FETCH_INTERVAL_MINUTES`（[仕事の流し方](jobs.md)の 6）、`STORAGE_LIMIT_MIB`（[古い記事の片付け](retention.md)の 1）
+   - 既定値はコードに持つ。何も入れなければ、取得の下限は 30 分、保存容量は 256 MiB で、OAuth は使わない
    - 手元では、`wrangler dev` の `--var` で入れる。`secrets` を書いているので、`.dev.vars` からは `secrets.required` の名前しか読まれない
 5. **秘密は、初めてのビルドが止まったあとで、画面から入れる。**
    - `secrets.required` の秘密がないと、1 回目のビルドは止まる。それでも Worker と D1 と Queues はできているので、画面の「変数とシークレット」に入れて、ビルドをやり直す
