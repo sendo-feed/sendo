@@ -6,6 +6,9 @@ use dom_query::{Document, Selection};
 
 use crate::{ExtractError, Extracted};
 
+const BODY_BLOCKS: &str =
+    "p, pre, td, th, blockquote, div, section, article, main, body, li, dt, dd";
+
 fn compact(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
 }
@@ -97,11 +100,14 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
     for node in doc.select("article, [itemprop=articleBody]").nodes() {
         let block = Selection::from(*node);
         let prose: usize = block
-            .select("p")
+            .select("p, pre, li, td, th, dt, dd")
             .nodes()
             .iter()
             .map(|p| {
                 let p = Selection::from(*p);
+                if p.select("p, pre, li, td, th, dt, dd").length() > 0 {
+                    return 0;
+                }
                 let text = compact(&p.text()).chars().count();
                 let linked = compact(&p.select("a").text()).chars().count();
                 if text >= 10 && linked * 2 < text {
@@ -135,13 +141,19 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         });
         if named && prose >= 40 && prose > semantic_size && !outside_body {
             semantic_size = prose;
-            semantic = Some(block.html().to_string());
+            semantic = Some(*node);
         }
     }
-    if let Some(html) = semantic {
-        doc.select("body").set_html(html);
-    }
-    let input = doc.html().to_string();
+    // 意味的な領域は文章の手掛かりに使う。出力用の DOM から隣の導入や画像を消さない。
+    let input = if let Some(node) = semantic {
+        let seed_doc = Document::from(doc.html().to_string());
+        seed_doc
+            .select("body")
+            .set_html(Selection::from(node).html().to_string());
+        seed_doc.html().to_string()
+    } else {
+        doc.html().to_string()
+    };
     let options = rs_trafilatura::Options {
         url: Some(url.to_owned()),
         include_images: true,
@@ -175,10 +187,20 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         .unwrap_or_else(|| page_title.clone());
 
     let mut anchors = Vec::new();
-    for node in doc.select("p, pre, td, blockquote, div").nodes() {
+    for node in doc.select(BODY_BLOCKS).nodes() {
+        if let Some(scope) = semantic
+            && node.id != scope.id
+            && !Selection::from(*node)
+                .ancestors(Some(128))
+                .nodes()
+                .iter()
+                .any(|parent| parent.id == scope.id)
+        {
+            continue;
+        }
         let block = Selection::from(*node);
         // 同じ文章を親と子で重ねて数えない。
-        if block.select("p, pre, td, blockquote, div").length() > 0 {
+        if block.select(BODY_BLOCKS).length() > 0 {
             continue;
         }
         let text = compact(&block.text());
@@ -204,19 +226,23 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         }
     }
     let total: usize = anchors.iter().map(|(_, weight)| weight).sum();
-    if total == 0 {
+    if total == 0 && semantic.is_none() {
         return Err(ExtractError::NoContent);
     }
 
     let mut candidates = std::collections::HashMap::new();
     for (anchor, weight) in &anchors {
+        candidates.entry(anchor.id).or_insert((*anchor, 0usize)).1 += weight;
         for node in Selection::from(*anchor).ancestors(Some(128)).nodes() {
             let candidate = candidates.entry(node.id).or_insert((*node, 0usize));
             candidate.1 += weight;
         }
     }
-    let mut best = None;
-    let mut best_size = usize::MAX;
+    let mut best = semantic.map(Selection::from);
+    let mut best_size = best
+        .as_ref()
+        .map(|s| compact(&s.text()).chars().count())
+        .unwrap_or(usize::MAX);
     // 文書の順に評価し、同じ大きさなら外側を残す。画像しかない隣接ブロックも保持する。
     for node in doc
         .select("body, main, article, section, div, [role=main]")
@@ -226,6 +252,16 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
             continue;
         };
         if *weight < total {
+            continue;
+        }
+        if let Some(scope) = semantic
+            && node.id != scope.id
+            && !Selection::from(scope)
+                .ancestors(Some(128))
+                .nodes()
+                .iter()
+                .any(|parent| parent.id == node.id)
+        {
             continue;
         }
         let block = Selection::from(*node);
@@ -238,11 +274,25 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
     let mut root = best.ok_or(ExtractError::NoContent)?;
     // 同じ記事の見出しと導入画像が隣のブロックに分かれている場合は、一緒に残す。
     let title_key = compact(&page_title);
+    let has_heading = root.select("h1").length() > 0;
     for node in root.ancestors(Some(3)).nodes() {
         let parent = Selection::from(*node);
         let size = compact(&parent.text()).chars().count();
         let heading = compact(&parent.select("h1").first().text());
-        if size <= best_size * 3 / 2 && heading.chars().count() >= 5 && title_key.contains(&heading)
+        let content_parent = matches!(node.node_name().as_deref(), Some("article" | "main"))
+            || parent.attr("role").as_deref() == Some("main");
+        let lead_image = content_parent
+            && parent.children().nodes().iter().any(|sibling| {
+                let sibling = Selection::from(*sibling);
+                matches!(
+                    sibling.nodes()[0].node_name().as_deref(),
+                    Some("header" | "figure" | "picture")
+                ) && sibling.select("img").length() > 0
+                    && compact(&sibling.text()).chars().count() <= 200
+            });
+        if size <= best_size * 3 / 2
+            && ((!has_heading && heading.chars().count() >= 5 && title_key.contains(&heading))
+                || lead_image)
         {
             root = parent;
             break;
@@ -332,5 +382,49 @@ mod tests {
         );
         let result = extract(&html, "https://different.example/post").unwrap();
         assert!(result.html.contains("本文の段落5"));
+    }
+    #[test]
+    fn keeps_heading_lead_and_cover_adjacent_to_semantic_body() {
+        let html = format!(
+            "<title>別ブロックに分かれた記事</title><main><header><h1>別ブロックに分かれた記事</h1><p>この短い導入も本文の一部です。</p></header><figure><a href='/photo/view'><img src='/cover.jpg'></a><figcaption>表紙の説明</figcaption></figure><section itemprop='articleBody'>{}</section></main><aside>長い著者紹介</aside>",
+            paragraphs()
+        );
+        let result = extract(&html, "https://unknown.example/post").unwrap();
+        assert!(result.html.contains("別ブロックに分かれた記事"));
+        assert!(result.html.contains("この短い導入も本文の一部"));
+        assert!(result.html.contains("https://unknown.example/cover.jpg"));
+        assert!(result.html.contains("https://unknown.example/photo/view"));
+        assert!(result.html.contains("表紙の説明"));
+        assert!(result.html.contains("本文の段落5"));
+        assert!(!result.html.contains("長い著者紹介"));
+    }
+    #[test]
+    fn extracts_list_only_articles_without_div_wrappers() {
+        let items: String = (0..5).map(|i|format!("<li>箇条書きの項目{i}です。これは説明をリスト形式で伝える記事で、段落の要素は使っていません。調べた結果を読みやすく順番に並べています。</li>")).collect();
+        let result = extract(&format!("<title>リスト形式の記事</title><main><article><h1>リスト形式の記事</h1><ul>{items}</ul></article></main>"), "https://new.example/post").unwrap();
+        assert!(result.html.contains("箇条書きの項目0"));
+        assert!(result.html.contains("箇条書きの項目4"));
+        assert!(result.html.contains("<ul>"));
+        assert_eq!(Document::from(result.html).select("li").length(), 5);
+    }
+    #[test]
+    fn extracts_a_plain_text_body_without_block_wrappers() {
+        let text = "これは文章だけで構成した記事です。段落のタグがなくても、取り込んだ文章を途中で捨てないようにします。".repeat(8);
+        let result = extract(
+            &format!("<title>文章の記事</title><body>{text}</body>"),
+            "https://plain.example/post",
+        )
+        .unwrap();
+        assert!(result.html.contains(&text));
+    }
+    #[test]
+    fn does_not_expand_an_article_to_the_site_header_logo() {
+        let html = format!(
+            "<title>本文を残す検証用の見出し</title><header><img src='/site-logo.png'></header><article><h1>本文を残す検証用の見出し</h1>{}</article>",
+            paragraphs()
+        );
+        let result = extract(&html, "https://another.example/post").unwrap();
+        assert!(result.html.contains("本文の段落5"));
+        assert!(!result.html.contains("site-logo.png"));
     }
 }
