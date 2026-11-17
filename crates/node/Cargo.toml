@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 sendo-extract = { path = "../extract" }
+sendo-language = { path = "../language" }
 napi = { version = "=3.16.1", default-features = false, features = ["napi4"] }
 napi-derive = "=3.7.0"
 

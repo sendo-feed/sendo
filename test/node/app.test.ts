@@ -1,13 +1,18 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app";
+import { getArticleLanguage } from "../../src/db/article-languages";
 import { PAGE_CONTENT_RETRY_MS } from "../../src/db/page-contents";
 import { runJob } from "../../src/jobs";
 import type { Job } from "../../src/jobs/job";
 import type { Platform } from "../../src/platform";
 import { createNodePlatform, withPublicOrigin } from "../../src/platform/node";
 import { createSqliteJobQueue, type SqliteJobQueue } from "../../src/platform/node/job-queue";
-import { createPageContentExtractor, loadNativeModule } from "../../src/platform/node/native";
+import {
+  createLanguageDetector,
+  createPageContentExtractor,
+  loadNativeModule,
+} from "../../src/platform/node/native";
 import { createTokenForEmail, normalizeTokenRequest } from "../../src/platform/node/token";
 import { articlePage, NATIVE_MODULE, openTestDatabase } from "./helpers";
 
@@ -94,6 +99,7 @@ describe("コンテナ版でアプリを動かす", () => {
       jobs,
       fetch: fakeFetch,
       pageContent: createPageContentExtractor(loadNativeModule(NATIVE_MODULE)),
+      languageDetection: createLanguageDetector(loadNativeModule(NATIVE_MODULE)),
     });
     token = await createTokenForEmail(
       database.db,
@@ -143,7 +149,19 @@ describe("コンテナ版でアプリを動かす", () => {
 
   it("使える機能として、ページの本文を抜けることを返す", async () => {
     const res = await request("/api/v1/features");
-    expect(await res.json()).toEqual({ pageContent: true });
+    expect(await res.json()).toEqual({ pageContent: true, languageDetection: true });
+  });
+
+  it("抽出したページの主言語をネイティブで調べ、実SQLiteの別表に保存する", async () => {
+    const id = await subscribeAndFetch();
+    await jobs.enqueue([{ type: "detect-article-languages" }]);
+    await drain();
+    expect(await getArticleLanguage(database.db, id, "page")).toMatchObject({
+      language: "ja",
+      status: "detected",
+      pipelineRevision: 1,
+      detector: "lingua-1.8.0-high-all75",
+    });
   });
 
   it("取り込んだときに記事のページから本文を抜き、開いたときは取りにいかずに返す", async () => {

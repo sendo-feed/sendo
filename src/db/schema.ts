@@ -3,6 +3,7 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
@@ -370,6 +371,29 @@ export const pageContents = sqliteTable("page_contents", {
   /** 最後に取りにいった時刻 */
   attemptedAt: integer("attempted_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+/** 主言語の判定は共有の派生データ。元の記事・本文や人ごとの変更番号は変えない */
+export const articleLanguages = sqliteTable(
+  "article_languages",
+  {
+    articleId: text("article_id")
+      .notNull()
+      .references(() => articles.id, { onDelete: "cascade" }),
+    source: text("source", { enum: ["feed", "page", "metadata"] }).notNull(),
+    language: text("language").notNull(),
+    status: text("status", {
+      enum: ["detected", "provisional", "insufficient", "uncertain"],
+    }).notNull(),
+    score: real("score").notNull(),
+    margin: real("margin").notNull(),
+    inputHash: text("input_hash").notNull(),
+    detector: text("detector").notNull(),
+    pipelineRevision: integer("pipeline_revision").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.articleId, t.source] })],
+);
+
+export type ArticleLanguage = typeof articleLanguages.$inferSelect;
 
 /**
  * 本文の置き場の名前の書き留め（docs/decisions/content.md の 4）。「この名前の本文は、どの記事の

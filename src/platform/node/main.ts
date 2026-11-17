@@ -15,12 +15,12 @@ import { parseArgs } from "node:util";
 import { serve } from "@hono/node-server";
 import { createApp } from "../../app";
 import { runJob } from "../../jobs";
-import { runScheduled } from "../../jobs/schedule";
+import { enqueueLanguageDetection, runScheduled } from "../../jobs/schedule";
 import { parseOrigin } from "..";
 import { openDatabase } from "./database";
 import { createNodePlatform, dataDirectory, type NodeEnv, withPublicOrigin } from "./index";
 import { createSqliteJobQueue } from "./job-queue";
-import { createPageContentExtractor, loadNativeModule } from "./native";
+import { createLanguageDetector, createPageContentExtractor, loadNativeModule } from "./native";
 import { startScheduler } from "./scheduler";
 import { createTokenForEmail } from "./token";
 
@@ -38,13 +38,20 @@ function nativeModulePath(env: NodeEnv): string {
  * Rust の処理を読み込み、記事のページから本文を抜く実装を作る。読み込めなければ、ログに出して
  * その機能なしで動く（GET /api/v1/features が false を返す）。イメージには必ず入っている
  */
-function loadPageContentExtractor(env: NodeEnv) {
+function loadNativeFeatures(env: NodeEnv) {
   const file = nativeModulePath(env);
   try {
-    return createPageContentExtractor(loadNativeModule(file));
+    const native = loadNativeModule(file);
+    return {
+      pageContent: createPageContentExtractor(native),
+      languageDetection: createLanguageDetector(native),
+    };
   } catch (error) {
-    console.error("could not load the native module; page content is disabled", { file, error });
-    return undefined;
+    console.error("could not load the native module; native features are disabled", {
+      file,
+      error,
+    });
+    return {};
   }
 }
 
@@ -88,11 +95,12 @@ async function runServer(env: NodeEnv): Promise<void> {
     env,
     db: database.db,
     jobs,
-    pageContent: loadPageContentExtractor(env),
+    ...loadNativeFeatures(env),
   });
   const app = createApp(platform);
 
   jobs.start((job) => runJob(platform, job));
+  await enqueueLanguageDetection(platform);
   const scheduler = startScheduler((scheduledTime) => runScheduled(platform, scheduledTime));
   const server = serve(
     {

@@ -75,12 +75,17 @@
       "Features": {
         "type": "object",
         "properties": {
+          "languageDetection": {
+            "type": "boolean",
+            "description": "記事の主言語を背景で判定・保存できるか。コンテナ版だけ"
+          },
           "pageContent": {
             "type": "boolean",
             "description": "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。コンテナ版だけ"
           }
         },
         "required": [
+          "languageDetection",
           "pageContent"
         ]
       },

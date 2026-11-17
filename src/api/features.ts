@@ -5,6 +5,9 @@ import { defaultHook } from "./hook";
 
 const FeaturesSchema = z
   .object({
+    languageDetection: z.boolean().openapi({
+      description: "記事の主言語を背景で判定・保存できるか。コンテナ版だけ",
+    }),
     pageContent: z.boolean().openapi({
       description:
         "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。コンテナ版だけ",
@@ -31,6 +34,13 @@ const featuresRoute = createRoute({
 export function featuresApi(platform: Platform) {
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook }).openapi(
     featuresRoute,
-    (c) => c.json({ pageContent: platform.pageContent !== undefined }, 200),
+    (c) =>
+      c.json(
+        {
+          pageContent: platform.pageContent !== undefined,
+          languageDetection: platform.languageDetection !== undefined,
+        },
+        200,
+      ),
   );
 }
