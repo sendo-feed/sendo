@@ -21,6 +21,7 @@ import { htmlToText } from "../fetcher/parse-feed";
 import { UrlNotAllowedError } from "../fetcher/url-guard";
 import { base64UrlDecode, base64UrlEncode } from "../lib/crypto";
 import type { Platform } from "../platform";
+import { MCP_ICON_PATH, MCP_ICON_SIZE, MCP_ICON_TYPE } from "./icon";
 
 /*
  * MCP のツール（docs/decisions/mcp.md の 6、8、9）。
@@ -172,10 +173,28 @@ function userIdOf(authInfo: AuthInfo | undefined): string {
 }
 
 /** 1 回のリクエストのための MCP サーバー。ツールはどれも、認証したユーザーのデータだけを扱う */
-export function createMcpServer(platform: Platform, authInfo: AuthInfo | undefined): McpServer {
+export function createMcpServer(
+  platform: Platform,
+  authInfo: AuthInfo | undefined,
+  requestUrl: string | undefined,
+): McpServer {
   const { db } = platform;
   const userId = userIdOf(authInfo);
-  const server = new McpServer({ name: "sendo", version: "0.0.0" });
+  const server = new McpServer({
+    name: "sendo",
+    version: "0.0.0",
+    ...(requestUrl === undefined
+      ? {}
+      : {
+          icons: [
+            {
+              src: new URL(`/api/v1${MCP_ICON_PATH}`, requestUrl).href,
+              mimeType: MCP_ICON_TYPE,
+              sizes: [MCP_ICON_SIZE],
+            },
+          ],
+        }),
+  });
 
   /** フィードの ID から、その人の購読の名前を引く表 */
   const feedTitles = async () =>

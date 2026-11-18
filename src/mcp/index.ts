@@ -90,7 +90,9 @@ async function authenticate(platform: Platform, token: string): Promise<AuthInfo
 }
 
 export function mcpApp(platform: Platform) {
-  const handler = createMcpHandler(({ authInfo }) => createMcpServer(platform, authInfo));
+  const handler = createMcpHandler(({ authInfo, requestInfo }) =>
+    createMcpServer(platform, authInfo, requestInfo?.url),
+  );
   const app = new Hono();
 
   app.all("/mcp", async (c) => {

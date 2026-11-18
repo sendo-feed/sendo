@@ -1173,6 +1173,25 @@
         }
       }
     },
+    "/mcp-icon.png": {
+      "get": {
+        "summary": "MCP サーバーのアイコン",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Sendo のアイコン",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/me": {
       "get": {
         "summary": "認証しているユーザー",
