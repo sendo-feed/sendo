@@ -30,8 +30,8 @@ Reeder や NetNewsWire などのリーダーアプリから、Sendo をそのま
    - `edit-tag`：既読（`read`）とスター（`starred`）の付け外し。`kept-unread` を付けたら未読にする
    - `mark-all-as-read`：`ts`（マイクロ秒）より前に受信箱に入った記事だけを既読にする。`ts` がなければ、受けた時刻を境界にする
    - 購読（`subscription/quickadd`、`subscription/edit`）、フォルダ（`rename-tag`、`disable-tag`）も、REST API と同じ処理を通す
-   - 購読の名前の付け直し（`subscription/edit` の `t`）は、人ごとの名前を持つまで受けるだけで何もしない
-6. **記事の本文は、要約（プレーンテキスト）を HTML にエスケープして返す。** Google Reader API の `summary.content` や `content.content` は HTML として表示されるので、エスケープしないと、フィードの中身がリーダーアプリの画面でマークアップとして解釈される。本文（[記事の本文](content.md)）は、今は出さない。
+   - `subscription/edit` は `t` を受け付ける。購読名には反映しない
+6. **記事の要約を HTML にエスケープして返す。** Google Reader API の `summary.content` や `content.content` は HTML として表示されるので、エスケープしないと、フィードの中身がリーダーアプリの画面でマークアップとして解釈される（[記事の本文](content.md)の 9）。
 7. **続き（`c`）は、意味を持たせない文字列にする。** 中身は、記事の一覧と同じく「最後に返した記事の位置」（公開日時と記事の ID）。
 
 ## 理由
