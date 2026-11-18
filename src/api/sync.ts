@@ -11,6 +11,7 @@ import {
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
+import { SavedPageIdSchema, SavedPageSchema, toSavedPageResponse } from "./saved";
 import {
   ArticleSchema,
   ErrorSchema,
@@ -41,6 +42,7 @@ const CursorSchema = z.object({
   // 設定を足す前に作られたカーソルには、ない。そのときは、設定だけを最初から送る
   // （全体を同期し直させない。docs/decisions/settings.md の 4）
   c: PositionSchema.optional(),
+  p: PositionSchema.optional(),
 });
 
 const toTuple = (p: SyncPosition) => [p.seq, p.id, p.upTo, p.done] as const;
@@ -59,6 +61,7 @@ export function encodeSyncCursor(cursor: SyncCursor): string {
     s: toTuple(cursor.subscriptions),
     a: toTuple(cursor.articles),
     c: toTuple(cursor.settings),
+    ...(cursor.savedPages && { p: toTuple(cursor.savedPages) }),
   });
   const bytes = new TextEncoder().encode(json);
   return btoa(String.fromCharCode(...bytes))
@@ -79,6 +82,7 @@ export function decodeSyncCursor(value: string): SyncCursor | null {
       subscriptions: fromTuple(parsed.data.s),
       articles: fromTuple(parsed.data.a),
       settings: parsed.data.c ? fromTuple(parsed.data.c) : INITIAL_POSITION,
+      ...(parsed.data.p && { savedPages: fromTuple(parsed.data.p) }),
     };
   } catch {
     return null;
@@ -145,6 +149,13 @@ const SyncSettingSchema = z
   ])
   .openapi("SyncSetting");
 
+const SyncSavedPageSchema = z
+  .union([
+    SavedPageSchema.extend({ deleted: z.literal(false) }).openapi("SyncActiveSavedPage"),
+    z.object({ id: SavedPageIdSchema, deleted: z.literal(true) }).openapi("SyncRemovedSavedPage"),
+  ])
+  .openapi("SyncSavedPage");
+
 const syncRoute = createRoute({
   method: "get",
   path: "/sync",
@@ -155,10 +166,12 @@ const syncRoute = createRoute({
     "配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。",
     "deleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。",
     "settings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。",
+    "includeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。",
     "cursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
   ].join("\n"),
   request: {
     query: z.object({
+      includeSaved: z.enum(["true", "false"]).optional(),
       cursor: z.string().max(1024).optional().openapi({ description: "前回の応答の cursor" }),
     }),
   },
@@ -175,6 +188,7 @@ const syncRoute = createRoute({
               feeds: z.array(SyncFeedSchema),
               articles: z.array(SyncArticleSchema),
               settings: z.array(SyncSettingSchema),
+              savedPages: z.array(SyncSavedPageSchema).optional(),
             })
             .openapi("SyncChanges"),
         },
@@ -191,12 +205,16 @@ export function syncApi(platform: Platform) {
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook }).openapi(
     syncRoute,
     async (c) => {
-      const raw = c.req.valid("query").cursor;
-      const cursor = raw === undefined ? INITIAL_CURSOR : decodeSyncCursor(raw);
-      if (cursor === null) {
+      const { cursor: raw, includeSaved } = c.req.valid("query");
+      const decoded = raw === undefined ? INITIAL_CURSOR : decodeSyncCursor(raw);
+      if (decoded === null) {
         return c.json(errorBody("invalid_cursor", "cursor is invalid; start over without it"), 400);
       }
 
+      const cursor = {
+        ...decoded,
+        savedPages: includeSaved === "true" ? (decoded.savedPages ?? INITIAL_POSITION) : undefined,
+      };
       const userId = c.get("user").id;
       const changes = await readChanges(platform.db, {
         userId,
@@ -237,6 +255,11 @@ export function syncApi(platform: Platform) {
                 : { ...(await toArticleResponse(item.article, images)), deleted: false as const },
             ),
           ),
+          ...(changes.savedPages && {
+            savedPages: changes.savedPages.map((item) =>
+              item.deleted ? item : { ...toSavedPageResponse(item), deleted: false as const },
+            ),
+          }),
           settings: changes.settings.map((item) =>
             item.deleted
               ? { deviceType: item.deviceType, name: item.name, deleted: true as const }

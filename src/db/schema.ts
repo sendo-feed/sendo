@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   integer,
   primaryKey,
@@ -559,6 +560,43 @@ export const clientSettings = sqliteTable(
  * 最初から同期し直してもらう。人ごとに持つ理由は removal_horizons と同じ
  */
 export const settingHorizons = sqliteTable("setting_horizons", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  seq: integer("seq").notNull(),
+});
+
+/** URL で保存したページ。解除するとメタデータは捨て、同期に必要な行だけを残す。 */
+export const savedPages = sqliteTable(
+  "saved_pages",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    id: text("id").notNull(),
+    url: text("url"),
+    title: text("title"),
+    savedAt: integer("saved_at", { mode: "timestamp_ms" }),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    seq: seq(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.id] }),
+    index("saved_pages_seq_idx").on(t.seq),
+    index("saved_pages_user_seq_idx").on(t.userId, t.seq, t.id),
+    index("saved_pages_user_saved_at_idx")
+      .on(t.userId, t.savedAt, t.id)
+      .where(sql`${t.deletedAt} is null`),
+    index("saved_pages_deleted_at_idx").on(t.deletedAt).where(sql`${t.deletedAt} is not null`),
+    check(
+      "saved_pages_state_check",
+      sql`(${t.deletedAt} is null and ${t.url} is not null and ${t.savedAt} is not null)
+        or (${t.deletedAt} is not null and ${t.url} is null and ${t.title} is null and ${t.savedAt} is null)`,
+    ),
+  ],
+);
+
+export const savedPageHorizons = sqliteTable("saved_page_horizons", {
   userId: text("user_id")
     .primaryKey()
     .references(() => users.id, { onDelete: "cascade" }),
