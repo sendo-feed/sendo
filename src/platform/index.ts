@@ -6,6 +6,7 @@
  * 同じインターフェースの実装を platform/<移植先>/ に足す。
  */
 import type { Database } from "../db";
+import type { ArticleCursor, ArticleListInput, InboxArticle } from "../db/inbox";
 import type { Job } from "../jobs/job";
 
 /** 重い処理を、API の応答と切り離して後で実行する */
@@ -130,9 +131,35 @@ export interface LanguageDetector {
   detect(html: string): Promise<LanguageDetectionResult>;
 }
 
+/** SQLite の索引を作るための、共有記事の現在の入力。 */
+export type SearchInput = {
+  articleId: string;
+  title: string | null;
+  summary: string | null;
+  contentKey: string | null;
+  pageHtml: string | null;
+  revision: string;
+};
+
+export interface ArticleSearch {
+  pending(limit: number): Promise<SearchInput[]>;
+  retry(input: Pick<SearchInput, "articleId" | "revision">): Promise<void>;
+  store(input: {
+    articleId: string;
+    revision: string;
+    content: string;
+    bytes: number;
+  }): Promise<boolean>;
+  find(input: ArticleListInput & { keyword: string }): Promise<{
+    items: (InboxArticle & { snippet: string })[];
+    next: ArticleCursor | null;
+  }>;
+}
+
 /** アプリが実行環境から受け取るもの */
 export interface Platform {
   db: Database;
+  articleSearch: ArticleSearch;
   jobs: JobQueue;
   /** 記事の本文の置き場 */
   content: ObjectStore;

@@ -161,6 +161,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       "list_folders",
       "mark_read",
       "move_feed",
+      "search_articles",
       "star",
       "subscribe",
       "unsubscribe",

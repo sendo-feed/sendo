@@ -1,6 +1,7 @@
 import { extractPageContentOnce } from "../fetcher/page-content";
 import type { Platform } from "../platform";
 import { detectArticleLanguages } from "./article-languages";
+import { indexArticleSearch } from "./article-search";
 import { runCleanUp } from "./clean-up";
 import { runFetchFeed } from "./fetch-feed";
 import { runImportFeeds } from "./import-feeds";
@@ -9,6 +10,10 @@ import type { Job } from "./job";
 /** キューから受け取った仕事を1つ実行する。例外を投げたら、キューがやり直す */
 export async function runJob(platform: Platform, job: Job): Promise<void> {
   switch (job.type) {
+    case "index-article-search": {
+      await indexArticleSearch(platform);
+      return;
+    }
     case "detect-article-languages": {
       await detectArticleLanguages(platform, job.after);
       return;

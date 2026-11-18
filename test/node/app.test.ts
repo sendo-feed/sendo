@@ -164,6 +164,21 @@ describe("コンテナ版でアプリを動かす", () => {
     });
   });
 
+  it("実 SQLite の FTS5 で抽出済みの本文を検索できる", async () => {
+    const id = await subscribeAndFetch();
+    await jobs.enqueue([{ type: "index-article-search" }]);
+    await drain();
+    const { user } = (await (await request("/api/v1/me")).json()) as { user: { id: string } };
+    const found = await platform.articleSearch.find({
+      userId: user.id,
+      keyword: "段落 0",
+      limit: 10,
+    });
+    expect(found.items).toEqual([
+      expect.objectContaining({ id, snippet: expect.stringContaining("段落 0") }),
+    ]);
+  });
+
   it("取り込んだときに記事のページから本文を抜き、開いたときは取りにいかずに返す", async () => {
     const id = await subscribeAndFetch();
     // 取得の仕事のあとで、ページから抜く仕事が動いている

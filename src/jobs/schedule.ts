@@ -91,4 +91,11 @@ export async function runScheduled(
   const count = await enqueueDueFeeds(platform);
   if (count > 0) console.info("enqueued due feeds", { count });
   await enqueueLanguageDetection(platform);
+  try {
+    await platform.jobs.enqueue([{ type: "index-article-search" }]);
+  } catch (error) {
+    console.warn("could not enqueue article search indexing; retrying at the next schedule", {
+      error,
+    });
+  }
 }

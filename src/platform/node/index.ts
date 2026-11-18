@@ -11,6 +11,7 @@ import {
   type Platform,
 } from "..";
 import { readAuthConfig, readFetchConfig, readRetentionConfig } from "../config";
+import { createSqliteArticleSearch } from "../sqlite/article-search";
 import { createFileObjectStore } from "./file-store";
 import type { SqliteJobQueue } from "./job-queue";
 import { createSafeFetch } from "./safe-fetch";
@@ -48,6 +49,7 @@ export function createNodePlatform(input: {
     ...(input.pageContent && { pageContent: input.pageContent }),
     ...(input.languageDetection && { languageDetection: input.languageDetection }),
     db: input.db,
+    articleSearch: createSqliteArticleSearch(input.db),
     jobs: input.jobs,
     content: createFileObjectStore(path.join(dataDirectory(input.env), "content")),
     fetch: input.fetch ?? createSafeFetch(),

@@ -206,35 +206,28 @@ export function inFolder(userId: string, folderId: string): SQL {
   )`;
 }
 
-const inboxSelection = {
+export const inboxSelection = {
   ...getTableColumns(articles),
   readAt: ua.readAt,
   starredAt: ua.starredAt,
   receivedAt: ua.createdAt,
 };
 
-/**
- * 受信箱の記事を新しい順に返す。
- *
- * OFFSET ではなく、直前のページの最後の記事より古いものを取る（キーセット方式）。
- * 指定した時刻と記事 ID が同じ順で並ぶようにし、新着が入ってもページの境界がずれないようにする。
- */
-export async function listInbox(
-  db: Database,
-  input: {
-    userId: string;
-    feedId?: string | undefined;
-    folderId?: string | undefined;
-    state?: ArticleState | undefined;
-    starred?: boolean | undefined;
-    dateBy?: ArticleDateField | undefined;
-    limit: number;
-    cursor?: ArticleCursor | undefined;
-    /** dateBy で選んだ時刻の範囲。since 以上、until 未満 */
-    since?: Date | undefined;
-    until?: Date | undefined;
-  },
-): Promise<{ items: InboxArticle[]; next: ArticleCursor | null }> {
+export type ArticleListInput = {
+  userId: string;
+  feedId?: string | undefined;
+  folderId?: string | undefined;
+  state?: ArticleState | undefined;
+  starred?: boolean | undefined;
+  dateBy?: ArticleDateField | undefined;
+  limit: number;
+  cursor?: ArticleCursor | undefined;
+  /** dateBy で選んだ時刻の範囲。since 以上、until 未満 */
+  since?: Date | undefined;
+  until?: Date | undefined;
+};
+
+export function inboxConditions(input: ArticleListInput): SQL[] {
   const dateBy = input.dateBy ?? "publishedAt";
   const dateColumn = ua[dateBy];
   const conditions: SQL[] = [eq(ua.userId, input.userId)];
@@ -252,22 +245,38 @@ export async function listInbox(
       sql`(${dateColumn}, ${ua.articleId}) < (${input.cursor.at}, ${input.cursor.id})`,
     );
   }
+  return conditions;
+}
 
-  const rows = await db
-    .select(inboxSelection)
-    .from(ua)
-    .innerJoin(articles, eq(articles.id, ua.articleId))
-    .where(and(...conditions))
-    .orderBy(desc(dateColumn), desc(ua.articleId))
-    .limit(input.limit + 1)
-    .all();
+export function inboxOrder(input: ArticleListInput): SQL[] {
+  return [desc(ua[input.dateBy ?? "publishedAt"]), desc(ua.articleId)];
+}
 
+export function inboxPage<T extends InboxArticle>(
+  rows: T[],
+  input: ArticleListInput,
+): { items: T[]; next: ArticleCursor | null } {
+  const dateBy = input.dateBy ?? "publishedAt";
   const items = rows.slice(0, input.limit);
   const last = items.at(-1);
   const lastDate = last?.[dateBy];
   const next =
     rows.length > input.limit && last && lastDate ? { at: lastDate.getTime(), id: last.id } : null;
   return { items, next };
+}
+
+/** 受信箱を時刻と記事 ID の順に読み、直前のページの最後から続きを返す。 */
+export async function listInbox(db: Database, input: ArticleListInput) {
+  const rows = await db
+    .select(inboxSelection)
+    .from(ua)
+    .innerJoin(articles, eq(articles.id, ua.articleId))
+    .where(and(...inboxConditions(input)))
+    .orderBy(...inboxOrder(input))
+    .limit(input.limit + 1)
+    .all();
+
+  return inboxPage(rows, input);
 }
 
 /** 受信箱の記事を 1 件。その人の受信箱になければ undefined */

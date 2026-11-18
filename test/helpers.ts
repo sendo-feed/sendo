@@ -14,6 +14,7 @@ import {
   type Platform,
 } from "../src/platform";
 import { createR2ObjectStore } from "../src/platform/cloudflare";
+import { createSqliteArticleSearch } from "../src/platform/sqlite/article-search";
 import { TEST_TOKEN as API_TOKEN, TEST_USER } from "./fixtures/user";
 
 export { API_TOKEN, TEST_USER };
@@ -44,8 +45,10 @@ function countingD1(db: D1Database) {
 export function createTestPlatform(overrides: Partial<Platform> = {}) {
   const enqueued: Job[] = [];
   const d1 = countingD1(env.DB);
+  const db = overrides.db ?? drizzle(d1.db, { schema });
   const platform: Platform = {
-    db: drizzle(d1.db, { schema }),
+    db,
+    articleSearch: createSqliteArticleSearch(db),
     jobs: {
       async enqueue(jobs) {
         enqueued.push(...jobs);

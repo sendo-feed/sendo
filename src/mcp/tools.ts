@@ -20,14 +20,14 @@ import { subscribeToUrl } from "../feeds/subscribe";
 import { DiscoverError } from "../fetcher/discover";
 import { htmlToText } from "../fetcher/parse-feed";
 import { UrlNotAllowedError } from "../fetcher/url-guard";
-import { base64UrlDecode, base64UrlEncode } from "../lib/crypto";
+import { base64UrlDecode, base64UrlEncode, sha256Hex } from "../lib/crypto";
 import type { Platform } from "../platform";
 import { MCP_ICON_PATH, MCP_ICON_SIZE, MCP_ICON_TYPE } from "./icon";
 
 /*
  * MCP のツール（docs/decisions/mcp.md の 6、8、9）。
  *
- * - read の範囲で使えるもの：list_feeds、list_folders、list_articles、list_activity、get_unread、get_article
+ * - read の範囲で使えるもの：list_feeds、list_folders、list_articles、list_activity、search_articles、get_unread、get_article
  * - write の範囲が要るもの：subscribe、move_feed、unsubscribe、mark_read、star。read だけのトークンで呼ばれたら、
  *   SDK が 403 insufficient_scope を返す（scopeChallenge）
  *
@@ -131,6 +131,14 @@ function toArticle(article: InboxArticle, feedTitle: string | null): z.infer<typ
   };
 }
 
+function toListedArticle(article: InboxArticle, feedTitle: string | null) {
+  return {
+    ...toArticle(article, feedTitle),
+    readAt: article.readAt?.toISOString() ?? null,
+    starredAt: article.starredAt?.toISOString() ?? null,
+  };
+}
+
 /** 構造化した結果。同じ JSON をテキストでも返す（structuredContent を読まないクライアントのため） */
 function result<T extends Record<string, unknown>>(data: T) {
   return {
@@ -155,6 +163,11 @@ const ListCursorSchema = z.object({
   id: CursorIdSchema,
 });
 
+const SearchCursorSchema = z.object({
+  at: z.int(),
+  id: CursorIdSchema,
+  filter: z.string().max(64),
+});
 const ActivityCursorSchema = z.object({ at: z.int(), id: z.uuid() });
 
 function decodeCursor<T>(value: string, schema: z.ZodType<T>): T | undefined {
@@ -221,22 +234,24 @@ export function createMcpServer(
     };
   };
 
+  const inboxInput = (query: z.infer<typeof ListArticlesQuerySchema>, cursor?: ArticleCursor) => ({
+    userId,
+    feedId: query.feedId,
+    folderId: query.folderId,
+    state: query.state,
+    starred: query.starred,
+    dateBy: query.dateBy,
+    limit: query.limit ?? 20,
+    cursor,
+    since: query.since === undefined ? undefined : new Date(query.since),
+    until: query.until === undefined ? undefined : new Date(query.until),
+  });
+
   const readPage = async (
     query: z.infer<typeof ListArticlesQuerySchema>,
     cursor?: ArticleCursor,
   ) => {
-    const page = await listInbox(db, {
-      userId,
-      feedId: query.feedId,
-      folderId: query.folderId,
-      state: query.state,
-      starred: query.starred,
-      dateBy: query.dateBy,
-      limit: query.limit ?? 20,
-      cursor,
-      since: query.since === undefined ? undefined : new Date(query.since),
-      until: query.until === undefined ? undefined : new Date(query.until),
-    });
+    const page = await listInbox(db, inboxInput(query, cursor));
     return { ...page, titles: await feedTitles() };
   };
 
@@ -372,12 +387,49 @@ export function createMcpServer(
         return failure("cursor is invalid");
       const { items, next, titles } = await readPage(query, cursor);
       return result({
-        articles: items.map((article) => ({
-          ...toArticle(article, titles.get(article.feedId) ?? null),
-          readAt: article.readAt?.toISOString() ?? null,
-          starredAt: article.starredAt?.toISOString() ?? null,
-        })),
+        articles: items.map((article) =>
+          toListedArticle(article, titles.get(article.feedId) ?? null),
+        ),
         nextCursor: next === null ? null : encodeCursor({ dateBy, ...next }),
+      });
+    },
+  );
+
+  server.registerTool(
+    "search_articles",
+    {
+      title: "記事をキーワード検索する",
+      description: `受信箱の記事のタイトル・要約・索引済みの本文からキーワードを探す。list_articles と同じ絞り込みを使える。最近既読にした記事は dateBy を readAt にする。続きは同じ検索語と絞り込みを渡す。${UNTRUSTED}`,
+      inputSchema: ListArticlesQuerySchema.safeExtend({
+        keyword: z.string().trim().min(1).max(128).describe("探す文字列。FTS の構文は使わない"),
+      }),
+      outputSchema: z.object({
+        articles: z.array(ListedArticleSchema.extend({ snippet: z.string() })),
+        nextCursor: z.string().nullable(),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ keyword, cursor: raw, ...query }) => {
+      const input = inboxInput(query);
+      const filter = await sha256Hex(
+        JSON.stringify({
+          keyword,
+          ...input,
+          state: input.state ?? "all",
+          dateBy: input.dateBy ?? "publishedAt",
+          limit: undefined,
+        }),
+      );
+      const cursor = raw === undefined ? undefined : decodeCursor(raw, SearchCursorSchema);
+      if (raw !== undefined && cursor?.filter !== filter) return failure("cursor is invalid");
+      const { items, next } = await platform.articleSearch.find({ ...input, keyword, cursor });
+      const titles = await feedTitles();
+      return result({
+        articles: items.map((article) => ({
+          ...toListedArticle(article, titles.get(article.feedId) ?? null),
+          snippet: article.snippet,
+        })),
+        nextCursor: next ? encodeCursor({ ...next, filter }) : null,
       });
     },
   );
