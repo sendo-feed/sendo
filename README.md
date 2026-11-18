@@ -146,7 +146,9 @@ Reeder、NetNewsWire など、Google Reader API（FreshRSS 互換）に対応し
 
 ### AI エージェントからつなぐ（MCP）
 
-`/mcp` にリモート MCP サーバーがあります（[決定](docs/decisions/mcp.md)）。ツールは `list_feeds`、`list_articles`、`get_unread`、`get_article`（読む）と、`subscribe`、`unsubscribe`、`mark_read`、`star`（変える）です。
+`/mcp` にリモート MCP サーバーがあります（[決定](docs/decisions/mcp.md)）。ツールは `list_feeds`、`list_folders`、`list_articles`、`get_unread`、`get_article`（読む）と、`subscribe`、`move_feed`、`unsubscribe`、`mark_read`、`star`（変える）です。
+
+`list_folders` は、空のフォルダも含めて名前と ID を返します。フォルダの ID を `subscribe` に渡すと、そこに新しく購読を追加できます。購読済みのフィードを移動するときは、`list_feeds` でフィードの ID を調べ、`move_feed` に `feedId` と `folderId` を渡します。`folderId` に `null` を指定すると未分類に戻せます。
 
 `list_articles` は `state`（`all`、`unread`、`read`。既定は `all`）、`starred`、`feedId`、`folderId` で絞り込めます。フィードとフォルダの ID は `list_feeds` で分かります。`dateBy` で並び順と `since`・`until` の基準を選びます。既定は `publishedAt` で、最近既読にした記事を見るなら `readAt` を指定します。`readAt` は既読にした時刻で、まとめて既読にした場合も含みます。時刻の範囲は `since` 以上、`until` 未満です。続きは同じ条件を指定し、`nextCursor` を `cursor` に渡します。
 

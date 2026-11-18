@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, notExists, type SQL, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, notExists, type SQL, sql } from "drizzle-orm";
 import type { Database } from ".";
 import { chunked } from "./chunk";
 import {
@@ -111,15 +111,22 @@ export async function removeSubscriptionFromFolder(
   return updated !== undefined;
 }
 
-/** 購読のフォルダを変える。null ならフォルダなし。購読していなければ undefined */
+/** 購読のフォルダを変える。null ならフォルダなし。未購読か移動先が無効なら undefined */
 export async function setSubscriptionFolder(
   db: Database,
   input: { userId: string; feedId: string; folderId: string | null },
 ): Promise<Subscription | undefined> {
+  const destination = activeFolderId(input.userId, input.folderId);
   return db
     .update(subscriptions)
-    .set({ folderId: activeFolderId(input.userId, input.folderId), seq: nextSeq(subscriptions) })
-    .where(and(active(input.userId), eq(subscriptions.feedId, input.feedId)))
+    .set({ folderId: input.folderId, seq: nextSeq(subscriptions) })
+    .where(
+      and(
+        active(input.userId),
+        eq(subscriptions.feedId, input.feedId),
+        destination === null ? undefined : isNotNull(destination),
+      ),
+    )
     .returning()
     .get();
 }

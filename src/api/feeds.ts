@@ -229,10 +229,14 @@ export function feedsApi(platform: Platform) {
       const user = c.get("user");
       const { id } = c.req.valid("param");
       const { folderId } = c.req.valid("json");
-      if (folderId !== null && !(await getFolder(db, { userId: user.id, id: folderId }))) {
+      const updated = await setSubscriptionFolder(db, { userId: user.id, feedId: id, folderId });
+      if (
+        !updated &&
+        folderId !== null &&
+        !(await getFolder(db, { userId: user.id, id: folderId }))
+      ) {
         return c.json(errorBody("folder_not_found", "folder does not exist"), 400);
       }
-      const updated = await setSubscriptionFolder(db, { userId: user.id, feedId: id, folderId });
       const subscription = updated && (await getSubscription(db, { userId: user.id, feedId: id }));
       if (!subscription) return c.json(errorBody("not_found", "feed is not subscribed"), 404);
       return c.json({ feed: await toFeedResponse(subscription, imageSigner(db)) }, 200);
