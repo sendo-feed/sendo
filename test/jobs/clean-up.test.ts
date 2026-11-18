@@ -65,6 +65,7 @@ describe("runCleanUp", () => {
       removals: 2,
       settings: 0,
       savedPages: 0,
+      activity: 0,
       contents: 0,
     });
     expect(await count("SELECT count(*) AS n FROM articles")).toBe(2);

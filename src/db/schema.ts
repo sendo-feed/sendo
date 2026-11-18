@@ -566,6 +566,28 @@ export const settingHorizons = sqliteTable("setting_horizons", {
   seq: integer("seq").notNull(),
 });
 
+/** 開封時に受信箱にあった記事の履歴。記事の片付け後も期限までは表示できる。 */
+export const articleActivity = sqliteTable(
+  "article_activity",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    id: text("id").notNull(),
+    articleId: text("article_id").notNull(),
+    articleTitle: text("article_title"),
+    articleUrl: text("article_url"),
+    occurredAt: integer("occurred_at", { mode: "timestamp_ms" }).notNull(),
+    type: text("type", { enum: ["article_opened"] }).notNull(),
+    source: text("source", { enum: ["reader"] }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.id] }),
+    index("article_activity_user_time_idx").on(t.userId, t.occurredAt, t.id),
+    index("article_activity_time_idx").on(t.occurredAt),
+  ],
+);
+
 /** URL で保存したページ。解除するとメタデータは捨て、同期に必要な行だけを残す。 */
 export const savedPages = sqliteTable(
   "saved_pages",

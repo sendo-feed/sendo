@@ -1,6 +1,7 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { MCP_ICON_PATH, MCP_ICON_PNG, MCP_ICON_TYPE } from "../mcp/icon";
 import type { Platform } from "../platform";
+import { activityApi } from "./activity";
 import { articlesApi } from "./articles";
 import { authenticate, SESSION_COOKIE } from "./auth";
 import { featuresApi } from "./features";
@@ -79,6 +80,7 @@ export function createApi(platform: Platform) {
   protectedApi.route("/", featuresApi(platform));
   protectedApi.route("/", feedsApi(platform));
   protectedApi.route("/", articlesApi(platform));
+  protectedApi.route("/", activityApi(platform));
   protectedApi.route("/", foldersApi(platform));
   protectedApi.route("/", imagesApi(platform));
   protectedApi.route("/", opmlApi(platform));

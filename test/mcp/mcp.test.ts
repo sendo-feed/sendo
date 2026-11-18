@@ -155,6 +155,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       "get_article",
       "get_unread",
+      "list_activity",
       "list_articles",
       "list_feeds",
       "list_folders",

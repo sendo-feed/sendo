@@ -1,5 +1,6 @@
 import { type AuthInfo, McpServer, requireScopes } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { listActivity } from "../db/activity";
 import { getFolder, listFolders } from "../db/folders";
 import {
   type ArticleCursor,
@@ -26,7 +27,7 @@ import { MCP_ICON_PATH, MCP_ICON_SIZE, MCP_ICON_TYPE } from "./icon";
 /*
  * MCP のツール（docs/decisions/mcp.md の 6、8、9）。
  *
- * - read の範囲で使えるもの：list_feeds、list_folders、list_articles、get_unread、get_article
+ * - read の範囲で使えるもの：list_feeds、list_folders、list_articles、list_activity、get_unread、get_article
  * - write の範囲が要るもの：subscribe、move_feed、unsubscribe、mark_read、star。read だけのトークンで呼ばれたら、
  *   SDK が 403 insufficient_scope を返す（scopeChallenge）
  *
@@ -153,6 +154,8 @@ const ListCursorSchema = z.object({
   at: z.number().int().min(-8_640_000_000_000_000).max(8_640_000_000_000_000),
   id: CursorIdSchema,
 });
+
+const ActivityCursorSchema = z.object({ at: z.int(), id: z.uuid() });
 
 function decodeCursor<T>(value: string, schema: z.ZodType<T>): T | undefined {
   const bytes = base64UrlDecode(value);
@@ -375,6 +378,74 @@ export function createMcpServer(
           starredAt: article.starredAt?.toISOString() ?? null,
         })),
         nextCursor: next === null ? null : encodeCursor({ dateBy, ...next }),
+      });
+    },
+  );
+
+  server.registerTool(
+    "list_activity",
+    {
+      title: "記事を開いた履歴",
+      description: `sendo-reader で記事を開いた時刻の新しい順に返す。期間・操作元・種類で絞れる。続きは同じ条件と nextCursor を渡す。${UNTRUSTED}`,
+      inputSchema: z
+        .object({
+          type: z.literal("article_opened").optional(),
+          source: z.literal("reader").optional(),
+          since: DateBoundarySchema.describe(
+            "開封時刻の下限（含む）。タイムゾーン付きの ISO 8601 日時",
+          ),
+          until: DateBoundarySchema.describe(
+            "開封時刻の上限（含まない）。タイムゾーン付きの ISO 8601 日時",
+          ),
+          limit: z.int().min(1).max(50).optional(),
+          cursor: z.string().max(512).optional(),
+        })
+        .refine(
+          ({ since, until }) =>
+            since === undefined || until === undefined || Date.parse(since) < Date.parse(until),
+          { message: "since must be before until", path: ["until"] },
+        ),
+      outputSchema: z.object({
+        events: z.array(
+          z.object({
+            id: z.string(),
+            type: z.literal("article_opened"),
+            source: z.literal("reader"),
+            occurredAt: z.iso.datetime(),
+            article: z.object({
+              id: z.string(),
+              title: z.string().nullable(),
+              url: z.string().nullable(),
+            }),
+          }),
+        ),
+        nextCursor: z.string().nullable(),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async (query) => {
+      const cursor =
+        query.cursor === undefined ? undefined : decodeCursor(query.cursor, ActivityCursorSchema);
+      if (query.cursor !== undefined && cursor === undefined) return failure("cursor is invalid");
+      const { events, next } = await listActivity(db, {
+        userId,
+        now: platform.now(),
+        type: query.type,
+        source: query.source,
+        since: query.since ? new Date(query.since) : undefined,
+        until: query.until ? new Date(query.until) : undefined,
+        cursor,
+        limit: query.limit ?? 20,
+      });
+      return result({
+        events: events.map((event) => ({
+          id: event.id,
+          type: event.type,
+          source: event.source,
+          occurredAt: event.occurredAt.toISOString(),
+          article: { id: event.articleId, title: event.articleTitle, url: event.articleUrl },
+        })),
+        nextCursor: next ? encodeCursor(next) : null,
       });
     },
   );

@@ -225,6 +225,13 @@
       "when": 1794971891612,
       "tag": "0031_saved_pages_seq_floor",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1794972578990,
+      "tag": "0032_article_activity",
+      "breakpoints": true
     }
   ]
 }
