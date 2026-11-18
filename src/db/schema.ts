@@ -453,6 +453,9 @@ export const userArticles = sqliteTable(
     index("user_articles_seq_idx").on(t.seq),
     // 未読の数はその都度数える（docs/decisions/tech-stack.md）。未読の行だけを載せる
     index("user_articles_unread_idx").on(t.userId, t.feedId).where(sql`${t.readAt} is null`),
+    index("user_articles_user_id_read_at_idx")
+      .on(t.userId, t.readAt, t.articleId)
+      .where(sql`${t.readAt} is not null`),
     index("user_articles_starred_idx")
       .on(t.userId, t.starredAt)
       .where(sql`${t.starredAt} is not null`),

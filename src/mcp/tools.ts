@@ -20,7 +20,7 @@ import type { Platform } from "../platform";
 /*
  * MCP のツール（docs/decisions/mcp.md の 6、8、9）。
  *
- * - read の範囲で使えるもの：list_feeds、get_unread、get_article
+ * - read の範囲で使えるもの：list_feeds、list_articles、get_unread、get_article
  * - write の範囲が要るもの：subscribe、unsubscribe、mark_read、star。read だけのトークンで呼ばれたら、
  *   SDK が 403 insufficient_scope を返す（scopeChallenge）
  *
@@ -38,8 +38,8 @@ export const MAX_CONTENT_TEXT_LENGTH = 20_000;
 /** 一度に既読やスターを変えられる記事の数（D1 の変数の上限に合わせる） */
 const MAX_IDS = 90;
 
-/** get_unread で一度に返す記事の数の上限 */
-const MAX_UNREAD = 50;
+/** 一覧で一度に返す記事の数の上限 */
+const MAX_ARTICLES = 50;
 
 const writeScope = requireScopes("read", "write");
 
@@ -56,6 +56,14 @@ const ArticleSchema = z.object({
   starred: z.boolean(),
 });
 
+const ListedArticleSchema = ArticleSchema.extend({
+  readAt: z.iso.datetime().nullable().describe("既読にした日時。未読なら null"),
+  starredAt: z.iso.datetime().nullable().describe("スターを付けた日時。なければ null"),
+});
+
+const DateFieldSchema = z.enum(["publishedAt", "readAt"]);
+const DateBoundarySchema = z.iso.datetime({ offset: true }).optional();
+
 const UnreadQuerySchema = z
   .object({
     feedId: z.string().min(1).max(64).optional().describe("このフィードの記事だけ"),
@@ -64,24 +72,42 @@ const UnreadQuerySchema = z
       .number()
       .int()
       .min(1)
-      .max(MAX_UNREAD)
+      .max(MAX_ARTICLES)
       .optional()
-      .describe(`数（既定 20、最大 ${MAX_UNREAD}）`),
+      .describe(`数（既定 20、最大 ${MAX_ARTICLES}）`),
     cursor: z.string().max(512).optional().describe("前の結果の nextCursor。期間も同じ値を渡す"),
-    since: z.iso
-      .datetime({ offset: true })
-      .optional()
-      .describe("公開日時の下限（含む）。タイムゾーン付きの ISO 8601 日時"),
-    until: z.iso
-      .datetime({ offset: true })
-      .optional()
-      .describe("公開日時の上限（含まない）。タイムゾーン付きの ISO 8601 日時"),
+    since: DateBoundarySchema.describe("公開日時の下限（含む）。タイムゾーン付きの ISO 8601 日時"),
+    until: DateBoundarySchema.describe(
+      "公開日時の上限（含まない）。タイムゾーン付きの ISO 8601 日時",
+    ),
   })
   .refine(
     ({ since, until }) =>
       since === undefined || until === undefined || Date.parse(since) < Date.parse(until),
     { message: "since must be before until", path: ["until"] },
   );
+
+const ListArticlesQuerySchema = UnreadQuerySchema.safeExtend({
+  state: z.enum(["all", "unread", "read"]).optional().describe("既読状態（既定 all）"),
+  starred: z.boolean().optional().describe("true はスター付き、false はスターなし"),
+  dateBy: DateFieldSchema.optional().describe(
+    "並び順と期間指定に使う日時（既定 publishedAt）。readAt を選ぶと既読の記事だけを返す",
+  ),
+  since: DateBoundarySchema.describe(
+    "dateBy で選んだ日時の下限（含む）。タイムゾーン付きの ISO 8601 日時",
+  ),
+  until: DateBoundarySchema.describe(
+    "dateBy で選んだ日時の上限（含まない）。タイムゾーン付きの ISO 8601 日時",
+  ),
+  cursor: z
+    .string()
+    .max(512)
+    .optional()
+    .describe("前の結果の nextCursor。並び順と絞り込みも同じ値を渡す"),
+}).refine(({ state, dateBy }) => state !== "unread" || dateBy !== "readAt", {
+  message: "unread articles cannot be sorted by readAt",
+  path: ["dateBy"],
+});
 
 function toArticle(article: InboxArticle, feedTitle: string | null): z.infer<typeof ArticleSchema> {
   return {
@@ -110,17 +136,23 @@ function failure(message: string) {
   return { content: [{ type: "text" as const, text: message }], isError: true };
 }
 
-function encodeCursor(cursor: ArticleCursor): string {
+function encodeCursor(cursor: Record<string, string | number>): string {
   return base64UrlEncode(new TextEncoder().encode(JSON.stringify(cursor)));
 }
 
-const CursorSchema = z.object({ publishedAt: z.number().int(), id: z.string().min(1).max(64) });
+const CursorIdSchema = z.string().min(1).max(64);
+const UnreadCursorSchema = z.object({ publishedAt: z.number().int(), id: CursorIdSchema });
+const ListCursorSchema = z.object({
+  dateBy: DateFieldSchema,
+  at: z.number().int().min(-8_640_000_000_000_000).max(8_640_000_000_000_000),
+  id: CursorIdSchema,
+});
 
-function decodeCursor(value: string): ArticleCursor | undefined {
+function decodeCursor<T>(value: string, schema: z.ZodType<T>): T | undefined {
   const bytes = base64UrlDecode(value);
   if (!bytes) return undefined;
   try {
-    const parsed = CursorSchema.safeParse(JSON.parse(new TextDecoder().decode(bytes)));
+    const parsed = schema.safeParse(JSON.parse(new TextDecoder().decode(bytes)));
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
@@ -156,26 +188,36 @@ export function createMcpServer(platform: Platform, authInfo: AuthInfo | undefin
         url: s.feed.url,
         siteUrl: s.feed.siteUrl,
         folder: s.folderName,
+        folderId: s.folderId,
         unread: unread.get(s.feed.id) ?? 0,
       })),
     };
   };
 
-  const readUnread = async (query: z.infer<typeof UnreadQuerySchema>) => {
+  const readPage = async (
+    query: z.infer<typeof ListArticlesQuerySchema>,
+    cursor?: ArticleCursor,
+  ) => {
     const page = await listInbox(db, {
       userId,
       feedId: query.feedId,
       folderId: query.folderId,
-      state: "unread",
+      state: query.state,
+      starred: query.starred,
+      dateBy: query.dateBy,
       limit: query.limit ?? 20,
-      cursor: query.cursor === undefined ? undefined : decodeCursor(query.cursor),
+      cursor,
       since: query.since === undefined ? undefined : new Date(query.since),
       until: query.until === undefined ? undefined : new Date(query.until),
     });
-    const titles = await feedTitles();
+    return { ...page, titles: await feedTitles() };
+  };
+
+  const readUnread = async (query: z.infer<typeof UnreadQuerySchema>, cursor?: ArticleCursor) => {
+    const { items, next, titles } = await readPage({ ...query, state: "unread" }, cursor);
     return {
-      articles: page.items.map((a) => toArticle(a, titles.get(a.feedId) ?? null)),
-      nextCursor: page.next === null ? null : encodeCursor(page.next),
+      articles: items.map((a) => toArticle(a, titles.get(a.feedId) ?? null)),
+      nextCursor: next === null ? null : encodeCursor({ publishedAt: next.at, id: next.id }),
     };
   };
 
@@ -199,7 +241,7 @@ export function createMcpServer(platform: Platform, authInfo: AuthInfo | undefin
     "sendo://unread/today",
     {
       title: "今日の未読（日本時間）",
-      description: `今日（Asia/Tokyo）の公開日時の未読を新しい順に最大 ${MAX_UNREAD} 件返す。続きは get_unread に nextCursor を cursor として、since と until もそのまま渡す。${UNTRUSTED}`,
+      description: `今日（Asia/Tokyo）の公開日時の未読を新しい順に最大 ${MAX_ARTICLES} 件返す。続きは get_unread に nextCursor を cursor として、since と until もそのまま渡す。${UNTRUSTED}`,
       mimeType: "application/json",
     },
     async (uri) => {
@@ -217,7 +259,7 @@ export function createMcpServer(platform: Platform, authInfo: AuthInfo | undefin
               timeZone: "Asia/Tokyo",
               since,
               until,
-              ...(await readUnread({ since, until, limit: MAX_UNREAD })),
+              ...(await readUnread({ since, until, limit: MAX_ARTICLES })),
             }),
           },
         ],
@@ -238,6 +280,7 @@ export function createMcpServer(platform: Platform, authInfo: AuthInfo | undefin
             url: z.string(),
             siteUrl: z.string().nullable(),
             folder: z.string().nullable(),
+            folderId: z.string().nullable(),
             unread: z.number().int(),
           }),
         ),
@@ -260,9 +303,40 @@ export function createMcpServer(platform: Platform, authInfo: AuthInfo | undefin
       annotations: { readOnlyHint: true },
     },
     async (query) => {
-      if (query.cursor !== undefined && decodeCursor(query.cursor) === undefined)
+      if (query.cursor === undefined) return result(await readUnread(query));
+      const cursor = decodeCursor(query.cursor, UnreadCursorSchema);
+      if (cursor === undefined) return failure("cursor is invalid");
+      return result(await readUnread(query, { at: cursor.publishedAt, id: cursor.id }));
+    },
+  );
+
+  server.registerTool(
+    "list_articles",
+    {
+      title: "記事の一覧",
+      description: `既読・未読をまたいで記事を新しい順に返す。既読状態、スター、フィード、フォルダ、期間で絞れる。「最近既読にした記事」は dateBy を readAt にする。続きは nextCursor を cursor に渡し、並び順と絞り込みを揃える。${UNTRUSTED}`,
+      inputSchema: ListArticlesQuerySchema,
+      outputSchema: z.object({
+        articles: z.array(ListedArticleSchema),
+        nextCursor: z.string().nullable(),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async (query) => {
+      const dateBy = query.dateBy ?? "publishedAt";
+      const cursor =
+        query.cursor === undefined ? undefined : decodeCursor(query.cursor, ListCursorSchema);
+      if (query.cursor !== undefined && cursor?.dateBy !== dateBy)
         return failure("cursor is invalid");
-      return result(await readUnread(query));
+      const { items, next, titles } = await readPage(query, cursor);
+      return result({
+        articles: items.map((article) => ({
+          ...toArticle(article, titles.get(article.feedId) ?? null),
+          readAt: article.readAt?.toISOString() ?? null,
+          starredAt: article.starredAt?.toISOString() ?? null,
+        })),
+        nextCursor: next === null ? null : encodeCursor({ dateBy, ...next }),
+      });
     },
   );
 

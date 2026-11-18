@@ -204,6 +204,13 @@
       "when": 1794927087733,
       "tag": "0028_article_language_storage",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1794966321617,
+      "tag": "0029_wealthy_luke_cage",
+      "breakpoints": true
     }
   ]
 }
