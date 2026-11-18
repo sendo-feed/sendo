@@ -18,6 +18,7 @@ import { alias } from "drizzle-orm/sqlite-core";
 import type { Database } from ".";
 import type { InboxArticle } from "./inbox";
 import { readRemovalHorizon } from "./retention";
+import { readSavedPageHorizon, type SavedPage, toSavedPage } from "./saved";
 import {
   articles,
   clientSettings,
@@ -27,6 +28,8 @@ import {
   folders,
   removalHorizons,
   type Subscription,
+  savedPageHorizons,
+  savedPages,
   settingHorizons,
   subscriptions,
   userArticleRemovals,
@@ -58,6 +61,7 @@ export type SyncCursor = {
   subscriptions: SyncPosition;
   articles: SyncPosition;
   settings: SyncPosition;
+  savedPages?: SyncPosition | undefined;
 };
 
 /** 最初の同期の始まり。upTo は、最初のページで決める（-1 は「まだ決めていない」） */
@@ -80,6 +84,7 @@ export const SYNC_LIMITS = {
   subscriptions: 500,
   articles: 300,
   settings: 500,
+  savedPages: 100,
 } as const;
 
 /** 最初の同期で送る、既読の記事の範囲（受信箱に入ってからの日数） */
@@ -97,11 +102,14 @@ export type SyncSetting = { deviceType: string; name: string } & (
   | { deleted: true }
 );
 
+export type SyncSavedPage = (SavedPage & { deleted: false }) | { id: string; deleted: true };
+
 export type SyncChanges = {
   folders: Folder[];
   subscriptions: (Subscription & { feed: Feed })[];
   articles: SyncArticle[];
   settings: SyncSetting[];
+  savedPages?: SyncSavedPage[];
   cursor: SyncCursor;
   hasMore: boolean;
 };
@@ -443,6 +451,34 @@ export async function readChanges(
     cursor.settings,
   );
 
+  const p =
+    cursor.savedPages &&
+    (await readTable(
+      singleTable({
+        seq: savedPages.seq,
+        id: savedPages.id,
+        initialFilter: isNull(savedPages.deletedAt),
+        limit: SYNC_LIMITS.savedPages,
+        read: (where, limit) =>
+          db
+            .select()
+            .from(savedPages)
+            .where(and(eq(savedPages.userId, userId), where))
+            .orderBy(asc(savedPages.seq), asc(savedPages.id))
+            .limit(limit)
+            .all(),
+        position: (row) => ({ seq: row.seq, id: row.id }),
+        maxSeq: async () => {
+          const row = await db.get<{ value: number }>(sql`select max(
+          coalesce((select max(${savedPages.seq}) from ${savedPages} where ${savedPages.userId} = ${userId}), 0),
+          coalesce((select ${savedPageHorizons.seq} from ${savedPageHorizons} where ${savedPageHorizons.userId} = ${userId}), 0)
+        ) as value`);
+          return row?.value ?? 0;
+        },
+      }),
+      cursor.savedPages,
+    ));
+
   return {
     folders: f.items,
     subscriptions: s.items.map((row) => ({ ...row.subscription, feed: row.feed })),
@@ -453,8 +489,22 @@ export async function readChanges(
         ? { deviceType, name, deleted: false, json: row.value }
         : { deviceType, name, deleted: true };
     }),
-    cursor: { folders: f.next, subscriptions: s.next, articles: a.next, settings: c.next },
-    hasMore: f.more || s.more || a.more || c.more,
+    ...(p && {
+      savedPages: p.items.map(
+        (row): SyncSavedPage =>
+          row.deletedAt === null
+            ? { ...toSavedPage(row), deleted: false }
+            : { id: row.id, deleted: true },
+      ),
+    }),
+    cursor: {
+      folders: f.next,
+      subscriptions: s.next,
+      articles: a.next,
+      settings: c.next,
+      savedPages: p?.next,
+    },
+    hasMore: f.more || s.more || a.more || c.more || (p?.more ?? false),
   };
 }
 
@@ -476,6 +526,15 @@ export async function isCursorExpired(
   const positionOf = (at: SyncPosition) => (at.upTo === null ? at.seq : at.upTo);
   const articlesAt = positionOf(input.cursor.articles);
   if (articlesAt >= 0 && articlesAt < (await readRemovalHorizon(db, input.userId))) return true;
+
+  const savedAt = input.cursor.savedPages && positionOf(input.cursor.savedPages);
+  if (
+    savedAt !== undefined &&
+    savedAt >= 0 &&
+    savedAt < (await readSavedPageHorizon(db, input.userId))
+  ) {
+    return true;
+  }
 
   const { settings: at } = input.cursor;
   const settingsAt = positionOf(at);

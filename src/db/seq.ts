@@ -2,6 +2,7 @@ import { getTableName, type SQL, sql } from "drizzle-orm";
 import {
   type clientSettings,
   type folders,
+  type savedPages,
   seqFloors,
   type subscriptions,
   type userArticles,
@@ -12,7 +13,8 @@ export type SeqTable =
   | typeof folders
   | typeof subscriptions
   | typeof userArticles
-  | typeof clientSettings;
+  | typeof clientSettings
+  | typeof savedPages;
 
 /**
  * 次の変更番号を返す SQL の式。行を作る ／ 変える文の中で、seq の値として使う。

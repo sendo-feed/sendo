@@ -5,6 +5,7 @@ import {
   readOldContentNotes,
 } from "../db/content";
 import { collectRemovals, REMOVAL_RETENTION_MS, raiseRemovalHorizons } from "../db/retention";
+import { collectDeletedSavedPages, SAVED_PAGE_REMOVAL_RETENTION_MS } from "../db/saved";
 import {
   collectDeletedSettings,
   DELETED_SETTING_RETENTION_MS,
@@ -24,6 +25,7 @@ export const SWEEP_BATCH = 500;
 export const SWEEP_ROUNDS = {
   removals: 3,
   settings: 2,
+  savedPages: 1,
   contents: 2,
 } as const;
 
@@ -32,6 +34,7 @@ export type CleanUpOutcome = {
   articles: number;
   removals: number;
   settings: number;
+  savedPages: number;
   /** 置き場から消した本文の数 */
   contents: number;
 };
@@ -100,9 +103,16 @@ export async function runCleanUp(
     collectDeletedSettings(db, { limit: SWEEP_BATCH }),
   );
 
+  const savedPages = await repeat(SWEEP_ROUNDS.savedPages, () =>
+    collectDeletedSavedPages(db, {
+      before: new Date(now - SAVED_PAGE_REMOVAL_RETENTION_MS),
+      limit: SWEEP_BATCH,
+    }),
+  );
+
   // 行のない本文を、書き留めから片付ける（docs/decisions/content.md の 4）。上で消した記事の本文は、
   // トリガーが今書き留めたばかりなので、次の日に片付く
   const contents = await sweepContents(platform, new Date(now - CONTENT_NOTE_GRACE_MS));
 
-  return { inbox, articles, removals, settings, contents };
+  return { inbox, articles, removals, settings, savedPages, contents };
 }

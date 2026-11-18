@@ -211,6 +211,20 @@
       "when": 1794966321617,
       "tag": "0029_wealthy_luke_cage",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1794971839103,
+      "tag": "0030_woozy_vermin",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1794971891612,
+      "tag": "0031_saved_pages_seq_floor",
+      "breakpoints": true
     }
   ]
 }

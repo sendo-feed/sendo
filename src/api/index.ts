@@ -12,6 +12,7 @@ import { loginApi } from "./login";
 import { meApi } from "./me";
 import { oauthApi } from "./oauth";
 import { opmlApi } from "./opml";
+import { savedApi } from "./saved";
 import { settingsApi } from "./settings";
 import { syncApi } from "./sync";
 import { tokensApi } from "./tokens";
@@ -81,6 +82,7 @@ export function createApi(platform: Platform) {
   protectedApi.route("/", foldersApi(platform));
   protectedApi.route("/", imagesApi(platform));
   protectedApi.route("/", opmlApi(platform));
+  protectedApi.route("/", savedApi(platform));
   protectedApi.route("/", settingsApi(platform));
   protectedApi.route("/", syncApi(platform));
   protectedApi.route("/", tokensApi(platform));
