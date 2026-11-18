@@ -1161,6 +1161,11 @@ describe("公式のクライアントで、OAuth でつなぐ", () => {
       structuredContent?: unknown;
     };
     expect(result.structuredContent).toEqual({ feeds: [] });
+    const articles = await client.callTool({
+      name: "list_articles",
+      arguments: { dateBy: "readAt" },
+    });
+    expect(articles.structuredContent).toEqual({ articles: [], nextCursor: null });
   });
 
   it("動的登録したクライアントとしてつなぎ、ツールを使える", async () => {

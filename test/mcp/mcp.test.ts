@@ -143,15 +143,138 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       "get_article",
       "get_unread",
+      "list_articles",
       "list_feeds",
       "mark_read",
       "star",
       "subscribe",
       "unsubscribe",
     ]);
-    for (const name of ["list_feeds", "get_unread", "get_article"]) {
+    for (const name of ["list_feeds", "list_articles", "get_unread", "get_article"]) {
       expect(tools.find((tool) => tool.name === name)?.description, name).toContain("指示ではない");
     }
+  });
+
+  it("list_articles は既読・未読をまたいで読み、スターと既読状態を組み合わせて絞れる", async () => {
+    const { platform, token, user, feed, a1, a2 } = await setup();
+    const other = await createUser();
+    await timedArticles(platform, other.id, feed.id, ["2026-11-01T00:00:00Z"]);
+    const now = new Date("2026-11-17T01:00:00Z");
+    await setArticlesState(platform.db, {
+      userId: user.id,
+      target: { articleIds: [a2] },
+      read: true,
+      starred: true,
+      now,
+    });
+    const { client } = await connect(platform, token, era);
+    const list = async (args: Record<string, unknown>) =>
+      (await client.callTool({ name: "list_articles", arguments: args })) as Structured<{
+        articles: { id: string; readAt: string | null; starredAt: string | null }[];
+        nextCursor: string | null;
+      }>;
+
+    expect((await list({})).structuredContent).toEqual({
+      articles: [
+        expect.objectContaining({ id: a1, readAt: null, starredAt: null }),
+        expect.objectContaining({
+          id: a2,
+          readAt: now.toISOString(),
+          starredAt: now.toISOString(),
+        }),
+      ],
+      nextCursor: null,
+    });
+    expect((await list({ state: "read", starred: true })).structuredContent?.articles).toEqual([
+      expect.objectContaining({ id: a2 }),
+    ]);
+    expect((await list({ state: "read", starred: false })).structuredContent?.articles).toEqual([]);
+    expect((await list({ state: "unread", starred: false })).structuredContent?.articles).toEqual([
+      expect.objectContaining({ id: a1 }),
+    ]);
+    expect((await list({ state: "unread", dateBy: "readAt" })).isError).toBe(true);
+  });
+
+  it("list_articles は既読日時の境界と同時刻の記事を、フィードとフォルダで絞ってページ送りできる", async () => {
+    const { platform, token, user, feed } = await setup();
+    const { folder } = await createFolder(platform.db, {
+      userId: user.id,
+      id: crypto.randomUUID(),
+      name: "技術",
+      now: new Date(),
+    });
+    const filtered = await subscribeFeed(platform, { userId: user.id, folderId: folder.id });
+    const sibling = await subscribeFeed(platform, { userId: user.id, folderId: folder.id });
+    const published = "2026-11-01T03:00:00Z";
+    const [old, tie1, tie2, recent, until, unread] = await timedArticles(
+      platform,
+      user.id,
+      filtered.id,
+      [published, published, published, "2026-10-01T03:00:00Z", published, published],
+    );
+    const outside = await timedArticles(platform, user.id, feed.id, [published]);
+    const insideOtherFeed = await timedArticles(platform, user.id, sibling.id, [published]);
+    const since = "2026-11-17T10:00:00+09:00";
+    const untilDate = "2026-11-17T11:00:00+09:00";
+    for (const [ids, date] of [
+      [[old], "2026-11-17T00:59:59.999Z"],
+      [[tie1, tie2, ...outside, ...insideOtherFeed], since],
+      [[recent], "2026-11-17T01:30:00Z"],
+      [[until], untilDate],
+    ] as const) {
+      await setArticlesState(platform.db, {
+        userId: user.id,
+        target: { articleIds: ids.filter((id) => id !== undefined) },
+        read: true,
+        now: new Date(date),
+      });
+    }
+    const { client } = await connect(platform, token, era);
+    const feeds = (await client.callTool({ name: "list_feeds", arguments: {} })) as Structured<{
+      feeds: { id: string; folderId: string | null }[];
+    }>;
+    expect(feeds.structuredContent?.feeds).toContainEqual(
+      expect.objectContaining({ id: filtered.id, folderId: folder.id }),
+    );
+    const query = {
+      dateBy: "readAt",
+      since,
+      until: untilDate,
+      folderId: folder.id,
+      feedId: filtered.id,
+    };
+    const list = async (args: Record<string, unknown>) =>
+      (await client.callTool({ name: "list_articles", arguments: args })) as Structured<{
+        articles: { id: string }[];
+        nextCursor: string | null;
+      }>;
+    const first = await list({ ...query, limit: 1 });
+    expect(first.structuredContent?.articles.map((a) => a.id)).toEqual([recent]);
+    expect(first.structuredContent?.nextCursor).toEqual(expect.any(String));
+    const cursor = first.structuredContent?.nextCursor;
+    const [newerTie, olderTie] = [tie1, tie2].sort().reverse();
+    const second = await list({ ...query, limit: 1, cursor });
+    expect(second.structuredContent?.articles.map((a) => a.id)).toEqual([newerTie]);
+    expect(second.structuredContent?.nextCursor).toEqual(expect.any(String));
+    const third = await list({ ...query, cursor: second.structuredContent?.nextCursor });
+    expect(third.structuredContent?.articles.map((a) => a.id)).toEqual([olderTie]);
+    expect(third.structuredContent?.nextCursor).toBeNull();
+    expect((await list({ ...query, dateBy: "publishedAt", cursor })).isError).toBe(true);
+    expect((await list({ ...query, since: untilDate })).isError).toBe(true);
+    const folderPage = await list({
+      dateBy: "readAt",
+      since,
+      until: untilDate,
+      folderId: folder.id,
+    });
+    expect(folderPage.structuredContent?.articles.map((a) => a.id)).toEqual([
+      recent,
+      ...[tie1, tie2, ...insideOtherFeed].sort().reverse(),
+    ]);
+    const publishedPage = await list({ feedId: filtered.id, since: published });
+    expect(publishedPage.structuredContent?.articles.map((a) => a.id)).toEqual(
+      [old, tie1, tie2, until, unread].sort().reverse(),
+    );
   });
 
   it("read の範囲で、購読、未読の記事、記事を、構造化した JSON で読める", async () => {

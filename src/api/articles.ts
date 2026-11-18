@@ -407,7 +407,7 @@ const CursorSchema = z.object({ p: z.int(), i: z.string().min(1) });
 
 /** ページ送りの位置を、URL にそのまま載せられる文字列にする（中身に意味を持たせない） */
 function encodeCursor(cursor: ArticleCursor): string {
-  const json = JSON.stringify({ p: cursor.publishedAt, i: cursor.id });
+  const json = JSON.stringify({ p: cursor.at, i: cursor.id });
   return btoa(json).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
@@ -415,7 +415,7 @@ function decodeCursor(value: string): ArticleCursor | null {
   try {
     const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
     const parsed = CursorSchema.safeParse(JSON.parse(atob(base64)));
-    return parsed.success ? { publishedAt: parsed.data.p, id: parsed.data.i } : null;
+    return parsed.success ? { at: parsed.data.p, id: parsed.data.i } : null;
   } catch {
     return null;
   }

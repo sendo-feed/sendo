@@ -188,10 +188,13 @@ export async function insertRecentArticles(
 }
 
 /** 一覧で絞り込む記事の状態。all ならすべて */
-export type ArticleState = "all" | "unread" | "starred";
+type ArticleState = "all" | "unread" | "read" | "starred";
+
+/** 一覧の期間と並び順に使う時刻 */
+type ArticleDateField = "publishedAt" | "readAt";
 
 /** 一覧のページ送りの位置。直前のページの最後の記事 */
-export type ArticleCursor = { publishedAt: number; id: string };
+export type ArticleCursor = { at: number; id: string };
 
 /** そのユーザーの、フォルダに入っている購読のフィードの記事 */
 export function inFolder(userId: string, folderId: string): SQL {
@@ -214,7 +217,7 @@ const inboxSelection = {
  * 受信箱の記事を新しい順に返す。
  *
  * OFFSET ではなく、直前のページの最後の記事より古いものを取る（キーセット方式）。
- * 記事が増えても速さが変わらず、ページを送る間に新着が入ってもずれない。
+ * 指定した時刻と記事 ID が同じ順で並ぶようにし、新着が入ってもページの境界がずれないようにする。
  */
 export async function listInbox(
   db: Database,
@@ -223,27 +226,31 @@ export async function listInbox(
     feedId?: string | undefined;
     folderId?: string | undefined;
     state?: ArticleState | undefined;
+    starred?: boolean | undefined;
+    dateBy?: ArticleDateField | undefined;
     limit: number;
     cursor?: ArticleCursor | undefined;
-    /** 公開日時の範囲。since 以上、until 未満 */
+    /** dateBy で選んだ時刻の範囲。since 以上、until 未満 */
     since?: Date | undefined;
     until?: Date | undefined;
   },
 ): Promise<{ items: InboxArticle[]; next: ArticleCursor | null }> {
+  const dateBy = input.dateBy ?? "publishedAt";
+  const dateColumn = ua[dateBy];
   const conditions: SQL[] = [eq(ua.userId, input.userId)];
   if (input.feedId !== undefined) conditions.push(eq(ua.feedId, input.feedId));
   if (input.folderId !== undefined) conditions.push(inFolder(input.userId, input.folderId));
   if (input.state === "unread") conditions.push(isNull(ua.readAt));
-  if (input.state === "starred") conditions.push(isNotNull(ua.starredAt));
-  if (input.since !== undefined) conditions.push(gte(ua.publishedAt, input.since));
-  if (input.until !== undefined) conditions.push(lt(ua.publishedAt, input.until));
+  if (input.state === "read" || dateBy === "readAt") conditions.push(isNotNull(ua.readAt));
+  if (input.state === "starred" || input.starred === true) conditions.push(isNotNull(ua.starredAt));
+  if (input.starred === false) conditions.push(isNull(ua.starredAt));
+  if (input.since !== undefined) conditions.push(gte(dateColumn, input.since));
+  if (input.until !== undefined) conditions.push(lt(dateColumn, input.until));
   if (input.cursor !== undefined) {
-    const at = new Date(input.cursor.publishedAt);
-    const after = or(
-      lt(ua.publishedAt, at),
-      and(eq(ua.publishedAt, at), lt(ua.articleId, input.cursor.id)),
+    // どちらの時刻も DB では Unix 時刻のミリ秒。索引の時刻と ID を組にして範囲を指定する。
+    conditions.push(
+      sql`(${dateColumn}, ${ua.articleId}) < (${input.cursor.at}, ${input.cursor.id})`,
     );
-    if (after) conditions.push(after);
   }
 
   const rows = await db
@@ -251,16 +258,15 @@ export async function listInbox(
     .from(ua)
     .innerJoin(articles, eq(articles.id, ua.articleId))
     .where(and(...conditions))
-    .orderBy(desc(ua.publishedAt), desc(ua.articleId))
+    .orderBy(desc(dateColumn), desc(ua.articleId))
     .limit(input.limit + 1)
     .all();
 
   const items = rows.slice(0, input.limit);
   const last = items.at(-1);
+  const lastDate = last?.[dateBy];
   const next =
-    rows.length > input.limit && last
-      ? { publishedAt: last.publishedAt.getTime(), id: last.id }
-      : null;
+    rows.length > input.limit && last && lastDate ? { at: lastDate.getTime(), id: last.id } : null;
   return { items, next };
 }
 

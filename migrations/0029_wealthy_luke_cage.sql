@@ -1,0 +1,1 @@
+CREATE INDEX `user_articles_user_id_read_at_idx` ON `user_articles` (`user_id`,`read_at`,`article_id`) WHERE "user_articles"."read_at" is not null;

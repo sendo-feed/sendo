@@ -146,7 +146,9 @@ Reeder、NetNewsWire など、Google Reader API（FreshRSS 互換）に対応し
 
 ### AI エージェントからつなぐ（MCP）
 
-`/mcp` にリモート MCP サーバーがあります（[決定](docs/decisions/mcp.md)）。ツールは `list_feeds`、`get_unread`、`get_article`（読む）と、`subscribe`、`unsubscribe`、`mark_read`、`star`（変える）です。
+`/mcp` にリモート MCP サーバーがあります（[決定](docs/decisions/mcp.md)）。ツールは `list_feeds`、`list_articles`、`get_unread`、`get_article`（読む）と、`subscribe`、`unsubscribe`、`mark_read`、`star`（変える）です。
+
+`list_articles` は `state`（`all`、`unread`、`read`。既定は `all`）、`starred`、`feedId`、`folderId` で絞り込めます。フィードとフォルダの ID は `list_feeds` で分かります。`dateBy` で並び順と `since`・`until` の基準を選びます。既定は `publishedAt` で、最近既読にした記事を見るなら `readAt` を指定します。`readAt` は既読にした時刻で、まとめて既読にした場合も含みます。時刻の範囲は `since` 以上、`until` 未満です。続きは同じ条件を指定し、`nextCursor` を `cursor` に渡します。
 
 `get_unread` は `feedId`、`folderId`、`limit` に加え、公開日時の期間を `since`（含む）と `until`（含まない）で指定できます。日時はタイムゾーン付きの ISO 8601 形式です。たとえば日本時間の 11 月 17 日は、`since: "2026-11-17T00:00:00+09:00"`、`until: "2026-11-18T00:00:00+09:00"` とします。続きがあるときは、同じ絞り込みと `nextCursor` を `cursor` に渡します。REST API の `GET /api/v1/articles` でも、同じ `since` と `until` を使えます。
 
