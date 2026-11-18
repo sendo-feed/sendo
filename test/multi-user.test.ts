@@ -10,9 +10,9 @@ import {
 } from "../src/db/inbox";
 import {
   clearUnsubscribedInbox,
-  setSubscriptionFolder,
   subscribeMany,
   unsubscribe,
+  updateSubscription,
 } from "../src/db/subscriptions";
 import { runFetchFeed } from "../src/jobs/fetch-feed";
 import {
@@ -403,7 +403,7 @@ describe("並行して動いたとき（#21 のレビュー）", () => {
     // フォルダを確かめたあと、入れる前に消された
     await env.DB.prepare("UPDATE folders SET deleted_at = 1 WHERE id = ?").bind(folder.id).run();
 
-    await setSubscriptionFolder(platform.db, {
+    await updateSubscription(platform.db, {
       userId: TEST_USER.id,
       feedId: feed.id,
       folderId: folder.id,

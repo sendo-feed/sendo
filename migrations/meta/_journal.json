@@ -246,6 +246,13 @@
       "when": 1794973787687,
       "tag": "0034_article_search_fts",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "6",
+      "when": 1795016446239,
+      "tag": "0035_subscription-display-name",
+      "breakpoints": true
     }
   ]
 }

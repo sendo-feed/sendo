@@ -13,9 +13,10 @@ import {
 import {
   getSubscription,
   listSubscriptions,
-  setSubscriptionFolder,
   unsubscribe,
+  updateSubscription,
 } from "../db/subscriptions";
+import { FeedDisplayNameInput } from "../feeds/display-name";
 import { subscribeToUrl } from "../feeds/subscribe";
 import { DiscoverError } from "../fetcher/discover";
 import { htmlToText } from "../fetcher/parse-feed";
@@ -28,7 +29,7 @@ import { MCP_ICON_PATH, MCP_ICON_SIZE, MCP_ICON_TYPE } from "./icon";
  * MCP のツール（docs/decisions/mcp.md の 6、8、9）。
  *
  * - read の範囲で使えるもの：list_feeds、list_folders、list_articles、list_activity、search_articles、get_unread、get_article
- * - write の範囲が要るもの：subscribe、move_feed、unsubscribe、mark_read、star。read だけのトークンで呼ばれたら、
+ * - write の範囲が要るもの：subscribe、move_feed、rename_feed、unsubscribe、mark_read、star。read だけのトークンで呼ばれたら、
  *   SDK が 403 insufficient_scope を返す（scopeChallenge）
  *
  * 記事のタイトル・要約・著者は、誰でも書けるフィードから来る。結果は構造化した JSON で返して
@@ -215,7 +216,10 @@ export function createMcpServer(
   /** フィードの ID から、その人の購読の名前を引く表 */
   const feedTitles = async () =>
     new Map(
-      (await listSubscriptions(db, userId)).map((s) => [s.feed.id, s.feed.title ?? s.feed.url]),
+      (await listSubscriptions(db, userId)).map((s) => [
+        s.feed.id,
+        s.displayName ?? s.feed.title ?? s.feed.url,
+      ]),
     );
 
   const readFeeds = async () => {
@@ -225,6 +229,7 @@ export function createMcpServer(
       feeds: subscriptions.map((s) => ({
         id: s.feed.id,
         title: s.feed.title,
+        displayName: s.displayName,
         url: s.feed.url,
         siteUrl: s.feed.siteUrl,
         folder: s.folderName,
@@ -318,7 +323,8 @@ export function createMcpServer(
         feeds: z.array(
           z.object({
             id: z.string(),
-            title: z.string().nullable(),
+            title: z.string().nullable().describe("配信元の名前"),
+            displayName: z.string().nullable().describe("購読の表示名。null なら title を使う"),
             url: z.string(),
             siteUrl: z.string().nullable(),
             folder: z.string().nullable(),
@@ -599,7 +605,7 @@ export function createMcpServer(
       scopeChallenge: writeScope,
     },
     async ({ feedId, folderId }) => {
-      const updated = await setSubscriptionFolder(db, { userId, feedId, folderId });
+      const updated = await updateSubscription(db, { userId, feedId, folderId });
       if (!updated && folderId !== null && !(await getFolder(db, { userId, id: folderId }))) {
         return failure("folder not found");
       }
@@ -608,6 +614,29 @@ export function createMcpServer(
       return result({
         feed: { id: feedId, folderId: subscription.folderId, folder: subscription.folderName },
       });
+    },
+  );
+
+  server.registerTool(
+    "rename_feed",
+    {
+      title: "購読の表示名を変える",
+      description:
+        "購読済みのフィードの表示名を設定または解除する。利用者に頼まれたときに、list_feeds でフィードの ID を調べて指定する。",
+      inputSchema: z.object({
+        feedId: z.string().min(1).max(64).describe("購読しているフィードの ID"),
+        displayName: FeedDisplayNameInput.describe("購読の表示名。null は配信元の名前に戻す"),
+      }),
+      outputSchema: z.object({
+        feed: z.object({ id: z.string(), displayName: z.string().nullable() }),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      scopeChallenge: writeScope,
+    },
+    async ({ feedId, displayName }) => {
+      const updated = await updateSubscription(db, { userId, feedId, displayName });
+      if (!updated) return failure("feed is not subscribed");
+      return result({ feed: { id: feedId, displayName: updated.displayName } });
     },
   );
 
