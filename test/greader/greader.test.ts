@@ -652,27 +652,6 @@ describe("購読を変える", () => {
     expect(await folderOf()).toEqual(["Tech"]);
   });
 
-  it("subscription/edit の t で表示名を変え、空欄で配信元の名前に戻す", async () => {
-    const { send, feed } = await setup();
-    const rename = (name: string) =>
-      send("/reader/api/0/subscription/edit", {
-        form: [
-          ["s", `feed/${feed.id}`],
-          ["t", name],
-        ],
-      });
-    const list = async () => (await send("/reader/api/0/subscription/list")).json();
-
-    expect((await rename(" ニュース ")).status).toBe(200);
-    expect(await list()).toMatchObject({
-      subscriptions: [{ id: `feed/${feed.id}`, title: "ニュース" }],
-    });
-    expect((await rename("")).status).toBe(200);
-    expect(await list()).toMatchObject({
-      subscriptions: [{ id: `feed/${feed.id}`, title: feed.title ?? feed.url }],
-    });
-  });
-
   it("フォルダから外す（r）間に、ほかのリクエストが別のフォルダへ移しても、移した先からは外さない（#38 のレビュー）", async () => {
     const { user, feed, folder } = await setup();
     const { folder: news } = await createFolder(createTestPlatform().platform.db, {

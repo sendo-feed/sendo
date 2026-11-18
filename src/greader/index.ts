@@ -25,7 +25,6 @@ import {
   updateSubscription,
 } from "../db/subscriptions";
 import { authenticateToken } from "../db/tokens";
-import { FeedDisplayNameInput } from "../feeds/display-name";
 import { subscribeFeed, subscribeToUrl } from "../feeds/subscribe";
 import { DiscoverError } from "../fetcher/discover";
 import { UrlNotAllowedError } from "../fetcher/url-guard";
@@ -215,7 +214,7 @@ export function greaderApp(platform: Platform) {
     return c.json({
       subscriptions: subscriptions.map((subscription) => ({
         id: feedStreamId(subscription.feed.id),
-        title: subscription.displayName ?? subscription.feed.title ?? subscription.feed.url,
+        title: subscription.feed.title ?? subscription.feed.url,
         categories:
           subscription.folderName === null
             ? []
@@ -344,14 +343,11 @@ export function greaderApp(platform: Platform) {
   const loadItems = async (userId: string, itemIds: readonly number[]) => {
     const items = await getItemsByItemIds(db, { userId, itemIds });
     const subscriptions = await listSubscriptions(db, userId);
-    const subscriptionOf = new Map(subscriptions.map((s) => [s.feed.id, s]));
+    const folderOf = new Map(subscriptions.map((s) => [s.feed.id, s.folderName]));
     const byId = new Map(items.map((item) => [item.itemId, item]));
     return itemIds.flatMap((id) => {
       const item = byId.get(id);
-      if (!item) return [];
-      const subscription = subscriptionOf.get(item.feedId);
-      const feedTitle = subscription?.displayName ?? item.feedTitle;
-      return [toReaderItem({ ...item, feedTitle }, subscription?.folderName ?? null)];
+      return item ? [toReaderItem(item, folderOf.get(item.feedId) ?? null)] : [];
     });
   };
 
@@ -473,7 +469,7 @@ export function greaderApp(platform: Platform) {
         numResults: 1,
         query,
         streamId: feedStreamId(subscription.feed.id),
-        streamName: subscription.displayName ?? subscription.feed.title ?? subscription.feed.url,
+        streamName: subscription.feed.title ?? subscription.feed.url,
       });
     } catch (e) {
       if (e instanceof UrlNotAllowedError || e instanceof DiscoverError) {
@@ -485,16 +481,12 @@ export function greaderApp(platform: Platform) {
 
   /**
    * 購読の変更。ac=subscribe（購読）、unsubscribe（やめる）、edit（フォルダの付け替え）。
-   * a=user/-/label/<名前> でそのフォルダに入れ（なければ作る）、r で外す。t は表示名。
+   * a=user/-/label/<名前> でそのフォルダに入れ（なければ作る）、r で外す。名前の付け直し（t）は、
+   * 人ごとの名前を持つまで受けるだけ（決定の 5）。
    */
   api.post("/subscription/edit", async (c) => {
     const params = await readParams(c);
     const action = params.get("ac") ?? "edit";
-    const name = action === "edit" ? params.get("t") : null;
-    const displayName = FeedDisplayNameInput.optional().safeParse(
-      name === null ? undefined : name.trim() || null,
-    );
-    if (!displayName.success) return badRequest(c, "InvalidName");
     const userId = c.get("user").id;
     const now = platform.now();
     const labelOf = (name: string) => {
@@ -538,15 +530,9 @@ export function greaderApp(platform: Platform) {
       } else if (action === "unsubscribe") {
         await unsubscribe(db, { userId, feedId: stream.feedId, now });
       } else if (action === "edit") {
-        if (folderId !== undefined || displayName.data !== undefined) {
-          await updateSubscription(db, {
-            userId,
-            feedId: stream.feedId,
-            folderId,
-            displayName: displayName.data,
-          });
-        }
-        if (folderId === undefined && removeFrom !== null) {
+        if (folderId !== undefined) {
+          await updateSubscription(db, { userId, feedId: stream.feedId, folderId });
+        } else if (removeFrom !== null) {
           const removeFromId = await findFolderId(userId, removeFrom);
           if (removeFromId !== undefined) {
             await removeSubscriptionFromFolder(db, {
