@@ -1,3 +1,4 @@
+import { ACTIVITY_RETENTION_MS, collectExpiredArticleActivity } from "../db/activity";
 import {
   CONTENT_NOTE_GRACE_MS,
   clearUsedContentNotes,
@@ -26,6 +27,7 @@ export const SWEEP_ROUNDS = {
   removals: 3,
   settings: 2,
   savedPages: 1,
+  activity: 1,
   contents: 2,
 } as const;
 
@@ -35,6 +37,7 @@ export type CleanUpOutcome = {
   removals: number;
   settings: number;
   savedPages: number;
+  activity: number;
   /** 置き場から消した本文の数 */
   contents: number;
 };
@@ -110,9 +113,16 @@ export async function runCleanUp(
     }),
   );
 
+  const activity = await repeat(SWEEP_ROUNDS.activity, () =>
+    collectExpiredArticleActivity(db, {
+      before: new Date(now - ACTIVITY_RETENTION_MS),
+      limit: SWEEP_BATCH,
+    }),
+  );
+
   // 行のない本文を、書き留めから片付ける（docs/decisions/content.md の 4）。上で消した記事の本文は、
   // トリガーが今書き留めたばかりなので、次の日に片付く
   const contents = await sweepContents(platform, new Date(now - CONTENT_NOTE_GRACE_MS));
 
-  return { inbox, articles, removals, settings, savedPages, contents };
+  return { inbox, articles, removals, settings, savedPages, activity, contents };
 }
