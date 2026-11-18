@@ -7,7 +7,8 @@ on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -29,3 +30,23 @@ jobs:
             exit 1
           fi
           echo "OK: $TITLE"
+
+      # pull_request のマージコミットと、その第1親（マージ先）を比較する。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Check decision title against changed files
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD -- docs/decisions/)
+          if [[ -n "$changed" && "$TITLE" != decision\(* ]]; then
+            echo "::error::docs/decisions/ を変更する PR のタイトルは 'decision(<テーマ>): …' にする。"
+            exit 1
+          fi
+          if [[ -z "$changed" && "$TITLE" == decision\(* ]]; then
+            echo "::error::decision の PR には docs/decisions/ の変更が必要。"
+            exit 1
+          fi
