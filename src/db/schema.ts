@@ -396,6 +396,42 @@ export const articleLanguages = sqliteTable(
 
 export type ArticleLanguage = typeof articleLanguages.$inferSelect;
 
+/** FTS5 が参照する本文の写し。整数 ID は仮想表の rowid に使う。 */
+export const articleSearchDocuments = sqliteTable("article_search_documents", {
+  id: integer("id").primaryKey(),
+  articleId: text("article_id")
+    .notNull()
+    .unique()
+    .references(() => articles.id, { onDelete: "cascade" }),
+  revision: text("revision").notNull(),
+  content: text("content").notNull(),
+  bytes: integer("bytes").notNull(),
+});
+
+/** 検索索引を作る順番と、UTC の日ごとの追加・更新件数。 */
+export const articleSearchState = sqliteTable("article_search_state", {
+  id: integer("id").primaryKey(),
+  day: integer("day").notNull().default(-1),
+  writes: integer("writes").notNull().default(0),
+  backfillAfter: text("backfill_after"),
+  backfillDone: integer("backfill_done", { mode: "boolean" }).notNull().default(false),
+});
+
+/** 索引の新規作成・更新を待つ記事。本文を読み出せないときは、再試行を遅らせる。 */
+export const articleSearchPending = sqliteTable(
+  "article_search_pending",
+  {
+    articleId: text("article_id")
+      .primaryKey()
+      .references(() => articles.id, { onDelete: "cascade" }),
+    retryAt: integer("retry_at").notNull().default(0),
+    queuedAt: integer("queued_at").notNull().default(0),
+  },
+  (t) => [
+    index("article_search_pending_order_idx").on(t.retryAt, sql`${t.queuedAt} desc`, t.articleId),
+  ],
+);
+
 /**
  * 本文の置き場の名前の書き留め（docs/decisions/content.md の 4）。「この名前の本文は、どの記事の
  * 行にも入っていないかもしれない」という印。置き場と D1 を 1 つの文でまとめて書けないので、

@@ -232,6 +232,20 @@
       "when": 1794972578990,
       "tag": "0032_article_activity",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1794973786598,
+      "tag": "0033_article_search_documents",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1794973787687,
+      "tag": "0034_article_search_fts",
+      "breakpoints": true
     }
   ]
 }

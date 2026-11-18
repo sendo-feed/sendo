@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../../db/schema";
 import type { ObjectStore, Platform } from "..";
 import { readAuthConfig, readFetchConfig, readRetentionConfig } from "../config";
+import { createSqliteArticleSearch } from "../sqlite/article-search";
 import { createQueueJobQueue } from "./queue";
 
 export { createQueueJobQueue, handleQueueBatch, type JobRunner } from "./queue";
@@ -21,8 +22,10 @@ type SettingName =
 /** Cloudflare の env から、アプリが使う Platform を組み立てる */
 export function createCloudflarePlatform(workerEnv: Env): Platform {
   const env: Env & Partial<Record<SettingName, string>> = workerEnv;
+  const db = drizzle(env.DB, { schema });
   return {
-    db: drizzle(env.DB, { schema }),
+    db,
+    articleSearch: createSqliteArticleSearch(db),
     jobs: createQueueJobQueue(env.JOBS),
     content: createR2ObjectStore(env.CONTENT),
     fetch: (input, init) => fetch(input, init),

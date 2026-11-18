@@ -19,6 +19,7 @@ export const jobSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("fetch-feed"), feedId: z.string().min(1) }),
   /** 1 日 1 回の片付け（docs/decisions/retention.md の 4、5）。定期実行が積む */
   z.object({ type: z.literal("clean-up") }),
+  z.object({ type: z.literal("index-article-search") }),
   /** 未処理・古い版の言語判定を小分けに進める。判定器のある版だけが積む */
   z.object({
     type: z.literal("detect-article-languages"),
