@@ -2,7 +2,14 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
 import { deliverNewArticles } from "../../src/db/inbox";
-import { createTestPlatform, fakeFetch, requestApp, TEST_USER } from "../helpers";
+import {
+  createTestPlatform,
+  createUser,
+  fakeFetch,
+  requestApp,
+  subscribeFeed,
+  TEST_USER,
+} from "../helpers";
 
 type FeedJson = { id: string; url: string; title: string | null; folderId: string | null };
 
@@ -254,6 +261,66 @@ describe("PATCH ／ DELETE /api/v1/feeds/{id}", () => {
       json: { folderId: null },
     });
     expect(((await back.json()) as { feed: FeedJson }).feed.folderId).toBeNull();
+  });
+
+  it("表示名だけを変更・解除でき、差分同期でもそのユーザーにだけ届く", async () => {
+    const { platform, feed } = await setup();
+    const other = await createUser();
+    await subscribeFeed(platform, { userId: other.id, url: feed.url });
+    const readSync = async (cursor?: string) =>
+      (
+        await requestApp(
+          platform,
+          cursor ? `/api/v1/sync?cursor=${encodeURIComponent(cursor)}` : "/api/v1/sync",
+        )
+      ).json<{
+        cursor: string;
+        feeds: unknown[];
+      }>();
+    const { cursor } = await readSync();
+    const patch = (json: unknown) =>
+      requestApp(platform, `/api/v1/feeds/${feed.id}`, { method: "PATCH", json });
+
+    const { folder } = await (
+      await requestApp(platform, "/api/v1/folders", {
+        method: "POST",
+        json: { name: "Tech" },
+      })
+    ).json<{ folder: { id: string } }>();
+    expect((await patch({ folderId: folder.id })).status).toBe(200);
+    const changed = await patch({ displayName: "  ニュース  " });
+    expect(changed.status).toBe(200);
+    expect(await changed.json()).toMatchObject({
+      feed: { title: "Blog", displayName: "ニュース", folderId: folder.id },
+    });
+    const delta = await readSync(cursor);
+    expect(delta.feeds).toMatchObject([{ id: feed.id, title: "Blog", displayName: "ニュース" }]);
+    const otherFeed = await requestApp(platform, "/api/v1/feeds", { token: other.token });
+    expect(await otherFeed.json()).toMatchObject({
+      items: [{ id: feed.id, title: "Blog", displayName: null }],
+    });
+
+    for (const json of [
+      {},
+      { displayName: " " },
+      { displayName: "あ".repeat(201) },
+      {
+        folderId: "nope",
+        displayName: "無効な変更",
+      },
+    ]) {
+      expect((await patch(json)).status).toBe(400);
+    }
+    expect((await readSync(delta.cursor)).feeds).toEqual([]);
+
+    const restored = await patch({ displayName: null, folderId: null });
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({
+      feed: { title: "Blog", displayName: null, folderId: null },
+    });
+    expect((await readSync(delta.cursor)).feeds).toMatchObject([
+      { id: feed.id, displayName: null },
+    ]);
   });
 
   it("存在しないフォルダやフィードなら 400 ／ 404", async () => {

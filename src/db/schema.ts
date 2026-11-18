@@ -276,6 +276,7 @@ export const subscriptions = sqliteTable(
       .references(() => feeds.id, { onDelete: "cascade" }),
     /** 入っているフォルダ。フォルダを消すときは、先にこの列を null に戻す */
     folderId: text("folder_id").references(() => folders.id),
+    displayName: text("display_name"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     /**
      * 購読を始めたときに、すでに取り込んであった最近の記事を受信箱に入れ終えた時刻。

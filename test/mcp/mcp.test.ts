@@ -161,6 +161,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       "list_folders",
       "mark_read",
       "move_feed",
+      "rename_feed",
       "search_articles",
       "star",
       "subscribe",
@@ -543,6 +544,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     for (const call of [
       { name: "mark_read", arguments: { ids: [a1] } },
       { name: "move_feed", arguments: { feedId: feed.id, folderId: folder.id } },
+      { name: "rename_feed", arguments: { feedId: feed.id, displayName: "ニュース" } },
     ]) {
       await expect(client.callTool(call)).rejects.toThrow();
       const res = last();
@@ -659,6 +661,27 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       feed: { id: feed.id, folderId: null, folder: null },
     });
     expect(await state(user.id, a1)).toEqual({ read: 0, starred: 0 });
+  });
+
+  it("rename_feed で表示名を設定・解除し、購読と記事の読み出しに反映する", async () => {
+    const { platform, token, feed } = await setup(["read", "write"]);
+    const { client } = await connect(platform, token, era);
+    const rename = (feedId: string, displayName: string | null) =>
+      client.callTool({ name: "rename_feed", arguments: { feedId, displayName } });
+
+    expect((await rename(feed.id, " ニュース ")).structuredContent).toEqual({
+      feed: { id: feed.id, displayName: "ニュース" },
+    });
+    expect((await client.callTool({ name: "list_feeds" })).structuredContent).toMatchObject({
+      feeds: [{ id: feed.id, displayName: "ニュース" }],
+    });
+    expect((await client.callTool({ name: "get_unread" })).structuredContent).toMatchObject({
+      articles: [{ feedTitle: "ニュース" }, { feedTitle: "ニュース" }],
+    });
+    expect((await rename(feed.id, null)).structuredContent).toEqual({
+      feed: { id: feed.id, displayName: null },
+    });
+    expect(await rename("missing", "ニュース")).toMatchObject({ isError: true });
   });
 
   it("取得してはいけない URL は購読せず、エラーの結果を返す", async () => {

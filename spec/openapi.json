@@ -105,6 +105,13 @@
               "null"
             ]
           },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "この購読の表示名。null なら配信元の title（なければ URL）を使う"
+          },
           "siteUrl": {
             "type": [
               "string",
@@ -156,6 +163,7 @@
           "id",
           "url",
           "title",
+          "displayName",
           "siteUrl",
           "iconUrl",
           "folderId",
@@ -199,11 +207,18 @@
             "minLength": 1,
             "maxLength": 64,
             "description": "null ならフォルダなしにする"
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "前後の空白を除いた購読の表示名。null なら配信元の名前に戻す"
           }
         },
-        "required": [
-          "folderId"
-        ]
+        "minProperties": 1
       },
       "ArticleContent": {
         "type": "object",
@@ -685,6 +700,13 @@
               "null"
             ]
           },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "この購読の表示名。null なら配信元の title（なければ URL）を使う"
+          },
           "siteUrl": {
             "type": [
               "string",
@@ -719,6 +741,7 @@
           "id",
           "url",
           "title",
+          "displayName",
           "siteUrl",
           "iconUrl",
           "folderId",
@@ -1497,7 +1520,7 @@
     },
     "/feeds/{id}": {
       "patch": {
-        "summary": "購読を変える（フォルダの移動）",
+        "summary": "購読を変える（フォルダと表示名）",
         "parameters": [
           {
             "schema": {

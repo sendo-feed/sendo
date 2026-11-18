@@ -1,0 +1,1 @@
+ALTER TABLE `subscriptions` ADD `display_name` text;

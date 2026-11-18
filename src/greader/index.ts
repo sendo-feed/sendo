@@ -21,8 +21,8 @@ import type { User } from "../db/schema";
 import {
   listSubscriptions,
   removeSubscriptionFromFolder,
-  setSubscriptionFolder,
   unsubscribe,
+  updateSubscription,
 } from "../db/subscriptions";
 import { authenticateToken } from "../db/tokens";
 import { subscribeFeed, subscribeToUrl } from "../feeds/subscribe";
@@ -531,7 +531,7 @@ export function greaderApp(platform: Platform) {
         await unsubscribe(db, { userId, feedId: stream.feedId, now });
       } else if (action === "edit") {
         if (folderId !== undefined) {
-          await setSubscriptionFolder(db, { userId, feedId: stream.feedId, folderId });
+          await updateSubscription(db, { userId, feedId: stream.feedId, folderId });
         } else if (removeFrom !== null) {
           const removeFromId = await findFolderId(userId, removeFrom);
           if (removeFromId !== undefined) {

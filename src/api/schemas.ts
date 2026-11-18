@@ -36,11 +36,16 @@ export const SettingValueSchema = z.unknown().openapi({
   description: "JSON の値（オブジェクト、配列、文字列、数、真偽、null）。Sendo は中身を解釈しない",
 });
 
+export const FeedDisplayNameSchema = z.string().nullable().openapi({
+  description: "この購読の表示名。null なら配信元の title（なければ URL）を使う",
+});
+
 export const FeedSchema = z
   .object({
     id: z.string(),
     url: z.string().openapi({ example: "https://example.com/feed.xml" }),
     title: z.string().nullable(),
+    displayName: FeedDisplayNameSchema,
     siteUrl: z.string().nullable(),
     iconUrl: FeedIconUrlSchema,
     folderId: z.string().nullable(),
@@ -95,6 +100,7 @@ export async function toFeedResponse(
     id: feed.id,
     url: feed.url,
     title: feed.title,
+    displayName: subscription.displayName,
     siteUrl: feed.siteUrl,
     iconUrl: await images.toRelayUrl(feed.iconUrl),
     folderId: subscription.folderId,

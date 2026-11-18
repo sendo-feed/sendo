@@ -4,9 +4,10 @@ import { imageSigner } from "../db/secrets";
 import {
   getSubscription,
   listSubscriptions,
-  setSubscriptionFolder,
   unsubscribe,
+  updateSubscription,
 } from "../db/subscriptions";
+import { FeedDisplayNameInput } from "../feeds/display-name";
 import { subscribeToUrl } from "../feeds/subscribe";
 import { DiscoverError, findFeedLinks } from "../fetcher/discover";
 import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
@@ -107,7 +108,7 @@ const listRoute = createRoute({
 const updateRoute = createRoute({
   method: "patch",
   path: "/feeds/{id}",
-  summary: "購読を変える（フォルダの移動）",
+  summary: "購読を変える（フォルダと表示名）",
   request: {
     params: IdParamSchema,
     body: {
@@ -121,9 +122,17 @@ const updateRoute = createRoute({
                 .min(1)
                 .max(64)
                 .nullable()
-                .openapi({ description: "null ならフォルダなしにする" }),
+                .openapi({ description: "null ならフォルダなしにする" })
+                .optional(),
+              displayName: FeedDisplayNameInput.openapi({
+                description: "前後の空白を除いた購読の表示名。null なら配信元の名前に戻す",
+              }).optional(),
             })
-            .openapi("UpdateFeedRequest"),
+            .refine(
+              ({ folderId, displayName }) => folderId !== undefined || displayName !== undefined,
+              { message: "at least one subscription field is required" },
+            )
+            .openapi("UpdateFeedRequest", { minProperties: 1 }),
         },
       },
     },
@@ -228,17 +237,24 @@ export function feedsApi(platform: Platform) {
     .openapi(updateRoute, async (c) => {
       const user = c.get("user");
       const { id } = c.req.valid("param");
-      const { folderId } = c.req.valid("json");
-      const updated = await setSubscriptionFolder(db, { userId: user.id, feedId: id, folderId });
+      const { folderId, displayName } = c.req.valid("json");
+      const updated = await updateSubscription(db, {
+        userId: user.id,
+        feedId: id,
+        folderId,
+        displayName,
+      });
       if (
         !updated &&
-        folderId !== null &&
+        typeof folderId === "string" &&
         !(await getFolder(db, { userId: user.id, id: folderId }))
       ) {
         return c.json(errorBody("folder_not_found", "folder does not exist"), 400);
       }
       const subscription = updated && (await getSubscription(db, { userId: user.id, feedId: id }));
-      if (!subscription) return c.json(errorBody("not_found", "feed is not subscribed"), 404);
+      if (!subscription || subscription.id !== updated?.id) {
+        return c.json(errorBody("not_found", "feed is not subscribed"), 404);
+      }
       return c.json({ feed: await toFeedResponse(subscription, imageSigner(db)) }, 200);
     })
     .openapi(deleteRoute, async (c) => {
