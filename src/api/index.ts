@@ -1,4 +1,5 @@
-import { OpenAPIHono } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { MCP_ICON_PATH, MCP_ICON_PNG, MCP_ICON_TYPE } from "../mcp/icon";
 import type { Platform } from "../platform";
 import { articlesApi } from "./articles";
 import { authenticate, SESSION_COOKIE } from "./auth";
@@ -24,6 +25,19 @@ export const OPENAPI_CONFIG = {
   // アクセストークンか、ブラウザのセッションのクッキーのどちらか
   security: [{ bearerAuth: [] }, { sessionCookie: [] }],
 };
+
+const mcpIconRoute = createRoute({
+  method: "get",
+  path: MCP_ICON_PATH,
+  summary: "MCP サーバーのアイコン",
+  security: [],
+  responses: {
+    200: {
+      description: "Sendo のアイコン",
+      content: { [MCP_ICON_TYPE]: { schema: z.string().openapi({ format: "binary" }) } },
+    },
+  },
+});
 
 /**
  * REST API（/api/v1）。機能はすべてここから使えるようにする（API ファースト）。
@@ -51,6 +65,12 @@ export function createApi(platform: Platform) {
   // 認証の要らない入口は、認証のミドルウェアより先に登録する（あとに登録したものには、
   // protectedApi の use("*") がかかる）
   api.route("/", loginApi(platform));
+  api.openapi(mcpIconRoute, (c) =>
+    c.body(MCP_ICON_PNG, 200, {
+      "content-type": MCP_ICON_TYPE,
+      "cache-control": "public, max-age=86400",
+    }),
+  );
 
   const protectedApi = new OpenAPIHono({ defaultHook });
   protectedApi.use("*", authenticate(platform));

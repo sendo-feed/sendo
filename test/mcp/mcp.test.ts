@@ -139,6 +139,17 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     const { platform, token } = await setup();
     const { client } = await connect(platform, token, era);
 
+    const iconUrl = new URL("/api/v1/mcp-icon.png", MCP_URL).href;
+    expect(client.getServerVersion()?.icons).toEqual([
+      { src: iconUrl, mimeType: "image/png", sizes: ["32x32"] },
+    ]);
+    const icon = await createApp(platform).request(iconUrl);
+    expect(icon.status).toBe(200);
+    expect(icon.headers.get("content-type")).toBe("image/png");
+    expect(new Uint8Array(await icon.arrayBuffer()).slice(0, 8)).toEqual(
+      Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10),
+    );
+
     const { tools } = await client.listTools();
 
     expect(tools.map((tool) => tool.name).sort()).toEqual([
