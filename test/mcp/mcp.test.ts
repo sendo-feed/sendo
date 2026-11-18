@@ -3,8 +3,9 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
 import { insertArticles } from "../../src/db/articles";
-import { createFolder } from "../../src/db/folders";
+import { createFolder, deleteFolder } from "../../src/db/folders";
 import { setArticlesState } from "../../src/db/inbox";
+import { getSubscription } from "../../src/db/subscriptions";
 import { createAccessToken, type McpScope } from "../../src/db/tokens";
 import type { Platform } from "../../src/platform";
 import {
@@ -145,7 +146,9 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       "get_unread",
       "list_articles",
       "list_feeds",
+      "list_folders",
       "mark_read",
+      "move_feed",
       "star",
       "subscribe",
       "unsubscribe",
@@ -513,19 +516,32 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
   });
 
   it("read だけのトークンで状態を変えるツールを呼ぶと、403 insufficient_scope（scope は read write）", async () => {
-    const { user, platform, token, a1 } = await setup(["read"]);
+    const { user, platform, token, feed, a1 } = await setup(["read"]);
+    const { folder } = await createFolder(platform.db, {
+      userId: user.id,
+      id: crypto.randomUUID(),
+      name: "技術",
+      now: new Date(),
+    });
     const { client, last } = await connect(platform, token, era);
 
-    await expect(
-      client.callTool({ name: "mark_read", arguments: { ids: [a1] } }),
-    ).rejects.toThrow();
-
-    const res = last();
-    expect(res?.status).toBe(403);
-    const challenge = res?.headers.get("www-authenticate") ?? "";
-    expect(challenge).toContain('error="insufficient_scope"');
-    expect(challenge).toContain('scope="read write"');
+    const folders = await client.callTool({ name: "list_folders", arguments: {} });
+    expect(folders.structuredContent).toEqual({ folders: [{ id: folder.id, name: "技術" }] });
+    for (const call of [
+      { name: "mark_read", arguments: { ids: [a1] } },
+      { name: "move_feed", arguments: { feedId: feed.id, folderId: folder.id } },
+    ]) {
+      await expect(client.callTool(call)).rejects.toThrow();
+      const res = last();
+      expect(res?.status).toBe(403);
+      const challenge = res?.headers.get("www-authenticate") ?? "";
+      expect(challenge).toContain('error="insufficient_scope"');
+      expect(challenge).toContain('scope="read write"');
+    }
     expect(await state(user.id, a1)).toEqual({ read: 0, starred: 0 });
+    expect(await getSubscription(platform.db, { userId: user.id, feedId: feed.id })).toMatchObject({
+      folderId: null,
+    });
   });
 
   it("write の範囲で、既読・スター・購読・購読をやめるを使え、REST API にも届く", async () => {
@@ -536,6 +552,12 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       () => new Response(rss, { headers: { "content-type": "application/rss+xml" } }),
     );
     const { platform } = createTestPlatform({ fetch });
+    const { folder } = await createFolder(platform.db, {
+      userId: user.id,
+      id: crypto.randomUUID(),
+      name: "技術",
+      now: new Date(),
+    });
     const { client } = await connect(platform, token, era);
 
     const read = (await client.callTool({
@@ -550,7 +572,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
 
     const subscribed = (await client.callTool({
       name: "subscribe",
-      arguments: { url: "https://new.example.com/feed.xml" },
+      arguments: { url: "https://new.example.com/feed.xml", folderId: folder.id },
     })) as Structured<{ feed: { id: string; title: string }; created: boolean }>;
     expect(subscribed.structuredContent).toMatchObject({ feed: { title: "New" }, created: true });
 
@@ -563,9 +585,67 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     const feeds = (await (
       await requestApp(platform, "/api/v1/feeds", { token: user.token })
     ).json()) as {
-      items: { id: string }[];
+      items: { id: string; folderId: string | null }[];
     };
-    expect(feeds.items.map((f) => f.id)).toEqual([subscribed.structuredContent?.feed.id]);
+    expect(feeds.items).toEqual([
+      expect.objectContaining({ id: subscribed.structuredContent?.feed.id, folderId: folder.id }),
+    ]);
+  });
+
+  it("空のフォルダを一覧から選んで移動し、無効な移動先では分類を維持する", async () => {
+    const { platform, token, user, feed, a1 } = await setup(["read", "write"]);
+    const other = await createUser();
+    const otherFeed = await subscribeFeed(platform, { userId: other.id });
+    const makeFolder = async (userId: string, name: string) =>
+      (await createFolder(platform.db, { userId, name, id: crypto.randomUUID(), now: new Date() }))
+        .folder;
+    const tech = await makeFolder(user.id, "技術");
+    const removed = await makeFolder(user.id, "削除済み");
+    const foreign = await makeFolder(other.id, "他ユーザー");
+    await deleteFolder(platform.db, { userId: user.id, id: removed.id, now: new Date() });
+    const { client } = await connect(platform, token, era);
+    const folders = await client.callTool({ name: "list_folders", arguments: {} });
+    expect(folders.structuredContent).toEqual({ folders: [{ id: tech.id, name: "技術" }] });
+    const initialSync = await requestApp(platform, "/api/v1/sync", { token: user.token });
+    const { cursor } = (await initialSync.json()) as { cursor: string };
+
+    const move = (feedId: string, folderId: string | null) =>
+      client.callTool({ name: "move_feed", arguments: { feedId, folderId } });
+    const moved = await move(feed.id, tech.id);
+    expect(moved.structuredContent).toEqual({
+      feed: { id: feed.id, folderId: tech.id, folder: "技術" },
+    });
+
+    for (const invalid of ["unknown-folder", removed.id, foreign.id]) {
+      expect(await move(feed.id, invalid)).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: "folder not found" }],
+      });
+    }
+    expect(await move(otherFeed.id, tech.id)).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: "feed is not subscribed" }],
+    });
+    const feeds = await client.callTool({ name: "list_feeds", arguments: {} });
+    expect(feeds.structuredContent).toEqual({
+      feeds: [expect.objectContaining({ id: feed.id, folderId: tech.id, folder: "技術" })],
+    });
+    const delta = await requestApp(platform, `/api/v1/sync?cursor=${encodeURIComponent(cursor)}`, {
+      token: user.token,
+    });
+    expect(await delta.json()).toMatchObject({
+      feeds: [{ id: feed.id, folderId: tech.id, deleted: false }],
+    });
+    expect(
+      await getSubscription(platform.db, { userId: other.id, feedId: otherFeed.id }),
+    ).toMatchObject({
+      folderId: null,
+    });
+    const unfiled = await move(feed.id, null);
+    expect(unfiled.structuredContent).toEqual({
+      feed: { id: feed.id, folderId: null, folder: null },
+    });
+    expect(await state(user.id, a1)).toEqual({ read: 0, starred: 0 });
   });
 
   it("取得してはいけない URL は購読せず、エラーの結果を返す", async () => {
