@@ -3,9 +3,6 @@ import { findActiveSession } from "../db/sessions";
 import type { Platform } from "../platform";
 import { getSessionCookie } from "./auth";
 import { defaultHook } from "./hook";
-import { ErrorSchema, errorBody } from "./schemas";
-
-const errorContent = { "application/json": { schema: ErrorSchema } };
 
 const updatesRoute = createRoute({
   method: "get",
@@ -16,30 +13,30 @@ const updatesRoute = createRoute({
   security: [{ sessionCookie: [] }],
   responses: {
     101: { description: "WebSocket 接続を開始した" },
-    400: { description: "WebSocket への切り替えが必要", content: errorContent },
-    401: { description: "有効なブラウザのセッションが必要", content: errorContent },
-    403: { description: "ほかのオリジンからは接続できない", content: errorContent },
-    429: { description: "WebSocket の接続数の上限に達した", content: errorContent },
-    503: { description: "サーバーは終了処理中", content: errorContent },
+    400: { description: "WebSocket への切り替えが必要" },
+    401: { description: "有効なブラウザのセッションが必要" },
+    403: { description: "公開オリジンと一致しないか、公開オリジンの設定が不正" },
+    429: { description: "WebSocket の接続数の上限に達した" },
+    503: { description: "サーバーは終了処理中" },
   },
 });
 
 export function syncUpdatesApi(platform: Platform) {
   return new OpenAPIHono({ defaultHook }).openapi(updatesRoute, async (c) => {
     if (c.req.header("origin") !== new URL(c.req.url).origin) {
-      return c.json(errorBody("forbidden", "same-origin WebSocket required"), 403);
+      return c.body(null, 403);
     }
     const token = getSessionCookie(c);
     const session = token && (await findActiveSession(platform.db, { token, now: platform.now() }));
     if (!session) {
-      return c.json(errorBody("unauthorized", "a valid browser session is required"), 401);
+      return c.body(null, 401);
     }
     const upgradeRequested = c.req
       .header("connection")
       ?.split(",")
       .some((token) => token.trim().toLowerCase() === "upgrade");
     if (!upgradeRequested || c.req.header("upgrade")?.toLowerCase() !== "websocket") {
-      return c.json(errorBody("invalid_request", "WebSocket upgrade required"), 400);
+      return c.body(null, 400);
     }
     return platform.syncUpdates.connect(c, session);
   });

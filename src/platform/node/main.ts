@@ -75,13 +75,13 @@ function readPort(env: NodeEnv): number {
   return port;
 }
 
-/** OAuth の設定と同じく、形が正しくなければ使わない（ログに出す） */
-function readPublicOrigin(env: NodeEnv): string | undefined {
+/** 未設定は undefined、不正な設定は null。通知接続では不正な値を拒否する。 */
+function readPublicOrigin(env: NodeEnv): string | null | undefined {
   try {
     return parseOrigin(env.PUBLIC_URL);
   } catch (error) {
     console.error("PUBLIC_URL is ignored: it must be an https origin", error);
-    return undefined;
+    return null;
   }
 }
 
@@ -90,7 +90,8 @@ async function runServer(env: NodeEnv): Promise<void> {
   const native = loadNativeFeatures(env);
   const database = await prepareDatabase(env);
   const jobs = createSqliteJobQueue(database.db);
-  const sync = createNodeSyncUpdates(database.db);
+  const publicOrigin = readPublicOrigin(env);
+  const sync = createNodeSyncUpdates(database.db, { invalidPublicOrigin: publicOrigin === null });
   const platform = createNodePlatform({
     env,
     db: database.db,
@@ -105,7 +106,7 @@ async function runServer(env: NodeEnv): Promise<void> {
   const scheduler = startScheduler((scheduledTime) => runScheduled(platform, scheduledTime));
   const hostname = env.HOST?.trim() || "0.0.0.0";
   const server = createNodeServer(
-    withPublicOrigin(app.fetch, readPublicOrigin(env)),
+    withPublicOrigin(app.fetch, publicOrigin ?? undefined),
     sync.webSocketServer,
     hostname,
   );

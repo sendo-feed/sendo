@@ -33,7 +33,7 @@ let httpUrl: string;
 
 beforeEach(async () => {
   database = await openTestDatabase();
-  hub = createNodeSyncUpdates(database.db, 200);
+  hub = createNodeSyncUpdates(database.db, { heartbeatIntervalMs: 200 });
   jobs = createSqliteJobQueue(database.db);
   platform = createNodePlatform({
     env: { DATA_DIR: database.directory },
@@ -89,7 +89,11 @@ function rejectSocket(headers: Record<string, string>) {
     });
     socket.once("unexpected-response", (_request, response) => {
       response.resume();
-      resolve(response.statusCode);
+      if (response.headers["content-length"] !== "0") {
+        reject(new Error("upgrade rejection should have no body"));
+      } else {
+        resolve(response.statusCode);
+      }
     });
   });
 }
@@ -237,21 +241,30 @@ it.each([
   },
 );
 
-it("Connection ヘッダーのない Upgrade に 400 を返す", async () => {
-  const { cookie } = await session();
-  const result = new Promise<number | undefined>((resolve, reject) => {
-    const outgoing = request(`${httpUrl}${UPDATES}`, {
-      headers: { origin: ORIGIN, cookie, upgrade: "websocket" },
+it.each(["GET", "HEAD"])(
+  "%s が通常の HTTP になった場合は Upgrade せずに 400 を返す",
+  async (method) => {
+    const { cookie } = await session();
+    const result = new Promise<number | undefined>((resolve, reject) => {
+      const outgoing = request(`${httpUrl}${UPDATES}`, {
+        method,
+        headers: {
+          origin: ORIGIN,
+          cookie,
+          upgrade: "websocket",
+          ...(method === "HEAD" && { connection: "Upgrade" }),
+        },
+      });
+      outgoing.once("error", reject);
+      outgoing.once("response", (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      });
+      outgoing.end();
     });
-    outgoing.once("error", reject);
-    outgoing.once("response", (response) => {
-      response.resume();
-      resolve(response.statusCode);
-    });
-    outgoing.end();
-  });
-  expect(await result).toBe(400);
-});
+    expect(await result).toBe(400);
+  },
+);
 
 it("更新通知がなくてもログアウト済みの接続を回収する", async () => {
   const { cookie } = await session();
@@ -272,4 +285,16 @@ it("ping に応答しない接続を閉じ、ほかの接続は保つ", async ()
   await once(unresponsive, "open");
   await once(unresponsive, "close");
   expect(responsive.readyState).toBe(WebSocket.OPEN);
+});
+
+it("公開オリジンの設定が不正な場合は通知の接続を拒否する", async () => {
+  const invalid = createNodeSyncUpdates(database.db, { invalidPublicOrigin: true });
+  try {
+    platform.syncUpdates = invalid.updates;
+    const { cookie } = await session();
+    expect(await rejectSocket({ cookie, origin: ORIGIN })).toBe(403);
+    expect((await fetch(`${httpUrl}/healthz`)).status).toBe(200);
+  } finally {
+    invalid.stop();
+  }
 });

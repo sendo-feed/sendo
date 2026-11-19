@@ -1506,54 +1506,19 @@
             "description": "WebSocket 接続を開始した"
           },
           "400": {
-            "description": "WebSocket への切り替えが必要",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
+            "description": "WebSocket への切り替えが必要"
           },
           "401": {
-            "description": "有効なブラウザのセッションが必要",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
+            "description": "有効なブラウザのセッションが必要"
           },
           "403": {
-            "description": "ほかのオリジンからは接続できない",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
+            "description": "公開オリジンと一致しないか、公開オリジンの設定が不正"
           },
           "429": {
-            "description": "WebSocket の接続数の上限に達した",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
+            "description": "WebSocket の接続数の上限に達した"
           },
           "503": {
-            "description": "サーバーは終了処理中",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
+            "description": "サーバーは終了処理中"
           }
         }
       }
