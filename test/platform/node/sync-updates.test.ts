@@ -210,10 +210,15 @@ it("通知の失敗後も新着を差分で読めて、同じ記事の再取得�
   });
 });
 
-it("WebSocket 以外の Upgrade を受けた接続を閉じる", async () => {
+it.each([
+  ["GET", UPDATES, "h2c"],
+  ["GET", "/healthz", "websocket"],
+  ["POST", UPDATES, "websocket"],
+])("通知用の GET 以外の Upgrade を閉じる（%s %s %s）", async (method, route, upgrade) => {
   const closed = new Promise<void>((resolve, reject) => {
-    const outgoing = request(`${httpUrl}${UPDATES}`, {
-      headers: { connection: "Upgrade", upgrade: "h2c" },
+    const outgoing = request(`${httpUrl}${route}`, {
+      method,
+      headers: { connection: "Upgrade", upgrade },
     });
     outgoing.once("error", (error: NodeJS.ErrnoException) => {
       if (error.code === "ECONNRESET") resolve();
