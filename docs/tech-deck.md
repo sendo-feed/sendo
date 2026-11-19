@@ -83,8 +83,8 @@ flowchart LR
 | 領域 | 選定（案） | メモ |
 |---|---|---|
 | UI | Svelte 5 ＋ Vite（SPA） | SvelteKit と Void は使わない（sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md)） |
-| ビルド・配信 | Vite ＋ Workers Static Assets（コンテナ版は Node のサーバー） | Pages は使わない |
-| サーバー接続 | reader Worker → Service binding（コンテナ版は reader のコンテナ → compose の中の sendo） | 同一オリジンで CORS 不要（sendo-reader の [decisions/container.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)） |
+| ビルド・配信 | Vite でビルドし、reader のコンテナの Node のサーバー（Hono）が配る | Cloudflare（Workers・Pages）は使わない |
+| サーバー接続 | reader のコンテナ → compose の中の sendo（`apps/web/sendo-paths.ts` のパスだけを中継） | 同一オリジンで CORS 不要（sendo-reader の [decisions/container.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)） |
 | PWA | vite-plugin-pwa（Workbox） | アプリの外枠をキャッシュして即起動 |
 | ローカル DB | SQLite（Web は Wasm ＋ OPFS） | 全プラットフォームで同じスキーマ |
 | 同期 | packages/core | 起動時に差分を1リクエストで取得、楽観的更新 |
@@ -173,11 +173,13 @@ sendo-reader/
 │   │   ├── src/
 │   │   │   ├── routes/
 │   │   │   └── components/
-│   │   ├── worker/            # 静的アセット ＋ /api 中継
-│   │   └── wrangler.jsonc
+│   │   ├── server/            # コンテナのサーバー（静的なファイル ＋ sendo のパスの中継）
+│   │   ├── sendo-paths.ts     # sendo に中継するパス
+│   │   └── security-headers.ts  # CSP などのヘッダー
 │   └── mobile/                # Capacitor（後から）
 │       ├── ios/
 │       └── android/
+├── Dockerfile                 # reader のイメージ
 ├── pnpm-workspace.yaml
 ├── AGENTS.md
 ├── CLAUDE.md
