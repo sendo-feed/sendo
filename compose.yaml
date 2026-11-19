@@ -2,11 +2,12 @@
 # このファイルと .env（.env.example を写して書く）を置いたディレクトリで、
 #
 #   docker compose up -d                 動かす
-#   docker compose pull && docker compose up -d   上流の更新を取り込む
+#   docker compose pull && docker compose up -d   標準構成で上流の更新を取り込む
 #
 # 外に出すのは reader（sendo-reader）だけ。reader が画面を返し、Sendo のパス（/api、/mcp、OAuth、
-# Google Reader API など）を、この compose の中の sendo に中継する。外からは reader のオリジン 1 つに
-# 見えるので、.env の PUBLIC_URL と READER_URL には、どちらもそのオリジンを入れる。
+# Google Reader API など）を、この compose の中の sendo に中継する。画面と API・認証は同じ reader の
+# オリジンから使う。.env の PUBLIC_URL と READER_URL には、どちらもそのオリジンを入れる。
+# X の埋め込みを有効にした構成では、docs/decisions/container.md の 10 のとおり reader もビルドし直す。
 #
 # TLS は、手前に置くリバースプロキシ（Caddy など）や Cloudflare Tunnel で終える。ここでは、同じマシンから
 # だけつなげるように 127.0.0.1 に出す
