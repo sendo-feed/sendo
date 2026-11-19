@@ -187,14 +187,21 @@ async function extract(
   }
 
   // 抜いた HTML は、外から来たもの。保存する前にサニタイズする（決定の 2）
+  const encoder = new TextEncoder();
   let html = sanitizeHtml(extracted.html, page.url, { expandImgurEmbeds: true });
+  let byteLength = encoder.encode(html).byteLength;
+  if (byteLength > MAX_CONTENT_BYTES) {
+    // 追加画像だけが上限を超えた場合は、元の本文とリンクを保存する。
+    html = sanitizeHtml(extracted.html, page.url);
+    byteLength = encoder.encode(html).byteLength;
+  }
   const text = htmlToText(html, Number.POSITIVE_INFINITY) ?? "";
   const textLength = [...text].length;
   if (textLength < MIN_PAGE_TEXT_LENGTH) {
     console.warn("the extracted content is too short after sanitizing", { ...detail, textLength });
     return null;
   }
-  if (new TextEncoder().encode(html).length > MAX_CONTENT_BYTES) {
+  if (byteLength > MAX_CONTENT_BYTES) {
     console.warn("the extracted content is too large", detail);
     return null;
   }
@@ -210,7 +217,7 @@ async function extract(
       },
     });
     html = sanitizeHtml(html, page.url);
-    if (new TextEncoder().encode(html).byteLength > MAX_CONTENT_BYTES) html = original;
+    if (encoder.encode(html).byteLength > MAX_CONTENT_BYTES) html = original;
   }
   return html;
 }

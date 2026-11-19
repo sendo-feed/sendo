@@ -693,10 +693,7 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                 .or_else(|| ancestors.nodes().first());
         }
         if root.is(REGION) {
-            return ancestors
-                .nodes()
-                .first()
-                .filter(|node| Selection::from(**node).is(CONTENT_REGION));
+            return ancestors.nodes().first();
         }
         if root.is("main, [role=main]") {
             return None;
@@ -1133,6 +1130,18 @@ mod tests {
         let lead = leading_embeds(&doc.select("#body"), "https://blog.example/post");
         assert_eq!(lead.len(), 1);
         assert_eq!(lead[0].text().trim(), "前の引用");
+    }
+
+    #[test]
+    fn keeps_a_leading_embed_inside_the_parent_of_a_body_section() {
+        let doc = Document::from(
+            r#"<main><blockquote class="twitter-tweet">別の引用</blockquote>
+            <div><blockquote class="twitter-tweet">本文の引用</blockquote>
+            <section id="body">本文</section></div></main>"#,
+        );
+        let lead = leading_embeds(&doc.select("#body"), "https://blog.example/post");
+        assert_eq!(lead.len(), 1);
+        assert_eq!(lead[0].text().trim(), "本文の引用");
     }
 
     #[test]

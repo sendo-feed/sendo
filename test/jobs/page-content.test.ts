@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
+import { MAX_CONTENT_BYTES } from "../../src/db/content";
 import {
   getPageContent,
   recordExtractedPageContent,
@@ -8,6 +9,7 @@ import {
 import { articles } from "../../src/db/schema";
 import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
+import { sanitizeHtml } from "../../src/lib/sanitize-html";
 import type { PageContentExtractor, Platform } from "../../src/platform";
 import { createTestPlatform, createUser, fakeFetch, requestApp, subscribeFeed } from "../helpers";
 
@@ -146,6 +148,21 @@ describe("抜いている間に記事が消えたとき", () => {
 });
 
 describe("取り込んだときに抜く", () => {
+  it("Imgur の画像を足すと保存上限を超える本文は、元のリンクを残して保存する", async () => {
+    const quote =
+      '<blockquote class="imgur-embed-pub"><a href="https://i.imgur.com/photo.jpeg">写真</a></blockquote>';
+    const quoteBytes = new TextEncoder().encode(sanitizeHtml(quote, "https://blog.example/post"));
+    const text = "x".repeat(MAX_CONTENT_BYTES - quoteBytes.byteLength - "<p></p>".length);
+    const t = await setUp({ extracted: `<p>${text}</p>${quote}` });
+    await runJob(t.platform, { type: "extract-page", articleId: t.article.id });
+
+    const row = await getPageContent(t.platform.db, t.article.id);
+    expect(row?.status).toBe("extracted");
+    expect(row?.html).toContain('href="https://i.imgur.com/photo.jpeg"');
+    expect(row?.html).not.toContain("<img");
+    expect(new TextEncoder().encode(row?.html ?? "").byteLength).toBe(MAX_CONTENT_BYTES);
+  });
+
   it("取得の仕事は、新しい記事ごとに、ページから抜く仕事を積む", async () => {
     const t = await setUp();
     expect(t.enqueued).toContainEqual({ type: "extract-page", articleId: t.article.id });
