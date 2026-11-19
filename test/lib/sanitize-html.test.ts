@@ -111,6 +111,7 @@ describe("sanitizeHtml", () => {
       tracking + link,
       link + tracking,
       link.replace("投稿", `${tracking}投稿`),
+      `<object>${tracking}</object>${link}`,
     ]) {
       const html = sanitizeHtml(`<blockquote class="imgur-embed-pub">${body}</blockquote>`, BASE, {
         expandImgurEmbeds: true,
@@ -130,6 +131,15 @@ describe("sanitizeHtml", () => {
       expect(html.match(/<img /g)).toHaveLength(1);
       expect(html).toContain(image);
     }
+  });
+
+  it("中継できない画像だけがある Imgur の引用では直リンクを画像にする", () => {
+    const html = sanitizeHtml(
+      '<blockquote class="imgur-embed-pub"><img src="https://example.com:444/unavailable.jpeg"><a href="https://i.imgur.com/photo.jpeg">投稿</a></blockquote>',
+      BASE,
+      { expandImgurEmbeds: true },
+    );
+    expect(html).toContain('<img src="https://i.imgur.com/photo.jpeg" alt="Imgur">');
   });
 
   it("抽出時に取り除いた Imgur の画像へのリンクはそのまま残す", () => {

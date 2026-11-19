@@ -1,4 +1,5 @@
 import { decodeHTML } from "entities";
+import { toFetchableUrl } from "../fetcher/url-guard";
 import { escapeHtml, parseAttributes, tokenizeHtml } from "./html";
 import { isTrackingImage } from "./tracking-image";
 
@@ -75,13 +76,27 @@ function isImgurImage(href: string): boolean {
   );
 }
 
+function canRelayImage(src: string): boolean {
+  try {
+    toFetchableUrl(src);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = false): Part[] {
   const parts: Part[] = [];
   /** 開いている（閉じタグを出していない）要素 */
   const open: string[] = [];
   const imgurQuotes = new Map<number, ImgurQuote>();
   // URL の断片は画像の取得先を変えない。リンクの前後で除外した画像も差し替えに使わない。
-  const droppedTrackingImages = new Set<string>();
+  const removedImgurImages = new Set<string>();
+  const recordRemovedImage = (src: string | null) => {
+    if (expandImgurEmbeds && src !== null && isImgurImage(src)) {
+      removedImgurImages.add(src.split("#", 1)[0] ?? src);
+    }
+  };
   let imgurLink: { index: number; href: string; quote: ImgurQuote; alt?: string } | undefined;
   /** 中身ごと落としている要素と、その入れ子の数 */
   let dropping: { name: string; depth: number; wantsLink: boolean } | null = null;
@@ -113,16 +128,19 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
     if (token.type === "comment") continue;
 
     if (dropping) {
-      if (token.type === "tag" && token.name === dropping.name) {
+      if (token.type !== "tag") continue;
+      if (token.name === dropping.name) {
         dropping.depth += token.closing ? -1 : 1;
         if (dropping.depth === 0) dropping = null;
-      } else if (dropping.wantsLink && token.type === "tag" && token.name === "source") {
+      } else if (dropping.wantsLink && token.name === "source") {
         // 動画・音声の行き先が、子の <source> に書いてある場合。最初に見つかった 1 つをリンクにする
         const src = toUrl(parseAttributes(token.attributes).get("src"), baseUrl, HTTP);
         if (src) {
           parts.push(link(src), escapeHtml(src), "</a>");
           dropping.wantsLink = false;
         }
+      } else if (expandImgurEmbeds && !token.closing && token.name === "img") {
+        recordRemovedImage(toUrl(parseAttributes(token.attributes).get("src"), baseUrl, HTTP));
       }
       continue;
     }
@@ -162,13 +180,13 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
       // 計測用の画像（トラッキングピクセル）は落とす
       const alt = attributes.get("alt");
       if (!src || isTrackingImage(src, attributes)) {
-        if (expandImgurEmbeds && src !== null && isImgurImage(src)) {
-          droppedTrackingImages.add(src.split("#", 1)[0] ?? src);
-        }
+        recordRemovedImage(src);
         if (imgurLink !== undefined && alt !== undefined) imgurLink.alt = decodeHTML(alt);
         continue;
       }
-      for (const quote of imgurQuotes.values()) quote.hasImage = true;
+      if (imgurQuotes.size > 0 && canRelayImage(src)) {
+        for (const quote of imgurQuotes.values()) quote.hasImage = true;
+      }
       let rest = "";
       if (alt !== undefined) rest += ` alt="${escapeHtml(decodeHTML(alt))}"`;
       for (const key of ["width", "height"] as const) {
@@ -228,7 +246,7 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
       typeof part === "string" ||
       !part.imgurFallback ||
       (!part.imgurFallback.hasImage &&
-        !droppedTrackingImages.has(part.image.split("#", 1)[0] ?? part.image)),
+        !removedImgurImages.has(part.image.split("#", 1)[0] ?? part.image)),
   );
 }
 

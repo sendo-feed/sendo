@@ -465,7 +465,7 @@ fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
 // 記事や節を囲む header / footer は導入や出典になりうる。文書全体のものだけを除く。
 fn has_site_chrome(block: &Selection<'_>) -> bool {
     const CHROME: &str = "header, footer, [role=banner], [role=contentinfo]";
-    const SECTION: &str = "article, section, main, nav, aside, [role=main], [itemprop=articleBody]";
+    const SECTION: &str = "article, section, [itemprop=articleBody]";
     block
         .nodes()
         .iter()
@@ -564,10 +564,13 @@ mod tests {
 
     #[test]
     fn does_not_bring_shared_page_regions_into_the_body() {
-        let doc = Document::from(
-            r#"<body><div><header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">注目</a></blockquote></header><footer><blockquote class="twitter-tweet"><a href="https://x.com/example/status/456">おすすめ</a></blockquote></footer><div id="body">記事本文</div></div></body>"#,
-        );
-        assert!(leading_embeds(&doc.select("#body")).is_empty());
+        for container in ["div", "main", "div role='main'"] {
+            let tag = container.split_whitespace().next().unwrap();
+            let doc = Document::from(format!(
+                r#"<body><{container}><header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">注目</a></blockquote></header><footer><blockquote class="twitter-tweet"><a href="https://x.com/example/status/456">おすすめ</a></blockquote></footer><div id="body">記事本文</div></{tag}></body>"#,
+            ));
+            assert!(leading_embeds(&doc.select("#body")).is_empty());
+        }
     }
 
     #[test]
