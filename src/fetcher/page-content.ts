@@ -8,7 +8,7 @@
  * ページを取りにいくときは、同じホストへは 1 本ずつにし（決定の 17）、robots.txt を守る（決定の 18）。
  * どちらの状態も、プロセスのメモリに持つ（コンテナ版は 1 つのプロセスで動く）。
  */
-import { getArticleUrl } from "../db/articles";
+import { getArticlePageUrl } from "../db/articles";
 import { MAX_CONTENT_BYTES } from "../db/content";
 import {
   getPageContent,
@@ -57,9 +57,9 @@ const robots = new RobotsCache();
 export async function loadPageContent(
   platform: PageContentPlatform,
   extractor: PageContentExtractor,
-  article: { id: string; url: string | null },
+  articleId: string,
 ): Promise<PageContentResult> {
-  const row = await getPageContent(platform.db, article.id);
+  const row = await getPageContent(platform.db, articleId);
   if (row?.status === "extracted" && row.html !== null) return { status: "ok", html: row.html };
   if (
     row?.status === "failed" &&
@@ -67,9 +67,10 @@ export async function loadPageContent(
   ) {
     return { status: "unavailable" };
   }
-  if (article.url === null) return { status: "unavailable" };
+  const article = await getArticlePageUrl(platform.db, articleId);
+  if (!article?.url) return { status: "unavailable" };
   // 読者が待っているので、抜く仕事より前に並べる
-  return extractOnce(platform, extractor, { id: article.id, url: article.url }, "interactive");
+  return extractOnce(platform, extractor, { id: articleId, url: article.url }, "interactive");
 }
 
 /**
@@ -82,7 +83,7 @@ export async function extractPageContentOnce(
   articleId: string,
 ): Promise<void> {
   if (await getPageContent(platform.db, articleId)) return;
-  const article = await getArticleUrl(platform.db, articleId);
+  const article = await getArticlePageUrl(platform.db, articleId);
   // 記事が消えた（片付けられた）か、URL がない
   if (!article?.url) return;
   await extractOnce(platform, extractor, { id: articleId, url: article.url }, "background");

@@ -21,6 +21,7 @@ import { findFeedIcon } from "../fetcher/find-icon";
 import { htmlToText, type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
+import { runFetchDiscord } from "./fetch-discord";
 import {
   backoffInterval,
   currentFetchInterval,
@@ -63,14 +64,23 @@ export type FetchFeedOutcome =
 export async function runFetchFeed(
   platform: Pick<
     Platform,
-    "db" | "content" | "fetch" | "now" | "fetchConfig" | "retentionConfig" | "jobs" | "pageContent"
+    | "db"
+    | "content"
+    | "fetch"
+    | "now"
+    | "fetchConfig"
+    | "retentionConfig"
+    | "jobs"
+    | "pageContent"
+    | "discord"
   >,
   feedId: string,
 ): Promise<FetchFeedOutcome> {
   const { db } = platform;
   const minIntervalMs = platform.fetchConfig.intervalMs;
   const feed = await getFeed(db, feedId);
-  if (!feed) return { status: "missing" };
+  if (!feed || (feed.discordCursor !== null && feed.discordConnectionId === null))
+    return { status: "missing" };
 
   const startedAt = platform.now();
   await measureExistingContents(platform);
@@ -78,6 +88,9 @@ export async function runFetchFeed(
 
   let fetchedPage: FetchedFeedPage | undefined;
   try {
+    if (feed.discordCursor !== null)
+      return await runFetchDiscord(platform, feed, startedAt, canStore);
+
     const result = await fetchFeed(feed.url, {
       fetch: platform.fetch,
       etag: feed.etag,
@@ -239,7 +252,9 @@ async function recordFailedAttempt(
   let latest: Feed | undefined = feed;
   for (
     let retries = 0;
-    latest && (latest.lastFetchedAt === null || latest.lastFetchedAt < startedAt);
+    latest &&
+    latest.discordConnectionId === feed.discordConnectionId &&
+    (latest.lastFetchedAt === null || latest.lastFetchedAt < startedAt);
     retries++
   ) {
     // 先行した取得が書き込んだ場合は、その結果から間隔と状態を計算し直す。
