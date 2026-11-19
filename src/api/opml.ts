@@ -124,12 +124,14 @@ export function opmlApi(platform: Platform) {
     .openapi(exportRoute, async (c) => {
       const subscriptions = await listSubscriptions(platform.db, c.get("user").id);
       const xml = writeOpml(
-        subscriptions.map((subscription) => ({
-          url: subscription.feed.url,
-          title: subscription.feed.title,
-          siteUrl: subscription.feed.siteUrl,
-          folderName: subscription.folderName,
-        })),
+        subscriptions
+          .filter(({ feed }) => feed.discordCursor === null)
+          .map((subscription) => ({
+            url: subscription.feed.url,
+            title: subscription.feed.title,
+            siteUrl: subscription.feed.siteUrl,
+            folderName: subscription.folderName,
+          })),
         platform.now(),
       );
       return c.body(xml, 200, {

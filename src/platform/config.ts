@@ -1,3 +1,4 @@
+import { DISCORD_CALLBACK_PATH } from "../discord/client";
 /**
  * 設定を読む（docs/decisions/container.md の 11）。環境変数から、値の入っているものだけを渡す。
  */
@@ -5,6 +6,7 @@ import {
   type AuthConfig,
   DEFAULT_FETCH_INTERVAL_MINUTES,
   DEFAULT_STORAGE_LIMIT_MIB,
+  type DiscordConfig,
   type FetchConfig,
   MIN_FETCH_INTERVAL_MINUTES,
   type OAuthServerConfig,
@@ -80,6 +82,32 @@ function readOAuthServerConfig(
     return issuer && readerOrigin ? { issuer, readerOrigin } : undefined;
   } catch (error) {
     console.error("OAuth is disabled: PUBLIC_URL and READER_URL must be https origins", error);
+    return undefined;
+  }
+}
+
+export type DiscordEnvName =
+  | "DISCORD_CLIENT_ID"
+  | "DISCORD_CLIENT_SECRET"
+  | "DISCORD_BOT_TOKEN"
+  | "READER_URL";
+
+export function readDiscordConfig(
+  env: Partial<Record<DiscordEnvName, string>>,
+): DiscordConfig | undefined {
+  const clientId = env.DISCORD_CLIENT_ID?.trim();
+  const clientSecret = env.DISCORD_CLIENT_SECRET?.trim();
+  const botToken = env.DISCORD_BOT_TOKEN?.trim();
+  if (!clientId || !/^[1-9][0-9]{0,19}$/.test(clientId) || !clientSecret || !botToken) {
+    return undefined;
+  }
+  try {
+    const origin = parseOrigin(env.READER_URL);
+    return origin
+      ? { clientId, clientSecret, botToken, redirectUri: origin + DISCORD_CALLBACK_PATH }
+      : undefined;
+  } catch {
+    console.error("Discord is disabled: READER_URL must be an https origin");
     return undefined;
   }
 }

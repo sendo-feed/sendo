@@ -20,6 +20,12 @@ export interface OAuthClient {
   clientSecret: string;
 }
 
+/** セルフホストする人が Discord Developer Portal で登録したアプリ */
+export interface DiscordConfig extends OAuthClient {
+  botToken: string;
+  redirectUri: string;
+}
+
 /**
  * Sendo が OAuth の認可サーバーになるための設定（docs/decisions/mcp.md の 3、4）。
  * Claude.ai や ChatGPT などが、OAuth で /mcp につなぐのに使う
@@ -167,6 +173,7 @@ export interface Platform {
   fetch: typeof fetch;
   now: () => Date;
   auth: AuthConfig;
+  discord?: DiscordConfig;
   fetchConfig: FetchConfig;
   retentionConfig: RetentionConfig;
   /** 記事のページから本文を抜く（Rust） */

@@ -5,7 +5,7 @@
 import path from "node:path";
 import type { Database } from "../../db";
 import type { LanguageDetector, PageContentExtractor, Platform } from "..";
-import { readAuthConfig, readFetchConfig, readRetentionConfig } from "../config";
+import { readAuthConfig, readDiscordConfig, readFetchConfig, readRetentionConfig } from "../config";
 import { createSqliteArticleSearch } from "../sqlite/article-search";
 import { createFileObjectStore } from "./file-store";
 import type { SqliteJobQueue } from "./job-queue";
@@ -41,7 +41,9 @@ export function createNodePlatform(input: {
   languageDetection: LanguageDetector;
 }): Platform {
   const settings = definedSettings(input.env);
+  const discord = readDiscordConfig(settings);
   return {
+    ...(discord && { discord }),
     pageContent: input.pageContent,
     languageDetection: input.languageDetection,
     db: input.db,
