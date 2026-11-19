@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import type { Database } from ".";
+import { type Database, getRow } from ".";
 import { type ArticleLanguage, articleLanguages } from "./schema";
 
 export type LanguageSource = ArticleLanguage["source"];
@@ -23,7 +23,9 @@ export async function recordArticleLanguage(
   db: Database,
   input: ArticleLanguage,
 ): Promise<boolean> {
-  const stored = await db.get<{ articleId: string }>(sql`
+  const stored = await getRow<{ articleId: string }>(
+    db,
+    sql`
     insert into article_languages (article_id, source, language, status, score, margin, input_hash, detector, pipeline_revision)
     select ${input.articleId}, ${input.source}, ${input.language}, ${input.status}, ${input.score}, ${input.margin},
       ${input.inputHash}, ${input.detector}, ${input.pipelineRevision}
@@ -33,7 +35,8 @@ export async function recordArticleLanguage(
       input_hash = excluded.input_hash, detector = excluded.detector, pipeline_revision = excluded.pipeline_revision
     where article_languages.pipeline_revision < excluded.pipeline_revision
     returning article_id as articleId
-  `);
+  `,
+  );
   return stored != null;
 }
 

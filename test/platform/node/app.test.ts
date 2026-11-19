@@ -1,20 +1,22 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApp } from "../../src/app";
-import { getArticleLanguage } from "../../src/db/article-languages";
-import { PAGE_CONTENT_RETRY_MS } from "../../src/db/page-contents";
-import { runJob } from "../../src/jobs";
-import type { Job } from "../../src/jobs/job";
-import type { Platform } from "../../src/platform";
-import { createNodePlatform, withPublicOrigin } from "../../src/platform/node";
-import { createSqliteJobQueue, type SqliteJobQueue } from "../../src/platform/node/job-queue";
+import { createApp } from "../../../src/app";
+import { getArticleLanguage } from "../../../src/db/article-languages";
+import { PAGE_CONTENT_RETRY_MS } from "../../../src/db/page-contents";
+import { runJob } from "../../../src/jobs";
+import type { Job } from "../../../src/jobs/job";
+import type { Platform } from "../../../src/platform";
+import { createNodePlatform, withPublicOrigin } from "../../../src/platform/node";
+import { createSqliteJobQueue, type SqliteJobQueue } from "../../../src/platform/node/job-queue";
 import {
   createLanguageDetector,
   createPageContentExtractor,
   loadNativeModule,
-} from "../../src/platform/node/native";
-import { createTokenForEmail, normalizeTokenRequest } from "../../src/platform/node/token";
-import { articlePage, NATIVE_MODULE, openTestDatabase } from "./helpers";
+} from "../../../src/platform/node/native";
+import { createTokenForEmail, normalizeTokenRequest } from "../../../src/platform/node/token";
+import { NATIVE_MODULE, openTestDatabase } from "../../db";
+import { articlePage } from "../../fixtures/pages";
+import { unusedNative, unusedSyncUpdates } from "../../helpers";
 
 const FEED_URL = "https://news.example.com/feed.xml";
 
@@ -54,8 +56,8 @@ const fakeFetch: typeof fetch = async (input) => {
   return new Response("not found", { status: 404 });
 };
 
-/** コンテナ版の組み立て（src/platform/node/main.ts と同じ）で、アプリを通して動かす */
-describe("コンテナ版でアプリを動かす", () => {
+/** 本番の組み立て（src/platform/node/main.ts と同じ）で、アプリを通して動かす */
+describe("本番の組み立てでアプリを動かす", () => {
   let database: Awaited<ReturnType<typeof openTestDatabase>>;
   let jobs: SqliteJobQueue;
   let platform: Platform;
@@ -94,6 +96,7 @@ describe("コンテナ版でアプリを動かす", () => {
         headers: { "content-type": "text/html; charset=utf-8" },
       });
     platform = createNodePlatform({
+      syncUpdates: unusedSyncUpdates,
       env: { DATA_DIR: path.join(database.directory, "data") },
       db: database.db,
       jobs,
@@ -149,7 +152,11 @@ describe("コンテナ版でアプリを動かす", () => {
 
   it("使える機能として、ページの本文を抜けることを返す", async () => {
     const res = await request("/api/v1/features");
-    expect(await res.json()).toEqual({ pageContent: true, languageDetection: true });
+    expect(await res.json()).toEqual({
+      pageContent: true,
+      languageDetection: true,
+      syncUpdates: true,
+    });
   });
 
   it("抽出したページの主言語をネイティブで調べ、実SQLiteの別表に保存する", async () => {
@@ -305,6 +312,7 @@ describe("withPublicOrigin", () => {
     try {
       const reader = "https://reader.example.com";
       const platform = createNodePlatform({
+        syncUpdates: unusedSyncUpdates,
         env: {
           DATA_DIR: path.join(database.directory, "data"),
           GOOGLE_CLIENT_ID: "client-id",
@@ -315,6 +323,7 @@ describe("withPublicOrigin", () => {
         db: database.db,
         jobs: createSqliteJobQueue(database.db),
         fetch: fakeFetch,
+        ...unusedNative,
       });
       const app = createApp(platform);
       const handler = withPublicOrigin((request) => app.fetch(request), reader);

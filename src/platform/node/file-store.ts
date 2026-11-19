@@ -1,6 +1,6 @@
 /**
  * 記事の本文の置き場を、ボリュームの上のファイルにする（docs/decisions/container.md の 7）。
- * Cloudflare 版の R2 と同じく、置く、読む、消すだけを使う。
+ * 置く、読む、消すだけを使う。
  */
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";

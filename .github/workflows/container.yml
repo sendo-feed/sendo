@@ -1,6 +1,6 @@
 name: Container
 
-# コンテナ版のイメージを作る（docs/decisions/container.md の 10）。
+# Sendo のイメージを作る（docs/decisions/container.md の 10）。
 # - main に入ったら、amd64 と arm64 で作り、GHCR（ghcr.io/sendo-feed/sendo）に main のタグで置く
 # - PR では、Dockerfile が壊れていないかを amd64 で確かめ、Rust のモジュールは arm64 向けにも作る（置かない）
 

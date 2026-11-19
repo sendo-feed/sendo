@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles, recordCurrentFeed } from "../../src/db/articles";
@@ -16,11 +15,13 @@ import { MAX_ITEMS } from "../../src/fetcher/parse-feed";
 import { runCleanUp } from "../../src/jobs/clean-up";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import { canStoreArticles, measureExistingContents, reclaimStorage } from "../../src/jobs/storage";
+import { testDb } from "../db";
 import {
   addToInbox,
   createTestPlatform,
   createUser,
   fakeFetch,
+  statementHook,
   subscribeFeed,
   TEST_USER,
 } from "../helpers";
@@ -62,11 +63,11 @@ const articleIds = async (platform: Platform) =>
   );
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM feeds");
-  await env.DB.exec("DELETE FROM user_article_removals");
-  await env.DB.exec("DELETE FROM content_notes");
-  await env.DB.exec("DELETE FROM content_sizes");
-  await env.DB.exec(
+  await testDb.exec("DELETE FROM feeds");
+  await testDb.exec("DELETE FROM user_article_removals");
+  await testDb.exec("DELETE FROM content_notes");
+  await testDb.exec("DELETE FROM content_sizes");
+  await testDb.exec(
     "UPDATE storage_usage SET limit_bytes = 268435456, reclaiming = 0, eviction_batches = 0, eviction_day = -1, reclaim_token = null, reclaim_until = 0 WHERE id = 1",
   );
 });
@@ -101,7 +102,7 @@ describe("容量による記事の保管", () => {
       await platform.db.select().from(userArticles).where(eq(userArticles.articleId, "star")),
     ).toHaveLength(2);
     expect(
-      (await env.DB.prepare("SELECT article_id FROM user_article_removals").all()).results,
+      (await testDb.prepare("SELECT article_id FROM user_article_removals").all()).results,
     ).toEqual([{ article_id: "old" }]);
   });
 
@@ -331,21 +332,10 @@ describe("容量回収の並行実行", () => {
     const entered = new Promise<void>((resolve) => {
       notify = resolve;
     });
-    let pause = true;
-    const db = new Proxy(platform.db, {
-      get(target, prop) {
-        if (prop === "all")
-          return async (query: Parameters<typeof target.all>[0]) => {
-            if (pause) {
-              pause = false;
-              notify();
-              await held;
-            }
-            return target.all(query);
-          };
-        const value = Reflect.get(target, prop, target);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
+    // 先行する回収が、所有権を取ったあとで候補を読む文の直前で止まる
+    const { db } = statementHook(/a\.reserved_inbox_bytes \+ a\.reserved_inbox_bytes/, async () => {
+      notify();
+      await held;
     });
     const first = reclaimStorage({ ...platform, db });
     await entered;
@@ -503,18 +493,27 @@ describe("履歴が多いフィードの配布", () => {
   it("配布済みの履歴が増えても、予約を解放する読み取りは履歴全件にならない", async () => {
     const { platform } = createTestPlatform();
     const feed = await subscribeFeed(platform, {});
-    await env.DB.prepare(`WITH RECURSIVE n(i) AS (
+    await testDb
+      .prepare(`WITH RECURSIVE n(i) AS (
       SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000
     ) INSERT INTO articles (id, feed_id, guid, published_at, created_at, item_id)
       SELECT 'history-' || i, ?, 'history-' || i, 0, 0, i FROM n`)
       .bind(feed.id)
       .run();
     await deliverNewArticles(platform.db, { feedId: feed.id });
-    const result = await env.DB.prepare(
-      "UPDATE feeds SET delivered_until = delivered_until + 1 WHERE id = ?",
-    )
-      .bind(feed.id)
-      .run();
-    expect(result.meta.rows_read).toBeLessThan(25);
+    // 予約の解放（トリガーの feeds_release_delivery）と同じ文が、予約の残る記事だけの索引を使う
+    const plan = await testDb
+      .prepare(`EXPLAIN QUERY PLAN UPDATE articles SET reserved_inbox_bytes = 0
+        WHERE feed_id = ? AND reserved_inbox_bytes > 0 AND created_at <= ? + 1
+          AND NOT EXISTS (
+            SELECT 1 FROM subscriptions s WHERE s.feed_id = ? AND s.deleted_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM user_articles u
+                WHERE u.article_id = articles.id AND u.user_id = s.user_id)
+          )`)
+      .bind(feed.id, Date.now(), feed.id)
+      .all<{ detail: string }>();
+    const details = plan.results.map((row) => row.detail).join("\n");
+    expect(details).toMatch(/articles USING INDEX articles_pending_delivery_idx/);
+    expect(details).not.toMatch(/SCAN articles/);
   });
 });

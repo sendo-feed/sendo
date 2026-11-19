@@ -1,21 +1,20 @@
-import { env } from "cloudflare:workers";
-import { drizzle } from "drizzle-orm/d1";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
 import { insertFeeds } from "../../src/db/feeds";
 import { createFolder } from "../../src/db/folders";
 import { backfillInbox, deliverNewArticles } from "../../src/db/inbox";
 import { collectRemovals, raiseRemovalHorizons } from "../../src/db/retention";
-import * as schema from "../../src/db/schema";
 import { assignFolderIfMissing, subscribeMany } from "../../src/db/subscriptions";
 import { SYNC_LIMITS } from "../../src/db/sync";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
+import { testDb } from "../db";
 import {
   addToInbox,
   createTestPlatform,
   createUser,
   fakeFetch,
   requestApp,
+  statementHook,
   subscribeFeed,
   TEST_USER,
 } from "../helpers";
@@ -133,18 +132,19 @@ async function seedArticles(
   );
   for (const row of rows) {
     if (!row.read && !row.starred) continue;
-    await env.DB.prepare(
-      "UPDATE user_articles SET read_at = ?, starred_at = ? WHERE user_id = ? AND article_id = ?",
-    )
+    await testDb
+      .prepare(
+        "UPDATE user_articles SET read_at = ?, starred_at = ? WHERE user_id = ? AND article_id = ?",
+      )
       .bind(row.read ? 1 : null, row.starred ? 1 : null, TEST_USER.id, row.id)
       .run();
   }
 }
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM feeds");
-  await env.DB.exec("DELETE FROM folders");
-  await env.DB.exec("DELETE FROM removal_horizons");
+  await testDb.exec("DELETE FROM feeds");
+  await testDb.exec("DELETE FROM folders");
+  await testDb.exec("DELETE FROM removal_horizons");
 });
 
 describe("最初の同期", () => {
@@ -313,12 +313,13 @@ describe("差分", () => {
     await client.sync();
 
     // コードで購読の番号を進めなくても、トリガーが進める（途中で落ちても伝え漏れがない）
-    await env.DB.prepare("UPDATE feeds SET title = ? WHERE id = ?").bind("New name", feed.id).run();
+    await testDb.prepare("UPDATE feeds SET title = ? WHERE id = ?").bind("New name", feed.id).run();
     await client.sync();
     expect(client.state.feeds.get(feed.id)?.title).toBe("New name");
 
     // 名前が変わらない更新では、番号は進まない
-    await env.DB.prepare("UPDATE feeds SET title = ?, etag = ? WHERE id = ?")
+    await testDb
+      .prepare("UPDATE feeds SET title = ?, etag = ? WHERE id = ?")
       .bind("New name", "x", feed.id)
       .run();
     const empty = await client.sync();
@@ -354,7 +355,15 @@ describe("差分", () => {
     const response = await requestApp(platform, "/api/v1/feeds");
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      items: [{ id: feed.id, status: "stalled", lastErrorCode: "gone", errorCount: 3 }],
+      items: [
+        {
+          id: feed.id,
+          status: "stalled",
+          lastErrorCode: "gone",
+          errorCount: 3,
+          lastSuccessfulFetchAt: null,
+        },
+      ],
     });
 
     now = new Date(now.getTime() + 7 * DAY);
@@ -363,6 +372,23 @@ describe("差分", () => {
     expect((await client.sync()).feeds).toMatchObject([
       { id: feed.id, status: "active", lastErrorCode: null },
     ]);
+
+    now = new Date(now.getTime() + DAY);
+    const successfulAt = now.toISOString();
+    await runFetchFeed(platform, feed.id);
+    expect((await client.sync()).feeds).toEqual([]);
+    expect(await (await requestApp(platform, "/api/v1/feeds")).json()).toMatchObject({
+      items: [{ id: feed.id, lastFetchedAt: successfulAt, lastSuccessfulFetchAt: successfulAt }],
+    });
+
+    now = new Date(now.getTime() + DAY);
+    status = 429;
+    await runFetchFeed(platform, feed.id);
+    expect(await (await requestApp(platform, "/api/v1/feeds")).json()).toMatchObject({
+      items: [
+        { id: feed.id, lastFetchedAt: now.toISOString(), lastSuccessfulFetchAt: successfulAt },
+      ],
+    });
   });
 
   it("404 の移転先候補を同期で届け、読者が新しい購読として追加できる", async () => {
@@ -461,9 +487,10 @@ describe("差分", () => {
 
     // 元のフォルダを消す（古い購読の行も、まだそのフォルダを指している）
     const oldRow = () =>
-      env.DB.prepare(
-        "SELECT seq, folder_id FROM subscriptions WHERE feed_id = ? AND deleted_at IS NOT NULL",
-      )
+      testDb
+        .prepare(
+          "SELECT seq, folder_id FROM subscriptions WHERE feed_id = ? AND deleted_at IS NOT NULL",
+        )
         .bind(feed.id)
         .first<{ seq: number; folder_id: string | null }>();
     const before = await oldRow();
@@ -489,9 +516,10 @@ describe("差分", () => {
     await client.sync();
 
     // どの経路であれ、古い購読の番号があとから進んだ場合
-    await env.DB.prepare(
-      "UPDATE subscriptions SET seq = (SELECT max(seq) FROM subscriptions) + 1 WHERE feed_id = ? AND deleted_at IS NOT NULL",
-    )
+    await testDb
+      .prepare(
+        "UPDATE subscriptions SET seq = (SELECT max(seq) FROM subscriptions) + 1 WHERE feed_id = ? AND deleted_at IS NOT NULL",
+      )
       .bind(feed.id)
       .run();
     const delta = await client.sync();
@@ -524,44 +552,13 @@ describe("差分", () => {
 });
 
 /**
- * pattern に合う SELECT を実行する直前に、一度だけ before を走らせる D1（arm したあとの 1 回だけ）。
+ * pattern に合う SELECT を実行する直前に、一度だけ before を走らせる DB（arm したあとの 1 回だけ）。
  * 1 回の同期の中で、文と文の間にほかの書き込みが入る場合を作る
  */
-function d1WithHook(pattern: RegExp, before: () => Promise<void>) {
-  let armed = false;
-  const wrap = (stmt: D1PreparedStatement, query: string): D1PreparedStatement =>
-    new Proxy(stmt, {
-      get(target, prop) {
-        const value = Reflect.get(target, prop, target);
-        if (typeof value !== "function") return value;
-        if (prop === "bind") {
-          return (...args: unknown[]) => wrap(value.apply(target, args), query);
-        }
-        if (prop === "all" || prop === "raw" || prop === "first" || prop === "run") {
-          return async (...args: unknown[]) => {
-            if (armed && /^\s*select/i.test(query) && pattern.test(query)) {
-              armed = false;
-              await before();
-            }
-            return value.apply(target, args);
-          };
-        }
-        return value.bind(target);
-      },
-    });
-  const db = new Proxy(env.DB, {
-    get(target, prop) {
-      const value = Reflect.get(target, prop, target);
-      if (prop === "prepare") return (query: string) => wrap(target.prepare(query), query);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
+function selectHook(pattern: RegExp, before: () => Promise<void>) {
+  return statementHook((sql) => /^\s*select/i.test(sql) && pattern.test(sql), before, {
+    armed: false,
   });
-  return {
-    db,
-    arm: () => {
-      armed = true;
-    },
-  };
 }
 
 describe("受信箱から消えた記事", () => {
@@ -584,11 +581,11 @@ describe("受信箱から消えた記事", () => {
       },
     ]);
     // 消した記録を読む文の直前に、新着（n）を配り、別の記事（r）を受信箱から消す
-    const hooked = d1WithHook(/user_article_removals/, async () => {
+    const hooked = selectHook(/user_article_removals/, async () => {
       await deliverNewArticles(plain.db, { feedId: feed.id });
-      await env.DB.prepare("DELETE FROM user_articles WHERE article_id = 'r'").run();
+      await testDb.prepare("DELETE FROM user_articles WHERE article_id = 'r'").run();
     });
-    const { platform } = createTestPlatform({ db: drizzle(hooked.db, { schema }) });
+    const { platform } = createTestPlatform({ db: hooked.db });
     const client = createClient(platform);
     await client.sync();
     expect([...client.state.articles.keys()]).toEqual(["r"]);
@@ -904,7 +901,7 @@ describe("消した記録の回収（docs/decisions/retention.md の 5）", () =
     const client = createClient(platform);
     await client.sync();
     expect([...client.state.articles.keys()].sort()).toEqual(["a", "b"]);
-    await env.DB.exec("DELETE FROM user_articles WHERE article_id = 'a'");
+    await testDb.exec("DELETE FROM user_articles WHERE article_id = 'a'");
     return { platform, client };
   }
 
@@ -925,7 +922,7 @@ describe("消した記録の回収（docs/decisions/retention.md の 5）", () =
   it("回収した記録がその人の最大の番号でも、同期し直したあとは続きから同期できる", async () => {
     const { platform } = await setup();
     // b も消し、2 つの記録を回収する。その人の受信箱の行も記録も残らない
-    await env.DB.exec("DELETE FROM user_articles WHERE article_id = 'b'");
+    await testDb.exec("DELETE FROM user_articles WHERE article_id = 'b'");
     await collectAll(platform);
 
     const fresh = createClient(platform);
@@ -959,8 +956,8 @@ describe("消した記録の回収（docs/decisions/retention.md の 5）", () =
 
   it("差分を読む直前に回収されても、取りこぼさずに 400 を返す", async () => {
     const { platform: plain, client } = await setup();
-    const hook = d1WithHook(/union all/i, () => collectAll(plain));
-    const { platform } = createTestPlatform({ db: drizzle(hook.db, { schema }) });
+    const hook = selectHook(/union all/i, () => collectAll(plain));
+    const { platform } = createTestPlatform({ db: hook.db });
     hook.arm();
 
     const res = await requestApp(platform, `/api/v1/sync?cursor=${client.cursor()}`);

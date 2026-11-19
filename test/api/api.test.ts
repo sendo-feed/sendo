@@ -1,8 +1,8 @@
-import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import spec from "../../spec/openapi.json";
 import { insertArticles } from "../../src/db/articles";
 import { deliverNewArticles } from "../../src/db/inbox";
+import { testDb } from "../db";
 import { createTestPlatform, requestApp, subscribeFeed } from "../helpers";
 
 type Json = Record<string, unknown>;
@@ -45,7 +45,7 @@ describe("認証", () => {
 
 describe("GET /api/v1/articles", () => {
   async function seed() {
-    await env.DB.exec("DELETE FROM feeds");
+    await testDb.exec("DELETE FROM feeds");
     const { platform } = createTestPlatform();
     const base = new Date("2026-11-01T00:00:00Z").getTime();
     const ids: Record<string, string> = {};
@@ -135,7 +135,7 @@ describe("GET /api/v1/articles", () => {
   });
 
   it("1970 年より前の記事をまたいでも、ページを送れる", async () => {
-    await env.DB.exec("DELETE FROM feeds");
+    await testDb.exec("DELETE FROM feeds");
     const { platform } = createTestPlatform();
     const feed = await subscribeFeed(platform, {});
     await insertArticles(

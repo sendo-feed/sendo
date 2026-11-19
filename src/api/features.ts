@@ -1,16 +1,19 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
 
 const FeaturesSchema = z
   .object({
     languageDetection: z.boolean().openapi({
-      description: "記事の主言語を背景で判定・保存できるか。コンテナ版だけ",
+      description: "記事の主言語を背景で判定・保存できるか。常に true",
     }),
     pageContent: z.boolean().openapi({
       description:
-        "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。コンテナ版だけ",
+        "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。常に true",
+    }),
+    syncUpdates: z.boolean().openapi({
+      description:
+        "Sendo が WebSocket 通知に対応しているか（GET /sync/updates）。対応前の Sendo はこの項目を返さない",
     }),
   })
   .openapi("Features");
@@ -20,8 +23,8 @@ const featuresRoute = createRoute({
   path: "/features",
   summary: "この Sendo で使える機能",
   description: [
-    "Sendo には 2 つの版があり、版によって使える機能が違う（docs/decisions/container.md の 3）。",
-    "クライアントは、これを見て画面を出し分ける。版の名前は返さない（機能ごとに見る）。",
+    "使える機能を返す。今はどの機能も常に使えるので、すべて true を返す。",
+    "sendo-reader の互換のために残している。sendo-reader が使わなくなったら消す（docs/decisions/container.md の 3）。",
   ].join("\n"),
   responses: {
     200: {
@@ -31,16 +34,9 @@ const featuresRoute = createRoute({
   },
 });
 
-export function featuresApi(platform: Platform) {
+export function featuresApi() {
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook }).openapi(
     featuresRoute,
-    (c) =>
-      c.json(
-        {
-          pageContent: platform.pageContent !== undefined,
-          languageDetection: platform.languageDetection !== undefined,
-        },
-        200,
-      ),
+    (c) => c.json({ pageContent: true, languageDetection: true, syncUpdates: true }, 200),
   );
 }

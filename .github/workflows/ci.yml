@@ -12,9 +12,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  WRANGLER_SEND_METRICS: "false"
-
 jobs:
   check:
     name: Check
@@ -68,7 +65,7 @@ jobs:
       - name: Rust
         run: pnpm check:rust
 
-      # コンテナ版のテスト（test/node/）が読み込む、Rust のネイティブのモジュールを作る
+      # テスト（test/platform/node/）が読み込む、Rust のネイティブのモジュールを作る
       - name: Build native module
         run: pnpm build:native
 

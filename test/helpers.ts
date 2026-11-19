@@ -1,6 +1,8 @@
-import { env } from "cloudflare:workers";
-import { drizzle } from "drizzle-orm/d1";
+import path from "node:path";
+import type { Client } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
 import { createApp } from "../src/app";
+import type { Database } from "../src/db";
 import { insertFeed } from "../src/db/feeds";
 import * as schema from "../src/db/schema";
 import { nextSeq } from "../src/db/seq";
@@ -11,42 +13,96 @@ import type { Job } from "../src/jobs/job";
 import {
   DEFAULT_FETCH_INTERVAL_MINUTES,
   DEFAULT_STORAGE_LIMIT_MIB,
+  type LanguageDetector,
+  type PageContentExtractor,
   type Platform,
+  type SyncUpdates,
 } from "../src/platform";
-import { createR2ObjectStore } from "../src/platform/cloudflare";
+import { createFileObjectStore } from "../src/platform/node/file-store";
 import { createSqliteArticleSearch } from "../src/platform/sqlite/article-search";
+import { testDatabase } from "./db";
 import { TEST_TOKEN as API_TOKEN, TEST_USER } from "./fixtures/user";
 
 export { API_TOKEN, TEST_USER };
 
+/** libsql のクライアントが SQL を実行する入口。drizzle はこれらを通して文を投げる */
+const EXECUTE_METHODS = new Set(["execute", "batch", "executeMultiple", "migrate"]);
+
 /**
- * D1 に投げたクエリの数を数える。D1 は 1 回の実行で投げられるクエリの数に上限があるので、
- * 最悪の場合でも収まるかをテストで確かめるのに使う。
+ * libsql のクライアントを包み、SQL を実行する直前に onExecute を呼ぶ。onExecute には実行する SQL を
+ * 渡す（batch などは、まとめて 1 回）
  */
-function countingD1(db: D1Database) {
-  const counter = { queries: 0 };
-  const wrapped = new Proxy(db, {
+function wrapClient(client: Client, onExecute: (sql: string) => void | Promise<void>): Client {
+  return new Proxy(client, {
     get(target, prop) {
       const value = Reflect.get(target, prop, target);
       if (typeof value !== "function") return value;
-      if (prop === "prepare" || prop === "exec" || prop === "batch") {
-        return (...args: unknown[]) => {
-          counter.queries++;
+      if (typeof prop === "string" && EXECUTE_METHODS.has(prop)) {
+        return async (...args: unknown[]) => {
+          const [statement] = args;
+          const sql =
+            typeof statement === "string"
+              ? statement
+              : typeof statement === "object" && statement !== null && "sql" in statement
+                ? String(statement.sql)
+                : "";
+          await onExecute(sql);
           return (value as (...a: unknown[]) => unknown).apply(target, args);
         };
       }
       return value.bind(target);
     },
   });
-  return { db: wrapped, counter };
 }
 
-/** テスト用の Platform。DB は本物の D1（手元の Miniflare）、キューと fetch は差し替える */
+/** 包んだクライアントで、アプリが使うのと同じ形の DB を作る */
+function databaseOf(client: Client): Database {
+  return drizzle(client, { schema });
+}
+
+/** テストで呼ばれたら失敗させる、ページの本文の抜き取り。使うテストは差し替える */
+const unusedPageContent: PageContentExtractor = {
+  async extract() {
+    throw new Error("page content extraction is not set up in this test; pass pageContent");
+  },
+};
+
+/** テストで呼ばれたら失敗させる、言語の判定。使うテストは差し替える */
+const unusedLanguageDetection: LanguageDetector = {
+  detector: "unused",
+  pipelineRevision: 1,
+  async detect() {
+    throw new Error("language detection is not set up in this test; pass languageDetection");
+  },
+};
+
+/** Rust の処理を使わないテストで、Platform に渡すもの（呼ばれたら失敗する） */
+export const unusedNative = {
+  pageContent: unusedPageContent,
+  languageDetection: unusedLanguageDetection,
+};
+
+/** 実際の HTTP 接続を使わないテストの通知。 */
+export const unusedSyncUpdates: SyncUpdates = {
+  async connect() {
+    throw new Error("WebSocket server is not set up in this test");
+  },
+  async notify() {},
+};
+
+/** テスト用の Platform。DB はテストファイルの SQLite（test/db.ts）、キューと fetch は差し替える */
 export function createTestPlatform(overrides: Partial<Platform> = {}) {
   const enqueued: Job[] = [];
-  const d1 = countingD1(env.DB);
-  const db = overrides.db ?? drizzle(d1.db, { schema });
+  const counter = { queries: 0 };
+  const db =
+    overrides.db ??
+    databaseOf(
+      wrapClient(testDatabase.client, () => {
+        counter.queries++;
+      }),
+    );
   const platform: Platform = {
+    syncUpdates: unusedSyncUpdates,
     db,
     articleSearch: createSqliteArticleSearch(db),
     jobs: {
@@ -54,7 +110,7 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
         enqueued.push(...jobs);
       },
     },
-    content: createR2ObjectStore(env.CONTENT),
+    content: createFileObjectStore(path.join(testDatabase.directory, "content")),
     fetch: async () => {
       throw new Error("network access is not allowed in tests; pass a fake fetch");
     },
@@ -62,15 +118,17 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
     auth: { allowedEmails: new Set(), google: undefined, oauth: undefined },
     fetchConfig: { intervalMs: DEFAULT_FETCH_INTERVAL_MINUTES * 60 * 1000 },
     retentionConfig: { maxBytes: DEFAULT_STORAGE_LIMIT_MIB * 1024 * 1024 },
+    pageContent: unusedPageContent,
+    languageDetection: unusedLanguageDetection,
     ...overrides,
   };
   return {
     platform,
     enqueued,
-    /** これまでに D1 に投げたクエリの数 */
-    queryCount: () => d1.counter.queries,
+    /** これまでに DB に投げた文の数 */
+    queryCount: () => counter.queries,
     resetQueryCount: () => {
-      d1.counter.queries = 0;
+      counter.queries = 0;
     },
   };
 }
@@ -98,8 +156,8 @@ export function fakeFetch(
 ) {
   const calls: { url: string; headers: Headers }[] = [];
   const fn: typeof fetch = async (input, init) => {
-    // 本物の fetch と同じように Request を組み立てる。Workers が受け付けない指定
-    // （redirect: "error" など）は、ここで本番と同じ TypeError になる
+    // 本物の fetch と同じように Request を組み立てる。受け付けない指定は、ここで本番と同じ
+    // TypeError になる
     new Request(input, init);
     const url = new URL(input instanceof Request ? input.url : String(input));
     calls.push({ url: url.href, headers: new Headers(init?.headers) });
@@ -108,7 +166,7 @@ export function fakeFetch(
   return { fetch: fn, calls };
 }
 
-/** テストごとに重ならない URL を作る（D1 はテストファイルの中で共有されるため） */
+/** テストごとに重ならない URL を作る（DB はテストファイルの中で共有されるため） */
 export function uniqueUrl(path = "feed.xml"): string {
   return `https://${crypto.randomUUID()}.example.com/${path}`;
 }
@@ -183,40 +241,30 @@ export async function createSessionHeaders(userId: string) {
 }
 
 /**
- * 正規表現に合う文を実行する直前に、一度だけ before を実行する D1。ほかのリクエストが間に入る場合や、
- * 途中で落ちる場合（before で投げる）をまねる
+ * 条件に合う文を実行する直前に、一度だけ before を実行する DB。ほかのリクエストが間に入る場合や、
+ * 途中で落ちる場合（before で投げる）をまねる。armed を false にすると、arm を呼ぶまで待つ
  */
-export function d1BeforeStatement(pattern: RegExp, before: () => Promise<void>) {
-  let armed = true;
-  const intercept = <T extends object>(target: T): T =>
-    new Proxy(target, {
-      get(t, key) {
-        const value = Reflect.get(t, key, t);
-        if (typeof value !== "function") return value;
-        if (key === "bind") return (...args: unknown[]) => intercept(value.apply(t, args));
-        if (key === "all" || key === "first" || key === "run" || key === "raw") {
-          return async (...args: unknown[]) => {
-            if (armed) {
-              armed = false;
-              await before();
-            }
-            return value.apply(t, args);
-          };
-        }
-        return value.bind(t);
-      },
-    });
-  const db = new Proxy(env.DB, {
-    get(target, prop) {
-      if (prop === "prepare") {
-        return (query: string) => {
-          const statement = target.prepare(query);
-          return pattern.test(query) ? intercept(statement) : statement;
-        };
-      }
-      const value = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
+export function statementHook(
+  match: RegExp | ((sql: string) => boolean),
+  before: () => Promise<void>,
+  options: { armed?: boolean } = {},
+) {
+  let armed = options.armed ?? true;
+  let fired = false;
+  const test = typeof match === "function" ? match : (sql: string) => match.test(sql);
+  const db = databaseOf(
+    wrapClient(testDatabase.client, async (sql) => {
+      if (!armed || !test(sql)) return;
+      armed = false;
+      fired = true;
+      await before();
+    }),
+  );
+  return {
+    db,
+    fired: () => fired,
+    arm: () => {
+      armed = true;
     },
-  });
-  return { db, fired: () => !armed };
+  };
 }

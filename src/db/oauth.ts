@@ -1,6 +1,6 @@
 import { and, desc, eq, exists, gt, isNull, lte, max, not, type SQL, sql } from "drizzle-orm";
 import { randomBase64Url } from "../lib/crypto";
-import type { Database } from ".";
+import { type Database, getRow } from ".";
 import {
   type OAuthCode,
   type OAuthGrant,
@@ -46,7 +46,7 @@ const UNUSED_CLIENT_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * 一度も許可されていないクライアントを、いくつまで置けるか（docs/decisions/mcp.md の 5）。
- * 動的登録は、ログインせずに D1 に書き込める入口なので、数に上限を置いて容量と書き込みを守る
+ * 動的登録は、ログインせずに DB に書き込める入口なので、数に上限を置いて容量と書き込みを守る
  */
 export const MAX_PENDING_CLIENTS = 100;
 
@@ -84,13 +84,16 @@ export async function registerClient(
   // 登録できたかは、returning で行が返るかで見る（書き込みの結果の形は、DB ごとに違うため）
   // insert の列の並びと returning には、表の名前を付けない列名を書く
   const column = (c: { name: string }) => sql.identifier(c.name);
-  const inserted = await db.get<{ id: string }>(sql`
+  const inserted = await getRow<{ id: string }>(
+    db,
+    sql`
     insert into ${oauthClients}
       (${column(oauthClients.id)}, ${column(oauthClients.name)}, ${column(oauthClients.redirectUris)}, ${column(oauthClients.createdAt)})
     select ${client.id}, ${client.name}, ${JSON.stringify(client.redirectUris)}, ${client.createdAt.getTime()}
     where (select count(*) from ${oauthClients} where ${oauthClients.authorizedAt} is null)
       < ${MAX_PENDING_CLIENTS}
-    returning ${column(oauthClients.id)}`);
+    returning ${column(oauthClients.id)}`,
+  );
   return inserted ? client : undefined;
 }
 

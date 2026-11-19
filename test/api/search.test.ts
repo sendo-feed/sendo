@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
@@ -6,6 +5,7 @@ import { insertArticles } from "../../src/db/articles";
 import { setArticlesState } from "../../src/db/inbox";
 import { createAccessToken } from "../../src/db/tokens";
 import { indexArticleSearch } from "../../src/jobs/article-search";
+import { testDb } from "../db";
 import { addToInbox, createTestPlatform, createUser, subscribeFeed } from "../helpers";
 
 describe("MCP の記事検索", () => {
@@ -42,7 +42,8 @@ describe("MCP の記事検索", () => {
     if (!bodyMatch || !titleMatch) throw new Error("articles missing");
     const key = `feed/${bodyMatch.id}`;
     await platform.content.put(key, "<p>ここの本文だけに <b>.NET</b> と短い語「技術」がある</p>");
-    await env.DB.prepare("UPDATE articles SET content_key = ? WHERE id = ?")
+    await testDb
+      .prepare("UPDATE articles SET content_key = ? WHERE id = ?")
       .bind(key, bodyMatch.id)
       .run();
     await setArticlesState(platform.db, {
@@ -81,16 +82,16 @@ describe("MCP の記事検索", () => {
       articles: [{ id: bodyMatch.id, snippet: expect.stringContaining("日本語") }],
     });
 
-    await env.DB.exec("UPDATE article_search_state SET day = unixepoch() / 86400, writes = 1499");
+    await testDb.exec("UPDATE article_search_state SET day = unixepoch() / 86400, writes = 1499");
     await Promise.all([indexArticleSearch(platform), indexArticleSearch(platform)]);
-    const counted = await env.DB.prepare("SELECT writes FROM article_search_state").first();
+    const counted = await testDb.prepare("SELECT writes FROM article_search_state").first();
     expect(counted).toEqual({ writes: 1500 });
     expect(
-      await env.DB.prepare("SELECT count(*) AS indexed FROM article_search_documents").first(),
+      await testDb.prepare("SELECT count(*) AS indexed FROM article_search_documents").first(),
     ).toEqual({ indexed: 1 });
 
-    await env.DB.exec("UPDATE article_search_state SET writes = 0");
-    await env.DB.exec("UPDATE article_search_pending SET retry_at = 0");
+    await testDb.exec("UPDATE article_search_state SET writes = 0");
+    await testDb.exec("UPDATE article_search_pending SET retry_at = 0");
     await indexArticleSearch(platform);
 
     const query = {
@@ -123,7 +124,7 @@ describe("MCP の記事検索", () => {
       articles: [],
       nextCursor: null,
     });
-    await env.DB.prepare("DELETE FROM articles WHERE id = ?").bind(bodyMatch.id).run();
+    await testDb.prepare("DELETE FROM articles WHERE id = ?").bind(bodyMatch.id).run();
     expect((await search({ keyword: "技術" })).structuredContent).toEqual({
       articles: [],
       nextCursor: null,

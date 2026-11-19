@@ -1,9 +1,4 @@
 {
   "extends": "../tsconfig.json",
-  "compilerOptions": {
-    "types": ["@cloudflare/vitest-plugin/types"]
-  },
-  "include": ["./**/*.ts", "../src", "../worker-configuration.d.ts", "../vitest.config.ts"],
-  // コンテナ版の緩衝層とそのテストは、Node の型で別に確かめる（test/node/tsconfig.json）
-  "exclude": ["./node", "../src/platform/node"]
+  "include": ["./**/*.ts", "../src", "../vitest.config.ts"]
 }

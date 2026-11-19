@@ -2,29 +2,38 @@ import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { describe, expect, it } from "vitest";
-import { insertArticles } from "../../src/db/articles";
-import { noteContentKeys, reserveContents } from "../../src/db/content";
-import { insertFeed } from "../../src/db/feeds";
-import * as schema from "../../src/db/schema";
-import { configureStorage, readStorageUsage } from "../../src/db/storage";
-import { createNodePlatform } from "../../src/platform/node";
-import { createSqliteJobQueue } from "../../src/platform/node/job-queue";
-import { MIGRATIONS_DIR, openTestDatabase } from "./helpers";
+import { insertArticles } from "../../../src/db/articles";
+import { noteContentKeys, reserveContents } from "../../../src/db/content";
+import { insertFeed } from "../../../src/db/feeds";
+import * as schema from "../../../src/db/schema";
+import { configureStorage, readStorageUsage } from "../../../src/db/storage";
+import { createNodePlatform } from "../../../src/platform/node";
+import { createSqliteJobQueue } from "../../../src/platform/node/job-queue";
+import { MIGRATIONS_DIR, openTestDatabase } from "../../db";
+import { unusedNative, unusedSyncUpdates } from "../../helpers";
 
-describe("コンテナ版の保存容量", () => {
+describe("保存容量", () => {
   it("環境変数を読み、SQLite でも同時の本文予約を上限内に収める", async () => {
     const database = await openTestDatabase();
     try {
       const jobs = createSqliteJobQueue(database.db);
       const platform = createNodePlatform({
+        syncUpdates: unusedSyncUpdates,
         env: { DATA_DIR: database.directory, STORAGE_LIMIT_MIB: "20480" },
         db: database.db,
         jobs,
+        ...unusedNative,
       });
       expect(platform.retentionConfig.maxBytes).toBe(20 * 1024 ** 3);
-      expect(createNodePlatform({ env: {}, db: database.db, jobs }).retentionConfig.maxBytes).toBe(
-        10 * 1024 ** 3,
-      );
+      expect(
+        createNodePlatform({
+          syncUpdates: unusedSyncUpdates,
+          env: {},
+          db: database.db,
+          jobs,
+          ...unusedNative,
+        }).retentionConfig.maxBytes,
+      ).toBe(10 * 1024 ** 3);
       const { feed } = await insertFeed(database.db, {
         id: "feed",
         url: "https://example.com/feed",

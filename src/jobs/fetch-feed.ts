@@ -71,8 +71,8 @@ export async function runFetchFeed(
     | "fetchConfig"
     | "retentionConfig"
     | "jobs"
-    | "pageContent"
     | "discord"
+    | "syncUpdates"
   >,
   feedId: string,
 ): Promise<FetchFeedOutcome> {
@@ -101,7 +101,7 @@ export async function runFetchFeed(
 
     if (result.status === "not-modified") {
       // 前回の取得が、受信箱に配る途中で落ちていた場合に備えて、配り直しを試みる
-      await deliverNewArticles(db, { feedId: feed.id });
+      await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
       // 新しい記事がなくても、時間がたった分だけペースは落ちているので、間隔を決め直す
       const nextIntervalMs = await nextFetchInterval(db, {
         feedId: feed.id,
@@ -136,7 +136,7 @@ export async function runFetchFeed(
     );
     if (!canStore) {
       // 前回の取り込みが配布の前で落ちていても、確保済みの受信箱の容量で配り切れる。
-      await deliverNewArticles(db, { feedId: feed.id });
+      await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
       await platform.jobs.enqueue([{ type: "clean-up" }]);
       return { status: "storage-full" };
     }
@@ -154,9 +154,8 @@ export async function runFetchFeed(
     // 行に入った名前の書き留めを消す。入らなかった名前は残り、1 日 1 回の片付けが本文を消す
     await clearUsedContentNotes(db, storedContents.keys);
     // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
-    await deliverNewArticles(db, { feedId: feed.id });
-    // ページから本文を抜ける版（コンテナ版）では、新しい記事ごとに、抜く仕事を積む
-    // （docs/decisions/content.md の 10）。ここで落ちて積めなくても、読者が開いたときに抜く
+    await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
+    // 新しい記事ごとに、ページから本文を抜く仕事を積む（docs/decisions/content.md の 10）。ここで落ちて積めなくても、読者が開いたときに抜く
     await enqueuePageContents(platform, insertedArticles);
 
     // フィードに今載っているかは、解析できたときだけ記録する。打ち切った場合は、
@@ -258,7 +257,7 @@ async function recordFailedAttempt(
     retries++
   ) {
     // 先行した取得が書き込んだ場合は、その結果から間隔と状態を計算し直す。
-    // 競合が続く場合はクエリの上限に収まるうちに、キューの再試行に任せる。
+    // 競合が続く場合は、数回で諦めてキューの再試行に任せる。
     if (retries > 3) throw new Error(`could not record fetch result for ${feed.id}`);
     const intervalMs = currentFetchInterval(latest, minIntervalMs);
     const errorCount = rateLimited ? latest.errorCount : latest.errorCount + 1;
@@ -391,12 +390,11 @@ function newContentKey(): string {
   return `feed/${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
-/** 新しく入った記事のうち、URL のあるものに、ページから本文を抜く仕事を積む。抜けない版では積まない */
+/** 新しく入った記事のうち、URL のあるものに、ページから本文を抜く仕事を積む */
 async function enqueuePageContents(
-  platform: Pick<Platform, "jobs" | "pageContent">,
+  platform: Pick<Platform, "jobs">,
   inserted: readonly { id: string; url: string | null }[],
 ): Promise<void> {
-  if (platform.pageContent === undefined) return;
   const jobs = inserted
     .filter((article) => article.url !== null)
     .map((article) => ({ type: "extract-page" as const, articleId: article.id }));

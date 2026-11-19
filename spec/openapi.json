@@ -77,16 +77,21 @@
         "properties": {
           "languageDetection": {
             "type": "boolean",
-            "description": "記事の主言語を背景で判定・保存できるか。コンテナ版だけ"
+            "description": "記事の主言語を背景で判定・保存できるか。常に true"
           },
           "pageContent": {
             "type": "boolean",
-            "description": "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。コンテナ版だけ"
+            "description": "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。常に true"
+          },
+          "syncUpdates": {
+            "type": "boolean",
+            "description": "Sendo が WebSocket 通知に対応しているか（GET /sync/updates）。対応前の Sendo はこの項目を返さない"
           }
         },
         "required": [
           "languageDetection",
-          "pageContent"
+          "pageContent",
+          "syncUpdates"
         ]
       },
       "DiscordIntegration": {
@@ -210,6 +215,14 @@
             "format": "date-time",
             "description": "最後に取得を試した時刻"
           },
+          "lastSuccessfulFetchAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "最後に成功した取得（HTTP 304 を含む）を試した時刻。記録がなければ null"
+          },
           "nextFetchAt": {
             "type": "string",
             "format": "date-time"
@@ -300,6 +313,7 @@
           "iconUrl",
           "folderId",
           "lastFetchedAt",
+          "lastSuccessfulFetchAt",
           "nextFetchAt",
           "status",
           "errorCount",
@@ -1478,6 +1492,44 @@
         }
       }
     },
+    "/sync/updates": {
+      "get": {
+        "summary": "受信箱の更新を WebSocket で受け取る",
+        "description": "同じオリジンからセッションのクッキーで接続する。受信箱が変わると {\"type\":\"sync_required\"} が届くので、最後のカーソルから差分を取る。初回の接続時と再接続時にも差分を取る。",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "WebSocket 接続を開始した"
+          },
+          "400": {
+            "description": "切り替えが必要か、ハンドシェイクの形式が不正。通常の HTTP で受けた場合は本文なし",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "有効なブラウザのセッションが必要"
+          },
+          "403": {
+            "description": "公開オリジンと一致しないか、公開オリジンの設定が不正"
+          },
+          "429": {
+            "description": "WebSocket の接続数の上限に達した"
+          },
+          "503": {
+            "description": "サーバーは終了処理中"
+          }
+        }
+      }
+    },
     "/mcp-icon.png": {
       "get": {
         "summary": "MCP サーバーのアイコン",
@@ -1526,7 +1578,7 @@
     "/features": {
       "get": {
         "summary": "この Sendo で使える機能",
-        "description": "Sendo には 2 つの版があり、版によって使える機能が違う（docs/decisions/container.md の 3）。\nクライアントは、これを見て画面を出し分ける。版の名前は返さない（機能ごとに見る）。",
+        "description": "使える機能を返す。今はどの機能も常に使えるので、すべて true を返す。\nsendo-reader の互換のために残している。sendo-reader が使わなくなったら消す（docs/decisions/container.md の 3）。",
         "responses": {
           "200": {
             "description": "使える機能",
@@ -2147,7 +2199,7 @@
     "/articles/{id}/content": {
       "get": {
         "summary": "記事の本文",
-        "description": "記事の本文（HTML）を返す。出どころは 2 つあり、source で選ぶ。\n- feed（既定）：フィードに入っていた本文。記事の hasContent が true のときだけ、取りにいく。\n- page：記事のページから抜いた本文。まだ抜いていなければ、このリクエストの中でページを取りにいって抜く（数秒かかることがある）。使える版だけ（GET /features の pageContent）。抜けなかったら 404（page_content_unavailable）で、1 日たつまで取りにいき直さない。\nHTML は Sendo がサニタイズしてある（決めたタグと属性だけ。スクリプトやスタイルはない）。それでも外部から来たデータなので、クライアントの側でも、信頼できない HTML として扱う。\n本文の中の画像は、中継を通る URL（/api/v1/images?…。オリジンは付けない）に書き換えてある。リンクは絶対の URL。\n本文は、いったん返したらあとから変わらないので、手元に置いてよい。",
+        "description": "記事の本文（HTML）を返す。出どころは 2 つあり、source で選ぶ。\n- feed（既定）：フィードに入っていた本文。記事の hasContent が true のときだけ、取りにいく。\n- page：記事のページから抜いた本文。まだ抜いていなければ、このリクエストの中でページを取りにいって抜く（数秒かかることがある）。抜けなかったら 404（page_content_unavailable）で、1 日たつまで取りにいき直さない。\nHTML は Sendo がサニタイズしてある（決めたタグと属性だけ。スクリプトやスタイルはない）。それでも外部から来たデータなので、クライアントの側でも、信頼できない HTML として扱う。\n本文の中の画像は、中継を通る URL（/api/v1/images?…。オリジンは付けない）に書き換えてある。リンクは絶対の URL。\n本文は、いったん返したらあとから変わらないので、手元に置いてよい。",
         "parameters": [
           {
             "schema": {
@@ -2188,16 +2240,6 @@
           },
           "404": {
             "description": "記事がない（not_found）か、その記事にフィードの本文がない（no_content）か、ページから本文を抜けなかった（page_content_unavailable）",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "この版では、ページから本文を抜けない（feature_unavailable。GET /features を見る）",
             "content": {
               "application/json": {
                 "schema": {

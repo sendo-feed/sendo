@@ -101,7 +101,7 @@ export async function leaseDueFeeds(
   db: Database,
   input: { now: Date; leaseUntil: Date; limit: number },
 ): Promise<string[]> {
-  // D1 は1つの文に渡せる変数が 100 個まで。IN 句と更新値の分を残して上限を設ける
+  // 1 つの文の変数は MAX_BOUND_PARAMETERS（db/chunk.ts）まで。IN 句と更新値の分を残して上限を設ける
   if (input.limit < 1 || input.limit > MAX_LEASE) {
     throw new RangeError(`limit must be between 1 and ${MAX_LEASE}`);
   }
@@ -153,12 +153,14 @@ export async function recordFetchSuccess(
     siteUrl?: string | null;
   },
 ): Promise<Pick<Feed, "id" | "siteUrl" | "iconUrl" | "iconCheckedAt"> | undefined> {
-  return db
+  const sameConnection = input.discord && eq(feeds.discordConnectionId, input.discord.connectionId);
+  const recorded = await db
     .update(feeds)
     .set({
       ...(input.etag !== undefined && { etag: input.etag }),
       ...(input.lastModified !== undefined && { lastModified: input.lastModified }),
       lastFetchedAt: input.now,
+      lastSuccessfulFetchAt: input.now,
       nextFetchAt: input.nextFetchAt,
       fetchIntervalMs: input.fetchIntervalMs,
       errorCount: 0,
@@ -176,13 +178,7 @@ export async function recordFetchSuccess(
       ...(input.title !== undefined && { title: input.title }),
       ...(input.siteUrl !== undefined && { siteUrl: input.siteUrl }),
     })
-    .where(
-      and(
-        eq(feeds.id, id),
-        fetchedBefore(input.now),
-        input.discord && eq(feeds.discordConnectionId, input.discord.connectionId),
-      ),
-    )
+    .where(and(eq(feeds.id, id), fetchedBefore(input.now), sameConnection))
     .returning({
       id: feeds.id,
       siteUrl: feeds.siteUrl,
@@ -190,6 +186,20 @@ export async function recordFetchSuccess(
       iconCheckedAt: feeds.iconCheckedAt,
     })
     .get();
+  if (!recorded) {
+    // 後から始めた試行が先に記録されていても、この成功の時刻は残す。
+    await db
+      .update(feeds)
+      .set({ lastSuccessfulFetchAt: input.now })
+      .where(
+        and(
+          eq(feeds.id, id),
+          sameConnection,
+          or(isNull(feeds.lastSuccessfulFetchAt), lt(feeds.lastSuccessfulFetchAt, input.now)),
+        ),
+      );
+  }
+  return recorded;
 }
 
 /**

@@ -1,7 +1,7 @@
-import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { runJob } from "../../src/jobs";
 import { readOpml } from "../../src/opml";
+import { testDb } from "../db";
 import { FEEDLY_OPML } from "../fixtures/opml";
 import { createTestPlatform, requestApp } from "../helpers";
 
@@ -17,8 +17,8 @@ function postOpml(platform: Parameters<typeof requestApp>[0], body: string, head
 
 describe("OPML の API", () => {
   beforeEach(async () => {
-    await env.DB.exec("DELETE FROM feeds");
-    await env.DB.exec("DELETE FROM folders");
+    await testDb.exec("DELETE FROM feeds");
+    await testDb.exec("DELETE FROM folders");
   });
 
   it("インポートを受け付け、ジョブを実行すると購読とフォルダが揃い、書き出せる", async () => {

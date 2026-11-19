@@ -233,7 +233,7 @@ const DEFAULTS = { timeoutMs: 10_000, maxBytes: 500 * 1024, maxRedirects: 5 };
  * オリジンの robots.txt を取りにいく。例外は投げない（届かなければ unreachable）。
  *
  * - フィードと同じ守り：toFetchableUrl、リダイレクトごとの確認、時間の上限。接続する IP の確認は、
- *   緩衝層の fetch（コンテナ版の platform/node/safe-fetch.ts）が行う
+ *   緩衝層の fetch（platform/node/safe-fetch.ts）が行う
  * - 最初の maxBytes だけを読み、そこで切れた最後の行は捨てる
  * - 2xx は読む。429 を除く 4xx はない（すべて許可）。429、5xx と届かないときは unreachable（すべて不許可）。
  *   429 は、回数を減らしてほしいというサイトの知らせなので、Google と同じく 5xx と同じに扱う
@@ -296,7 +296,7 @@ type CacheEntry = { result: RobotsTxt; expiresAt: number };
 
 /**
  * robots.txt の結果を、オリジン（スキーム、ホスト、ポート）ごとに、プロセスのメモリに置く。
- * コンテナ版は 1 つのプロセスで動く（docs/decisions/container.md の 7）ので、DB には置かない
+ * Sendo は 1 つのプロセスで動く（docs/decisions/container.md の 7）ので、DB には置かない
  */
 type RobotsContext = { fetch: typeof fetch; now: Date; signal?: AbortSignal };
 

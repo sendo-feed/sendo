@@ -1,12 +1,12 @@
 /**
- * 記事のページの本文（docs/decisions/content.md の 10〜18）。コンテナ版では、取り込んだときに抜く仕事
- * （extract-page）が抜き、読者が開いたときにまだ抜いていなければ、そのリクエストの中で抜く。
+ * 記事のページの本文（docs/decisions/content.md の 10〜18）。取り込んだときに抜く仕事（extract-page）が
+ * 抜き、読者が開いたときにまだ抜いていなければ、そのリクエストの中で抜く。
  * サニタイズした本文は、DB の行に入れる（置き場には置かない）。結果は全員で共有する。
  *
- * 抜く処理は緩衝層（platform.pageContent）が持つ。持っていない版（Cloudflare 版）では呼ばない。
+ * 抜く処理は緩衝層（platform.pageContent。Rust）が持つ。
  *
  * ページを取りにいくときは、同じホストへは 1 本ずつにし（決定の 17）、robots.txt を守る（決定の 18）。
- * どちらの状態も、プロセスのメモリに持つ（コンテナ版は 1 つのプロセスで動く）。
+ * どちらの状態も、プロセスのメモリに持つ（Sendo は 1 つのプロセスで動く）。
  */
 import { getArticlePageUrl } from "../db/articles";
 import { MAX_CONTENT_BYTES } from "../db/content";

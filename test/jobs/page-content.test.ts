@@ -12,8 +12,8 @@ import type { PageContentExtractor, Platform } from "../../src/platform";
 import { createTestPlatform, createUser, fakeFetch, requestApp, subscribeFeed } from "../helpers";
 
 /*
- * 記事のページの本文（docs/decisions/content.md の 10〜15）。抜く処理（Rust）はコンテナ版だけが持つので、
- * ここでは差し替えて、2 つの版で共有する部分（仕事、D1 での読み書き、API）を確かめる。
+ * 記事のページの本文（docs/decisions/content.md の 10〜15）。抜く処理（Rust）は差し替えて、
+ * それ以外（仕事、DB での読み書き、API）を確かめる。Rust の処理は test/platform/node/ で確かめる。
  */
 
 const PAGE_HTML = "<html><body><article><p>ページの本文</p></article></body></html>";
@@ -36,9 +36,7 @@ function fakeExtractor(html: string | null) {
   return { extractor, calls };
 }
 
-async function setUp(
-  options: { extracted?: string | null; pageContent?: boolean; feedContent?: string } = {},
-) {
+async function setUp(options: { extracted?: string | null; feedContent?: string } = {}) {
   const user = await createUser();
   let now = new Date();
   const link = `https://${crypto.randomUUID()}.example.com/posts/1`;
@@ -55,7 +53,7 @@ async function setUp(
   const overrides: Partial<Platform> = {
     fetch: fetched.fetch,
     now: () => now,
-    ...(options.pageContent !== false && { pageContent: page.extractor }),
+    pageContent: page.extractor,
   };
   const { platform, enqueued } = createTestPlatform(overrides);
   const feed = await subscribeFeed(platform, { userId: user.id });
@@ -151,11 +149,6 @@ describe("取り込んだときに抜く", () => {
   it("取得の仕事は、新しい記事ごとに、ページから抜く仕事を積む", async () => {
     const t = await setUp();
     expect(t.enqueued).toContainEqual({ type: "extract-page", articleId: t.article.id });
-  });
-
-  it("ページから抜けない版（Cloudflare 版）では、抜く仕事を積まない", async () => {
-    const t = await setUp({ pageContent: false });
-    expect(t.enqueued.filter((job) => job.type === "extract-page")).toEqual([]);
   });
 
   it("抜く仕事は、抜いてサニタイズした本文を行に入れる。2 回目は取りにいかない", async () => {
@@ -356,27 +349,13 @@ describe("開いたときに抜く（API）", () => {
     expect(t.pageFetches()).toBe(0);
   });
 
-  it("抜く処理を持たない版（Cloudflare 版）では 501 を返し、使える機能の一覧でも false", async () => {
-    const t = await setUp({ pageContent: false });
-
-    const res = await requestApp(
-      t.platform,
-      `/api/v1/articles/${t.article.id}/content?source=page`,
-      {
-        token: t.user.token,
-      },
-    );
-    expect(res.status).toBe(501);
-    expect(await res.json()).toMatchObject({ error: { code: "feature_unavailable" } });
-    expect(t.pageFetches()).toBe(0);
-
-    const features = await requestApp(t.platform, "/api/v1/features", { token: t.user.token });
-    expect(await features.json()).toEqual({ pageContent: false, languageDetection: false });
-  });
-
-  it("抜く処理を持つ版（コンテナ版）では、使える機能の一覧で true", async () => {
+  it("使える機能の一覧（互換のために残す）は、常に true を返す", async () => {
     const t = await setUp();
     const features = await requestApp(t.platform, "/api/v1/features", { token: t.user.token });
-    expect(await features.json()).toEqual({ pageContent: true, languageDetection: false });
+    expect(await features.json()).toEqual({
+      pageContent: true,
+      languageDetection: true,
+      syncUpdates: true,
+    });
   });
 });

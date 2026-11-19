@@ -39,6 +39,18 @@ export const BACKFILL_DAYS = 30;
 
 const ua = userArticles;
 
+export type InboxNotifier = (userIds: readonly string[]) => Promise<void>;
+
+/** 通知は同期を始める合図。届かなくても、書いた変更は次の差分同期で取り直せる。 */
+async function notifyInbox(notify: InboxNotifier | undefined, userIds: readonly string[]) {
+  if (!notify || userIds.length === 0) return;
+  try {
+    await notify(userIds);
+  } catch {
+    console.warn("could not notify inbox changes");
+  }
+}
+
 /** 列の名前を、INSERT の列の並びに書く形にする */
 const columns = (...names: string[]) =>
   sql.join(
@@ -64,9 +76,13 @@ const INBOX_COLUMNS = columns(
  * 今（DB の時計）と同じミリ秒の記事まで配り、記録は 1 ミリ秒前までにする。同じミリ秒に
  * ほかの取得が入れた記事は、次に配り直す（同じ行は飛ばす）。
  */
-export async function deliverNewArticles(db: Database, input: { feedId: string }): Promise<void> {
+export async function deliverNewArticles(
+  db: Database,
+  input: { feedId: string },
+  notify?: InboxNotifier,
+): Promise<void> {
   const upTo = (await dbNow(db)).getTime();
-  await db.run(sql`
+  const insert = sql`
     insert into ${ua} (${INBOX_COLUMNS})
     select ${subscriptions.userId}, ${articles.id}, ${articles.feedId}, ${articles.publishedAt},
       ${DB_NOW_MS}, ${nextSeq(ua)}, ${nextSeq(ua)}
@@ -78,7 +94,15 @@ export async function deliverNewArticles(db: Database, input: { feedId: string }
         (select ${feeds.deliveredUntil} from ${feeds} where ${feeds.id} = ${input.feedId}), -1)
       and ${articles.createdAt} <= ${upTo}
     on conflict do nothing
-  `);
+  `;
+  if (notify) {
+    const delivered = await db.all<{ userId: string }>(
+      sql`${insert} returning ${sql.identifier("user_id")} as "userId"`,
+    );
+    await notifyInbox(notify, [...new Set(delivered.map(({ userId }) => userId))]);
+  } else {
+    await db.run(insert);
+  }
   await db
     .update(feeds)
     .set({
@@ -312,6 +336,7 @@ export async function setArticleState(
     starred?: boolean | undefined;
     now: Date;
   },
+  notify?: InboxNotifier,
 ): Promise<InboxArticle | undefined> {
   const now = input.now.getTime();
   const set: { readAt?: SQL | null; starredAt?: SQL | null; seq?: SQL; readSeq?: SQL } = {};
@@ -333,6 +358,7 @@ export async function setArticleState(
       .returning({ articleId: ua.articleId })
       .get();
     if (!updated) return undefined;
+    await notifyInbox(notify, [input.userId]);
   }
   return getInboxArticle(db, { userId: input.userId, articleId: input.articleId });
 }
@@ -354,7 +380,7 @@ export type MarkReadScope =
   | ({ folderId: string } & MarkReadBoundary)
   | ({ all: true } & MarkReadBoundary);
 
-/** IN 句に並べられる記事の ID の数。D1 の変数の上限（100）から、ほかの条件の分を残す */
+/** IN 句に並べられる記事の ID の数。1 文の変数の数（db/chunk.ts の MAX_BOUND_PARAMETERS）から、ほかの条件の分を残す */
 export const MAX_MARK_READ_IDS = 90;
 
 /**
@@ -367,6 +393,7 @@ export const MAX_MARK_READ_IDS = 90;
 export async function markArticlesRead(
   db: Database,
   input: { userId: string; scope: MarkReadScope; now: Date },
+  notify?: InboxNotifier,
 ): Promise<number> {
   const { scope } = input;
   const conditions: SQL[] = [eq(ua.userId, input.userId), isNull(ua.readAt)];
@@ -404,6 +431,7 @@ export async function markArticlesRead(
     .where(and(...conditions))
     .returning({ id: ua.articleId })
     .all();
+  if (updated.length > 0) await notifyInbox(notify, [input.userId]);
   return updated.length;
 }
 
@@ -425,6 +453,7 @@ export async function setArticlesState(
     starred?: boolean | undefined;
     now: Date;
   },
+  notify?: InboxNotifier,
 ): Promise<number> {
   if (input.read === undefined && input.starred === undefined) return 0;
   const now = input.now.getTime();
@@ -451,14 +480,18 @@ export async function setArticlesState(
           ),
         );
   let updated = 0;
-  for (const match of chunks) {
-    const rows = await db
-      .update(ua)
-      .set(set)
-      .where(and(eq(ua.userId, input.userId), match))
-      .returning({ articleId: ua.articleId })
-      .all();
-    updated += rows.length;
+  try {
+    for (const match of chunks) {
+      const rows = await db
+        .update(ua)
+        .set(set)
+        .where(and(eq(ua.userId, input.userId), match))
+        .returning({ articleId: ua.articleId })
+        .all();
+      updated += rows.length;
+    }
+  } finally {
+    if (updated > 0) await notifyInbox(notify, [input.userId]);
   }
   return updated;
 }
