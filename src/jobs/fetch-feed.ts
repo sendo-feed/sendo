@@ -64,7 +64,15 @@ export type FetchFeedOutcome =
 export async function runFetchFeed(
   platform: Pick<
     Platform,
-    "db" | "content" | "fetch" | "now" | "fetchConfig" | "retentionConfig" | "jobs" | "discord"
+    | "db"
+    | "content"
+    | "fetch"
+    | "now"
+    | "fetchConfig"
+    | "retentionConfig"
+    | "jobs"
+    | "discord"
+    | "syncUpdates"
   >,
   feedId: string,
 ): Promise<FetchFeedOutcome> {
@@ -93,7 +101,7 @@ export async function runFetchFeed(
 
     if (result.status === "not-modified") {
       // 前回の取得が、受信箱に配る途中で落ちていた場合に備えて、配り直しを試みる
-      await deliverNewArticles(db, { feedId: feed.id });
+      await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
       // 新しい記事がなくても、時間がたった分だけペースは落ちているので、間隔を決め直す
       const nextIntervalMs = await nextFetchInterval(db, {
         feedId: feed.id,
@@ -128,7 +136,7 @@ export async function runFetchFeed(
     );
     if (!canStore) {
       // 前回の取り込みが配布の前で落ちていても、確保済みの受信箱の容量で配り切れる。
-      await deliverNewArticles(db, { feedId: feed.id });
+      await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
       await platform.jobs.enqueue([{ type: "clean-up" }]);
       return { status: "storage-full" };
     }
@@ -146,7 +154,7 @@ export async function runFetchFeed(
     // 行に入った名前の書き留めを消す。入らなかった名前は残り、1 日 1 回の片付けが本文を消す
     await clearUsedContentNotes(db, storedContents.keys);
     // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
-    await deliverNewArticles(db, { feedId: feed.id });
+    await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
     // 新しい記事ごとに、ページから本文を抜く仕事を積む（docs/decisions/content.md の 10）。ここで落ちて積めなくても、読者が開いたときに抜く
     await enqueuePageContents(platform, insertedArticles);
 

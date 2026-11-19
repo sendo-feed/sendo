@@ -7,7 +7,7 @@
   "type": "module",
   "packageManager": "pnpm@11.28.10",
   "engines": {
-    "node": ">=22.12"
+    "node": "^22.21.0 || >=24.9.0"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -29,6 +29,7 @@
     "@biomejs/biome": "2.6.4",
     "@modelcontextprotocol/client": "2.4.0",
     "@types/node": "24.19.2",
+    "@types/ws": "8.18.2",
     "drizzle-kit": "0.31.11",
     "esbuild": "0.28.2",
     "tsx": "4.23.15",
@@ -45,6 +46,7 @@
     "feedsmith": "3.0.1",
     "hono": "4.13.16",
     "undici": "8.12.3",
+    "ws": "8.21.0",
     "zod": "4.6.7"
   }
 }

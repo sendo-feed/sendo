@@ -82,11 +82,16 @@
           "pageContent": {
             "type": "boolean",
             "description": "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。常に true"
+          },
+          "syncUpdates": {
+            "type": "boolean",
+            "description": "Sendo が WebSocket 通知に対応しているか（GET /sync/updates）。対応前の Sendo はこの項目を返さない"
           }
         },
         "required": [
           "languageDetection",
-          "pageContent"
+          "pageContent",
+          "syncUpdates"
         ]
       },
       "DiscordIntegration": {
@@ -1483,6 +1488,44 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/sync/updates": {
+      "get": {
+        "summary": "受信箱の更新を WebSocket で受け取る",
+        "description": "同じオリジンからセッションのクッキーで接続する。受信箱が変わると {\"type\":\"sync_required\"} が届くので、最後のカーソルから差分を取る。初回の接続時と再接続時にも差分を取る。",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "WebSocket 接続を開始した"
+          },
+          "400": {
+            "description": "切り替えが必要か、ハンドシェイクの形式が不正。通常の HTTP で受けた場合は本文なし",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "有効なブラウザのセッションが必要"
+          },
+          "403": {
+            "description": "公開オリジンと一致しないか、公開オリジンの設定が不正"
+          },
+          "429": {
+            "description": "WebSocket の接続数の上限に達した"
+          },
+          "503": {
+            "description": "サーバーは終了処理中"
           }
         }
       }

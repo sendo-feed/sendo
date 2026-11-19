@@ -16,6 +16,7 @@ import {
   type LanguageDetector,
   type PageContentExtractor,
   type Platform,
+  type SyncUpdates,
 } from "../src/platform";
 import { createFileObjectStore } from "../src/platform/node/file-store";
 import { createSqliteArticleSearch } from "../src/platform/sqlite/article-search";
@@ -81,6 +82,14 @@ export const unusedNative = {
   languageDetection: unusedLanguageDetection,
 };
 
+/** 実際の HTTP 接続を使わないテストの通知。 */
+export const unusedSyncUpdates: SyncUpdates = {
+  async connect() {
+    throw new Error("WebSocket server is not set up in this test");
+  },
+  async notify() {},
+};
+
 /** テスト用の Platform。DB はテストファイルの SQLite（test/db.ts）、キューと fetch は差し替える */
 export function createTestPlatform(overrides: Partial<Platform> = {}) {
   const enqueued: Job[] = [];
@@ -93,6 +102,7 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
       }),
     );
   const platform: Platform = {
+    syncUpdates: unusedSyncUpdates,
     db,
     articleSearch: createSqliteArticleSearch(db),
     jobs: {

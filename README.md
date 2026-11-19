@@ -78,7 +78,7 @@ docker compose pull && docker compose up -d
 
 必要なもの：
 
-- Node.js 22.12 以上（CI は [.node-version](.node-version) のバージョンで動かす）
+- Node.js 22.21 以上の 22 系、または 24.9 以上（CI は [.node-version](.node-version) のバージョンで動かす）
 - pnpm（バージョンは [package.json](package.json) の `packageManager` で固定している）
 - Rust（ページの本文の抽出や言語の判定などの重い処理。rustup を入れておけば、[rust-toolchain.toml](rust-toolchain.toml) の版が自動で使われる）
 

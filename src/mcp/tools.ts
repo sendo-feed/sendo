@@ -676,12 +676,16 @@ export function createMcpServer(
     },
     async ({ ids, read }) =>
       result({
-        updated: await setArticlesState(db, {
-          userId,
-          target: { articleIds: ids },
-          read: read ?? true,
-          now: platform.now(),
-        }),
+        updated: await setArticlesState(
+          db,
+          {
+            userId,
+            target: { articleIds: ids },
+            read: read ?? true,
+            now: platform.now(),
+          },
+          platform.syncUpdates.notify,
+        ),
       }),
   );
 
@@ -700,12 +704,16 @@ export function createMcpServer(
     },
     async ({ ids, starred }) =>
       result({
-        updated: await setArticlesState(db, {
-          userId,
-          target: { articleIds: ids },
-          starred: starred ?? true,
-          now: platform.now(),
-        }),
+        updated: await setArticlesState(
+          db,
+          {
+            userId,
+            target: { articleIds: ids },
+            starred: starred ?? true,
+            now: platform.now(),
+          },
+          platform.syncUpdates.notify,
+        ),
       }),
   );
 
