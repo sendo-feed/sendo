@@ -35,7 +35,7 @@ Sendo は、コンテナ（Node ＋ SQLite）だけで動かす（[テックス�
 
 10. **上流のリポジトリの CI がイメージを作り、GHCR（`ghcr.io/sendo-feed/sendo`）に置く。使う人は fork しない。**
     - 標準構成では、手元に `compose.yaml` と `.env` を置き、配布済みイメージで動かす。上流の更新は `docker compose pull` で取り込み、コンテナを作り直す。新しいコンテナが起動するときにマイグレーションを当てる（5）
-    - X の埋め込みを有効にする場合は、reader とホスト名が異なる HTTPS オリジンで隔離フレーム用の静的ページを配信する。配信元を指定した reader イメージをビルドして Compose で使い、reader の更新時もビルドし直す。隔離フレームの静的ファイルや配信用ヘッダーに変更があれば、同じ版の `apps/web/x-embed/` を別ホストへ再配信する。開いたままの reader のため、投稿 ID の渡し方や高さ通知は旧版とも互換に保つ。互換性を変える場合は新しい配信元のホストを用意する。配信先を移す場合は、開いたままの旧 reader が使えるように旧ホストの配信も続ける。Sendo は `docker compose pull sendo` で更新してから、Compose でコンテナを作り直す。配備後は、対応版の Sendo が保存した本文をオンラインで開き、投稿 ID が一意に決まる X の引用で公式ウィジェットが表示されることと、専用ホストの HTTPS 応答に所定の CSP が付くことを確認する。[reader のコンテナ構成の 2](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md#決定)
+    - X の埋め込みを有効にする場合は、reader とホスト名が異なる HTTPS オリジンで隔離フレーム用の静的ページを配信する。配信元を指定した reader イメージをビルドして Compose で使い、reader の更新時もビルドし直す。隔離フレームの静的ファイルや配信用ヘッダーに変更があれば、同じ版の `apps/web/x-embed/` を別ホストへ再配信する。開いたままの reader のため、投稿 ID の渡し方や高さ通知は旧版とも互換に保つ。互換性を変える場合は新しい配信元のホストを用意する。配信先を移す場合は、開いたままの旧 reader や、Service Worker のキャッシュから起動する旧 reader が使えるように旧ホストの配信も続ける。Sendo は `docker compose pull sendo` で更新してから、Compose でコンテナを作り直す。配備後は、対応版の Sendo が保存した本文をオンラインで開き、投稿 ID が一意に決まる X の引用で公式ウィジェットが表示されることと、専用ホストの HTTPS 応答に所定の CSP が付くことを確認する。[reader のコンテナ構成の 2](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md#決定)
     - `main` に変更が入るたびに、`main` のタグを付けて出す。版を切るようになったら、版のタグ（`1.2.3`、`1.2`）と `latest` も付ける
     - amd64 と arm64 の両方で作る。Rust のネイティブのモジュールも、それぞれの CPU 向けにビルドしてイメージに入れる
     - イメージは公開する。使う人は `docker login` せずに取ってこられる
