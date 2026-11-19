@@ -3,6 +3,7 @@ import { ensureFolders } from "../db/folders";
 import { backfillInbox } from "../db/inbox";
 import { assignFolderIfMissing, subscribeMany } from "../db/subscriptions";
 import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
+import { notifySync } from "../lib/sync-notify";
 import type { OpmlEntry } from "../opml";
 import type { Platform } from "../platform";
 
@@ -87,6 +88,6 @@ export async function runImportFeeds(
     );
   }
   // 購読、フォルダ、受信箱を変えたので、開いている画面に知らせる（docs/decisions/sync.md の 9）
-  if (rows.length > 0) await platform.syncUpdates.notify([userId]);
+  if (rows.length > 0) await notifySync(platform.syncUpdates.notify, [userId]);
   return { subscribed: subscribed.size };
 }

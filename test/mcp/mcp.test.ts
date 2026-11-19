@@ -709,6 +709,22 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     expect(recording.notified).toEqual([user.id, user.id, user.id]);
   });
 
+  it("mark_read と star は、受信箱の記事を指したときだけ、開いている画面に知らせる", async () => {
+    const { platform, token, user, a1 } = await setup(["read", "write"]);
+    const recording = recordingSyncUpdates();
+    platform.syncUpdates = recording.syncUpdates;
+    const { client } = await connect(platform, token, era);
+
+    await client.callTool({ name: "mark_read", arguments: { ids: [a1] } });
+    expect(recording.notified).toEqual([user.id]);
+    // 受信箱にない記事だけなら、何も変えないので知らせない
+    await client.callTool({ name: "star", arguments: { ids: ["missing"] } });
+    expect(recording.notified).toEqual([user.id]);
+
+    await client.callTool({ name: "star", arguments: { ids: [a1] } });
+    expect(recording.notified).toEqual([user.id, user.id]);
+  });
+
   it("取得してはいけない URL は購読せず、エラーの結果を返す", async () => {
     const { platform, token } = await setup(["read", "write"]);
     const { client } = await connect(platform, token, era);

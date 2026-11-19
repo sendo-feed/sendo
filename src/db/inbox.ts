@@ -14,6 +14,7 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
+import { notifySync, type SyncNotifier } from "../lib/sync-notify";
 import type { Database } from ".";
 import { chunked } from "./chunk";
 import { DB_NOW_MS, dbNow } from "./clock";
@@ -38,18 +39,6 @@ export const BACKFILL_PER_FEED = 50;
 export const BACKFILL_DAYS = 30;
 
 const ua = userArticles;
-
-export type InboxNotifier = (userIds: readonly string[]) => Promise<void>;
-
-/** 通知は同期を始める合図。届かなくても、書いた変更は次の差分同期で取り直せる。 */
-async function notifyInbox(notify: InboxNotifier | undefined, userIds: readonly string[]) {
-  if (!notify || userIds.length === 0) return;
-  try {
-    await notify(userIds);
-  } catch {
-    console.warn("could not notify inbox changes");
-  }
-}
 
 /** 列の名前を、INSERT の列の並びに書く形にする */
 const columns = (...names: string[]) =>
@@ -79,7 +68,7 @@ const INBOX_COLUMNS = columns(
 export async function deliverNewArticles(
   db: Database,
   input: { feedId: string },
-  notify?: InboxNotifier,
+  notify?: SyncNotifier,
 ): Promise<void> {
   const upTo = (await dbNow(db)).getTime();
   const insert = sql`
@@ -99,7 +88,7 @@ export async function deliverNewArticles(
     const delivered = await db.all<{ userId: string }>(
       sql`${insert} returning ${sql.identifier("user_id")} as "userId"`,
     );
-    await notifyInbox(notify, [...new Set(delivered.map(({ userId }) => userId))]);
+    await notifySync(notify, [...new Set(delivered.map(({ userId }) => userId))]);
   } else {
     await db.run(insert);
   }
@@ -336,7 +325,6 @@ export async function setArticleState(
     starred?: boolean | undefined;
     now: Date;
   },
-  notify?: InboxNotifier,
 ): Promise<InboxArticle | undefined> {
   const now = input.now.getTime();
   const set: { readAt?: SQL | null; starredAt?: SQL | null; seq?: SQL; readSeq?: SQL } = {};
@@ -358,7 +346,6 @@ export async function setArticleState(
       .returning({ articleId: ua.articleId })
       .get();
     if (!updated) return undefined;
-    await notifyInbox(notify, [input.userId]);
   }
   return getInboxArticle(db, { userId: input.userId, articleId: input.articleId });
 }
@@ -393,7 +380,6 @@ export const MAX_MARK_READ_IDS = 90;
 export async function markArticlesRead(
   db: Database,
   input: { userId: string; scope: MarkReadScope; now: Date },
-  notify?: InboxNotifier,
 ): Promise<number> {
   const { scope } = input;
   const conditions: SQL[] = [eq(ua.userId, input.userId), isNull(ua.readAt)];
@@ -431,7 +417,6 @@ export async function markArticlesRead(
     .where(and(...conditions))
     .returning({ id: ua.articleId })
     .all();
-  if (updated.length > 0) await notifyInbox(notify, [input.userId]);
   return updated.length;
 }
 
@@ -453,7 +438,6 @@ export async function setArticlesState(
     starred?: boolean | undefined;
     now: Date;
   },
-  notify?: InboxNotifier,
 ): Promise<number> {
   if (input.read === undefined && input.starred === undefined) return 0;
   const now = input.now.getTime();
@@ -480,18 +464,14 @@ export async function setArticlesState(
           ),
         );
   let updated = 0;
-  try {
-    for (const match of chunks) {
-      const rows = await db
-        .update(ua)
-        .set(set)
-        .where(and(eq(ua.userId, input.userId), match))
-        .returning({ articleId: ua.articleId })
-        .all();
-      updated += rows.length;
-    }
-  } finally {
-    if (updated > 0) await notifyInbox(notify, [input.userId]);
+  for (const match of chunks) {
+    const rows = await db
+      .update(ua)
+      .set(set)
+      .where(and(eq(ua.userId, input.userId), match))
+      .returning({ articleId: ua.articleId })
+      .all();
+    updated += rows.length;
   }
   return updated;
 }

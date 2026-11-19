@@ -7,7 +7,7 @@ import { defaultHook } from "./hook";
 const updatesRoute = createRoute({
   method: "get",
   path: "/sync/updates",
-  summary: "受信箱の更新を WebSocket で受け取る",
+  summary: "同期の対象の変化を WebSocket で受け取る",
   description: [
     '同じオリジンからセッションのクッキーで接続する。人ごとの同期の対象が変わると {"type":"sync_required"} が届くので、最後のカーソルから差分を取る。初回の接続時と再接続時にも差分を取る。クライアントからはメッセージを送らない（docs/decisions/sync.md の 9）。',
     "",
