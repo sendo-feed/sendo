@@ -603,7 +603,8 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
         } else {
             root.is(REGION)
         };
-    let wrapped_embeds = root.is(ARTICLE_BODY) && !Selection::from(*boundary).is("body");
+    let explicit_body = root.is(ARTICLE_BODY);
+    let wrapped_embeds = explicit_body && !Selection::from(*boundary).is("body");
     let branches = std::iter::once(root.clone())
         .chain(ancestors.nodes().iter().map(|node| Selection::from(*node)));
     for branch in branches.take_while(|branch| branch.nodes()[0].id != boundary.id) {
@@ -628,11 +629,11 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                 // 記事を囲む要素を特定できないときは、直接並ぶ埋め込みだけを引き継ぐ。
                 if direct_embeds
                     && !sibling.is(EMBED_BLOCK)
-                    && !(wrapped_embeds && is_embed_wrapper(&sibling))
+                    && !((wrapped_embeds || sibling.is("a[href]")) && is_embed_wrapper(&sibling))
                 {
                     break;
                 }
-                if has_post_embed(&sibling, base) && !has_site_chrome(&sibling) {
+                if has_post_embed(&sibling, base) && !has_site_chrome(&sibling, explicit_body) {
                     leading.push(sibling);
                 }
             }
@@ -647,7 +648,8 @@ fn is_embed_wrapper(block: &Selection<'_>) -> bool {
     if block.is(EMBED_BLOCK) {
         return true;
     }
-    if !block.is("div, span") {
+    let image_link = block.is("a[href]");
+    if !image_link && !block.is("div, span") {
         return false;
     }
     let mut has_embed = false;
@@ -660,7 +662,12 @@ fn is_embed_wrapper(block: &Selection<'_>) -> bool {
             if child.is("br, hr") {
                 continue;
             }
-            if !is_embed_wrapper(&child) {
+            let allowed = if image_link {
+                child.is("img, picture")
+            } else {
+                is_embed_wrapper(&child)
+            };
+            if !allowed {
                 return false;
             }
             has_embed = true;
@@ -670,7 +677,7 @@ fn is_embed_wrapper(block: &Selection<'_>) -> bool {
 }
 
 // 記事や節を囲む header / footer は導入や出典になりうる。文書全体のものだけを除く。
-fn has_site_chrome(block: &Selection<'_>) -> bool {
+fn has_site_chrome(block: &Selection<'_>, explicit_body: bool) -> bool {
     const CHROME: &str = "header, footer, [role~=banner], [role~=contentinfo]";
     block
         .nodes()
@@ -680,8 +687,13 @@ fn has_site_chrome(block: &Selection<'_>) -> bool {
         .any(|node| {
             let region = Selection::from(*node);
             let ancestors = region.ancestors(Some(128));
+            let article_intro =
+                explicit_body && region.is("header") && ancestors.is("main, [role~=main]");
             region.is("[role~=banner], [role~=contentinfo]")
-                || (!ancestors.is(REGION) && !ancestors.is(ARTICLE_BODY) && !ancestors.is(ARTICLE))
+                || (!article_intro
+                    && !ancestors.is(REGION)
+                    && !ancestors.is(ARTICLE_BODY)
+                    && !ancestors.is(ARTICLE))
         })
 }
 
@@ -993,6 +1005,36 @@ mod tests {
         );
         assert_eq!(lead.len(), 1);
         assert_eq!(lead[0].text().trim(), "本文の引用");
+    }
+
+    #[test]
+    fn keeps_a_main_header_but_excludes_an_explicit_banner() {
+        let doc = Document::from(
+            r#"<div role="main"><header role="banner note"><blockquote class="twitter-tweet">サイトの引用</blockquote></header>
+            <header><blockquote class="twitter-tweet">本文の引用</blockquote></header>
+            <div itemprop="articleBody">本文</div></div>"#,
+        );
+        let lead = leading_embeds(
+            &doc.select("[itemprop=articleBody]"),
+            "https://blog.example/post",
+        );
+        assert_eq!(lead.len(), 1);
+        assert_eq!(lead[0].text().trim(), "本文の引用");
+    }
+
+    #[test]
+    fn keeps_an_imgur_photo_in_its_link_before_the_article_body() {
+        let doc = Document::from(
+            r#"<div><a href="/related"><img src="https://i.imgur.com/related.jpeg">別の記事</a>
+            <a href="/photo"><img src="https://i.imgur.com/lead.jpeg"></a>
+            <div itemprop="articleBody">本文</div></div>"#,
+        );
+        let lead = leading_embeds(
+            &doc.select("[itemprop=articleBody]"),
+            "https://blog.example/post",
+        );
+        assert_eq!(lead.len(), 1);
+        assert_eq!(lead[0].attr("href").as_deref(), Some("/photo"));
     }
 
     #[test]
