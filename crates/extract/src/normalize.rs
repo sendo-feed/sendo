@@ -102,63 +102,67 @@ fn placeholder(url: &str) -> bool {
     .iter()
     .any(|x| u.contains(x))
 }
-pub(crate) fn normalize(html: &str, base: &str) -> String {
-    let doc = Document::from(html);
-    for node in doc.select("img").nodes() {
-        let im = Selection::from(*node);
-        let original = im.attr("src").map(|x| x.to_string());
-        let mut choice = None;
-        for name in ["data-srcset", "srcset"] {
+pub(crate) fn normalized_image_url(im: &Selection<'_>, base: &str) -> Option<String> {
+    let original = im.attr("src").map(|x| x.to_string());
+    let mut choice = None;
+    for name in ["data-srcset", "srcset"] {
+        if let Some(v) = im.attr(name)
+            && let Some(u) = best_srcset(&v, base)
+        {
+            choice = Some((u, name));
+            break;
+        }
+    }
+    if choice.is_none() {
+        for name in ["data-src", "data-original", "data-lazy-src"] {
             if let Some(v) = im.attr(name)
-                && let Some(u) = best_srcset(&v, base)
+                && let Some(u) = http(&v, base)
+                && !placeholder(&u)
             {
                 choice = Some((u, name));
                 break;
             }
         }
-        if choice.is_none() {
-            for name in ["data-src", "data-original", "data-lazy-src"] {
-                if let Some(v) = im.attr(name)
-                    && let Some(u) = http(&v, base)
-                    && !placeholder(&u)
+    }
+    if choice.is_none()
+        && let Some(v) = &original
+        && let Some(u) = http(v, base)
+        && !placeholder(&u)
+    {
+        choice = Some((u, "src"));
+    }
+    if choice.is_none() {
+        let parent = im.parent();
+        if parent
+            .nodes()
+            .first()
+            .and_then(|n| n.node_name())
+            .map(|x| x.to_string())
+            .as_deref()
+            == Some("picture")
+        {
+            for node in parent.select("source[srcset]").nodes() {
+                let source = Selection::from(*node);
+                if source.attr("media").is_some() {
+                    continue;
+                }
+                if let Some(v) = source.attr("srcset")
+                    && let Some(u) = best_srcset(&v, base)
                 {
-                    choice = Some((u, name));
+                    choice = Some((u, "picture"));
                     break;
                 }
             }
         }
-        if choice.is_none()
-            && let Some(v) = &original
-            && let Some(u) = http(v, base)
-            && !placeholder(&u)
-        {
-            choice = Some((u, "src"));
-        }
-        if choice.is_none() {
-            let parent = im.parent();
-            if parent
-                .nodes()
-                .first()
-                .and_then(|n| n.node_name())
-                .map(|x| x.to_string())
-                .as_deref()
-                == Some("picture")
-            {
-                for node in parent.select("source[srcset]").nodes() {
-                    let source = Selection::from(*node);
-                    if source.attr("media").is_some() {
-                        continue;
-                    }
-                    if let Some(v) = source.attr("srcset")
-                        && let Some(u) = best_srcset(&v, base)
-                    {
-                        choice = Some((u, "picture"));
-                        break;
-                    }
-                }
-            }
-        }
-        if let Some((url, _reason)) = choice {
+    }
+    choice.map(|(url, _reason)| url)
+}
+
+pub(crate) fn normalize(html: &str, base: &str) -> String {
+    let doc = Document::from(html);
+    for node in doc.select("img").nodes() {
+        let im = Selection::from(*node);
+        if let Some(url) = normalized_image_url(&im, base) {
             im.set_attr("src", &url);
             im.remove_attrs(&[
                 "srcset",

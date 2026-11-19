@@ -48,7 +48,12 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
     if !doc.select(IMGUR_LINK).exists() {
         return Vec::new();
     }
-    let mut images = doc.select("img[src]").nodes().to_vec();
+    let mut images: Vec<_> = doc
+        .select("img[src]")
+        .nodes()
+        .iter()
+        .filter_map(|node| Some((node.id, imgur_resource(&node.attr("src")?, base)?)))
+        .collect();
     let mut templates = doc.select("template").nodes().to_vec();
     // template の中身は文書とは別の木にあるので、ふつうのセレクタからは見えない。
     while let Some(template) = templates.pop() {
@@ -58,7 +63,14 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
         if let Some(fragment) = fragment.and_then(|id| doc.tree.get(&id)) {
             for node in fragment.descendants_it() {
                 match node.node_name().as_deref() {
-                    Some("img") => images.push(node),
+                    Some("img") => {
+                        let image = Selection::from(node);
+                        if let Some(url) = crate::normalize::normalized_image_url(&image, base)
+                            .and_then(|src| imgur_resource(&src, base))
+                        {
+                            images.push((node.id, url));
+                        }
+                    }
                     Some("template") => templates.push(node),
                     _ => {}
                 }
@@ -66,9 +78,6 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
         }
     }
     images
-        .into_iter()
-        .filter_map(|node| Some((node.id, imgur_resource(&node.attr("src")?, base)?)))
-        .collect()
 }
 
 fn prune(doc: &Document, base: &str) {
@@ -121,11 +130,19 @@ fn prune(doc: &Document, base: &str) {
             .iter()
             .map(|n| compact(&Selection::from(*n).text()).chars().count())
             .sum();
-        let related = if block.is("ul.manual-related")
+        let related = if block.is("ul")
             && links.length() >= 3
+            && block.children().nodes().iter().all(|node| {
+                let item = Selection::from(*node);
+                item.is("br")
+                    || (item.is("li")
+                        && item.children().length() == 1
+                        && item.children().is("a[href]")
+                        && compact(&item.text()) == compact(&item.select("a[href]").text()))
+            })
             && !block.select("img, video, audio, iframe").exists()
         {
-            related_heading_before(&block, base)
+            related_heading_before(&block)
         } else {
             None
         };
@@ -176,15 +193,19 @@ fn mark_removed_imgur_images(blocks: &[&Selection<'_>], images: Vec<(NodeId, Url
     }
 }
 
-fn related_heading_before<'a>(block: &Selection<'a>, base: &str) -> Option<Selection<'a>> {
+fn related_heading_before<'a>(block: &Selection<'a>) -> Option<Selection<'a>> {
     let mut previous = block.prev_sibling();
     for _ in 0..6 {
         if !previous.is("br, hr") {
-            return (previous.is("#related-title, .related-title")
-                && !has_post_embed(&previous, base)
-                && !previous
-                    .select("p, div, section, article, ul, ol, table, blockquote, img, video, audio, iframe")
-                    .exists())
+            let label = previous
+                .text()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            return (matches!(
+                label.to_ascii_lowercase().as_str(),
+                "関連記事" | "related articles" | "related posts"
+            ) && !previous.select("a, p, div, section, article, ul, ol, table, blockquote, img, video, audio, iframe").exists())
             .then_some(previous);
         }
         previous = previous.prev_sibling();
@@ -471,7 +492,13 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                 .find(|node| Selection::from(**node).is(ARTICLE_BODY))
         });
     let boundary = article_boundary.or_else(|| {
-        if root.is("main, [role=main]") || root.is(ARTICLE_BODY) {
+        if root.is(ARTICLE_BODY) {
+            return ancestors
+                .nodes()
+                .iter()
+                .find(|node| Selection::from(**node).is("section, [role=region]"));
+        }
+        if root.is("main, section, [role=main], [role=region]") {
             return None;
         }
         ancestors
@@ -677,8 +704,10 @@ mod tests {
             r#"<article><blockquote class="imgur-embed-pub">
             <a href="https://i.imgur.com/photo.jpeg#post">投稿</a>
             <span hidden><img src="//i.imgur.com/photo.jpeg#pixel" width="1" height="1"></span>
-            <template><template><img src="https://i.imgur.com/template.jpeg" width="1" height="1"></template></template>
+            <template><template><img data-src="https://i.imgur.com/template.jpeg" width="1" height="1"></template>
+            <img srcset="https://i.imgur.com/responsive.jpeg 2x"></template>
             <a href="https://i.imgur.com/template.jpeg">ひな形の投稿</a>
+            <a href="https://i.imgur.com/responsive.jpeg">レスポンシブ画像</a>
             <a href="https://i.imgur.com/other.jpeg">別の投稿</a>
             </blockquote></article>"#,
         );
@@ -692,7 +721,7 @@ mod tests {
             links.attr("href").as_deref(),
             Some("https://i.imgur.com/photo.jpeg#post")
         );
-        assert_eq!(links.length(), 2);
+        assert_eq!(links.length(), 3);
         assert!(
             doc.select("a[href$='template.jpeg'][data-sendo-imgur-image-removed]")
                 .exists()
@@ -736,6 +765,18 @@ mod tests {
         );
         prune(&doc, "https://blog.example/post");
         assert!(doc.select("#related-title blockquote").exists());
+    }
+
+    #[test]
+    fn keeps_a_lead_in_the_same_section_as_the_article_body() {
+        let doc = Document::from(
+            r#"<main><section><blockquote class="twitter-tweet"><a href="https://x.com/user/status/456">別の記事</a></blockquote></section>
+            <section><blockquote class="twitter-tweet"><a href="https://x.com/user/status/123">本文の引用</a></blockquote>
+            <div id="body" itemprop="articleBody">本文</div></section></main>"#,
+        );
+        let lead = leading_embeds(&doc.select("#body"), "https://blog.example/post");
+        assert_eq!(lead.len(), 1);
+        assert!(lead[0].text().contains("本文の引用"));
     }
 
     #[test]
