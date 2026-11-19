@@ -28,7 +28,9 @@ sendo-reader はローカルファーストで作る（画面はネットワー�
 8. **あとで読むページも変更番号で同期する。** `includeSaved=true` が指定されたときだけ、`savedPages` とその位置を返す。保存の位置がないカーソルでは、保存だけを最初から送る。解除の記録は 30 日で回収し、回収した範囲より古い保存カーソルには `invalid_cursor` を返す（[あとで読むページ](saved.md)）。
 
 9. **新着・既読・スターの更新を WebSocket で知らせる。** `GET /api/v1/sync/updates` で、同じオリジンからのブラウザのセッションを受ける。
-   - ブラウザは reader と同じオリジンのパスへ接続する。reader のコンテナが、その WebSocket 接続を Sendo へ中継する（[コンテナ版](container.md#動かし方)の 7）。`GET /api/v1/features` の `syncUpdates: true` は Sendo 側の対応を示す。reader が中継に対応し、かつ Sendo が true を返すときに通知を使う。どちらかが旧版なら定期同期を続ける
+   - ブラウザは reader 自身の `/api/v1/sync/updates` へ接続する。reader のコンテナはこのパスの WebSocket Upgrade を通常の HTTP 中継とは別に扱い、Sendo へ通す（[コンテナ版](container.md#動かし方)の 7）。reader 側の実装時に、その中継の決定も更新する
+   - 本番では reader の公開 URL と同じホストとポートの `wss:` に接続する。reader 側で本番の CSP を使い、対応ブラウザで接続を確かめる。CSP の変更が要る場合は reader 自身の通知先に絞り、reader 側の決定にも記録する
+   - `GET /api/v1/features` の `syncUpdates: true` は Sendo 側の対応を示す。reader が中継に対応し、かつ Sendo が true を返すときに通知を使う。どちらかが旧版なら定期同期を続ける
    - 新しい記事を受信箱へ配ったときと、既読・未読・スターを更新したときに、書き込みの後で対象ユーザーの接続へ `{"type":"sync_required"}` を送る。reader は通知を受けたら手元のカーソルから差分を取る。受信箱の削除だけが起きたときは、定期同期で取り込む
    - 取得ジョブと HTTP が動く同じ Node プロセスのメモリに接続を持つ。通知を送る前にセッションが有効か確かめ、失効していれば接続を閉じる。reader はこの接続で通知を受け取る
    - 通知の重複や欠落を許す。初回と再接続のどちらでも、接続が開いたら手元のカーソルから同期し、定期同期も続ける。通知が使えないときは従来の同期で動く
