@@ -4,7 +4,7 @@
  */
 import path from "node:path";
 import type { Database } from "../../db";
-import type { LanguageDetector, PageContentExtractor, Platform } from "..";
+import type { LanguageDetector, PageContentExtractor, Platform, SyncUpdates } from "..";
 import { readAuthConfig, readDiscordConfig, readFetchConfig, readRetentionConfig } from "../config";
 import { createSqliteArticleSearch } from "../sqlite/article-search";
 import { createFileObjectStore } from "./file-store";
@@ -39,6 +39,7 @@ export function createNodePlatform(input: {
   pageContent: PageContentExtractor;
   /** 記事の主言語を調べる（Rust のモジュール） */
   languageDetection: LanguageDetector;
+  syncUpdates: SyncUpdates;
 }): Platform {
   const settings = definedSettings(input.env);
   const discord = readDiscordConfig(settings);
@@ -46,6 +47,7 @@ export function createNodePlatform(input: {
     ...(discord && { discord }),
     pageContent: input.pageContent,
     languageDetection: input.languageDetection,
+    syncUpdates: input.syncUpdates,
     db: input.db,
     articleSearch: createSqliteArticleSearch(input.db),
     jobs: input.jobs,
@@ -65,19 +67,19 @@ export function createNodePlatform(input: {
  * アプリから見える URL が http://<コンテナの中の名前> になり、ログインの戻り先や、同じオリジンかの
  * 確かめが合わなくなる。X-Forwarded-* のヘッダーは誰でも付けられるので信じず、設定のオリジンを使う
  */
-export function withPublicOrigin(
-  handler: (request: Request) => Response | Promise<Response>,
+export function withPublicOrigin<Args extends unknown[]>(
+  handler: (request: Request, ...args: Args) => Response | Promise<Response>,
   publicOrigin: string | undefined,
-): (request: Request) => Response | Promise<Response> {
+): (request: Request, ...args: Args) => Response | Promise<Response> {
   if (publicOrigin === undefined) return handler;
-  return (request) => {
+  return (request, ...args) => {
     const url = new URL(request.url);
     // パスを URL として解釈させない（//evil.example.com/... のようなパスで、ホストを変えられないように）。
     // 設定のオリジンに、パスとクエリだけを入れる
     const rewritten = new URL(publicOrigin);
     rewritten.pathname = url.pathname;
     rewritten.search = url.search;
-    if (rewritten.href === url.href) return handler(request);
+    if (rewritten.href === url.href) return handler(request, ...args);
     const hasBody = request.method !== "GET" && request.method !== "HEAD";
     return handler(
       new Request(rewritten, {
@@ -89,6 +91,7 @@ export function withPublicOrigin(
         // 本文をストリームのまま渡すのに要る（Node の fetch の決まり）
         ...(hasBody ? { duplex: "half" } : {}),
       } as RequestInit),
+      ...args,
     );
   };
 }

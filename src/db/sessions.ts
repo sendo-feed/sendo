@@ -1,6 +1,7 @@
-import { and, eq, gt, lte } from "drizzle-orm";
+import { and, eq, gt, lte, or } from "drizzle-orm";
 import { randomBase64Url } from "../lib/crypto";
 import type { Database } from ".";
+import { MAX_BOUND_PARAMETERS, RESERVED_PARAMETERS } from "./chunk";
 import { type Session, sessions, type User, users } from "./schema";
 import { hashToken } from "./tokens";
 
@@ -44,6 +45,41 @@ export async function createSession(
     .returning()
     .get();
   return { token, session };
+}
+
+/** クッキーの値から有効なセッションを引く。WebSocket の接続では期限を延ばさない。 */
+export async function findActiveSession(db: Database, input: { token: string; now: Date }) {
+  return db
+    .select({ id: sessions.id, userId: sessions.userId })
+    .from(sessions)
+    .where(
+      and(eq(sessions.tokenHash, await hashToken(input.token)), gt(sessions.expiresAt, input.now)),
+    )
+    .get();
+}
+
+export type SessionIdentity = Pick<Session, "id" | "userId">;
+
+/** 現在も有効なセッションの ID を返す。1 件につきセッションと持ち主の 2 変数を使う。 */
+export async function activeSessionIds(
+  db: Database,
+  identities: readonly SessionIdentity[],
+  now: Date,
+): Promise<Set<string>> {
+  const perQuery = Math.floor((MAX_BOUND_PARAMETERS - RESERVED_PARAMETERS) / 2);
+  const active = new Set<string>();
+  for (let offset = 0; offset < identities.length; offset += perQuery) {
+    const matches = identities
+      .slice(offset, offset + perQuery)
+      .map(({ id, userId }) => and(eq(sessions.id, id), eq(sessions.userId, userId)));
+    const rows = await db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(and(or(...matches), gt(sessions.expiresAt, now)))
+      .all();
+    for (const { id } of rows) active.add(id);
+  }
+  return active;
 }
 
 /**

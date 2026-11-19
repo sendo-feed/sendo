@@ -11,6 +11,10 @@ const FeaturesSchema = z
       description:
         "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。常に true",
     }),
+    syncUpdates: z.boolean().openapi({
+      description:
+        "Sendo が WebSocket 通知に対応しているか（GET /sync/updates）。対応前の Sendo はこの項目を返さない",
+    }),
   })
   .openapi("Features");
 
@@ -33,6 +37,6 @@ const featuresRoute = createRoute({
 export function featuresApi() {
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook }).openapi(
     featuresRoute,
-    (c) => c.json({ pageContent: true, languageDetection: true }, 200),
+    (c) => c.json({ pageContent: true, languageDetection: true, syncUpdates: true }, 200),
   );
 }

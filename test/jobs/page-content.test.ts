@@ -352,6 +352,10 @@ describe("開いたときに抜く（API）", () => {
   it("使える機能の一覧（互換のために残す）は、常に true を返す", async () => {
     const t = await setUp();
     const features = await requestApp(t.platform, "/api/v1/features", { token: t.user.token });
-    expect(await features.json()).toEqual({ pageContent: true, languageDetection: true });
+    expect(await features.json()).toEqual({
+      pageContent: true,
+      languageDetection: true,
+      syncUpdates: true,
+    });
   });
 });

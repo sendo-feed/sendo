@@ -420,13 +420,17 @@ export function greaderApp(platform: Platform) {
       if (kind === "read") read = false;
       if (kind === "starred") starred = false;
     }
-    await setArticlesState(db, {
-      userId: c.get("user").id,
-      target: { itemIds },
-      read,
-      starred,
-      now: platform.now(),
-    });
+    await setArticlesState(
+      db,
+      {
+        userId: c.get("user").id,
+        target: { itemIds },
+        read,
+        starred,
+        now: platform.now(),
+      },
+      platform.syncUpdates.notify,
+    );
     return c.text("OK");
   });
 
@@ -449,7 +453,7 @@ export function greaderApp(platform: Platform) {
       if (folderId !== undefined) scope = { folderId, until };
     }
     // スター付きなど、ほかのストリームは受けるだけ
-    if (scope) await markArticlesRead(db, { userId, scope, now });
+    if (scope) await markArticlesRead(db, { userId, scope, now }, platform.syncUpdates.notify);
     return c.text("OK");
   });
 

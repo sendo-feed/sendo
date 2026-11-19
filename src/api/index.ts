@@ -17,6 +17,7 @@ import { opmlApi } from "./opml";
 import { savedApi } from "./saved";
 import { settingsApi } from "./settings";
 import { syncApi } from "./sync";
+import { syncUpdatesApi } from "./sync-updates";
 import { tokensApi } from "./tokens";
 
 /** OpenAPI の定義の、paths 以外の部分。/api/v1/openapi.json と spec/openapi.json で同じものを使う */
@@ -68,6 +69,8 @@ export function createApi(platform: Platform) {
   // 認証の要らない入口は、認証のミドルウェアより先に登録する（あとに登録したものには、
   // protectedApi の use("*") がかかる）
   api.route("/", loginApi(platform));
+  // WebSocket の接続はブラウザのセッションと Origin を専用の入口で確認する。
+  api.route("/", syncUpdatesApi(platform));
   api.openapi(mcpIconRoute, (c) =>
     c.body(MCP_ICON_PNG, 200, {
       "content-type": MCP_ICON_TYPE,
