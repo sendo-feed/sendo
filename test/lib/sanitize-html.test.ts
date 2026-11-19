@@ -142,6 +142,17 @@ describe("sanitizeHtml", () => {
     expect(html).toContain('<img src="https://i.imgur.com/photo.jpeg" alt="Imgur">');
   });
 
+  it("Imgur の直リンクは画像中継が許すポートだけを画像にする", () => {
+    for (const port of [":8443", ":444"]) {
+      const html = sanitizeHtml(
+        `<blockquote class="imgur-embed-pub"><a href="https://i.imgur.com${port}/photo.jpeg">投稿</a></blockquote>`,
+        BASE,
+        { expandImgurEmbeds: true },
+      );
+      expect(html.includes("<img")).toBe(port === ":8443");
+    }
+  });
+
   it("抽出時に取り除いた Imgur の画像へのリンクはそのまま残す", () => {
     const html = sanitizeHtml(
       '<blockquote class="imgur-embed-pub"><a href="https://i.imgur.com/photo.jpeg" data-sendo-imgur-image-removed="true">投稿</a></blockquote>',

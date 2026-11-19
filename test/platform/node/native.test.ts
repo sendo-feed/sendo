@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sanitizeHtml } from "../../../src/lib/sanitize-html";
 import { createPageContentExtractor, loadNativeModule } from "../../../src/platform/node/native";
 import { NATIVE_MODULE } from "../../db";
 import { articlePage } from "../../fixtures/pages";
@@ -28,6 +29,26 @@ describe("Rust のモジュール（記事のページから本文を抜く）",
       url: "https://news.example.com/posts/2",
     });
     expect(result?.html).toContain("段落 7");
+  });
+
+  it("ひな形から取り除いた画像を本文の Imgur リンクから復元しない", async () => {
+    const url = "https://news.example.com/posts/1";
+    const photo = "https://i.imgur.com/photo.jpeg";
+    const pixel = "https://i.imgur.com/pixel.jpeg";
+    const page = articlePage().replace(
+      "</h1>",
+      `</h1><blockquote class="imgur-embed-pub"><a href="${pixel}">元のリンク</a><template><img src="${pixel}" width="1" height="1"></template></blockquote><blockquote class="imgur-embed-pub"><a href="${photo}">写真</a></blockquote>`,
+    );
+    const result = await extractor.extract({
+      bytes: new TextEncoder().encode(page),
+      contentType: "text/html; charset=utf-8",
+      url,
+    });
+    expect(result).not.toBeNull();
+    const html = sanitizeHtml(result?.html ?? "", url, { expandImgurEmbeds: true });
+    expect(html).toContain(`href="${pixel}"`);
+    expect(html).not.toContain(`src="${pixel}"`);
+    expect(html).toContain(`src="${photo}"`);
   });
 
   it("本文が見つからなければ null を返す", async () => {

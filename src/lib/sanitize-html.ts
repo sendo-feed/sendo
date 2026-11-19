@@ -69,9 +69,6 @@ function isImgurImage(href: string): boolean {
   return (
     url.protocol === "https:" &&
     url.hostname === "i.imgur.com" &&
-    url.port === "" &&
-    url.username === "" &&
-    url.password === "" &&
     /\.(?:jpe?g|png|gif|webp|avif)$/i.test(url.pathname)
   );
 }
@@ -213,6 +210,7 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
       if (
         imgurQuotes.size > 0 &&
         isImgurImage(href) &&
+        canRelayImage(href) &&
         !attributes.has("data-sendo-imgur-image-removed")
       ) {
         const quote = Array.from(imgurQuotes.values()).at(-1);

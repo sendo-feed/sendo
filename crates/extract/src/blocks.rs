@@ -30,9 +30,25 @@ fn imgur_resource(value: &str, base: &str) -> Option<Url> {
 fn prune(doc: &Document, base: &str) {
     const IMGUR_LINK: &str = "blockquote.imgur-embed-pub a[href]";
     let images: Vec<_> = if doc.select(IMGUR_LINK).exists() {
-        doc.select("img[src]")
-            .nodes()
-            .iter()
+        let mut images = doc.select("img[src]").nodes().to_vec();
+        let mut templates = doc.select("template").nodes().to_vec();
+        // template の中身は文書とは別の木にあるので、ふつうのセレクタからは見えない。
+        while let Some(template) = templates.pop() {
+            let fragment = template
+                .element_ref()
+                .and_then(|element| element.template_contents);
+            if let Some(fragment) = fragment.and_then(|id| doc.tree.get(&id)) {
+                for node in fragment.descendants_it() {
+                    match node.node_name().as_deref() {
+                        Some("img") => images.push(node),
+                        Some("template") => templates.push(node),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        images
+            .into_iter()
             .filter_map(|node| Some((node.id, imgur_resource(&node.attr("src")?, base)?)))
             .collect()
     } else {
@@ -405,23 +421,25 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
 
 /// 選ばれた本文と同じ記事の範囲で、手前に分かれた埋め込みを含むブロックを探す。
 fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
-    const ARTICLE: &str = "article, [itemprop=articleBody]";
-    if root.is("article, body") {
+    const ARTICLE: &str =
+        "article, [itemscope][itemtype$='Article'], [itemscope][itemtype$='BlogPosting']";
+    const ARTICLE_BODY: &str = "[itemprop=articleBody]";
+    if root.is(ARTICLE) || root.is("body") {
         return Vec::new();
     }
     let ancestors = root.ancestors(Some(128));
     let boundary = ancestors
         .nodes()
         .iter()
-        .find(|node| Selection::from(**node).is("article"))
+        .find(|node| Selection::from(**node).is(ARTICLE))
         .or_else(|| {
             ancestors
                 .nodes()
                 .iter()
-                .find(|node| Selection::from(**node).is(ARTICLE))
+                .find(|node| Selection::from(**node).is(ARTICLE_BODY))
         })
         .or_else(|| {
-            if root.is("main, [role=main]") {
+            if root.is("main, [role=main]") || root.is(ARTICLE_BODY) {
                 return None;
             }
             ancestors
@@ -446,7 +464,11 @@ fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
             let previous = sibling.prev_sibling();
             if !sibling.is("br, hr") {
                 blocks += 1;
-                if sibling.is(ARTICLE) || sibling.select(ARTICLE).exists() {
+                if sibling.is(ARTICLE)
+                    || sibling.is(ARTICLE_BODY)
+                    || sibling.select(ARTICLE).exists()
+                    || sibling.select(ARTICLE_BODY).exists()
+                {
                     break;
                 }
                 let contains_embed =
@@ -604,6 +626,8 @@ mod tests {
             r#"<article><blockquote class="imgur-embed-pub">
             <a href="https://i.imgur.com/photo.jpeg#post">投稿</a>
             <span hidden><img src="//i.imgur.com/photo.jpeg#pixel" width="1" height="1"></span>
+            <template><template><img src="https://i.imgur.com/template.jpeg" width="1" height="1"></template></template>
+            <a href="https://i.imgur.com/template.jpeg">ひな形の投稿</a>
             <a href="https://i.imgur.com/other.jpeg">別の投稿</a>
             </blockquote></article>"#,
         );
@@ -614,7 +638,21 @@ mod tests {
             links.attr("href").as_deref(),
             Some("https://i.imgur.com/photo.jpeg#post")
         );
-        assert_eq!(links.length(), 1);
+        assert_eq!(links.length(), 2);
+        assert!(
+            doc.select("a[href$='template.jpeg'][data-sendo-imgur-image-removed]")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn uses_the_explicit_article_as_the_boundary_of_an_article_body() {
+        let dom = r#"<main><section><blockquote class="twitter-tweet"><a href="https://x.com/user/status/123">別の記事</a></blockquote></section><div id="body" itemprop="articleBody">本文</div></main>"#;
+        let doc = Document::from(dom);
+        assert!(leading_embeds(&doc.select("#body")).is_empty());
+
+        let within_article = Document::from(dom.replace("main", "article"));
+        assert_eq!(leading_embeds(&within_article.select("#body")).len(), 1);
     }
 
     #[test]
