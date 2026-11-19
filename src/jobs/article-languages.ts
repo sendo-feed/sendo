@@ -12,7 +12,7 @@ import { configureStorage, readStorageUsage } from "../db/storage";
 import { escapeHtml } from "../lib/html";
 import type { Platform } from "../platform";
 
-/** 本文を読む・判定済みを確かめる・保存する、各 1 クエリでも上限内に収まる */
+/** 1 つの仕事で判定する件数（docs/decisions/jobs.md の 4）。残りは次の仕事に引き継ぐ */
 export const LANGUAGE_BATCH_SIZE = 10;
 
 export async function detectArticleLanguages(
@@ -20,7 +20,6 @@ export async function detectArticleLanguages(
   after?: LanguageCursor,
 ): Promise<void> {
   const detector = platform.languageDetection;
-  if (!detector) return;
   await configureStorage(platform.db, platform.retentionConfig.maxBytes);
   const pending = await findPendingArticleLanguages(
     platform.db,

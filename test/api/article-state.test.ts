@@ -1,8 +1,8 @@
-import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
 import { createFolder } from "../../src/db/folders";
 import { deliverNewArticles, MAX_MARK_READ_IDS } from "../../src/db/inbox";
+import { testDb } from "../db";
 import { addToInbox, createTestPlatform, requestApp, subscribeFeed, TEST_USER } from "../helpers";
 
 type ArticleJson = { id: string; readAt: string | null; starredAt: string | null };
@@ -17,8 +17,8 @@ const NOW = new Date("2026-11-14T03:00:00Z");
  * 購読している。a3 だけ、あとから（T2 に）受信箱に入った記事。
  */
 async function seed() {
-  await env.DB.exec("DELETE FROM feeds");
-  await env.DB.exec("DELETE FROM folders");
+  await testDb.exec("DELETE FROM feeds");
+  await testDb.exec("DELETE FROM folders");
   const { platform } = createTestPlatform({ now: () => NOW });
   const { folder } = await createFolder(platform.db, {
     userId: TEST_USER.id,

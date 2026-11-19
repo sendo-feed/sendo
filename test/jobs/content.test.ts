@@ -1,6 +1,5 @@
 import { eq, inArray } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { QUERY_BUDGET } from "../../src/db/chunk";
 import { CONTENT_NOTE_GRACE_MS, noteContentKeys } from "../../src/db/content";
 import { articles, contentNotes } from "../../src/db/schema";
 import { runCleanUp } from "../../src/jobs/clean-up";
@@ -177,24 +176,6 @@ describe("本文を取り込む", () => {
     expect(rows).toHaveLength(guids.length);
     expect(rows.filter((row) => row.contentKey !== null)).toHaveLength(MAX_CONTENTS_PER_FETCH);
     expect(t.puts).toHaveLength(MAX_CONTENTS_PER_FETCH);
-  });
-
-  it("本文を上限の数まで置く取得でも、D1 のクエリは上限に収まる", async () => {
-    const guids = Array.from({ length: MAX_CONTENTS_PER_FETCH + 5 }, (_, i) => `g${i}`);
-    const user = await createUser();
-    const { platform, queryCount, resetQueryCount } = createTestPlatform({
-      fetch: fakeFetch((url) =>
-        url.hostname === "blog.example"
-          ? new Response(null, { status: 404 })
-          : new Response(rss(...guids.map((guid) => item(guid, FULL)))),
-      ).fetch,
-    });
-    const feed = await subscribeFeed(platform, { userId: user.id });
-
-    resetQueryCount();
-    await runFetchFeed(platform, feed.id);
-
-    expect(queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
   });
 
   it("大きすぎる本文は置かない", async () => {

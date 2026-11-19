@@ -354,7 +354,7 @@ export type MarkReadScope =
   | ({ folderId: string } & MarkReadBoundary)
   | ({ all: true } & MarkReadBoundary);
 
-/** IN 句に並べられる記事の ID の数。D1 の変数の上限（100）から、ほかの条件の分を残す */
+/** IN 句に並べられる記事の ID の数。1 文の変数の数（db/chunk.ts の MAX_BOUND_PARAMETERS）から、ほかの条件の分を残す */
 export const MAX_MARK_READ_IDS = 90;
 
 /**

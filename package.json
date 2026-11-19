@@ -10,20 +10,14 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "dev": "wrangler dev",
-    "build": "wrangler deploy --dry-run --outdir dist",
-    "build:node": "esbuild src/platform/node/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --sourcemap --outfile=dist/node/sendo.mjs",
+    "dev": "node scripts/dev.mjs",
+    "build": "esbuild src/platform/node/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --sourcemap --outfile=dist/node/sendo.mjs",
     "build:native": "node scripts/build-native.mjs",
-    "start:node": "node --enable-source-maps dist/node/sendo.mjs",
-    "deploy": "node scripts/deploy.mjs",
-    "cf-typegen": "wrangler types",
+    "start": "node --enable-source-maps dist/node/sendo.mjs",
     "openapi:generate": "tsx scripts/generate-openapi.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate:local": "wrangler d1 migrations apply DB --local",
-    "db:migrate": "wrangler d1 migrations apply DB --remote",
-    "token:create": "node scripts/create-token.mjs",
-    "postinstall": "wrangler types",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/platform/node && tsc --noEmit -p test && tsc --noEmit -p test/node && tsc --noEmit -p scripts",
+    "token:create": "node scripts/dev.mjs token:create",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test && tsc --noEmit -p scripts",
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest run",
@@ -33,15 +27,13 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
-    "@cloudflare/vitest-plugin": "1.4.12",
     "@modelcontextprotocol/client": "2.4.0",
     "@types/node": "24.19.2",
     "drizzle-kit": "0.31.11",
     "esbuild": "0.28.2",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
-    "vitest": "5.0.5",
-    "wrangler": "4.156.1"
+    "vitest": "5.0.5"
   },
   "dependencies": {
     "@hono/node-server": "2.1.6",

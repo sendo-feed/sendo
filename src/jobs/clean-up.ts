@@ -21,7 +21,7 @@ export const SWEEP_BATCH = 500;
 
 /**
  * 1 回の片付けで、それぞれを消す文の数の上限。受信箱の行は、1 行消すのに 5 行書く（消した記録を
- * 含む）ので少なめにする。合わせて QUERY_BUDGET に収まる
+ * 含む）ので少なめにする。1 つの仕事が扱う量を抑え、残りは翌日に回す（docs/decisions/jobs.md の 4）
  */
 export const SWEEP_ROUNDS = {
   removals: 3,

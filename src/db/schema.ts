@@ -259,7 +259,7 @@ export const feeds = sqliteTable(
     /**
      * 取得の間隔（ミリ秒。docs/decisions/jobs.md の 7）。取得に成功するたびに、記事の出るペースから
      * 決め直す。null なら、まだ決めていない（設定の間隔を使う）。書くのは取得の記録の UPDATE の中だけ
-     * にし、索引は付けない（D1 の書き込みの行数を増やさないため）
+     * にし、索引は付けない（取得のたびに索引を書き換えないため）
      */
     fetchIntervalMs: integer("fetch_interval_ms"),
     /** 続けて失敗した回数（429 を除く）。成功したら 0 に戻す */
@@ -389,12 +389,12 @@ export const articles = sqliteTable(
 );
 
 /**
- * 記事のページから抜いた本文（docs/decisions/content.md の 10〜15）。記事ごとに 1 行。コンテナ版だけが
- * 書き、全員で共有する。記事の行は取り込んだあとは変えないので、あとから付く結果は、この表に持つ。
+ * 記事のページから抜いた本文（docs/decisions/content.md の 10〜15）。記事ごとに 1 行。全員で
+ * 共有する。記事の行は取り込んだあとは変えないので、あとから付く結果は、この表に持つ。
  *
  * - 抜けたとき：status は extracted、html にサニタイズした本文を入れる。あとから変えない
  * - 抜けなかったとき：status は failed。開いたときの抜き取りは、1 日たてば取りにいき直す
- * - 本文は置き場（R2 ／ ファイル）ではなく、この行に入れる（決定の 13）。記事の行が消えると、連鎖で消える
+ * - 本文は置き場（ファイル）ではなく、この行に入れる（決定の 13）。記事の行が消えると、連鎖で消える
  */
 export const pageContents = sqliteTable("page_contents", {
   articleId: text("article_id")
@@ -468,7 +468,7 @@ export const articleSearchPending = sqliteTable(
 
 /**
  * 本文の置き場の名前の書き留め（docs/decisions/content.md の 4）。「この名前の本文は、どの記事の
- * 行にも入っていないかもしれない」という印。置き場と D1 を 1 つの文でまとめて書けないので、
+ * 行にも入っていないかもしれない」という印。置き場（ファイル）と DB を 1 つの文でまとめて書けないので、
  * 行のない本文が残りうる。それを、置き場を全部見て回らずに片付けるために持つ。
  *
  * - 取り込むとき：本文を置く前に書き、記事の行に入ったら消す（db/content.ts）
@@ -489,7 +489,7 @@ export const contentNotes = sqliteTable("content_notes", {
  * ユーザーの受信箱。購読しているフィードの記事が、人ごとに 1 行ずつ入る。既読とスターはここに持つ。
  *
  * 一覧と未読の数を、ユーザーの行だけを読んで返せるようにするため、記事の feed_id と
- * published_at を写して持つ（D1 は読んだ行の数で課金されるので、記事の表を全部なめない）。
+ * published_at を写して持つ（記事の表を全部なめない）。
  */
 export const userArticles = sqliteTable(
   "user_articles",
@@ -707,8 +707,7 @@ export const appSecrets = sqliteTable("app_secrets", {
 });
 
 /**
- * コンテナ版の仕事の表（docs/decisions/container.md の 6）。Cloudflare 版は Queues を使うので、
- * D1 では空のまま。スキーマを 2 つの版で 1 組にするため、ここに置く（決定の 5）。
+ * 仕事の表（docs/decisions/container.md の 6）。
  *
  * 取り出すときに attempts を増やし、run_at を借りの期限まで先へ送る。終われば行を消し、失敗したら
  * run_at を少し先へ送ってやり直す。プロセスが途中で落ちても、借りの期限が過ぎればまた取り出される

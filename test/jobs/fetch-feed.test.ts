@@ -289,10 +289,16 @@ describe("runFetchFeed", () => {
   });
 
   it("失敗を記録してから 30 日で週 1 回にし、304 で通常に戻す", async () => {
-    let status = 530;
-    const { platform, feed } = await setup(
-      () => new Response(status === 530 ? "error code: 1016" : null, { status }),
-    );
+    // 0 は、名前解決に失敗したことにする
+    let status = 0;
+    const { platform, feed } = await setup(() => {
+      if (status === 0) {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error(), { code: "ENOTFOUND" }),
+        });
+      }
+      return new Response(null, { status });
+    });
     // 導入前から失敗していても、失敗が始まった時刻は分からない
     await platform.db
       .update(feeds)
@@ -320,7 +326,7 @@ describe("runFetchFeed", () => {
       errorCount: 17,
       lastErrorCode: "rate_limited",
     });
-    status = 530;
+    status = 0;
     const stalledAfter = FETCH_FAILURE_WINDOW_MS + MAX_FETCH_INTERVAL_MS;
     expect(await attempt(stalledAfter)).toMatchObject({
       fetchStalled: true,

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Rust の処理（crates/node）をビルドし、Node から読み込めるネイティブのモジュール
- * （native/sendo.node）にする（docs/decisions/tech-stack.md の 5）。コンテナ版と、そのテストで使う。
+ * （native/sendo.node）にする（docs/decisions/tech-stack.md の 5）。Sendo と、そのテストで使う。
  *
  *   pnpm build:native [--target <Rust のターゲット>]
  *

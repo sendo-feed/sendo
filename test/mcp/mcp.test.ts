@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
@@ -8,6 +7,7 @@ import { setArticlesState } from "../../src/db/inbox";
 import { getSubscription } from "../../src/db/subscriptions";
 import { createAccessToken, type McpScope } from "../../src/db/tokens";
 import type { Platform } from "../../src/platform";
+import { testDb } from "../db";
 import {
   addToInbox,
   createSessionHeaders,
@@ -97,9 +97,10 @@ async function setup(scopes: McpScope[] = ["read"]) {
 }
 
 async function state(userId: string, articleId: string) {
-  return env.DB.prepare(
-    "SELECT read_at IS NOT NULL AS read, starred_at IS NOT NULL AS starred FROM user_articles WHERE user_id = ? AND article_id = ?",
-  )
+  return testDb
+    .prepare(
+      "SELECT read_at IS NOT NULL AS read, starred_at IS NOT NULL AS starred FROM user_articles WHERE user_id = ? AND article_id = ?",
+    )
     .bind(userId, articleId)
     .first<{ read: number; starred: number }>();
 }
@@ -131,7 +132,7 @@ async function timedArticles(platform: Platform, userId: string, feedId: string,
 }
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM feeds");
+  await testDb.exec("DELETE FROM feeds");
 });
 
 describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の版）", (era) => {
@@ -341,7 +342,8 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       `feed/${a1}`,
       "<p>本文 &amp; <strong>強調</strong></p><p>次の段落</p>",
     );
-    await env.DB.prepare("UPDATE articles SET content_key = ? WHERE id = ?")
+    await testDb
+      .prepare("UPDATE articles SET content_key = ? WHERE id = ?")
       .bind(`feed/${a1}`, a1)
       .run();
     const { client } = await connect(platform, token, era);

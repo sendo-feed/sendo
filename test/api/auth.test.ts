@@ -1,8 +1,8 @@
-import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { accessTokens, users } from "../../src/db/schema";
 import { createAccessToken, generateToken, hashToken, TOKEN_PREFIX } from "../../src/db/tokens";
+import { testDb } from "../db";
 import { createTestPlatform, requestApp } from "../helpers";
 
 async function createUserWithToken(now: Date) {
@@ -64,14 +64,14 @@ describe("アクセストークン", () => {
 
   it("取り消したトークンは使えない", async () => {
     const { platform, token, tokenId } = await createUserWithToken(new Date());
-    await env.DB.prepare("DELETE FROM access_tokens WHERE id = ?").bind(tokenId).run();
+    await testDb.prepare("DELETE FROM access_tokens WHERE id = ?").bind(tokenId).run();
 
     expect((await requestApp(platform, "/api/v1/feeds", { token })).status).toBe(401);
   });
 
   it("ユーザーを消すと、そのユーザーのトークンも消える", async () => {
     const { platform, token, userId, tokenId } = await createUserWithToken(new Date());
-    await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
+    await testDb.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
 
     expect((await requestApp(platform, "/api/v1/feeds", { token })).status).toBe(401);
     expect(await lastUsedAt(tokenId)).toBeUndefined();

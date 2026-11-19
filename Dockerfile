@@ -1,4 +1,4 @@
-# コンテナ版のイメージ（docs/decisions/container.md）。上流の CI が作って GHCR に置き、
+# Sendo のイメージ（docs/decisions/container.md）。上流の CI が作って GHCR に置き、
 # 使う人は compose.yaml で動かす。手元で作るときは docker build -t sendo .
 #
 # 土台のイメージは、ダイジェストで固定する（Dependabot が上げる）。Node のメジャーは .node-version と揃える
@@ -44,11 +44,11 @@ RUN set -eu; \
 
 # バンドルを作る。依存はバンドルに入れず（--packages=external）、動かすときに入れる
 FROM base AS build
-# インストール時のスクリプト（wrangler types など）は、バンドルには要らないので動かさない
+# インストール時のスクリプトは、バンドルには要らないので動かさない
 RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY tsconfig.json ./
 COPY src ./src
-RUN pnpm build:node
+RUN pnpm build
 
 # 動かすイメージ。動かすのに要る依存と、バンドルと、マイグレーションと、Rust のモジュールだけを入れる
 FROM base AS runtime

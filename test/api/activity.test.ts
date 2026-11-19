@@ -1,10 +1,10 @@
-import { env } from "cloudflare:workers";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
 import { insertArticles } from "../../src/db/articles";
 import { createAccessToken } from "../../src/db/tokens";
 import { runCleanUp } from "../../src/jobs/clean-up";
+import { testDb } from "../db";
 import { addToInbox, createTestPlatform, createUser, requestApp, subscribeFeed } from "../helpers";
 
 describe("記事を開いた履歴", () => {
@@ -56,7 +56,7 @@ describe("記事を開いた履歴", () => {
     expect(await (await send()).json()).toEqual({ recorded: 2 });
     expect(await (await send()).json()).toEqual({ recorded: 0 });
 
-    await env.DB.prepare("DELETE FROM articles WHERE id = ?").bind(own.id).run();
+    await testDb.prepare("DELETE FROM articles WHERE id = ?").bind(own.id).run();
 
     async function connect(userId: string) {
       const { token } = await createAccessToken(platform.db, {

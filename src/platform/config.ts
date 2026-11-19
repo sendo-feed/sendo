@@ -1,7 +1,6 @@
 import { DISCORD_CALLBACK_PATH } from "../discord/client";
 /**
- * 設定を読む。2 つの版で同じ名前の設定を使うので（docs/decisions/container.md の 11）、読み方もここで
- * 共有する。Cloudflare 版は env（画面の変数とシークレット）から、コンテナ版は環境変数から渡す。
+ * 設定を読む（docs/decisions/container.md の 11）。環境変数から、値の入っているものだけを渡す。
  */
 import {
   type AuthConfig,
@@ -38,14 +37,14 @@ export function readFetchConfig(env: { FETCH_INTERVAL_MINUTES?: string }): Fetch
 /**
  * 古い記事の片付けの設定を読む（docs/decisions/retention.md の 1）。読み方は readFetchConfig と同じ
  */
-export function readRetentionConfig(
-  env: { STORAGE_LIMIT_MIB?: string; ARTICLE_RETENTION_DAYS?: string },
-  defaultMiB = DEFAULT_STORAGE_LIMIT_MIB,
-): RetentionConfig {
+export function readRetentionConfig(env: {
+  STORAGE_LIMIT_MIB?: string;
+  ARTICLE_RETENTION_DAYS?: string;
+}): RetentionConfig {
   if (env.ARTICLE_RETENTION_DAYS?.trim()) {
     console.warn("ARTICLE_RETENTION_DAYS is no longer used; set STORAGE_LIMIT_MIB instead");
   }
-  const mib = parseStorageLimitMiB(env.STORAGE_LIMIT_MIB) ?? defaultMiB;
+  const mib = parseStorageLimitMiB(env.STORAGE_LIMIT_MIB) ?? DEFAULT_STORAGE_LIMIT_MIB;
   return { maxBytes: mib * 1024 * 1024 };
 }
 

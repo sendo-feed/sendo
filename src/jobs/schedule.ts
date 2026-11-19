@@ -8,8 +8,8 @@ import { MIN_FETCH_INTERVAL_MINUTES, type Platform } from "../platform";
 const LEASE_MS = 15 * 60 * 1000;
 
 /**
- * 1 回の定期実行で借りる回数の上限。1 回につき 2 クエリなので、D1 のクエリの上限
- * （QUERY_BUDGET）に収まる。残りは次の定期実行（10 分後）で積む
+ * 1 回の定期実行で借りる回数の上限。1 回の定期実行が扱う量を抑える（docs/decisions/jobs.md の 4）。
+ * 残りは次の定期実行（10 分後）で積む
  */
 export const MAX_LEASE_ROUNDS = 20;
 
@@ -41,10 +41,7 @@ export async function enqueueDueFeeds(
 export const CLEAN_UP_HOUR_UTC = 18;
 
 /** 未処理分は次回も拾えるので、投入の失敗で取得や起動を止めない */
-export async function enqueueLanguageDetection(
-  platform: Pick<Platform, "jobs" | "languageDetection">,
-): Promise<void> {
-  if (!platform.languageDetection) return;
+export async function enqueueLanguageDetection(platform: Pick<Platform, "jobs">): Promise<void> {
   try {
     await platform.jobs.enqueue([{ type: "detect-article-languages" }]);
   } catch (error) {
@@ -76,13 +73,13 @@ export async function enqueueDailyCleanUp(
 }
 
 /**
- * 定期実行（MIN_FETCH_INTERVAL_MINUTES おき）の中身。Cloudflare 版は Cron Triggers の scheduled から、
- * コンテナ版はプロセスの中のタイマーから呼ぶ
+ * 定期実行（MIN_FETCH_INTERVAL_MINUTES おき）の中身。プロセスの中のタイマー（platform/node/scheduler.ts）
+ * から呼ぶ
  *
  * @param scheduledTime 定期実行が予定された時刻
  */
 export async function runScheduled(
-  platform: Pick<Platform, "db" | "jobs" | "now" | "languageDetection">,
+  platform: Pick<Platform, "db" | "jobs" | "now">,
   scheduledTime: Date,
 ): Promise<void> {
   if (await enqueueDailyCleanUp(platform, scheduledTime)) {

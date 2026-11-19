@@ -4,11 +4,9 @@ node_modules
 dist
 target
 native
-.wrangler
 .git
 .github
 .claude
-.dev.vars*
 .env*
 .sendo-token
 coverage

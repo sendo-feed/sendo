@@ -1,12 +1,12 @@
 /**
- * コンテナ版の入口（docs/decisions/container.md）。Cloudflare 版の src/index.ts に当たる。
- * 設定から実装を組み立てて渡すだけにし、処理の中身は書かない。
+ * Sendo の入口（docs/decisions/container.md）。設定から実装を組み立てて渡すだけにし、処理の中身は
+ * 書かない。
  *
  *   node dist/node/sendo.mjs                     サーバーを動かす（既定）
  *   node dist/node/sendo.mjs token:create ...    アクセストークンを発行する
  *
- * 設定は環境変数で受ける。名前は Cloudflare 版と同じ（ALLOWED_EMAILS、PUBLIC_URL など）。
- * コンテナ版だけのものは、PORT（既定 8787）、DATA_DIR（既定 /data）、MIGRATIONS_DIR、NATIVE_MODULE。
+ * 設定は環境変数で受ける（ALLOWED_EMAILS、PUBLIC_URL など。.env.example）。動かし方の設定は、
+ * PORT（既定 8787）、HOST（既定 0.0.0.0）、DATA_DIR（既定 /data）、MIGRATIONS_DIR、NATIVE_MODULE。
  */
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -35,24 +35,21 @@ function nativeModulePath(env: NodeEnv): string {
 }
 
 /**
- * Rust の処理を読み込み、記事のページから本文を抜く実装を作る。読み込めなければ、ログに出して
- * その機能なしで動く（GET /api/v1/features が false を返す）。イメージには必ず入っている
+ * Rust の処理を読み込み、記事のページから本文を抜く実装と、言語を調べる実装を作る。イメージには
+ * 必ず入っているので、読み込めなければ起動を止める（docs/decisions/container.md の 2）
  */
 function loadNativeFeatures(env: NodeEnv) {
   const file = nativeModulePath(env);
+  let native: ReturnType<typeof loadNativeModule>;
   try {
-    const native = loadNativeModule(file);
-    return {
-      pageContent: createPageContentExtractor(native),
-      languageDetection: createLanguageDetector(native),
-    };
+    native = loadNativeModule(file);
   } catch (error) {
-    console.error("could not load the native module; native features are disabled", {
-      file,
-      error,
-    });
-    return {};
+    throw new Error(`could not load the native module: ${file}`, { cause: error });
   }
+  return {
+    pageContent: createPageContentExtractor(native),
+    languageDetection: createLanguageDetector(native),
+  };
 }
 
 /** マイグレーションの置き場。既定は、バンドル（dist/node/sendo.mjs）から見た ../../migrations */
@@ -89,13 +86,14 @@ function readPublicOrigin(env: NodeEnv): string | undefined {
 
 async function runServer(env: NodeEnv): Promise<void> {
   const port = readPort(env);
+  const native = loadNativeFeatures(env);
   const database = await prepareDatabase(env);
   const jobs = createSqliteJobQueue(database.db);
   const platform = createNodePlatform({
     env,
     db: database.db,
     jobs,
-    ...loadNativeFeatures(env),
+    ...native,
   });
   const app = createApp(platform);
 
@@ -186,5 +184,6 @@ async function main(argv: string[]): Promise<void> {
 
 main(process.argv.slice(2)).catch((error) => {
   console.error(error instanceof Error ? error.message : error);
+  if (error instanceof Error && error.cause !== undefined) console.error(error.cause);
   process.exit(1);
 });

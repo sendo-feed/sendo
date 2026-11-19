@@ -107,10 +107,6 @@ export async function fetchFeed(url: string, options: FetchFeedOptions): Promise
         let notFoundPage: FetchedFeedPage | undefined;
         if (res.status === 404 && options.notFoundPageBytes !== undefined) {
           notFoundPage = await readNotFoundPage(res, current.href, options.notFoundPageBytes);
-        } else if (res.status === 530) {
-          if (await isCloudflareDnsError(res)) {
-            throw new FetchFeedError("dns", "DNS resolution failed (Cloudflare 1016)", res.status);
-          }
         } else {
           await res.body?.cancel();
         }
@@ -148,12 +144,7 @@ export async function fetchFeed(url: string, options: FetchFeedOptions): Promise
     if (error instanceof Error && isDnsLookupError(error.cause)) {
       throw new FetchFeedError("dns", "DNS resolution failed");
     }
-    const message = error instanceof Error ? error.message : String(error);
-    // workerd の内部エラーは原因を含まない。応答や DB に参照 ID を残さない
-    throw new FetchFeedError(
-      "network",
-      /^internal error(?:; reference = .*)?$/i.test(message) ? "network request failed" : message,
-    );
+    throw new FetchFeedError("network", error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -178,36 +169,6 @@ function isDnsLookupError(cause: unknown): boolean {
     "code" in cause &&
     (cause.code === "ENOTFOUND" || cause.code === "EAI_AGAIN")
   );
-}
-
-async function isCloudflareDnsError(response: Response): Promise<boolean> {
-  try {
-    const errorType = response.headers.get("cf-error-type");
-    if (errorType !== null) {
-      await response.body?.cancel();
-      return errorType === "1016";
-    }
-    // 診断ヘッダーがなければ、短いテキストか構造化されたエラー応答を確かめる
-    const { bytes, truncated } = await readPrefix(response.body, 4096);
-    if (truncated) return false;
-    const body = new TextDecoder().decode(bytes).trim();
-    const mediaType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
-    if (mediaType === "application/json" || mediaType === "application/problem+json") {
-      const error: unknown = JSON.parse(body);
-      return (
-        typeof error === "object" &&
-        error !== null &&
-        "cloudflare_error" in error &&
-        error.cloudflare_error === true &&
-        "error_code" in error &&
-        error.error_code === 1016
-      );
-    }
-    return /^error code:\s*1016$/i.test(body);
-  } catch {
-    // エラーの本文を読めなくても、受け取った HTTP ステータスを記録する
-    return false;
-  }
 }
 
 /**

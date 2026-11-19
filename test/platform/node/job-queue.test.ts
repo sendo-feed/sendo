@@ -1,19 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { jobQueue } from "../../src/db/schema";
-import type { Job } from "../../src/jobs/job";
+import { jobQueue } from "../../../src/db/schema";
+import type { Job } from "../../../src/jobs/job";
 import {
   createSqliteJobQueue,
   LEASE_MS,
   MAX_ATTEMPTS,
   RETRY_DELAY_MS,
   type SqliteJobQueue,
-} from "../../src/platform/node/job-queue";
-import { openTestDatabase } from "./helpers";
+} from "../../../src/platform/node/job-queue";
+import { openTestDatabase } from "../../db";
 
 const FETCH: Job = { type: "fetch-feed", feedId: "feed-1" };
 const CLEAN_UP: Job = { type: "clean-up" };
 
-describe("コンテナ版の仕事の表", () => {
+describe("仕事の表", () => {
   let database: Awaited<ReturnType<typeof openTestDatabase>>;
   let clock: Date;
   let queue: SqliteJobQueue;

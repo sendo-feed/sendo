@@ -1,5 +1,5 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
-import type { Database } from ".";
+import { type Database, getRow } from ".";
 import { randomItemId } from "./articles";
 import { DB_NOW_MS } from "./clock";
 import { discordConnections, type Feed, feeds, subscriptions } from "./schema";
@@ -73,7 +73,9 @@ export async function addDiscordSubscription(
     .get();
   if (!feed) return null;
 
-  const subscription = await db.get<{ id: string }>(sql`
+  const subscription = await getRow<{ id: string }>(
+    db,
+    sql`
     insert into subscriptions (id, user_id, feed_id, folder_id, created_at, backfilled_at, seq)
     select ${crypto.randomUUID()}, ${userId}, ${feeds.id}, ${activeFolderId(userId, folderId)},
       ${now.getTime()}, ${now.getTime()}, ${nextSeq(subscriptions)}
@@ -81,7 +83,8 @@ export async function addDiscordSubscription(
     where ${feeds.id} = ${feed.feed.id} and ${feeds.discordConnectionId} = ${connectionId}
     on conflict do nothing
     returning id
-  `);
+  `,
+  );
   if (!subscription && !(await getSubscription(db, { userId, feedId: feed.feed.id }))) return null;
   return { feed: feed.feed, created: subscription !== undefined };
 }

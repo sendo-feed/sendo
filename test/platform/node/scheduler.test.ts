@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { nextScheduledTime, startScheduler } from "../../src/platform/node/scheduler";
+import { nextScheduledTime, startScheduler } from "../../../src/platform/node/scheduler";
 
-describe("コンテナ版の定期実行", () => {
+describe("定期実行", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("時計の 10 分の区切りに合わせる（Cloudflare 版の Cron と同じ）", () => {
+  it("時計の 10 分の区切りに合わせる", () => {
     expect(nextScheduledTime(new Date("2026-11-16T17:59:59.999Z")).toISOString()).toBe(
       "2026-11-16T18:00:00.000Z",
     );

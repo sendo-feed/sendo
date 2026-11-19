@@ -1,9 +1,9 @@
 /**
  * 実行環境の緩衝層。
  *
- * アプリ（api/、jobs/ など）は、実行環境の機能をここのインターフェース越しに使う。
- * Cloudflare での実装は platform/cloudflare/ にある。移植するときは、
- * 同じインターフェースの実装を platform/<移植先>/ に足す。
+ * DB、ファイル、外への取得、Rust のネイティブのモジュール、タイマーなど、実行環境の I/O をまとめる。
+ * アプリ（api/、jobs/ など）は、ここのインターフェース越しに使い、テストでは差し替える。
+ * 実装は platform/node/ にある（docs/decisions/container.md）。
  */
 import type { Database } from "../db";
 import type { ArticleCursor, ArticleListInput, InboxArticle } from "../db/inbox";
@@ -68,7 +68,7 @@ export interface RetentionConfig {
 
 /**
  * オブジェクトの置き場（docs/decisions/content.md の 3）。記事の本文を置く。置く、読む、消すだけを
- * 使う。Cloudflare では R2。移植するときは、ローカルのファイルや S3 互換の置き場に替える
+ * 使う。実装は、データのボリュームの上のファイル（platform/node/file-store.ts）
  */
 export interface ObjectStore {
   /** 置く。同じ名前があれば上書きする */
@@ -109,8 +109,8 @@ export interface PageImageProcessor {
 }
 
 /**
- * 記事のページのバイト列から本文を抜く（docs/decisions/content.md の 11、12）。コンテナ版だけが持つ
- * （Rust の処理を napi-rs で読み込む）。外への取得はしない。本文が見つからなければ null
+ * 記事のページのバイト列から本文を抜く（docs/decisions/content.md の 11、12）。Rust の処理を
+ * napi-rs で読み込む。外への取得はしない。本文が見つからなければ null
  */
 export interface PageContentExtractor {
   images?: PageImageProcessor;
@@ -176,28 +176,23 @@ export interface Platform {
   discord?: DiscordConfig;
   fetchConfig: FetchConfig;
   retentionConfig: RetentionConfig;
-  /**
-   * 版によって有無が分かれる機能（docs/decisions/container.md の 2）。持っている版だけが渡す。
-   * アプリは、ここにあるかどうかで振る舞いを変え、版の名前では分岐しない
-   */
-  /** 記事のページから本文を抜く。コンテナ版だけ */
-  pageContent?: PageContentExtractor;
-  /** 記事の主言語を調べる。コンテナ版だけ */
-  languageDetection?: LanguageDetector;
+  /** 記事のページから本文を抜く（Rust） */
+  pageContent: PageContentExtractor;
+  /** 記事の主言語を調べる（Rust） */
+  languageDetection: LanguageDetector;
 }
 
 /** 取得の間隔の既定（分） */
 export const DEFAULT_FETCH_INTERVAL_MINUTES = 30;
 
 /**
- * 取得の間隔の下限（分）。取得の時期が来たフィードは定期実行（wrangler.jsonc の triggers.crons、
- * 10 分おき）が積むので、これより短くしても、その間隔でしか取得されない
+ * 取得の間隔の下限（分）。取得の時期が来たフィードは定期実行（platform/node/scheduler.ts、10 分おき）が
+ * 積むので、これより短くしても、その間隔でしか取得されない
  */
 export const MIN_FETCH_INTERVAL_MINUTES = 10;
 
-/** Cloudflare 版の保存容量の既定（MiB）。コンテナ版は緩衝層で 10 GiB を渡す */
-export const DEFAULT_STORAGE_LIMIT_MIB = 256;
-export const NODE_STORAGE_LIMIT_MIB = 10 * 1024;
+/** 保存容量の既定（MiB）。10 GiB */
+export const DEFAULT_STORAGE_LIMIT_MIB = 10 * 1024;
 export const MIN_STORAGE_LIMIT_MIB = 16;
 
 /** 下限以上の整数の設定を読む。空なら undefined（既定を使う）。下限以上の整数でなければ例外 */

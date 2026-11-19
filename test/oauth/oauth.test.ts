@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import {
   Client,
   type OAuthClientMetadata,
@@ -9,19 +8,18 @@ import {
   StreamableHTTPClientTransport,
   UnauthorizedError,
 } from "@modelcontextprotocol/client";
-import { drizzle } from "drizzle-orm/d1";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
 import { createPkce } from "../../src/auth/oidc";
 import { MAX_PENDING_CLIENTS } from "../../src/db/oauth";
-import * as schema from "../../src/db/schema";
 import type { OAuthServerConfig, Platform } from "../../src/platform";
+import { testDb } from "../db";
 import {
   createSessionHeaders,
   createTestPlatform,
   createUser,
-  d1BeforeStatement,
   fakeFetch,
+  statementHook,
 } from "../helpers";
 
 const ISSUER = "https://sendo.example.com";
@@ -209,7 +207,7 @@ function mcp(platform: Platform, token: string | undefined, body?: Json) {
 }
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM oauth_grants; DELETE FROM oauth_clients;");
+  await testDb.exec("DELETE FROM oauth_grants; DELETE FROM oauth_clients;");
 });
 
 describe("OAuth のメタデータ", () => {
@@ -337,12 +335,12 @@ describe("動的登録（/oauth/register）", () => {
     const unused = (await (await register(platform, body)).json()) as { client_id: string };
     const used = (await (await register(platform, body)).json()) as { client_id: string };
     await approve(platform, headers, { client_id: used.client_id });
-    await env.DB.exec("DELETE FROM oauth_grants");
+    await testDb.exec("DELETE FROM oauth_grants");
 
     clock.now += 25 * 60 * 60 * 1000;
     await register(platform, body);
 
-    const ids = (await env.DB.prepare("SELECT id FROM oauth_clients").all<{ id: string }>())
+    const ids = (await testDb.prepare("SELECT id FROM oauth_clients").all<{ id: string }>())
       .results;
     expect(ids.map((row) => row.id)).toContain(used.client_id);
     expect(ids.map((row) => row.id)).not.toContain(unused.client_id);
@@ -363,20 +361,21 @@ describe("動的登録の上限（docs/decisions/mcp.md の 5）", () => {
 
   /** 一度も許可されていないクライアントを、count 個置く */
   async function addPendingClients(count: number, createdAt: number) {
-    await env.DB.prepare(
-      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+    await testDb
+      .prepare(
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
        INSERT INTO oauth_clients (id, name, redirect_uris, created_at)
        SELECT 'pending-' || i, NULL, '["https://pending.example.com/cb"]', ? FROM n`,
-    )
+      )
       .bind(count, createdAt)
       .run();
   }
 
   const pendingCount = async () =>
     (
-      await env.DB.prepare(
-        "SELECT count(*) AS n FROM oauth_clients WHERE authorized_at IS NULL",
-      ).first<{ n: number }>()
+      await testDb
+        .prepare("SELECT count(*) AS n FROM oauth_clients WHERE authorized_at IS NULL")
+        .first<{ n: number }>()
     )?.n;
 
   it(`一度も許可されていない登録が ${MAX_PENDING_CLIENTS} 件あれば、新しい登録を 429 で断る`, async () => {
@@ -396,7 +395,8 @@ describe("動的登録の上限（docs/decisions/mcp.md の 5）", () => {
     const clock = { now: Date.now() };
     const { platform } = setup({ clock });
     await addPendingClients(MAX_PENDING_CLIENTS, clock.now);
-    await env.DB.prepare("UPDATE oauth_clients SET authorized_at = ? WHERE id = 'pending-1'")
+    await testDb
+      .prepare("UPDATE oauth_clients SET authorized_at = ? WHERE id = 'pending-1'")
       .bind(clock.now)
       .run();
 
@@ -705,7 +705,7 @@ describe("許可の画面の API（/api/v1/oauth/authorize）", () => {
     const anonymous = await readerApi(platform, {}, "/oauth/authorize/decide", body);
     expect(anonymous.status).toBe(401);
 
-    const grants = await env.DB.prepare("SELECT count(*) AS n FROM oauth_grants").first<{
+    const grants = await testDb.prepare("SELECT count(*) AS n FROM oauth_grants").first<{
       n: number;
     }>();
     expect(grants?.n).toBe(0);
@@ -772,15 +772,15 @@ describe("トークンのエンドポイント（/oauth/token）", () => {
     const { headers } = await session();
     const approved = await approve(platform, headers);
     // コードに使った印を付ける文の直前に、もう一方のリクエストが同じコードを使う
-    const hooked = d1BeforeStatement(/^\s*update\s+"oauth_codes"/i, async () => {
-      await env.DB.prepare("UPDATE oauth_codes SET used_at = ?").bind(Date.now()).run();
+    const hooked = statementHook(/^\s*update\s+"oauth_codes"/i, async () => {
+      await testDb.prepare("UPDATE oauth_codes SET used_at = ?").bind(Date.now()).run();
     });
 
-    const res = await exchange({ ...platform, db: drizzle(hooked.db, { schema }) }, approved);
+    const res = await exchange({ ...platform, db: hooked.db }, approved);
 
     expect(hooked.fired()).toBe(true);
     expect(((await res.json()) as Json).error).toBe("invalid_grant");
-    const grants = await env.DB.prepare("SELECT count(*) AS n FROM oauth_grants").first<{
+    const grants = await testDb.prepare("SELECT count(*) AS n FROM oauth_grants").first<{
       n: number;
     }>();
     expect(grants?.n).toBe(0);
@@ -791,16 +791,14 @@ describe("トークンのエンドポイント（/oauth/token）", () => {
     const { headers } = await session();
     const tokens = await authorizeAndExchange(platform, headers);
     // 作り直した印を付ける文の直前に、もう一方のリクエストが同じトークンを作り直す
-    const hooked = d1BeforeStatement(/^\s*update\s+"oauth_tokens"/i, async () => {
-      await env.DB.prepare("UPDATE oauth_tokens SET rotated_at = ? WHERE kind = 'refresh'")
+    const hooked = statementHook(/^\s*update\s+"oauth_tokens"/i, async () => {
+      await testDb
+        .prepare("UPDATE oauth_tokens SET rotated_at = ? WHERE kind = 'refresh'")
         .bind(Date.now())
         .run();
     });
 
-    const res = await refresh(
-      { ...platform, db: drizzle(hooked.db, { schema }) },
-      tokens.refresh_token,
-    );
+    const res = await refresh({ ...platform, db: hooked.db }, tokens.refresh_token);
 
     expect(hooked.fired()).toBe(true);
     expect(((await res.json()) as Json).error).toBe("invalid_grant");
@@ -814,14 +812,11 @@ describe("トークンのエンドポイント（/oauth/token）", () => {
     const tokens = await authorizeAndExchange(platform, headers);
     clock.now += 10 * 60 * 1000;
     // 新しいトークンを入れる文の直前に、ほかの許可（使えない許可の掃除）が走る
-    const hooked = d1BeforeStatement(/^\s*insert\s+into\s+"oauth_tokens"/i, async () => {
+    const hooked = statementHook(/^\s*insert\s+into\s+"oauth_tokens"/i, async () => {
       await approve(platform, headers);
     });
 
-    const res = await refresh(
-      { ...platform, db: drizzle(hooked.db, { schema }) },
-      tokens.refresh_token,
-    );
+    const res = await refresh({ ...platform, db: hooked.db }, tokens.refresh_token);
 
     expect(hooked.fired()).toBe(true);
     expect(res.status).toBe(200);
@@ -836,12 +831,12 @@ describe("トークンのエンドポイント（/oauth/token）", () => {
     const approved = await approve(platform, headers);
     clock.now += 5 * 60 * 1000 - 1;
     // トークンを入れる文の直前に、コードの期限を過ぎてから、ほかの許可（掃除）が走る
-    const hooked = d1BeforeStatement(/^\s*insert\s+into\s+"oauth_tokens"/i, async () => {
+    const hooked = statementHook(/^\s*insert\s+into\s+"oauth_tokens"/i, async () => {
       clock.now += 1000;
       await approve(platform, headers);
     });
 
-    const res = await exchange({ ...platform, db: drizzle(hooked.db, { schema }) }, approved);
+    const res = await exchange({ ...platform, db: hooked.db }, approved);
 
     expect(hooked.fired()).toBe(true);
     expect(res.status).toBe(200);
@@ -1045,7 +1040,8 @@ describe("出した許可の一覧と取り消し（/api/v1/oauth/grants）", ()
     expect(items).toEqual([expect.objectContaining({ lastUsedAt: expect.any(String) })]);
     await approve(platform, headers);
 
-    const rows = await env.DB.prepare("SELECT count(*) AS n FROM oauth_grants WHERE user_id = ?")
+    const rows = await testDb
+      .prepare("SELECT count(*) AS n FROM oauth_grants WHERE user_id = ?")
       .bind(user.id)
       .first<{ n: number }>();
     expect(rows?.n).toBe(2);
