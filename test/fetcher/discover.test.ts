@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { findFeedLinks } from "../../src/fetcher/discover";
+import { findFeedLinks, findFeedRelocation } from "../../src/fetcher/discover";
+import { fakeFetch } from "../helpers";
 
 const BASE = "https://blog.example/posts/";
 
@@ -86,5 +87,45 @@ describe("findFeedLinks", () => {
     ["閉じたタグの繰り返し", '<link rel="x">'.repeat(100_000)],
   ])("悪意のある入力でも長さに比例する時間で終わる：%s", (_label, html) => {
     expect(findFeedLinks(html, BASE)).toEqual([]);
+  });
+});
+
+describe("findFeedRelocation", () => {
+  it("元の URL、内部 URL、取得できない候補を除く", async () => {
+    const original = "https://old.example/feed.xml";
+    const { fetch, calls } = fakeFetch(() => new Response(null, { status: 404 }));
+    const page = {
+      url: BASE,
+      body: `<link rel="alternate" type="application/rss+xml" href="${original}#hash">
+      <link rel="alternate" type="application/rss+xml" href="http://127.0.0.1/feed.xml">
+      <link rel="alternate" type="application/rss+xml" href="/missing.xml">`,
+    };
+
+    expect(await findFeedRelocation(page, original, fetch)).toBeNull();
+    expect(calls.map(({ url }) => url)).toEqual(["https://blog.example/missing.xml"]);
+  });
+
+  it("候補のリダイレクト先も確認する", async () => {
+    const original = "https://old.example/feed.xml";
+    const { fetch, calls } = fakeFetch((url) =>
+      url.pathname === "/blocked.xml"
+        ? new Response(null, { status: 302, headers: { location: "http://localhost/feed" } })
+        : new Response("<rss version='2.0'><channel><title>New feed</title></channel></rss>"),
+    );
+    const page = {
+      url: BASE,
+      body: `<link rel="alternate" type="application/rss+xml" href="/blocked.xml">
+      <link rel="alternate" type="application/rss+xml" href="/feed.xml">`,
+    };
+
+    expect(await findFeedRelocation(page, original, fetch)).toEqual({
+      url: "https://blog.example/feed.xml",
+      title: "New feed",
+      siteUrl: null,
+    });
+    expect(calls.map(({ url }) => url)).toEqual([
+      "https://blog.example/blocked.xml",
+      "https://blog.example/feed.xml",
+    ]);
   });
 });

@@ -116,7 +116,53 @@ describe("fetchFeed", () => {
     const error = await fetchFeed("https://example.com/f", { fetch }).catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(FetchFeedError);
-    expect(error).toMatchObject({ code: "http_status", status: 410 });
+    expect(error).toMatchObject({ code: "gone", status: 410 });
+  });
+
+  it.each([
+    { body: "", headers: new Headers({ "cf-error-type": "1016" }) },
+    { body: "error code: 1016", headers: new Headers() },
+    {
+      body: JSON.stringify({ cloudflare_error: true, error_code: 1016 }),
+      headers: new Headers({ "content-type": "application/problem+json; charset=utf-8" }),
+    },
+  ])("530 で Cloudflare の 1016 が確認できたら DNS として扱う", async ({ body, headers }) => {
+    const { fetch } = fakeFetch(() => new Response(body, { status: 530, headers }));
+    await expect(fetchFeed("https://example.com/f", { fetch })).rejects.toMatchObject({
+      code: "dns",
+      status: 530,
+    });
+  });
+
+  it.each(["error code: 1033", "1016", `error code: 1016${" ".repeat(4096)}`])(
+    "530 の本文が 1016 の診断メッセージと確認できなければ HTTP エラーのままにする",
+    async (body) => {
+      const { fetch } = fakeFetch(() => new Response(body, { status: 530 }));
+      await expect(fetchFeed("https://example.com/f", { fetch })).rejects.toMatchObject({
+        code: "http_status",
+        status: 530,
+      });
+    },
+  );
+
+  it.each(["ENOTFOUND", "EAI_AGAIN"])("名前解決の例外 %s を DNS として扱う", async (code) => {
+    const { fetch } = fakeFetch(() => {
+      throw new TypeError("fetch failed", { cause: Object.assign(new Error(), { code }) });
+    });
+    await expect(fetchFeed("https://example.com/f", { fetch })).rejects.toMatchObject({
+      code: "dns",
+      message: "DNS resolution failed",
+    });
+  });
+
+  it("workerd の内部エラーを通信エラーとして記録し、参照 ID を外す", async () => {
+    const { fetch } = fakeFetch(() => {
+      throw new TypeError("internal error; reference = example");
+    });
+    await expect(fetchFeed("https://example.com/f", { fetch })).rejects.toMatchObject({
+      code: "network",
+      message: "network request failed",
+    });
   });
 
   it("時間がかかりすぎれば打ち切る", async () => {

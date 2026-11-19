@@ -207,15 +207,77 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "description": "最後に取得を試した時刻"
           },
           "nextFetchAt": {
             "type": "string",
             "format": "date-time"
           },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "failing",
+              "stalled"
+            ],
+            "description": "Sendo からの取得状態。active は数えた失敗なし（429 を除く）、failing は失敗中、stalled は長期の失敗または HTTP 410"
+          },
           "errorCount": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "連続した失敗の回数（429 を除く）"
+          },
+          "lastErrorCode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "blocked_url",
+              "http_status",
+              "too_large",
+              "too_many_redirects",
+              "timeout",
+              "network",
+              "dns",
+              "gone",
+              "rate_limited",
+              "invalid_feed",
+              null
+            ],
+            "description": "直近の取得失敗の理由。成功後や、理由を記録していない場合は null"
+          },
+          "relocationCandidate": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "確認できた候補のフィード URL"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "プレーンテキストのタイトル"
+              },
+              "siteUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "url",
+              "title",
+              "siteUrl"
+            ],
+            "description": "取得に失敗した応答から確認した移転先候補"
           },
           "lastError": {
             "type": [
@@ -239,7 +301,10 @@
           "folderId",
           "lastFetchedAt",
           "nextFetchAt",
+          "status",
           "errorCount",
+          "lastErrorCode",
+          "relocationCandidate",
           "lastError",
           "createdAt"
         ]
@@ -777,6 +842,66 @@
             ],
             "description": "この購読の表示名。null なら配信元の title（なければ URL）を使う"
           },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "failing",
+              "stalled"
+            ],
+            "description": "Sendo からの取得状態。active は数えた失敗なし（429 を除く）、failing は失敗中、stalled は長期の失敗または HTTP 410"
+          },
+          "lastErrorCode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "blocked_url",
+              "http_status",
+              "too_large",
+              "too_many_redirects",
+              "timeout",
+              "network",
+              "dns",
+              "gone",
+              "rate_limited",
+              "invalid_feed",
+              null
+            ],
+            "description": "直近の取得失敗の理由。成功後や、理由を記録していない場合は null"
+          },
+          "relocationCandidate": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "確認できた候補のフィード URL"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "プレーンテキストのタイトル"
+              },
+              "siteUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "url",
+              "title",
+              "siteUrl"
+            ],
+            "description": "取得に失敗した応答から確認した移転先候補"
+          },
           "siteUrl": {
             "type": [
               "string",
@@ -812,6 +937,9 @@
           "url",
           "title",
           "displayName",
+          "status",
+          "lastErrorCode",
+          "relocationCandidate",
           "siteUrl",
           "iconUrl",
           "folderId",

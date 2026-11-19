@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "1cb93937-2792-456c-9b2a-48bd4aed5d01",
+  "id": "18c3d455-86f4-4e29-9814-66a115e50138",
   "prevId": "e708c49f-f61d-490d-b3c7-bfe3a577f9bb",
   "tables": {
     "access_tokens": {
@@ -864,59 +864,6 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "discord_connections": {
-      "name": "discord_connections",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "discord_user_id": {
-          "name": "discord_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "discord_connections_user_id_unique": {
-          "name": "discord_connections_user_id_unique",
-          "columns": [
-            "user_id"
-          ],
-          "isUnique": true
-        }
-      },
-      "foreignKeys": {
-        "discord_connections_user_id_users_id_fk": {
-          "name": "discord_connections_user_id_users_id_fk",
-          "tableFrom": "discord_connections",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "feeds": {
       "name": "feeds",
       "columns": {
@@ -932,20 +879,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
-        },
-        "discord_connection_id": {
-          "name": "discord_connection_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "discord_cursor": {
-          "name": "discord_cursor",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
           "autoincrement": false
         },
         "title": {
@@ -1012,6 +945,35 @@
           "notNull": false,
           "autoincrement": false
         },
+        "last_error_code": {
+          "name": "last_error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "failure_started_at": {
+          "name": "failure_started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "fetch_stalled": {
+          "name": "fetch_stalled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "relocation_candidate": {
+          "name": "relocation_candidate",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "delivered_until": {
           "name": "delivered_until",
           "type": "integer",
@@ -1042,45 +1004,22 @@
         }
       },
       "indexes": {
+        "feeds_url_unique": {
+          "name": "feeds_url_unique",
+          "columns": [
+            "url"
+          ],
+          "isUnique": true
+        },
         "feeds_next_fetch_at_idx": {
           "name": "feeds_next_fetch_at_idx",
           "columns": [
             "next_fetch_at"
           ],
           "isUnique": false
-        },
-        "feeds_public_url_idx": {
-          "name": "feeds_public_url_idx",
-          "columns": [
-            "url"
-          ],
-          "isUnique": true,
-          "where": "\"feeds\".\"discord_cursor\" is null"
-        },
-        "feeds_discord_connection_url_idx": {
-          "name": "feeds_discord_connection_url_idx",
-          "columns": [
-            "discord_connection_id",
-            "url"
-          ],
-          "isUnique": true
         }
       },
-      "foreignKeys": {
-        "feeds_discord_connection_id_discord_connections_id_fk": {
-          "name": "feeds_discord_connection_id_discord_connections_id_fk",
-          "tableFrom": "feeds",
-          "tableTo": "discord_connections",
-          "columnsFrom": [
-            "discord_connection_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}

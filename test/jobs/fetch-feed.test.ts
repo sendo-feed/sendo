@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest";
 import { getFeed, insertFeed } from "../../src/db/feeds";
 import { articles, feeds } from "../../src/db/schema";
 import { ICON_CHECK_INTERVAL_MS, runFetchFeed } from "../../src/jobs/fetch-feed";
-import { MAX_FETCH_INTERVAL_MS } from "../../src/jobs/fetch-interval";
+import {
+  FETCH_FAILURE_WINDOW_MS,
+  MAX_FETCH_INTERVAL_MS,
+  STALLED_FETCH_INTERVAL_MS,
+} from "../../src/jobs/fetch-interval";
 import type { Platform } from "../../src/platform";
 import { PNG } from "../fixtures/images";
 import { createTestPlatform, fakeFetch, uniqueUrl } from "../helpers";
@@ -214,10 +218,11 @@ describe("runFetchFeed", () => {
     expect(once).toMatchObject({ errorCount: 1, lastError: expect.stringContaining("500") });
     expect(once?.nextFetchAt).toEqual(new Date(NOW.getTime() + INTERVAL_MS * 2));
 
-    await runFetchFeed(platform, feed.id);
+    const next = new Date(NOW.getTime() + 2 * INTERVAL_MS);
+    await runFetchFeed({ ...platform, now: () => next }, feed.id);
     const twice = await getFeed(platform.db, feed.id);
     expect(twice?.errorCount).toBe(2);
-    expect(twice?.nextFetchAt).toEqual(new Date(NOW.getTime() + INTERVAL_MS * 4));
+    expect(twice?.nextFetchAt).toEqual(new Date(next.getTime() + INTERVAL_MS * 4));
   });
 
   it("失敗したときに延ばす間隔は、1 日より長い設定の間隔より短くしない", async () => {
@@ -238,6 +243,27 @@ describe("runFetchFeed", () => {
     expect((await getFeed(platform.db, feed.id))?.lastError).toMatch(/^ParseFeedError/);
   });
 
+  it("200 の HTML から移転先候補を探し、リンクが消えたら候補を消す", async () => {
+    let fallback = '<link rel="alternate" type="application/rss+xml" href="/new.xml">';
+    const { platform, feed, articlesOf } = await setup((url) =>
+      url.pathname === "/new.xml" ? new Response(RSS) : new Response(`<html>${fallback}</html>`),
+    );
+
+    expect(await runFetchFeed(platform, feed.id)).toMatchObject({ status: "failed" });
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({
+      lastErrorCode: "invalid_feed",
+      relocationCandidate: { url: new URL("/new.xml", feed.url).href, title: "Blog" },
+    });
+    expect(await articlesOf()).toEqual([]);
+
+    fallback = "temporary page";
+    await runFetchFeed(
+      { ...platform, now: () => new Date(NOW.getTime() + 2 * INTERVAL_MS) },
+      feed.id,
+    );
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({ relocationCandidate: null });
+  });
+
   it("成功したら、失敗の回数を戻す", async () => {
     let fail = true;
     const { platform, feed } = await setup(() =>
@@ -246,10 +272,170 @@ describe("runFetchFeed", () => {
 
     await runFetchFeed(platform, feed.id);
     fail = false;
-    await runFetchFeed(platform, feed.id);
+    await runFetchFeed({ ...platform, now: () => new Date(NOW.getTime() + HOUR) }, feed.id);
 
-    expect(await getFeed(platform.db, feed.id)).toMatchObject({ errorCount: 0, lastError: null });
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({
+      errorCount: 0,
+      lastError: null,
+      lastErrorCode: null,
+      failureStartedAt: null,
+      fetchStalled: false,
+    });
   });
+
+  it("失敗を記録してから 30 日で週 1 回にし、304 で通常に戻す", async () => {
+    let status = 530;
+    const { platform, feed } = await setup(
+      () => new Response(status === 530 ? "error code: 1016" : null, { status }),
+    );
+    // 導入前から失敗していても、失敗が始まった時刻は分からない
+    await platform.db
+      .update(feeds)
+      .set({ errorCount: 15, lastFetchedAt: new Date(NOW.getTime() - FETCH_FAILURE_WINDOW_MS) })
+      .where(eq(feeds.id, feed.id));
+
+    const attempt = async (elapsedMs: number) => {
+      const now = new Date(NOW.getTime() + elapsedMs);
+      await runFetchFeed({ ...platform, now: () => now }, feed.id);
+      return getFeed(platform.db, feed.id);
+    };
+    expect(await attempt(0)).toMatchObject({
+      failureStartedAt: NOW,
+      fetchStalled: false,
+      lastErrorCode: "dns",
+    });
+    expect(await attempt(FETCH_FAILURE_WINDOW_MS - 1)).toMatchObject({
+      failureStartedAt: NOW,
+      fetchStalled: false,
+    });
+    status = 429;
+    expect(await attempt(FETCH_FAILURE_WINDOW_MS)).toMatchObject({
+      failureStartedAt: NOW,
+      fetchStalled: false,
+      errorCount: 17,
+      lastErrorCode: "rate_limited",
+    });
+    status = 530;
+    const stalledAfter = FETCH_FAILURE_WINDOW_MS + MAX_FETCH_INTERVAL_MS;
+    expect(await attempt(stalledAfter)).toMatchObject({
+      fetchStalled: true,
+      nextFetchAt: new Date(NOW.getTime() + stalledAfter + STALLED_FETCH_INTERVAL_MS),
+    });
+    status = 304;
+    expect(await attempt(stalledAfter + STALLED_FETCH_INTERVAL_MS)).toMatchObject({
+      errorCount: 0,
+      lastError: null,
+      lastErrorCode: null,
+      failureStartedAt: null,
+      fetchStalled: false,
+      nextFetchAt: new Date(
+        NOW.getTime() + stalledAfter + STALLED_FETCH_INTERVAL_MS + MAX_FETCH_INTERVAL_MS,
+      ),
+    });
+  });
+
+  it("410 ですぐ週 1 回にし、429 を受けても取得間隔を縮めない", async () => {
+    let status = 410;
+    const { platform, feed } = await setup(() => new Response(null, { status }));
+    await runFetchFeed(platform, feed.id);
+    const next = new Date(NOW.getTime() + STALLED_FETCH_INTERVAL_MS);
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({
+      fetchStalled: true,
+      nextFetchAt: next,
+      errorCount: 1,
+      lastErrorCode: "gone",
+    });
+    status = 429;
+    await runFetchFeed({ ...platform, now: () => next }, feed.id);
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({
+      fetchStalled: true,
+      nextFetchAt: new Date(next.getTime() + STALLED_FETCH_INTERVAL_MS),
+      errorCount: 1,
+      lastErrorCode: "rate_limited",
+    });
+  });
+
+  it("後から完了した古い取得の 410 で、成功済みの状態を上書きしない", async () => {
+    const pending = Promise.withResolvers<Response>();
+    const started = Promise.withResolvers<void>();
+    const { platform, feed } = await setup(() => {
+      started.resolve();
+      return pending.promise;
+    });
+    const slow = runFetchFeed(platform, feed.id);
+    await started.promise;
+
+    try {
+      const newer = new Date(NOW.getTime() + 1);
+      await runFetchFeed(
+        {
+          ...platform,
+          now: () => newer,
+          fetch: fakeFetch(() => new Response(null, { status: 304 })).fetch,
+        },
+        feed.id,
+      );
+    } finally {
+      pending.resolve(new Response(null, { status: 410 }));
+      await slow;
+    }
+
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({
+      fetchStalled: false,
+      errorCount: 0,
+      nextFetchAt: new Date(NOW.getTime() + 1 + MAX_FETCH_INTERVAL_MS),
+    });
+  });
+
+  it.each([
+    { status: 429, errorCount: 1, lastErrorCode: "rate_limited", wait: 3 * HOUR },
+    { status: 304, errorCount: 0, lastErrorCode: null, wait: MAX_FETCH_INTERVAL_MS },
+  ])(
+    "先に開始した失敗が先に記録されても、後続の $status の結果を記録する",
+    async ({ status, errorCount, lastErrorCode, wait }) => {
+      const olderResponse = Promise.withResolvers<Response>();
+      const olderStarted = Promise.withResolvers<void>();
+      const { platform, feed } = await setup(() => {
+        olderStarted.resolve();
+        return olderResponse.promise;
+      });
+      const older = runFetchFeed(platform, feed.id);
+      await olderStarted.promise;
+
+      const newerResponse = Promise.withResolvers<Response>();
+      const newerStarted = Promise.withResolvers<void>();
+      const newerAt = new Date(NOW.getTime() + 1);
+      const newer = runFetchFeed(
+        {
+          ...platform,
+          now: () => newerAt,
+          fetch: fakeFetch(() => {
+            newerStarted.resolve();
+            return newerResponse.promise;
+          }).fetch,
+        },
+        feed.id,
+      );
+      await newerStarted.promise;
+
+      try {
+        olderResponse.resolve(new Response(null, { status: 500 }));
+        await older;
+      } finally {
+        const headers = new Headers();
+        if (status === 429) headers.set("retry-after", "10800");
+        newerResponse.resolve(new Response(null, { status, headers }));
+        await newer;
+      }
+
+      expect(await getFeed(platform.db, feed.id)).toMatchObject({
+        lastFetchedAt: newerAt,
+        errorCount,
+        lastErrorCode,
+        nextFetchAt: new Date(newerAt.getTime() + wait),
+      });
+    },
+  );
 
   it("消されたフィードなら何もしない", async () => {
     const { platform } = createTestPlatform();
@@ -359,11 +545,11 @@ describe("runFetchFeed の取得の間隔（docs/decisions/jobs.md の 7）", ()
 });
 
 describe("runFetchFeed の Retry-After（docs/decisions/jobs.md の 8）", () => {
-  const nextFetchAtOf = async (response: () => Response) => {
+  const nextFetchAtOf = async (response: () => Response, expectedErrorCount = 1) => {
     const { platform, feed } = await setup(response);
     expect(await runFetchFeed(platform, feed.id)).toMatchObject({ status: "failed" });
     const saved = await getFeed(platform.db, feed.id);
-    expect(saved?.errorCount).toBe(1);
+    expect(saved?.errorCount).toBe(expectedErrorCount);
     return saved?.nextFetchAt;
   };
 
@@ -372,6 +558,7 @@ describe("runFetchFeed の Retry-After（docs/decisions/jobs.md の 8）", () =>
     expect(
       await nextFetchAtOf(
         () => new Response("", { status: 429, headers: { "retry-after": "7200" } }),
+        0,
       ),
     ).toEqual(new Date(NOW.getTime() + 2 * HOUR));
   });
@@ -392,6 +579,7 @@ describe("runFetchFeed の Retry-After（docs/decisions/jobs.md の 8）", () =>
     expect(
       await nextFetchAtOf(
         () => new Response("", { status: 429, headers: { "retry-after": "60" } }),
+        0,
       ),
     ).toEqual(new Date(NOW.getTime() + INTERVAL_MS * 2));
   });

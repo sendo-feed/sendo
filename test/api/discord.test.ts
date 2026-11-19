@@ -342,6 +342,11 @@ describe("Discord の購読", () => {
       where: (f, { eq }) => eq(f.id, feedId),
     });
     expect(feed?.nextFetchAt.getTime()).toBeGreaterThanOrEqual(FIXED_NOW.getTime() + 3600500);
+    expect(feed).toMatchObject({
+      lastErrorCode: "rate_limited",
+      errorCount: 0,
+      failureStartedAt: null,
+    });
     expect(await (await request(BASE)).json()).toMatchObject({ subscriptions: [{ feedId }] });
 
     remote.setMessageStatus(403, 40333);

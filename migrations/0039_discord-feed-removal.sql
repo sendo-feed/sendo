@@ -13,7 +13,8 @@ BEGIN
   WHERE `feed_id` = NEW.`id` AND `deleted_at` IS NULL;
 
   UPDATE `feeds` SET `url` = '', `site_url` = NULL, `title` = NULL,
-    `discord_cursor` = '0', `last_error` = NULL
+    `discord_cursor` = '0', `last_error` = NULL, `last_error_code` = NULL,
+    `error_count` = 0, `failure_started_at` = NULL, `fetch_stalled` = 0, `relocation_candidate` = NULL
   WHERE `id` = NEW.`id`;
 
   DELETE FROM `articles` WHERE `feed_id` = NEW.`id`;

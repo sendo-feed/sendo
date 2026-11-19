@@ -17,9 +17,13 @@ import {
   ErrorSchema,
   errorBody,
   FeedDisplayNameSchema,
+  FeedErrorCodeSchema,
   FeedIconUrlSchema,
+  FeedRelocationCandidateSchema,
+  FeedStatusSchema,
   SettingValueSchema,
   toArticleResponse,
+  toFeedHealthResponse,
 } from "./schemas";
 
 /*
@@ -104,6 +108,9 @@ const SyncFeedSchema = z
     url: z.string(),
     title: z.string().nullable(),
     displayName: FeedDisplayNameSchema,
+    status: FeedStatusSchema,
+    lastErrorCode: FeedErrorCodeSchema,
+    relocationCandidate: FeedRelocationCandidateSchema,
     siteUrl: z.string().nullable(),
     iconUrl: FeedIconUrlSchema,
     folderId: z.string().nullable(),
@@ -244,6 +251,7 @@ export function syncApi(platform: Platform) {
               url: subscription.feed.url,
               title: subscription.feed.title,
               displayName: subscription.displayName,
+              ...toFeedHealthResponse(subscription.feed),
               siteUrl: subscription.feed.siteUrl,
               iconUrl: await images.toRelayUrl(subscription.feed.iconUrl),
               folderId: subscription.folderId,

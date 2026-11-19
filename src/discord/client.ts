@@ -202,7 +202,12 @@ class DiscordHttpError extends FetchFeedError {
     retryAfterMs: number | undefined,
     readonly discordCode?: number,
   ) {
-    super("http_status", `Discord returned HTTP ${status}`, status, retryAfterMs);
+    super(
+      status === 429 ? "rate_limited" : "http_status",
+      `Discord returned HTTP ${status}`,
+      status,
+      retryAfterMs,
+    );
   }
 }
 

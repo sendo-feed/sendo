@@ -13,9 +13,10 @@ import {
 } from "../db/content";
 import { getFeed, recordFeedIcon, recordFetchFailure, recordFetchSuccess } from "../db/feeds";
 import { deliverNewArticles } from "../db/inbox";
-import type { Feed } from "../db/schema";
+import type { Feed, FeedErrorCode } from "../db/schema";
 import { isStorageLimitError, readStorageUsage } from "../db/storage";
-import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
+import { findFeedRelocation, MAX_FEED_LINK_PAGE_BYTES } from "../fetcher/discover";
+import { type FetchedFeedPage, FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
 import { findFeedIcon } from "../fetcher/find-icon";
 import { htmlToText, type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
@@ -24,8 +25,10 @@ import { runFetchDiscord } from "./fetch-discord";
 import {
   backoffInterval,
   currentFetchInterval,
+  FETCH_FAILURE_WINDOW_MS,
   nextFetchInterval,
   retryAfterWait,
+  STALLED_FETCH_INTERVAL_MS,
 } from "./fetch-interval";
 import { canStoreArticles, measureExistingContents, reportStorageFull } from "./storage";
 
@@ -80,12 +83,10 @@ export async function runFetchFeed(
     return { status: "missing" };
 
   const startedAt = platform.now();
-  // 前回の取得で決めた間隔。片付けの幅と、失敗したときに延ばす間隔のもとにする
-  const intervalMs = currentFetchInterval(feed, minIntervalMs);
-
   await measureExistingContents(platform);
   const canStore = await canStoreArticles(platform);
 
+  let fetchedPage: FetchedFeedPage | undefined;
   try {
     if (feed.discordCursor !== null)
       return await runFetchDiscord(platform, feed, startedAt, canStore);
@@ -95,6 +96,7 @@ export async function runFetchFeed(
       etag: feed.etag,
       lastModified: feed.lastModified,
       now: startedAt,
+      notFoundPageBytes: MAX_FEED_LINK_PAGE_BYTES,
     });
 
     if (result.status === "not-modified") {
@@ -106,18 +108,24 @@ export async function runFetchFeed(
         now: startedAt,
         minMs: minIntervalMs,
       });
-      await recordFetchSuccess(db, feed.id, {
+      const recorded = await recordFetchSuccess(db, feed.id, {
         now: startedAt,
         nextFetchAt: new Date(startedAt.getTime() + nextIntervalMs),
         fetchIntervalMs: nextIntervalMs,
-        etag: feed.etag,
-        lastModified: feed.lastModified,
       });
-      // フィードの中身は読んでいないので、フィード自身のアイコンは分からない。サイトから探す
-      await refreshIcon(platform, feed, { siteUrl: feed.siteUrl, feedIconUrl: null }, startedAt);
+      if (recorded) {
+        // フィードの中身は読んでいないので、サイトからアイコンを探す
+        await refreshIcon(
+          platform,
+          recorded,
+          { siteUrl: recorded.siteUrl, feedIconUrl: null },
+          startedAt,
+        );
+      }
       return { status: "not-modified" };
     }
 
+    fetchedPage = result;
     const parsed = parseFeed(result.body, result.url);
     const rows = await Promise.all(parsed.items.map((item) => toArticle(feed.id, item, startedAt)));
     await recordCurrentFeed(
@@ -177,7 +185,7 @@ export async function runFetchFeed(
       minMs: minIntervalMs,
     });
     // 記事を入れ終えてから、取得済みとして記録する。途中で落ちても、次の取得でやり直せる
-    await recordFetchSuccess(db, feed.id, {
+    const recorded = await recordFetchSuccess(db, feed.id, {
       now: startedAt,
       nextFetchAt: new Date(startedAt.getTime() + nextIntervalMs),
       fetchIntervalMs: nextIntervalMs,
@@ -188,12 +196,14 @@ export async function runFetchFeed(
     });
     // フィードの名前やサイトの URL が変わると、購読の変更番号はトリガーが進める
     // （migrations/0003_received_seq_and_feed_trigger.sql。同期でクライアントに伝わる）
-    await refreshIcon(
-      platform,
-      feed,
-      { siteUrl: parsed.siteUrl, feedIconUrl: parsed.iconUrl },
-      startedAt,
-    );
+    if (recorded) {
+      await refreshIcon(
+        platform,
+        recorded,
+        { siteUrl: parsed.siteUrl, feedIconUrl: parsed.iconUrl },
+        startedAt,
+      );
+    }
     return { status: "fetched", inserted: insertedArticles.length };
   } catch (error) {
     if (isStorageLimitError(error)) {
@@ -203,27 +213,79 @@ export async function runFetchFeed(
     }
     if (!(error instanceof FetchFeedError || error instanceof ParseFeedError)) throw error;
 
-    const errorCount = feed.errorCount + 1;
-    // フィードの今の間隔を、失敗の回数で延ばす。上限は取得の間隔の上限と同じ（設定の間隔が 1 日より
-    // 長いとき、失敗中のフィードのほうが頻繁に取得されないように）
-    const backoff = backoffInterval({ intervalMs, errorCount, minMs: minIntervalMs });
-    // 429 ／ 503 の Retry-After を守る（docs/decisions/jobs.md の 8）。待つ長さは、応答を受けた
-    // 時刻から数える
+    const errorCode = error instanceof FetchFeedError ? error.code : "invalid_feed";
+    // Retry-After は、応答を受けた時刻から数える（docs/decisions/jobs.md の 8）
     const retryAfter =
       error instanceof FetchFeedError ? retryAfterWait(error.retryAfterMs, minIntervalMs) : 0;
-    const nextFetchAt = Math.max(
-      startedAt.getTime() + backoff,
-      platform.now().getTime() + retryAfter,
-    );
+    const retryAt = platform.now().getTime() + retryAfter;
     const message = `${error.name}: ${error.message}`;
-    await recordFetchFailure(db, feed.id, {
-      now: startedAt,
-      nextFetchAt: new Date(nextFetchAt),
-      errorCount,
-      error: message,
-      discordConnectionId: feed.discordConnectionId,
+    const page = error instanceof FetchFeedError ? error.notFoundPage : fetchedPage;
+    const relocationCandidate = page
+      ? await findFeedRelocation(page, feed.url, platform.fetch)
+      : undefined;
+    await recordFailedAttempt(db, feed, {
+      startedAt,
+      minIntervalMs,
+      retryAt,
+      message,
+      errorCode,
+      relocationCandidate,
     });
     return { status: "failed", error: message };
+  }
+}
+
+async function recordFailedAttempt(
+  db: Platform["db"],
+  feed: Feed,
+  input: {
+    startedAt: Date;
+    minIntervalMs: number;
+    retryAt: number;
+    message: string;
+    errorCode: FeedErrorCode;
+    relocationCandidate: Feed["relocationCandidate"] | undefined;
+  },
+): Promise<void> {
+  const { startedAt, minIntervalMs, retryAt, message, errorCode, relocationCandidate } = input;
+  const rateLimited = errorCode === "rate_limited";
+  let latest: Feed | undefined = feed;
+  for (
+    let retries = 0;
+    latest &&
+    latest.discordConnectionId === feed.discordConnectionId &&
+    (latest.lastFetchedAt === null || latest.lastFetchedAt < startedAt);
+    retries++
+  ) {
+    // 先行した取得が書き込んだ場合は、その結果から間隔と状態を計算し直す。
+    // 競合が続く場合はクエリの上限に収まるうちに、キューの再試行に任せる。
+    if (retries > 3) throw new Error(`could not record fetch result for ${feed.id}`);
+    const intervalMs = currentFetchInterval(latest, minIntervalMs);
+    const errorCount = rateLimited ? latest.errorCount : latest.errorCount + 1;
+    const failureStartedAt = rateLimited
+      ? latest.failureStartedAt
+      : (latest.failureStartedAt ?? startedAt);
+    const fetchStalled =
+      latest.fetchStalled ||
+      errorCode === "gone" ||
+      (!rateLimited &&
+        failureStartedAt !== null &&
+        startedAt.getTime() - failureStartedAt.getTime() >= FETCH_FAILURE_WINDOW_MS);
+    const backoff = fetchStalled
+      ? Math.max(STALLED_FETCH_INTERVAL_MS, minIntervalMs)
+      : backoffInterval({ intervalMs, errorCount: Math.max(errorCount, 1), minMs: minIntervalMs });
+    const recorded = await recordFetchFailure(db, latest, {
+      now: startedAt,
+      nextFetchAt: new Date(Math.max(startedAt.getTime() + backoff, retryAt)),
+      errorCount,
+      error: message,
+      errorCode,
+      failureStartedAt,
+      fetchStalled,
+      relocationCandidate,
+    });
+    if (recorded) return;
+    latest = await getFeed(db, feed.id);
   }
 }
 
@@ -235,7 +297,7 @@ export async function runFetchFeed(
  */
 async function refreshIcon(
   platform: Pick<Platform, "db" | "fetch">,
-  feed: Feed,
+  feed: Pick<Feed, "id" | "iconUrl" | "iconCheckedAt">,
   found: { siteUrl: string | null; feedIconUrl: string | null },
   now: Date,
 ): Promise<void> {

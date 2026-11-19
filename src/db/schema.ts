@@ -9,6 +9,8 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import type { FeedRelocationCandidate } from "../fetcher/discover";
+import type { FetchFeedErrorCode } from "../fetcher/fetch-feed";
 
 /**
  * ユーザー。パスワードは持たない（docs/decisions/accounts.md）。
@@ -221,6 +223,8 @@ export const folders = sqliteTable(
   ],
 );
 
+export type FeedErrorCode = FetchFeedErrorCode | "invalid_feed";
+
 /** Discord OAuth で確認した、Sendo のユーザーと Discord のアカウントの結び付き */
 export const discordConnections = sqliteTable("discord_connections", {
   id: text("id").primaryKey(),
@@ -246,6 +250,7 @@ export const feeds = sqliteTable(
     /** 条件付き GET に使う。前回の応答の ETag ／ Last-Modified */
     etag: text("etag"),
     lastModified: text("last_modified"),
+    /** 取得を試した時刻 */
     lastFetchedAt: integer("last_fetched_at", { mode: "timestamp_ms" }),
     /** この時刻を過ぎたら、定期実行で取得のキューに積む（購読している人がいるときだけ） */
     nextFetchAt: integer("next_fetch_at", { mode: "timestamp_ms" }).notNull(),
@@ -255,9 +260,18 @@ export const feeds = sqliteTable(
      * にし、索引は付けない（D1 の書き込みの行数を増やさないため）
      */
     fetchIntervalMs: integer("fetch_interval_ms"),
-    /** 続けて失敗した回数。間隔を延ばすのに使い、成功したら 0 に戻す */
+    /** 続けて失敗した回数（429 を除く）。成功したら 0 に戻す */
     errorCount: integer("error_count").notNull().default(0),
     lastError: text("last_error"),
+    lastErrorCode: text("last_error_code").$type<FeedErrorCode>(),
+    /** 今の失敗が続き始めた時刻。導入前の失敗は開始時刻が分からない */
+    failureStartedAt: integer("failure_started_at", { mode: "timestamp_ms" }),
+    /** 取得の失敗が長期化したか、HTTP 410 が返ったか（docs/decisions/jobs.md の 9） */
+    fetchStalled: integer("fetch_stalled", { mode: "boolean" }).notNull().default(false),
+    /** 失敗した応答から確認できた候補（docs/decisions/feed-relocation.md） */
+    relocationCandidate: text("relocation_candidate", {
+      mode: "json",
+    }).$type<FeedRelocationCandidate>(),
     /**
      * どこまでの記事を、購読している人の受信箱に配ったか（記事の created_at）。
      * 配るのが途中で落ちても、次の取得でここから配り直せる
