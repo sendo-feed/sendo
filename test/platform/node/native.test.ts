@@ -35,9 +35,10 @@ describe("Rust のモジュール（記事のページから本文を抜く）",
     const url = "https://news.example.com/posts/1";
     const photo = "https://i.imgur.com/photo.jpeg";
     const pixel = "https://i.imgur.com/pixel.jpeg";
+    const hidden = "https://i.imgur.com/hidden.jpeg";
     const page = articlePage().replace(
       "</h1>",
-      `</h1><blockquote class="imgur-embed-pub"><a href="${pixel}">元のリンク</a><template><img src="${pixel}" width="1" height="1"></template></blockquote><blockquote class="imgur-embed-pub"><a href="${photo}">写真</a></blockquote>`,
+      `</h1><blockquote class="imgur-embed-pub"><a href="${pixel}">元のリンク</a><template><img src="${pixel}" width="1" height="1"></template><img hidden src="${hidden}" data-src="https://example.com/other.png" width="1" height="1"><a href="${hidden}">非表示画像のリンク</a></blockquote><blockquote class="imgur-embed-pub"><a href="${photo}">写真</a></blockquote>`,
     );
     const result = await extractor.extract({
       bytes: new TextEncoder().encode(page),
@@ -48,6 +49,8 @@ describe("Rust のモジュール（記事のページから本文を抜く）",
     const html = sanitizeHtml(result?.html ?? "", url, { expandImgurEmbeds: true });
     expect(html).toContain(`href="${pixel}"`);
     expect(html).not.toContain(`src="${pixel}"`);
+    expect(html).toContain(`href="${hidden}"`);
+    expect(html).not.toContain(`src="${hidden}"`);
     expect(html).toContain(`src="${photo}"`);
   });
 

@@ -60,8 +60,7 @@ pub fn extract(
     if !matches!(base.scheme(), "http" | "https") {
         return Err(ExtractError::InvalidInput("expected an HTTP URL".into()));
     }
-    let normalized = normalize::normalize(&html, url);
-    blocks::extract(&normalized, url)
+    blocks::extract(&html, url)
 }
 
 /// 文字コードを決めて、文字列にする。

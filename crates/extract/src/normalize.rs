@@ -160,6 +160,11 @@ pub(crate) fn normalized_image_url(im: &Selection<'_>, base: &str) -> Option<Str
 
 pub(crate) fn normalize(html: &str, base: &str) -> String {
     let doc = Document::from(html);
+    normalize_document(&doc, base);
+    doc.html().to_string()
+}
+
+pub(crate) fn normalize_document(doc: &Document, base: &str) {
     for node in doc.select("img").nodes() {
         let im = Selection::from(*node);
         if let Some(url) = normalized_image_url(&im, base) {
@@ -177,7 +182,6 @@ pub(crate) fn normalize(html: &str, base: &str) -> String {
     for n in doc.select("picture source").nodes() {
         Selection::from(*n).remove();
     }
-    doc.html().to_string()
 }
 
 #[cfg(test)]

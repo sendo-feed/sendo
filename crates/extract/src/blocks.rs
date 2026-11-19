@@ -4,7 +4,7 @@
 //! 保てる。ホスト名やサイト別のセレクタは使わない。
 use std::collections::HashSet;
 
-use dom_query::{Document, NodeId, Selection};
+use dom_query::{Document, NodeId, NodeRef, Selection};
 use url::Url;
 
 use crate::{ExtractError, Extracted};
@@ -51,12 +51,21 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
     if !doc.select(IMGUR_LINK).exists() {
         return Vec::new();
     }
-    let mut images: Vec<_> = doc
-        .select("img[src]")
-        .nodes()
-        .iter()
-        .filter_map(|node| Some((node.id, imgur_resource(&node.attr("src")?, base)?)))
-        .collect();
+    let mut images = Vec::new();
+    let mut collect = |node: NodeRef<'_>| {
+        let image = Selection::from(node);
+        // 元の src と、遅延読み込みなどの正規化で選ばれる URL の両方を記録する。
+        let urls = [
+            image.attr("src").and_then(|src| imgur_resource(&src, base)),
+            crate::normalize::normalized_image_url(&image, base)
+                .and_then(|src| imgur_resource(&src, base)),
+        ];
+        images.extend(urls.into_iter().flatten().map(|url| (node.id, url)));
+    };
+    for node in doc.select("img").nodes() {
+        collect(*node);
+    }
+
     let mut templates = doc.select("template").nodes().to_vec();
     // template の中身は文書とは別の木にあるので、ふつうのセレクタからは見えない。
     while let Some(template) = templates.pop() {
@@ -66,17 +75,7 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
         if let Some(fragment) = fragment.and_then(|id| doc.tree.get(&id)) {
             for node in fragment.descendants_it() {
                 match node.node_name().as_deref() {
-                    Some("img") => {
-                        let image = Selection::from(node);
-                        if let Some(url) = crate::normalize::normalized_image_url(&image, base)
-                            .and_then(|src| imgur_resource(&src, base))
-                            .or_else(|| {
-                                image.attr("src").and_then(|src| imgur_resource(&src, base))
-                            })
-                        {
-                            images.push((node.id, url));
-                        }
-                    }
+                    Some("img") => collect(node),
                     Some("template") => templates.push(node),
                     _ => {}
                 }
@@ -172,15 +171,16 @@ fn mark_removed_imgur_images(blocks: &[&Selection<'_>], images: Vec<(NodeId, Url
         return;
     }
     let mut visible = HashSet::new();
+    let source = |node: &NodeRef<'_>| Some((node.id, imgur_resource(&node.attr("src")?, base)?));
     for block in blocks {
         if block.is("img") {
-            visible.extend(block.nodes().iter().map(|node| node.id));
+            visible.extend(block.nodes().iter().filter_map(source));
         }
-        visible.extend(block.select("img[src]").nodes().iter().map(|node| node.id));
+        visible.extend(block.select("img[src]").nodes().iter().filter_map(source));
     }
     let removed: HashSet<_> = images
         .into_iter()
-        .filter(|(id, _)| !visible.contains(id))
+        .filter(|image| !visible.contains(image))
         .map(|(_, url)| url)
         .collect();
     if removed.is_empty() {
@@ -238,6 +238,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         depths.insert(node.id, depth);
     }
     let imgur_images = collect_imgur_images(&doc, url);
+    crate::normalize::normalize_document(&doc, url);
     prune(&doc, url);
     let page_title = doc.select("title").text().to_string();
     // 記事を明示した領域は、短い記事をサイドバーの長文に負けさせない手掛かりにする。
@@ -503,10 +504,9 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
         if root.is("main, section, [role=main], [role=region]") {
             return None;
         }
-        ancestors
-            .nodes()
-            .iter()
-            .find(|node| Selection::from(**node).is("main, [role=main], body"))
+        ancestors.nodes().iter().find(|node| {
+            Selection::from(**node).is("section, [role=region], main, [role=main], body")
+        })
     });
     let Some(boundary) = boundary else {
         return Vec::new();
@@ -650,12 +650,12 @@ mod tests {
     #[test]
     fn keeps_a_direct_imgur_image_in_the_lead_without_article_markup() {
         let doc = Document::from(
-            r#"<main><img src="https://i.imgur.com/example.jpeg">
+            r#"<main><section><img src="https://i.imgur.com/example.jpeg">
             <picture><img src="http://i.imgur.com/link.jpeg"></picture>
             <figure><img src="//I.IMGUR.COM/protocol-relative.jpeg"><figcaption>冒頭の画像</figcaption></figure>
             <img src="https://i.imgur.com.example/unrelated.jpeg">
             <blockquote class="imgur-embed-pub"><a href="https://imgur.com/a/link">投稿</a></blockquote>
-            <section><div id="body">記事本文</div></section></main>"#,
+            <div id="body">記事本文</div></section></main>"#,
         );
         let leads = leading_embeds(&doc.select("#body"), "https://blog.example/post");
         assert_eq!(leads.len(), 4);
@@ -756,6 +756,16 @@ mod tests {
             r#"<main><section><h2>別の特集</h2>
             <blockquote class="twitter-tweet"><a href="https://x.com/user/status/123">別の投稿</a></blockquote></section>
             <div id="body">本文</div></main>"#,
+        );
+        assert!(leading_embeds(&doc.select("#body"), "https://blog.example/post").is_empty());
+    }
+
+    #[test]
+    fn does_not_take_a_promotion_before_the_section_that_contains_the_article() {
+        let doc = Document::from(
+            r#"<main><div><h2>編集部のおすすめ</h2>
+            <blockquote class="twitter-tweet"><a href="https://x.com/user/status/456">別の引用</a></blockquote></div>
+            <section><div id="body">本文</div></section></main>"#,
         );
         assert!(leading_embeds(&doc.select("#body"), "https://blog.example/post").is_empty());
     }
