@@ -4,7 +4,7 @@
 //! 保てる。ホスト名やサイト別のセレクタは使わない。
 use std::collections::HashSet;
 
-use dom_query::{Document, Selection};
+use dom_query::{Document, NodeId, Selection};
 use url::Url;
 
 use crate::{ExtractError, Extracted};
@@ -13,6 +13,7 @@ const BODY_BLOCKS: &str =
     "p, pre, td, th, blockquote, div, section, article, main, body, li, dt, dd";
 
 const POST_LINKS: &str = "blockquote.twitter-tweet a[href], blockquote.imgur-embed-pub a[href]";
+const IMGUR_LINK: &str = "blockquote.imgur-embed-pub a[href]";
 
 fn compact(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
@@ -43,33 +44,34 @@ fn has_post_embed(block: &Selection<'_>, base: &str) -> bool {
             })
 }
 
-fn prune(doc: &Document, base: &str) {
-    const IMGUR_LINK: &str = "blockquote.imgur-embed-pub a[href]";
-    let images: Vec<_> = if doc.select(IMGUR_LINK).exists() {
-        let mut images = doc.select("img[src]").nodes().to_vec();
-        let mut templates = doc.select("template").nodes().to_vec();
-        // template の中身は文書とは別の木にあるので、ふつうのセレクタからは見えない。
-        while let Some(template) = templates.pop() {
-            let fragment = template
-                .element_ref()
-                .and_then(|element| element.template_contents);
-            if let Some(fragment) = fragment.and_then(|id| doc.tree.get(&id)) {
-                for node in fragment.descendants_it() {
-                    match node.node_name().as_deref() {
-                        Some("img") => images.push(node),
-                        Some("template") => templates.push(node),
-                        _ => {}
-                    }
+fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
+    if !doc.select(IMGUR_LINK).exists() {
+        return Vec::new();
+    }
+    let mut images = doc.select("img[src]").nodes().to_vec();
+    let mut templates = doc.select("template").nodes().to_vec();
+    // template の中身は文書とは別の木にあるので、ふつうのセレクタからは見えない。
+    while let Some(template) = templates.pop() {
+        let fragment = template
+            .element_ref()
+            .and_then(|element| element.template_contents);
+        if let Some(fragment) = fragment.and_then(|id| doc.tree.get(&id)) {
+            for node in fragment.descendants_it() {
+                match node.node_name().as_deref() {
+                    Some("img") => images.push(node),
+                    Some("template") => templates.push(node),
+                    _ => {}
                 }
             }
         }
-        images
-            .into_iter()
-            .filter_map(|node| Some((node.id, imgur_resource(&node.attr("src")?, base)?)))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    }
+    images
+        .into_iter()
+        .filter_map(|node| Some((node.id, imgur_resource(&node.attr("src")?, base)?)))
+        .collect()
+}
+
+fn prune(doc: &Document, base: &str) {
     doc.select("nav, aside, script, style, noscript, template, form, [hidden], [aria-hidden=true], [role=navigation], [role=banner], [role=contentinfo], [role=complementary]").remove();
     // 完全な語か区切りで比較し、本文の単語の部分一致では消さない。
     const NOISE: &[&str] = &[
@@ -123,7 +125,7 @@ fn prune(doc: &Document, base: &str) {
             && links.length() >= 3
             && !block.select("img, video, audio, iframe").exists()
         {
-            related_heading_before(&block)
+            related_heading_before(&block, base)
         } else {
             None
         };
@@ -139,20 +141,30 @@ fn prune(doc: &Document, base: &str) {
             block.remove();
         }
     }
-    if !images.is_empty() {
-        let visible: HashSet<_> = doc
-            .select("img[src]")
-            .nodes()
-            .iter()
-            .map(|node| node.id)
-            .collect();
-        let removed: HashSet<_> = images
-            .into_iter()
-            .filter(|(id, _)| !visible.contains(id))
-            .map(|(_, url)| url)
-            .collect();
-        // 取り除いた画像は、リンクだけが残ってもサニタイズ時に画像へ戻さない。
-        for node in doc.select(IMGUR_LINK).nodes() {
+}
+
+// 本文に選ばれなかった領域の画像も、直リンクから生成し直さない。
+fn mark_removed_imgur_images(blocks: &[&Selection<'_>], images: Vec<(NodeId, Url)>, base: &str) {
+    if images.is_empty() {
+        return;
+    }
+    let mut visible = HashSet::new();
+    for block in blocks {
+        if block.is("img") {
+            visible.extend(block.nodes().iter().map(|node| node.id));
+        }
+        visible.extend(block.select("img[src]").nodes().iter().map(|node| node.id));
+    }
+    let removed: HashSet<_> = images
+        .into_iter()
+        .filter(|(id, _)| !visible.contains(id))
+        .map(|(_, url)| url)
+        .collect();
+    if removed.is_empty() {
+        return;
+    }
+    for block in blocks {
+        for node in block.select(IMGUR_LINK).nodes() {
             if let Some(href) = node
                 .attr("href")
                 .and_then(|href| imgur_resource(&href, base))
@@ -164,13 +176,14 @@ fn prune(doc: &Document, base: &str) {
     }
 }
 
-fn related_heading_before<'a>(block: &Selection<'a>) -> Option<Selection<'a>> {
+fn related_heading_before<'a>(block: &Selection<'a>, base: &str) -> Option<Selection<'a>> {
     let mut previous = block.prev_sibling();
     for _ in 0..6 {
         if !previous.is("br, hr") {
             return (previous.is("#related-title, .related-title")
+                && !has_post_embed(&previous, base)
                 && !previous
-                    .select("p, div, section, article, ul, ol, table")
+                    .select("p, div, section, article, ul, ol, table, blockquote, img, video, audio, iframe")
                     .exists())
             .then_some(previous);
         }
@@ -197,6 +210,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         }
         depths.insert(node.id, depth);
     }
+    let imgur_images = collect_imgur_images(&doc, url);
     prune(&doc, url);
     let page_title = doc.select("title").text().to_string();
     // 記事を明示した領域は、短い記事をサイドバーの長文に負けさせない手掛かりにする。
@@ -405,9 +419,11 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         }
     }
     let leading = leading_embeds(&root, url);
+    let blocks: Vec<_> = leading.iter().chain(std::iter::once(&root)).collect();
+    mark_removed_imgur_images(&blocks, imgur_images, url);
     let mut html = String::new();
     let mut text_length = 0;
-    for block in leading.iter().chain(std::iter::once(&root)) {
+    for block in blocks {
         // 相対 URL はリダイレクト後の記事 URL を基準にする。HTML の base タグは信用しない。
         for node in block.select("a[href], img[src]").nodes() {
             let el = Selection::from(*node);
@@ -444,7 +460,7 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
         return Vec::new();
     }
     let ancestors = root.ancestors(Some(128));
-    let boundary = ancestors
+    let article_boundary = ancestors
         .nodes()
         .iter()
         .find(|node| Selection::from(**node).is(ARTICLE))
@@ -453,16 +469,16 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                 .nodes()
                 .iter()
                 .find(|node| Selection::from(**node).is(ARTICLE_BODY))
-        })
-        .or_else(|| {
-            if root.is("main, [role=main]") || root.is(ARTICLE_BODY) {
-                return None;
-            }
-            ancestors
-                .nodes()
-                .iter()
-                .find(|node| Selection::from(**node).is("main, [role=main], body"))
         });
+    let boundary = article_boundary.or_else(|| {
+        if root.is("main, [role=main]") || root.is(ARTICLE_BODY) {
+            return None;
+        }
+        ancestors
+            .nodes()
+            .iter()
+            .find(|node| Selection::from(**node).is("main, [role=main], body"))
+    });
     let Some(boundary) = boundary else {
         return Vec::new();
     };
@@ -484,6 +500,9 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                     || sibling.is(ARTICLE_BODY)
                     || sibling.select(ARTICLE).exists()
                     || sibling.select(ARTICLE_BODY).exists()
+                    || (article_boundary.is_none()
+                        && (sibling.is("section, [role=region]")
+                            || sibling.select("section, [role=region]").exists()))
                 {
                     break;
                 }
@@ -630,7 +649,7 @@ mod tests {
     #[test]
     fn keeps_an_intro_heading_separated_by_line_breaks() {
         let doc = Document::from(format!(
-            r#"<main><section><header><h2>導入</h2></header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">引用</a></blockquote></section>{}<section id="body">記事本文</section></main>"#,
+            r#"<article><section><header><h2>導入</h2></header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">引用</a></blockquote></section>{}<section id="body">記事本文</section></article>"#,
             "<br>".repeat(8)
         ));
         let leads = leading_embeds(&doc.select("#body"), "https://blog.example/post");
@@ -663,7 +682,10 @@ mod tests {
             <a href="https://i.imgur.com/other.jpeg">別の投稿</a>
             </blockquote></article>"#,
         );
-        prune(&doc, "https://blog.example/post");
+        let base = "https://blog.example/post";
+        let images = collect_imgur_images(&doc, base);
+        prune(&doc, base);
+        mark_removed_imgur_images(&[&doc.select("article")], images, base);
         assert!(!doc.select("img").exists());
         let links = doc.select("a[data-sendo-imgur-image-removed=true]");
         assert_eq!(
@@ -675,6 +697,45 @@ mod tests {
             doc.select("a[href$='template.jpeg'][data-sendo-imgur-image-removed]")
                 .exists()
         );
+    }
+
+    #[test]
+    fn does_not_restore_imgur_images_outside_the_extracted_blocks() {
+        let doc = Document::from(
+            r#"<article><div id="body"><blockquote class="imgur-embed-pub">
+            <a href="https://i.imgur.com/photo.jpeg">投稿</a></blockquote></div>
+            <div><img src="https://i.imgur.com/photo.jpeg" width="1" height="1"></div></article>"#,
+        );
+        let base = "https://blog.example/post";
+        let images = collect_imgur_images(&doc, base);
+        prune(&doc, base);
+        assert!(doc.select("img").exists());
+        mark_removed_imgur_images(&[&doc.select("#body")], images, base);
+        assert!(
+            doc.select("a[data-sendo-imgur-image-removed=true]")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn does_not_cross_separate_sections_under_an_unmarked_main() {
+        let doc = Document::from(
+            r#"<main><section><h2>別の特集</h2>
+            <blockquote class="twitter-tweet"><a href="https://x.com/user/status/123">別の投稿</a></blockquote></section>
+            <div id="body">本文</div></main>"#,
+        );
+        assert!(leading_embeds(&doc.select("#body"), "https://blog.example/post").is_empty());
+    }
+
+    #[test]
+    fn keeps_a_quote_in_an_element_that_looks_like_a_related_heading() {
+        let doc = Document::from(
+            r#"<article><div id="related-title"><blockquote class="twitter-tweet">
+            <a href="https://x.com/user/status/123">引用</a></blockquote></div>
+            <ul class="manual-related"><li><a href="/a">別一</a></li><li><a href="/b">別二</a></li><li><a href="/c">別三</a></li></ul></article>"#,
+        );
+        prune(&doc, "https://blog.example/post");
+        assert!(doc.select("#related-title blockquote").exists());
     }
 
     #[test]

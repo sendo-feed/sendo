@@ -51,7 +51,7 @@ services:
     pull_policy: never
 ```
 
-初回は `docker compose pull sendo` で対応版の Sendo に更新してから、`docker compose up -d` で起動します。以後の更新では reader のイメージも新しいソースからビルドし直します。
+初回は `docker compose pull sendo` で対応版の Sendo に更新してから、`docker compose up -d` で起動します。以後の更新でも Sendo のイメージを取り込み、reader のイメージをビルドし直してコンテナを作り直します。別ホストのファイルや配信用ヘッダーに変更があれば、reader と同じ版の `apps/web/x-embed/` を再配信します。旧 reader との互換性を保つ更新手順は [reader のコンテナ構成の決定](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md#決定)に従います。
 
 ### 標準構成を更新する
 
