@@ -23,6 +23,20 @@ Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS �
    - `PUBLIC_URL` と `READER_URL`：どちらも、外から開く sendo-reader のオリジン（例：`https://reader.example.com`）。`PUBLIC_URL` は欠かせません。ないと、ブラウザのログインの戻り先が合いません。2 つとも入れると、OAuth（[OAuth でつなぐ](#oauth-でつなぐ)）も使えます
    - `ALLOWED_EMAILS`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`：ブラウザでログインするとき（[ブラウザでログインする](#ブラウザでログインするgoogle)）。Google の「承認済みのリダイレクト URI」には `https://reader.example.com/api/v1/auth/google/callback` を入れる
 2. 手前にリバースプロキシ（Caddy など）か Cloudflare Tunnel を置いて TLS を終え、sendo-reader のコンテナ（`127.0.0.1:8080`）に向ける
+   - 更新の知らせ（`/api/v1/sync/updates`）は WebSocket を使うので、手前のプロキシが `Upgrade` を通す必要があります（[決定](docs/decisions/sync.md)の 9）。Caddy（`reverse_proxy`）と Cloudflare Tunnel は、何も足さずに通します
+   - nginx などでは、HTTP/1.1 で中継し、`Upgrade` と `Connection` のヘッダーを渡す設定が要ります
+
+     ```nginx
+     location = /api/v1/sync/updates {
+         proxy_pass http://127.0.0.1:8080;
+         proxy_http_version 1.1;
+         proxy_set_header Upgrade $http_upgrade;
+         proxy_set_header Connection "upgrade";
+         proxy_set_header Host $host;
+     }
+     ```
+
+   - 通さなくても、定期の同期だけで動きます。壊れはしませんが、別の端末や取得での変更が、開いている画面にすぐには反映されません
 3. 動かす
 
    ```sh

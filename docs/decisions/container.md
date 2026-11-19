@@ -35,7 +35,7 @@ Sendo は、コンテナ（Node ＋ SQLite）だけで動かす（[テックス�
 
 10. **上流のリポジトリの CI がイメージを作り、GHCR（`ghcr.io/sendo-feed/sendo`）に置く。使う人は fork しない。**
     - 標準構成では、手元に `compose.yaml` と `.env` を置き、配布済みイメージで動かす。上流の更新は `docker compose pull` で取り込み、コンテナを作り直す。新しいコンテナが起動するときにマイグレーションを当てる（5）
-    - X の埋め込みを有効にする場合は、reader とホスト名が異なる HTTPS オリジンで隔離フレーム用の静的ページを配信する。配信元を指定した reader イメージをビルドして Compose で使い、reader の更新時もビルドし直す。隔離フレームの静的ファイルや配信用ヘッダーに変更があれば、同じ版の `apps/web/x-embed/` を別ホストへ再配信する。開いたままの reader のため、投稿 ID の渡し方や高さ通知は旧版とも互換に保つ。互換性を変える場合は新しい配信元のホストを用意する。配信先を移す場合は、開いたままの旧 reader や、Service Worker のキャッシュから起動する旧 reader が使えるように旧ホストの配信も続ける。Sendo は `docker compose pull sendo` で更新してから、Compose でコンテナを作り直す。配備後は、対象記事の本文をまだ保持していないブラウザープロファイルで、対応版の Sendo が保存した本文をオンラインで開き、[reader の候補条件](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/local-first.md#記事の本文)を満たす引用で公式ウィジェットが表示されることを確認する。専用ホストのルート（`/`）の HTTPS 応答のヘッダー（CSP と Referrer-Policy を含む）を reader のビルドに使った版の `apps/web/x-embed/_headers` と照合する。[reader のコンテナ構成の 2](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md#決定)
+    - X の埋め込みを有効にする場合は、reader とホスト名が異なる HTTPS オリジンで隔離フレーム用の静的ページを配信する。配信元を指定した reader イメージをビルドして Compose で使い、reader の更新時もビルドし直す。隔離フレームの静的ファイルや配信用ヘッダーに変更があれば、同じ版の `apps/web/x-embed/` を別ホストへ再配信する。開いたままの reader のため、投稿 ID の渡し方や高さ通知は旧版とも互換に保つ。互換性を変える場合は新しい配信元のホストを用意する。配信先を移す場合は、開いたままの旧 reader や、Service Worker のキャッシュから起動する旧 reader が使えるように旧ホストの配信も続ける。Sendo は `docker compose pull sendo` で更新してから、Compose でコンテナを作り直す。配備後は、新規のブラウザープロファイルで、配備した版の reader を使って対応版の Sendo が保存した本文をオンラインで開き、[reader の候補条件](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/local-first.md#記事の本文)を満たす引用までスクロールし、表示範囲に入った引用で公式ウィジェットが表示され、ブラウザーの隔離フレームが設定した HTTPS オリジンに接続することを確認する。専用ホストのルート（`/`）の HTTPS 応答のヘッダー（CSP と Referrer-Policy を含む）を reader のビルドに使った版の `apps/web/x-embed/_headers` と照合する。[reader のコンテナ構成の 2](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md#決定)
     - `main` に変更が入るたびに、`main` のタグを付けて出す。版を切るようになったら、版のタグ（`1.2.3`、`1.2`）と `latest` も付ける
     - amd64 と arm64 の両方で作る。Rust のネイティブのモジュールも、それぞれの CPU 向けにビルドしてイメージに入れる
     - イメージは公開する。使う人は `docker login` せずに取ってこられる
@@ -60,8 +60,8 @@ Sendo がほかの RSS リーダーと違う価値を出すのは、CPU を多�
 - **ネイティブのモジュールを必ず読み込む：** 機能を欠いたまま動くと、ページの本文や言語判定が静かに止まり、気づきにくい。イメージには必ず入っているので、読み込めないのは壊れたときだけ。起動を止めて知らせるほうがよい。
 - **機能の有無を返す API を持たない：**
   - 版で機能が分かれなくなったので、有無を返す意味がない。項目ごとに「いつ消すか」を決め続けることもなくなる
-  - Sendo と reader は compose で一緒に更新するので、新旧が混ざるのは更新の途中の短い間だけ。その間は、呼んで失敗したら使わない、で足りる
-  - sendo-reader は、全文の取得を常に使える機能として出し、この API を見ない（sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)の 8）。古い版の画面（Service Worker に残った版）が呼んで 404 を受けても、全文の取得を出さないだけで動き続ける
+  - 独自ビルドの reader を据え置いた場合や、開いたままのタブや Service Worker が旧版を使う場合は、新旧の組み合わせが続く。機能を呼んで失敗したら、使える機能で動き続ける
+  - sendo-reader は、全文の取得を常に使える機能として出し、この API を見ない（sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)の 8）。旧 reader が呼んで 404 を受けると、未取得の記事の全文を取りにいく操作は出ない。取得済みの全文は引き続き表示できる
 - **Node を使う：**
   - LTS の期間が長く、開発の道具（`.node-version`）でもすでに使っている
   - undici の接続の処理を差し替えれば、外への取得で接続先の IP を確かめられる（8）
