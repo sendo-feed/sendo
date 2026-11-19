@@ -129,9 +129,9 @@ async function runServer(env: NodeEnv): Promise<void> {
     // 新しい接続を受けるのをやめ、処理中のリクエストが終わるのを待つ。待っている間の、使われていない
     // 接続（keep-alive）は閉じる。終わらなければ、上の上限で打ち切る
     const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-    sync.stop();
+    const notificationsClosed = sync.stop();
     server.closeIdleConnections();
-    await closed;
+    await Promise.all([closed, notificationsClosed]);
     await scheduler.stop();
     await jobs.stop();
     database.close();

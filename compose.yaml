@@ -10,7 +10,8 @@
 # X の埋め込みを有効にした構成では、docs/decisions/container.md の 10 のとおり reader もビルドし直す。
 #
 # TLS は、手前に置くリバースプロキシ（Caddy など）や Cloudflare Tunnel で終える。ここでは、同じマシンから
-# だけつなげるように 127.0.0.1 に出す
+# だけつなげるように 127.0.0.1 に出す。更新の知らせ（/api/v1/sync/updates）は WebSocket なので、
+# 手前のプロキシで Upgrade を通す（nginx の設定例は README の「動かす」）
 services:
   sendo:
     image: ghcr.io/sendo-feed/sendo:main
