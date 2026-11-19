@@ -16,6 +16,8 @@ const IMGUR_LINK: &str = "blockquote.imgur-embed-pub a[href]";
 const X_QUOTE: &str = "blockquote.twitter-tweet";
 const ARTICLE: &str = "article, [role~=article], [itemscope][itemtype$='Article'], [itemscope][itemtype$='BlogPosting']";
 const ARTICLE_BODY: &str = "[itemprop=articleBody]";
+const REGION: &str = "section, [role~=region]";
+const CONTENT_REGION: &str = "section, [role~=region], main, [role~=main]";
 
 fn compact(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
@@ -552,7 +554,6 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
 
 /// 選ばれた本文と同じ記事の範囲で、手前に分かれた埋め込みを含むブロックを探す。
 fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
-    const REGION: &str = "section, [role=region]";
     if root.is(ARTICLE) || root.is("body") {
         return Vec::new();
     }
@@ -572,26 +573,21 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
             return ancestors
                 .nodes()
                 .iter()
-                .find(|node| {
-                    Selection::from(**node).is("section, [role=region], main, [role=main]")
-                })
-                .or_else(|| {
-                    ancestors
-                        .nodes()
-                        .first()
-                        .filter(|node| Selection::from(**node).is("body"))
-                });
+                .find(|node| Selection::from(**node).is(CONTENT_REGION))
+                .or_else(|| ancestors.nodes().first());
         }
         if root.is(REGION) {
-            return ancestors.nodes().first().filter(|node| {
-                Selection::from(**node).is("section, [role=region], main, [role=main]")
-            });
+            return ancestors
+                .nodes()
+                .first()
+                .filter(|node| Selection::from(**node).is(CONTENT_REGION));
         }
-        if root.is("main, [role=main]") {
+        if root.is("main, [role~=main]") {
             return None;
         }
         ancestors.nodes().iter().find(|node| {
-            Selection::from(**node).is("section, [role=region], main, [role=main], body")
+            let node = Selection::from(**node);
+            node.is(CONTENT_REGION) || node.is("body")
         })
     });
     let Some(boundary) = boundary else {
@@ -601,7 +597,7 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
     let mut leading = Vec::new();
     let direct_embeds = article_boundary.is_none()
         && if root.is(ARTICLE_BODY) {
-            Selection::from(*boundary).is("body")
+            !Selection::from(*boundary).is(CONTENT_REGION)
         } else {
             root.is(REGION)
         };
@@ -646,7 +642,6 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
 // 記事や節を囲む header / footer は導入や出典になりうる。文書全体のものだけを除く。
 fn has_site_chrome(block: &Selection<'_>) -> bool {
     const CHROME: &str = "header, footer, [role=banner], [role=contentinfo]";
-    const SECTION: &str = "article, section, [itemprop=articleBody]";
     block
         .nodes()
         .iter()
@@ -656,7 +651,7 @@ fn has_site_chrome(block: &Selection<'_>) -> bool {
             let region = Selection::from(*node);
             let ancestors = region.ancestors(Some(128));
             region.is("[role=banner], [role=contentinfo]")
-                || (!ancestors.is(SECTION) && !ancestors.is(ARTICLE))
+                || (!ancestors.is(REGION) && !ancestors.is(ARTICLE_BODY) && !ancestors.is(ARTICLE))
         })
 }
 
@@ -918,6 +913,36 @@ mod tests {
             r#"<body><div><blockquote class="twitter-tweet">別の引用</blockquote></div>
             <blockquote class="twitter-tweet">本文の引用</blockquote>
             <div itemprop="articleBody">本文</div></body>"#,
+        );
+        let lead = leading_embeds(
+            &doc.select("[itemprop=articleBody]"),
+            "https://blog.example/post",
+        );
+        assert_eq!(lead.len(), 1);
+        assert_eq!(lead[0].text().trim(), "本文の引用");
+    }
+
+    #[test]
+    fn keeps_direct_embeds_before_an_article_body_in_a_plain_wrapper() {
+        let doc = Document::from(
+            r#"<div><aside><blockquote class="twitter-tweet">別の引用</blockquote></aside>
+            <blockquote class="twitter-tweet">本文の引用</blockquote>
+            <div itemprop="articleBody">本文</div></div>"#,
+        );
+        let lead = leading_embeds(
+            &doc.select("[itemprop=articleBody]"),
+            "https://blog.example/post",
+        );
+        assert_eq!(lead.len(), 1);
+        assert_eq!(lead[0].text().trim(), "本文の引用");
+    }
+
+    #[test]
+    fn keeps_a_header_inside_a_region_without_taking_a_site_banner() {
+        let doc = Document::from(
+            r#"<header><blockquote class="twitter-tweet">サイトの引用</blockquote></header>
+            <div role="region"><header><blockquote class="twitter-tweet">本文の引用</blockquote></header>
+            <div itemprop="articleBody">本文</div></div>"#,
         );
         let lead = leading_embeds(
             &doc.select("[itemprop=articleBody]"),
