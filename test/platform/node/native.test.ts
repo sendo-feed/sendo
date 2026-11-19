@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createPageContentExtractor, loadNativeModule } from "../../src/platform/node/native";
-import { articlePage, NATIVE_MODULE } from "./helpers";
+import { createPageContentExtractor, loadNativeModule } from "../../../src/platform/node/native";
+import { NATIVE_MODULE } from "../../db";
+import { articlePage } from "../../fixtures/pages";
 
 describe("Rust のモジュール（記事のページから本文を抜く）", () => {
   const extractor = createPageContentExtractor(loadNativeModule(NATIVE_MODULE));

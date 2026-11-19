@@ -30,11 +30,10 @@ describe("取得の設定", () => {
 });
 
 describe("保存容量の設定", () => {
-  it("MiB の整数を受け、未指定は版の既定を使う", () => {
+  it("MiB の整数を受け、未指定は既定（10 GiB）を使う", () => {
     expect(parseStorageLimitMiB(" 20480 ")).toBe(20480);
     expect(parseStorageLimitMiB(undefined)).toBeUndefined();
-    expect(readRetentionConfig({})).toEqual({ maxBytes: 256 * 1024 * 1024 });
-    expect(readRetentionConfig({}, 10240)).toEqual({ maxBytes: 10 * 1024 ** 3 });
+    expect(readRetentionConfig({})).toEqual({ maxBytes: 10 * 1024 ** 3 });
     expect(readRetentionConfig({ STORAGE_LIMIT_MIB: "20480" })).toEqual({
       maxBytes: 20 * 1024 ** 3,
     });

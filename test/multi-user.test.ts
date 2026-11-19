@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../src/db/articles";
 import { deleteFolder } from "../src/db/folders";
@@ -15,6 +14,7 @@ import {
   updateSubscription,
 } from "../src/db/subscriptions";
 import { runFetchFeed } from "../src/jobs/fetch-feed";
+import { testDb } from "./db";
 import {
   createTestPlatform,
   createUser,
@@ -47,17 +47,18 @@ async function setup() {
 
 /** seq の列の値を読む */
 async function seqOf(sql: string, ...params: unknown[]) {
-  const row = await env.DB.prepare(sql)
+  const row = await testDb
+    .prepare(sql)
     .bind(...params)
     .first<{ seq: number }>();
   return row?.seq;
 }
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM feeds");
-  await env.DB.exec("DELETE FROM folders");
+  await testDb.exec("DELETE FROM feeds");
+  await testDb.exec("DELETE FROM folders");
   // 下限の行が消えていても、トリガーが作り直すことも確かめる
-  await env.DB.exec("DELETE FROM seq_floors");
+  await testDb.exec("DELETE FROM seq_floors");
 });
 
 describe("人ごとのデータ", () => {
@@ -117,7 +118,7 @@ describe("人ごとのデータ", () => {
     await runFetchFeed(platform, mine.feed.id);
 
     expect(calls).toHaveLength(1);
-    const feeds = await env.DB.prepare("SELECT count(*) AS n FROM feeds").first<{ n: number }>();
+    const feeds = await testDb.prepare("SELECT count(*) AS n FROM feeds").first<{ n: number }>();
     expect(feeds?.n).toBe(1);
     for (const user of [me, other]) {
       const list = (await json(await user.get("/api/v1/articles"))) as {
@@ -174,9 +175,8 @@ describe("受信箱に配る", () => {
     await deliverNewArticles(platform.db, { feedId: feed.id });
     await deliverNewArticles(platform.db, { feedId: feed.id });
 
-    const inbox = await env.DB.prepare(
-      "SELECT article_id FROM user_articles WHERE user_id = ? ORDER BY article_id",
-    )
+    const inbox = await testDb
+      .prepare("SELECT article_id FROM user_articles WHERE user_id = ? ORDER BY article_id")
       .bind(TEST_USER.id)
       .all<{ article_id: string }>();
     expect(inbox.results.map((row) => row.article_id)).toEqual(["x1", "x2"]);
@@ -192,7 +192,8 @@ describe("受信箱に配る", () => {
 
     await runFetchFeed(platform, feed.id);
 
-    const theirs = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+    const theirs = await testDb
+      .prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
       .bind(otherId)
       .first<{ n: number }>();
     expect(theirs?.n).toBe(0);
@@ -230,7 +231,8 @@ describe("変更番号（docs/decisions/sync.md）", () => {
 
     await me.send("DELETE", `/api/v1/folders/${folder.id}`);
 
-    const tombstone = await env.DB.prepare("SELECT deleted_at FROM folders WHERE id = ?")
+    const tombstone = await testDb
+      .prepare("SELECT deleted_at FROM folders WHERE id = ?")
       .bind(folder.id)
       .first<{ deleted_at: number | null }>();
     expect(tombstone?.deleted_at).not.toBeNull();
@@ -292,7 +294,8 @@ describe("最近の記事の補充（#21 のレビュー）", () => {
       rows: [{ feedId: feed.id, folderId: null }],
       now: new Date(),
     });
-    const before = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+    const before = await testDb
+      .prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
       .bind(otherId)
       .first<{ n: number }>();
     expect(before?.n).toBe(0);
@@ -300,14 +303,16 @@ describe("最近の記事の補充（#21 のレビュー）", () => {
     // やり直し：補充の済んでいない購読に、もう一度補充する
     await backfillInbox(platform.db, { userId: otherId, feedIds: [feed.id], now: new Date() });
 
-    const after = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+    const after = await testDb
+      .prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
       .bind(otherId)
       .first<{ n: number }>();
     expect(after?.n).toBe(2);
 
     // 補充済みの印が付いたら、もう一度呼んでも何もしない
     await backfillInbox(platform.db, { userId: otherId, feedIds: [feed.id], now: new Date() });
-    const again = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+    const again = await testDb
+      .prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
       .bind(otherId)
       .first<{ n: number }>();
     expect(again?.n).toBe(2);
@@ -348,7 +353,8 @@ describe("最近の記事の補充（#21 のレビュー）", () => {
 
     await insertRecentArticles(platform.db, { userId: otherId, feedIds: [feed.id], since: 0 });
 
-    const inbox = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+    const inbox = await testDb
+      .prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
       .bind(otherId)
       .first<{ n: number }>();
     expect(inbox?.n).toBe(0);
@@ -359,7 +365,7 @@ describe("次の変更番号を振る速さ（#21 のレビュー）", () => {
   it.each(["folders", "subscriptions", "user_articles"])(
     "%s の最大の番号は、インデックスで 1 行だけ読んで取る",
     async (table) => {
-      const plan = await env.DB.prepare(`EXPLAIN QUERY PLAN SELECT max(seq) FROM ${table}`).all<{
+      const plan = await testDb.prepare(`EXPLAIN QUERY PLAN SELECT max(seq) FROM ${table}`).all<{
         detail: string;
       }>();
 
@@ -378,9 +384,8 @@ describe("並行して動いたとき（#21 のレビュー）", () => {
     )) as { feed: { id: string } };
     await runFetchFeed(platform, feed.id);
     // 購読をやめた（消した印だけ付いた）あと、もう一度購読して補充が終わった
-    await env.DB.prepare(
-      "UPDATE subscriptions SET deleted_at = 1 WHERE user_id = ? AND deleted_at IS NULL",
-    )
+    await testDb
+      .prepare("UPDATE subscriptions SET deleted_at = 1 WHERE user_id = ? AND deleted_at IS NULL")
       .bind(TEST_USER.id)
       .run();
     await me.send("POST", "/api/v1/feeds", { url: "https://shared.example/feed" });
@@ -401,7 +406,7 @@ describe("並行して動いたとき（#21 のレビュー）", () => {
       folder: { id: string };
     };
     // フォルダを確かめたあと、入れる前に消された
-    await env.DB.prepare("UPDATE folders SET deleted_at = 1 WHERE id = ?").bind(folder.id).run();
+    await testDb.prepare("UPDATE folders SET deleted_at = 1 WHERE id = ?").bind(folder.id).run();
 
     await updateSubscription(platform.db, {
       userId: TEST_USER.id,
@@ -414,7 +419,8 @@ describe("並行して動いたとき（#21 のレビュー）", () => {
       now: new Date(),
     });
 
-    const rows = await env.DB.prepare("SELECT count(*) AS n FROM subscriptions WHERE folder_id = ?")
+    const rows = await testDb
+      .prepare("SELECT count(*) AS n FROM subscriptions WHERE folder_id = ?")
       .bind(folder.id)
       .first<{ n: number }>();
     expect(rows?.n).toBe(0);
@@ -430,7 +436,7 @@ describe("並行して動いたとき（#21 のレビュー）", () => {
       folderId: folder.id,
     });
     // 消した印だけ付いて、中の購読を外す前に落ちた
-    await env.DB.prepare("UPDATE folders SET deleted_at = 1 WHERE id = ?").bind(folder.id).run();
+    await testDb.prepare("UPDATE folders SET deleted_at = 1 WHERE id = ?").bind(folder.id).run();
 
     expect(
       await deleteFolder(platform.db, { userId: TEST_USER.id, id: folder.id, now: new Date() }),
@@ -453,9 +459,8 @@ describe("並行して動いたとき（#21 のレビュー）", () => {
       rows: [{ feedId: feed.id, folderId: null }],
       now: new Date(),
     });
-    const old = await env.DB.prepare(
-      "SELECT id FROM subscriptions WHERE user_id = ? AND deleted_at IS NULL",
-    )
+    const old = await testDb
+      .prepare("SELECT id FROM subscriptions WHERE user_id = ? AND deleted_at IS NULL")
       .bind(otherId)
       .first<{ id: string }>();
     // 古い購読の補充の途中で、購読をやめてもう一度購読した
@@ -471,7 +476,8 @@ describe("並行して動いたとき（#21 のレビュー）", () => {
 
     // 新しい購読は補充済みになっておらず、補充すれば記事が入る
     await backfillInbox(platform.db, { userId: otherId, feedIds: [feed.id], now: new Date() });
-    const inbox = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+    const inbox = await testDb
+      .prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
       .bind(otherId)
       .first<{ n: number }>();
     expect(inbox?.n).toBe(2);

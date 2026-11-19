@@ -101,7 +101,7 @@ export function opmlApi(platform: Platform) {
         throw error;
       }
 
-      // D1 のクエリの回数の上限に当たらないように、登録は小分けにしてキューで行う
+      // 1 つの仕事が扱う量を抑えるため、登録は小分けにしてキューで行う（docs/decisions/jobs.md の 4）
       const jobs = [];
       for (let i = 0; i < result.entries.length; i += IMPORT_CHUNK_SIZE) {
         jobs.push({
@@ -124,12 +124,14 @@ export function opmlApi(platform: Platform) {
     .openapi(exportRoute, async (c) => {
       const subscriptions = await listSubscriptions(platform.db, c.get("user").id);
       const xml = writeOpml(
-        subscriptions.map((subscription) => ({
-          url: subscription.feed.url,
-          title: subscription.feed.title,
-          siteUrl: subscription.feed.siteUrl,
-          folderName: subscription.folderName,
-        })),
+        subscriptions
+          .filter(({ feed }) => feed.discordCursor === null)
+          .map((subscription) => ({
+            url: subscription.feed.url,
+            title: subscription.feed.title,
+            siteUrl: subscription.feed.siteUrl,
+            folderName: subscription.folderName,
+          })),
         platform.now(),
       );
       return c.body(xml, 200, {

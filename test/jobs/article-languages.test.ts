@@ -1,17 +1,15 @@
-import { env } from "cloudflare:workers";
-import { drizzle } from "drizzle-orm/d1";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getArticleLanguage, recordArticleLanguage } from "../../src/db/article-languages";
 import { insertArticles } from "../../src/db/articles";
 import { insertFeed } from "../../src/db/feeds";
 import { recordExtractedPageContent } from "../../src/db/page-contents";
-import * as schema from "../../src/db/schema";
 import { configureStorage, readEvictionCandidates, readStorageUsage } from "../../src/db/storage";
 import { runJob } from "../../src/jobs";
 import { LANGUAGE_BATCH_SIZE } from "../../src/jobs/article-languages";
 import { enqueueLanguageDetection, runScheduled } from "../../src/jobs/schedule";
 import type { LanguageDetectionResult } from "../../src/platform";
-import { createTestPlatform, d1BeforeStatement } from "../helpers";
+import { testDb } from "../db";
+import { createTestPlatform, statementHook } from "../helpers";
 
 const result = {
   language: "ja",
@@ -48,10 +46,10 @@ async function seed(platform: Platform, ids: string[], content = false) {
 }
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM feeds");
-  await env.DB.exec("DELETE FROM content_notes");
-  await env.DB.exec("DELETE FROM content_sizes");
-  await env.DB.exec("UPDATE storage_usage SET limit_bytes = 268435456 WHERE id = 1");
+  await testDb.exec("DELETE FROM feeds");
+  await testDb.exec("DELETE FROM content_notes");
+  await testDb.exec("DELETE FROM content_sizes");
+  await testDb.exec("UPDATE storage_usage SET limit_bytes = 268435456 WHERE id = 1");
 });
 
 describe("主言語の背景判定と保存", () => {
@@ -180,12 +178,10 @@ describe("主言語の背景判定と保存", () => {
       pipelineRevision: 1,
     };
     await recordArticleLanguage(platform.db, input);
-    const race = d1BeforeStatement(/insert into article_languages/, async () => {
-      await env.DB.exec("DELETE FROM articles WHERE id = 'gone'");
+    const race = statementHook(/insert into article_languages/, async () => {
+      await testDb.exec("DELETE FROM articles WHERE id = 'gone'");
     });
-    expect(
-      await recordArticleLanguage(drizzle(race.db, { schema }), { ...input, pipelineRevision: 2 }),
-    ).toBe(false);
+    expect(await recordArticleLanguage(race.db, { ...input, pipelineRevision: 2 })).toBe(false);
     expect(race.fired()).toBe(true);
     expect(await getArticleLanguage(platform.db, "gone", "metadata")).toBeUndefined();
   });
@@ -223,20 +219,14 @@ describe("主言語の背景判定と保存", () => {
       pipelineRevision: 1,
     });
     expect(await readEvictionCandidates(platform.db, 10, articleBytes + 512)).toEqual(["a"]);
-    await env.DB.exec("DELETE FROM articles WHERE id = 'a'");
+    await testDb.exec("DELETE FROM articles WHERE id = 'a'");
     expect((await readStorageUsage(platform.db)).bytes).toBe(initial + articleBytes);
   });
 
-  it("判定器のない版は定期実行でも判定の仕事を積まず、既存の仕事も捨てる", async () => {
-    const t = createTestPlatform();
-    t.resetQueryCount();
-    await runJob(t.platform, job);
-    expect(t.queryCount()).toBe(0);
-    await runScheduled(t.platform, new Date("2026-11-17T00:00:00Z"));
-    expect(t.enqueued).not.toContainEqual(job);
-    const enabled = createTestPlatform({ languageDetection: detector() });
-    await runScheduled(enabled.platform, new Date("2026-11-17T00:00:00Z"));
-    expect(enabled.enqueued).toContainEqual(job);
+  it("定期実行は、判定の仕事を積む", async () => {
+    const { platform, enqueued } = createTestPlatform({ languageDetection: detector() });
+    await runScheduled(platform, new Date("2026-11-17T00:00:00Z"));
+    expect(enqueued).toContainEqual(job);
   });
 
   it("言語判定の投入が失敗しても呼び出し元を落とさず、次回また投入する", async () => {

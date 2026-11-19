@@ -1,7 +1,7 @@
-import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
 import { collectRemovals, raiseRemovalHorizons, readRemovalHorizon } from "../../src/db/retention";
+import { testDb } from "../db";
 import { addToInbox, createTestPlatform, createUser, subscribeFeed, TEST_USER } from "../helpers";
 
 /* 古い記事の片付け（docs/decisions/retention.md） */
@@ -49,17 +49,16 @@ async function seed(
 
 const removalsOf = async (userId = TEST_USER.id) =>
   (
-    await env.DB.prepare(
-      "SELECT article_id FROM user_article_removals WHERE user_id = ? ORDER BY article_id",
-    )
+    await testDb
+      .prepare("SELECT article_id FROM user_article_removals WHERE user_id = ? ORDER BY article_id")
       .bind(userId)
       .all<{ article_id: string }>()
   ).results.map((row) => row.article_id);
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM feeds");
-  await env.DB.exec("DELETE FROM user_article_removals");
-  await env.DB.exec("DELETE FROM removal_horizons");
+  await testDb.exec("DELETE FROM feeds");
+  await testDb.exec("DELETE FROM user_article_removals");
+  await testDb.exec("DELETE FROM removal_horizons");
 });
 
 describe("同期の削除記録の回収", () => {
@@ -70,18 +69,20 @@ describe("同期の削除記録の回収", () => {
       { id: "old", createdAt: daysAgo(120) },
       { id: "new", createdAt: daysAgo(120) },
     ]);
-    await env.DB.exec("DELETE FROM user_articles WHERE article_id = 'old'");
+    await testDb.exec("DELETE FROM user_articles WHERE article_id = 'old'");
     const cutoff = new Date();
-    await env.DB.exec("DELETE FROM user_articles WHERE article_id = 'new'");
+    await testDb.exec("DELETE FROM user_articles WHERE article_id = 'new'");
     // 消えた時刻を決めて書き直す（記録は DB の時計で残る）
-    await env.DB.prepare("UPDATE user_article_removals SET removed_at = ? WHERE article_id = 'old'")
+    await testDb
+      .prepare("UPDATE user_article_removals SET removed_at = ? WHERE article_id = 'old'")
       .bind(cutoff.getTime() - 1)
       .run();
-    await env.DB.prepare("UPDATE user_article_removals SET removed_at = ? WHERE article_id = 'new'")
+    await testDb
+      .prepare("UPDATE user_article_removals SET removed_at = ? WHERE article_id = 'new'")
       .bind(cutoff.getTime() + 1)
       .run();
     const oldSeq = (
-      await env.DB.prepare("SELECT seq FROM user_article_removals WHERE article_id = 'old'").first<{
+      await testDb.prepare("SELECT seq FROM user_article_removals WHERE article_id = 'old'").first<{
         seq: number;
       }>()
     )?.seq;
@@ -105,7 +106,7 @@ describe("同期の削除記録の回収", () => {
     const other = await createUser();
     const feed = await subscribeFeed(platform, {});
     await seed(platform, feed.id, [{ id: "x", createdAt: daysAgo(120) }]);
-    await env.DB.exec("DELETE FROM user_articles WHERE article_id = 'x'");
+    await testDb.exec("DELETE FROM user_articles WHERE article_id = 'x'");
 
     await raiseRemovalHorizons(platform.db, { before: new Date(Date.now() + DAY) });
 

@@ -43,7 +43,7 @@ const UNTRUSTED =
 /** get_article で返す本文の長さの上限（文字）。超えた分は切り詰める */
 export const MAX_CONTENT_TEXT_LENGTH = 20_000;
 
-/** 一度に既読やスターを変えられる記事の数（D1 の変数の上限に合わせる） */
+/** 一度に既読やスターを変えられる記事の数（db/inbox.ts の MAX_MARK_READ_IDS に合わせる） */
 const MAX_IDS = 90;
 
 /** 一覧で一度に返す記事の数の上限 */

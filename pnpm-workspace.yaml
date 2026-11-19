@@ -4,7 +4,6 @@
 minimumReleaseAge: 20160
 
 # インストール時にスクリプトを実行してよい依存だけを許可する。
-# esbuild と workerd は、プラットフォームごとのバイナリを用意するために必要。
+# esbuild は、プラットフォームごとのバイナリを用意するために必要。
 allowBuilds:
   esbuild: true
-  workerd: true

@@ -1,7 +1,7 @@
-import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
 import { setArticleState } from "../../src/db/inbox";
+import { testDb } from "../db";
 import { addToInbox, createTestPlatform, createUser, subscribeFeed, TEST_USER } from "../helpers";
 
 /*
@@ -35,28 +35,27 @@ async function seed(platform: Platform, feedId: string, ids: string[], userId = 
 }
 
 const maxInboxSeq = async () =>
-  (await env.DB.prepare("SELECT max(seq) AS seq FROM user_articles").first<{ seq: number }>())
+  (await testDb.prepare("SELECT max(seq) AS seq FROM user_articles").first<{ seq: number }>())
     ?.seq ?? 0;
 
 const removalsOf = async (userId: string) =>
   (
-    await env.DB.prepare(
-      "SELECT article_id, seq FROM user_article_removals WHERE user_id = ? ORDER BY seq",
-    )
+    await testDb
+      .prepare("SELECT article_id, seq FROM user_article_removals WHERE user_id = ? ORDER BY seq")
       .bind(userId)
       .all<{ article_id: string; seq: number }>()
   ).results;
 
 const floor = async () =>
   (
-    await env.DB.prepare("SELECT floor FROM seq_floors WHERE table_name = 'user_articles'").first<{
+    await testDb.prepare("SELECT floor FROM seq_floors WHERE table_name = 'user_articles'").first<{
       floor: number;
     }>()
   )?.floor;
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM feeds");
-  await env.DB.exec("DELETE FROM user_article_removals");
+  await testDb.exec("DELETE FROM feeds");
+  await testDb.exec("DELETE FROM user_article_removals");
 });
 
 describe("受信箱から消えた記事の記録", () => {
@@ -67,7 +66,7 @@ describe("受信箱から消えた記事の記録", () => {
     const before = await maxInboxSeq();
 
     // どの経路で消しても残る（コードで記録を書かない）
-    await env.DB.prepare("DELETE FROM user_articles WHERE article_id = 'x'").run();
+    await testDb.prepare("DELETE FROM user_articles WHERE article_id = 'x'").run();
 
     const [removal] = await removalsOf(TEST_USER.id);
     expect(removal?.article_id).toBe("x");
@@ -88,7 +87,7 @@ describe("受信箱から消えた記事の記録", () => {
     const feed = await subscribeFeed(platform, {});
     await seed(platform, feed.id, ["a", "b"]);
 
-    await env.DB.prepare("DELETE FROM user_articles WHERE feed_id = ?").bind(feed.id).run();
+    await testDb.prepare("DELETE FROM user_articles WHERE feed_id = ?").bind(feed.id).run();
     const first = await removalsOf(TEST_USER.id);
     expect(first.map((row) => row.article_id).sort()).toEqual(["a", "b"]);
     expect(new Set(first.map((row) => row.seq)).size).toBe(2);
@@ -97,7 +96,7 @@ describe("受信箱から消えた記事の記録", () => {
     await addToInbox(platform, [
       { articleId: "a", feedId: feed.id, publishedAt: new Date(), receivedAt: new Date() },
     ]);
-    await env.DB.prepare("DELETE FROM user_articles WHERE article_id = 'a'").run();
+    await testDb.prepare("DELETE FROM user_articles WHERE article_id = 'a'").run();
     const again = await removalsOf(TEST_USER.id);
     expect(again).toHaveLength(2);
     const a = again.find((row) => row.article_id === "a");
@@ -110,9 +109,10 @@ describe("受信箱から消えた記事の記録", () => {
     const feed = await subscribeFeed(platform, { userId: other.id });
     await seed(platform, feed.id, ["o1", "o2"], other.id);
 
-    await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(other.id).run();
+    await testDb.prepare("DELETE FROM users WHERE id = ?").bind(other.id).run();
 
-    const left = await env.DB.prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+    const left = await testDb
+      .prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
       .bind(other.id)
       .first<{ n: number }>();
     expect(left?.n).toBe(0);

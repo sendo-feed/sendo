@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { testDb } from "../db";
 import { createSessionHeaders, createTestPlatform, createUser, requestApp } from "../helpers";
 
 type TokenJson = { id: string; name: string; createdAt: string; lastUsedAt: string | null };
@@ -82,7 +82,8 @@ describe("アクセストークンの発行・一覧・取り消し", () => {
 
   it("アクセストークンでは使えない（漏れたトークンで、新しいトークンを発行させない）", async () => {
     const { platform, user } = await signedIn();
-    const before = await env.DB.prepare("SELECT count(*) AS n FROM access_tokens WHERE user_id = ?")
+    const before = await testDb
+      .prepare("SELECT count(*) AS n FROM access_tokens WHERE user_id = ?")
       .bind(user.id)
       .first<{ n: number }>();
 
@@ -99,7 +100,8 @@ describe("アクセストークンの発行・一覧・取り消し", () => {
       expect(res.status, `${method} ${path}`).toBe(403);
       expect(await res.json()).toMatchObject({ error: { code: "session_required" } });
     }
-    const after = await env.DB.prepare("SELECT count(*) AS n FROM access_tokens WHERE user_id = ?")
+    const after = await testDb
+      .prepare("SELECT count(*) AS n FROM access_tokens WHERE user_id = ?")
       .bind(user.id)
       .first<{ n: number }>();
     expect(after?.n).toBe(before?.n);

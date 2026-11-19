@@ -11,73 +11,100 @@ Sendo は、オープンソースのフィード集約サーバーです。
 - **自分で持てる**：セルフホストして、データも設定も手元に置ける
 
 > [!NOTE]
-> Phase 1（MVP）は完了し、Feedly の OPML を移して sendo-reader で毎日読む段階に入りました。いまは Phase 2 を進めています。記事のページからの全文抽出はコンテナ版で実装済みです。[機能と達成状況](docs/features.md)
+> Phase 1（MVP）は完了し、Feedly の OPML を移して sendo-reader で毎日読む段階に入りました。いまは Phase 2 を進めています。記事のページからの全文抽出は実装済みです。[機能と達成状況](docs/features.md)
 
-## 必要なもの
+## 動かす
 
-- Node.js 22.12 以上（CI は [.node-version](.node-version) のバージョンで動かす）
-- pnpm（バージョンは [package.json](package.json) の `packageManager` で固定している）
-- Rust（コンテナ版の重い処理と、そのテストに使う。rustup を入れておけば、[rust-toolchain.toml](rust-toolchain.toml) の版が自動で使われる）
+Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS など）で、Docker で動かします（[決定](docs/decisions/container.md)）。上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo` と、画面の `ghcr.io/sendo-feed/sendo-reader`）を、Docker Compose で並べて動かします。標準構成では fork もビルドも要りません（[決定](docs/decisions/container.md)の 7、10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。
 
-pnpm は corepack で入れると、決められたバージョンが自動で使われます。
+外に出すのは sendo-reader のコンテナだけです。sendo-reader が画面を返し、Sendo のパス（`/api`、`/mcp`、OAuth、Google Reader API など）を、compose の中の Sendo に中継します。画面、ブラウザのログイン、リーダーアプリ、MCP は同じ sendo-reader のオリジンを使います（[sendo-reader の決定](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)）。
+
+1. [compose.yaml](compose.yaml) と [.env.example](.env.example) を、置き場にするディレクトリに写す。`.env.example` は `.env` という名前にして、設定を書く
+   - `PUBLIC_URL` と `READER_URL`：どちらも、外から開く sendo-reader のオリジン（例：`https://reader.example.com`）。`PUBLIC_URL` は欠かせません。ないと、ブラウザのログインの戻り先が合いません。2 つとも入れると、OAuth（[OAuth でつなぐ](#oauth-でつなぐ)）も使えます
+   - `ALLOWED_EMAILS`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`：ブラウザでログインするとき（[ブラウザでログインする](#ブラウザでログインするgoogle)）。Google の「承認済みのリダイレクト URI」には `https://reader.example.com/api/v1/auth/google/callback` を入れる
+2. 手前にリバースプロキシ（Caddy など）か Cloudflare Tunnel を置いて TLS を終え、sendo-reader のコンテナ（`127.0.0.1:8080`）に向ける
+3. 動かす
+
+   ```sh
+   docker compose up -d
+   ```
+
+4. `https://reader.example.com` を開き、Google でログインする。ブラウザでログインしないで使うときは、アクセストークンを発行する
+
+   ```sh
+   docker compose exec sendo node dist/node/sendo.mjs token:create --email you@example.com
+   # MCP 用なら --mcp（状態を変えるツールも使うなら --mcp --write）
+   ```
+
+リーダーアプリのサーバー（[リーダーアプリで読む](#リーダーアプリで読むgoogle-reader-api)）も、MCP の URL（`https://reader.example.com/mcp`）も、sendo-reader のオリジンにします。
+
+画面を使わず、リーダーアプリや MCP だけで使うときは、`compose.yaml` の `reader` を消して Sendo のポートを出し（`compose.yaml` のコメント）、`PUBLIC_URL` を Sendo のオリジンにします。`READER_URL` は空にします（OAuth は使えず、MCP 用のトークンでつなぎます）。
+
+### 標準構成を更新する
+
+上流の更新は、次で取り込みます。Sendo と sendo-reader が一緒に新しくなります。マイグレーションは、起動するときに当たります。
 
 ```sh
-corepack enable pnpm
+docker compose pull && docker compose up -d
 ```
 
-Windows では、WSL の中（Linux 側のファイルシステム）にクローンするのがおすすめです。
+設定（`.env`）を変えたら、`docker compose up -d` でコンテナを作り直すと効きます。入れなければ、既定で動きます。
 
-## はじめかた
-
-```sh
-git clone https://github.com/sendo-feed/sendo.git
-cd sendo
-pnpm install
-pnpm db:migrate:local                         # 手元の D1 にテーブルを作る
-pnpm token:create --email you@example.com     # ユーザーとアクセストークンを作る
-pnpm dev
-```
-
-`pnpm token:create` は、ユーザーがいなければ作り、アクセストークン（`sendo_` で始まる文字列）を発行します。トークンは一度だけ表示されるので、控えておいてください。DB にはハッシュだけを置きます。デプロイ先の D1 に作るときは `--remote` を付けます。
-
-`pnpm dev` で、手元に Workers のランタイム（D1、Queues、Cron を含む）が立ち上がります。Cloudflare のアカウントは要りません。
+| 名前 | 既定 | 中身 |
+|---|---|---|
+| `FETCH_INTERVAL_MINUTES` | 30 | フィードを取得する間隔の下限（分）。[取得の間隔](#取得の間隔) |
+| `STORAGE_LIMIT_MIB` | 10240 | 記事と本文の保存容量（MiB）。[古い記事の片付け](#古い記事の片付け) |
+| `PUBLIC_URL`、`READER_URL` | なし | 外から呼ぶときのオリジンと、sendo-reader のオリジン。[OAuth でつなぐ](#oauth-でつなぐ) |
+| `ALLOWED_EMAILS`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` | なし | ブラウザのログイン。[ブラウザでログインする](#ブラウザでログインするgoogle) |
+| `DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN` | なし | Discord の購読。[Discord のチャンネルを購読する](#discord-のチャンネルを購読する) |
 
 ### 取得の間隔
 
-無料プランのフィード数は検索索引を含めた概算です。容量による保管を含めた実運用の書き込み行数は引き続き計測します。[計算の前提と検索索引の費用](docs/cost.md#記事のキーワード検索の見積もり)
-
-フィードを取得する間隔の下限（分）は、Cloudflare の画面の変数 `FETCH_INTERVAL_MINUTES` に入れます（[設定を変える](#設定を変える)）。10 以上の整数で、既定は 30 です。取得の時期が来たフィードは 10 分おきの定期実行がキューに積むので、10 分より短くはできません。回せるフィードの数は、Cloudflare のプランとこの間隔で決まります（[決定](docs/decisions/jobs.md)）。
+フィードを取得する間隔の下限（分）は、`FETCH_INTERVAL_MINUTES` に入れます。10 以上の整数で、既定は 30 です。取得の時期が来たフィードは 10 分おきの定期実行が仕事に積むので、10 分より短くはできません（[決定](docs/decisions/jobs.md)）。
 
 実際の間隔は、フィードごとに、直近 7 日の記事の出るペースから決まります（記事の平均の間隔の 3 分の 1）。記事の多いフィードは設定の間隔で、静かなフィードは最長で 1 日おきに取得します。429 ／ 503 の応答に `Retry-After` が付いていれば、その時刻（1 日まで）より前には取りにいきません。長く取得に失敗したフィードや HTTP 410 が返ったフィードは、週 1 回確認します。
-
-購読するフィードの数に合わせて、次を目安に選んでください。
-
-| 取得の間隔 | 無料プラン | Workers Paid（月 5 ドル） |
-|---|---|---|
-| 15 分 | 85 フィードほど | 1,000 フィードほど |
-| 30 分（既定） | 135 フィードほど | 2,000 フィードほど |
-| 1 時間 | 190 フィードほど | 4,000 フィードほど |
-| 2 時間 | 235 フィードほど | 8,000 フィードほど |
-
-- 1 人で使い、1 フィードの記事が 1 日平均 5 件のときの数です
-- どのフィードも設定の間隔で取得されるとき（いちばん多いとき）の数です。静かなフィードは間隔が延びるので、実際にはもっと多く回せます（[コストの見積もり](docs/cost.md#無料プランのフィード数の目安検索索引を含む)）
-- 無料プランは、1 日の上限（先に効くのは D1 の書き込み）の 6 割に収まる数です。D1 の上限を超えると、日本時間 9:00 まで記事を読むこともできなくなるので、余裕を残しています
-- Workers Paid は、月 5 ドルに含まれる量に収まる数です。超えても、追加はわずかです
-- 保存できる記事数は、本文と検索索引を含む保存容量で決まります。D1 は無料プランが 1 DB あたり 500 MB、Workers Paid が 10 GB です。
-
-計算のしかたと前提は、[コストの見積もり](docs/cost.md)にあります。
 
 ### 古い記事の片付け
 
 記事と本文は、設定した保存容量に収まる限り残します。保存日数による削除はしません。使用量が上限の 90% に達すると、80% 以下を目指し、取り込んだ時刻の古い記事から片付けます。未読も対象ですが、誰かがスターを付けている記事と、フィードにまだ載っている記事は残します（[決定](docs/decisions/retention.md)）。
 
-`STORAGE_LIMIT_MIB` に MiB（1,048,576 バイト）の整数を設定します。最小は 16 MiB、既定は Cloudflare 版が 256 MiB、コンテナ版が 10240 MiB（10 GiB）です。例えば、コンテナ版で 20 GiB にするなら `.env` に `STORAGE_LIMIT_MIB=20480` と書き、コンテナを作り直します。従来の `ARTICLE_RETENTION_DAYS` は使いません。誤った容量設定はエラーにし、小さい既定値への差し戻しによる削除を防ぎます。
+`STORAGE_LIMIT_MIB` に MiB（1,048,576 バイト）の整数を設定します。最小は 16 MiB、既定は 10240 MiB（10 GiB）です。例えば、20 GiB にするなら `.env` に `STORAGE_LIMIT_MIB=20480` と書き、コンテナを作り直します。従来の `ARTICLE_RETENTION_DAYS` は使いません。誤った容量設定はエラーにし、小さい既定値への差し戻しによる削除を防ぎます。
 
 容量は、記事の文字列、フィード本文、抽出本文に、DB の行と索引の見積もりを足した値です。DB ファイルの大きさを直接制限するものではありません。WAL、バックアップ、認証や設定などは別なので、配置先の空きを十分に残してください。削除した SQLite の領域は、後の書き込みで再利用されます。
 
 移行時は、既存の本文を少しずつ集計します。集計が終わるまで既存記事は読めますが、容量による削除と新しい記事・本文の取り込みは待ちます。容量が足りなくなった場合も、既存記事は読めます。管理者向けログに `storage_limit_reached` を出し、空きができれば取り込みを再開します。記事の削除前のアーカイブは行いません。
 
 受信箱の削除記録は、記事の保管とは別に、同期のため 30 日残します。古いカーソルを持つ端末は同期し直します。
+
+## 手元で動かす
+
+必要なもの：
+
+- Node.js 22.12 以上（CI は [.node-version](.node-version) のバージョンで動かす）
+- pnpm（バージョンは [package.json](package.json) の `packageManager` で固定している）
+- Rust（ページの本文の抽出や言語の判定などの重い処理。rustup を入れておけば、[rust-toolchain.toml](rust-toolchain.toml) の版が自動で使われる）
+
+pnpm は corepack で入れると、決められたバージョンが自動で使われます。Windows では、WSL の中（Linux 側のファイルシステム）にクローンするのがおすすめです。
+
+```sh
+corepack enable pnpm
+```
+
+```sh
+git clone https://github.com/sendo-feed/sendo.git
+cd sendo
+pnpm install
+pnpm build:native                             # Rust の処理をネイティブのモジュールにする
+cp .env.example .env                          # 設定（なくても動く）
+pnpm token:create --email you@example.com     # ユーザーとアクセストークンを作る
+pnpm dev
+```
+
+`pnpm dev` は、ソースを [tsx](https://tsx.is/) でそのまま動かし、変更を見て動かし直します（`http://localhost:8787`）。`.env` があれば読みます。データは `.data/` に置き、マイグレーションは起動時に当てます。Rust のモジュールがなければ起動しないので、先に `pnpm build:native` を実行します（`crates/` を変えたときも）。
+
+`pnpm token:create` は、ユーザーがいなければ作り、アクセストークン（`sendo_` で始まる文字列）を発行します。トークンは一度だけ表示されるので、控えておいてください。DB にはハッシュだけを置きます。
+
+REST API は、次のように試せます。
 
 ```sh
 TOKEN=sendo_...   # pnpm token:create で発行したトークン
@@ -90,7 +117,7 @@ curl -X POST http://localhost:8787/api/v1/feeds \
 # 未読の記事を新しい順に読む（state=starred ならスター付き、folderId ／ feedId で絞り込める）
 curl -H "authorization: Bearer $TOKEN" "http://localhost:8787/api/v1/articles?state=unread&limit=10"
 
-# 記事の本文を読む。source=page で、記事のページから抜いた本文（コンテナ版だけ。使えるかは GET /api/v1/features）
+# 記事の本文を読む。source=page で、記事のページから抜いた本文
 curl -H "authorization: Bearer $TOKEN" "http://localhost:8787/api/v1/articles/<記事の ID>/content?source=page"
 
 # 記事を既読にして、スターを付ける
@@ -120,17 +147,30 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 
 ページから抜いた本文は、サニタイズしてタグと文字参照を処理したあとの文字数が 100 文字未満なら、取得失敗として扱います。サイト紹介やコメント欄の案内だけを本文として保存するのを減らすためです。短い正規の記事も対象になるので、そのときはフィードの本文か要約を使ってください。`source=page` は 404（`page_content_unavailable`）を返し、1 日たってから呼ぶと取りにいき直します。
 
+## 使い方
+
 ### ブラウザでログインする（Google）
 
-ブラウザ（sendo-reader）からは、Google でログインしてセッションのクッキーで使います。手元では、試すときだけ設定すれば足ります（なければ `pnpm dev` が警告を出すだけ）。デプロイには 3 つとも要ります（`wrangler.jsonc` の `secrets.required`。ないとデプロイが止まる。[初めてのデプロイ](#初めてのデプロイ)）。
+ブラウザ（sendo-reader）からは、Google でログインしてセッションのクッキーで使います。設定しなければ、ブラウザのログインは使えず、アクセストークンだけで使います。
 
 1. [Google Cloud のコンソール](https://console.cloud.google.com/apis/credentials)で OAuth クライアント（種類は「ウェブ アプリケーション」）を作る。「承認済みのリダイレクト URI」には、ブラウザから見た `<オリジン>/api/v1/auth/google/callback` を登録する（手元の sendo-reader なら `http://localhost:5173/api/v1/auth/google/callback`、本番なら sendo-reader のオリジン）
-2. `.dev.vars.example` を `.dev.vars` に写し、`ALLOWED_EMAILS`（ユーザーになれるメール）、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` を書く。本番では、Cloudflare の画面にシークレットとして入れる（[初めてのデプロイ](#初めてのデプロイ)）
+2. `.env` に、`ALLOWED_EMAILS`（ユーザーになれるメール）、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` を書く
 3. ブラウザで `<オリジン>/api/v1/auth/google/login` を開く。ログインできたら `/` に戻る（`?returnTo=/パス` で戻る先を変えられる）。できなければ `/?login_error=<理由>` に戻る
 
 許可したメールの人が初めてログインすると、ユーザーを作ります。同じメールのユーザー（`pnpm token:create` で作った人など）がいれば、そのユーザーに結び付けます。
 
-ログインしたら、アクセストークン（リーダーアプリのアプリ用パスワード）を `/api/v1/tokens` で発行・一覧・取り消しできます。これはブラウザのセッションでだけ使え、アクセストークンでは使えません（漏れたトークンで新しいトークンを発行させないため）。定期的な取得（Cron）は、`pnpm dev --test-scheduled` で起動して `http://localhost:8787/__scheduled` を開くと、すぐに試せます。
+ログインしたら、アクセストークン（リーダーアプリのアプリ用パスワード）を `/api/v1/tokens` で発行・一覧・取り消しできます。これはブラウザのセッションでだけ使え、アクセストークンでは使えません（漏れたトークンで新しいトークンを発行させないため）。
+
+### Discord のチャンネルを購読する
+
+管理者が追加した Discord Bot で、指定したテキストチャンネルとアナウンスチャンネルの新着を受信箱に取り込みます。投稿のテキストと元投稿へのリンクが記事に並びます。添付ファイルや会話は Discord で開きます。
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) でアプリを作り、サーバーへのインストールと、Bot の **Message Content Intent** を有効にします。OAuth2 のリダイレクト先に `<READER_URL>/api/v1/integrations/discord/callback` を登録します。
+2. `.env` に `DISCORD_CLIENT_ID`（Application ID）、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN`、`READER_URL` を設定します。
+3. `GET /api/v1/integrations/discord` が返す `inviteUrl` をサーバーの管理者が開いて Bot を追加します。Bot に購読するチャンネルの「チャンネルを見る」と「メッセージ履歴を読む」を許可します。
+4. ブラウザで Sendo にログインし、`POST /api/v1/integrations/discord/connect` の `authorizationUrl` を開いて Discord アカウントを接続します。`POST /api/v1/integrations/discord/subscriptions` にチャンネル URL を渡すと、その時点からの新着を取得します。接続と購読の API は [OpenAPI](spec/openapi.json) にあります。
+
+購読の解除、Discord 連携の解除、取得時に Discord 側の閲覧権限がなくなったことを検出した場合は、取り込んだ記事をスター付きも含めて削除します。
 
 ### リーダーアプリで読む（Google Reader API）
 
@@ -181,11 +221,11 @@ claude mcp add --transport http sendo http://localhost:8787/mcp --header "Author
 
 #### OAuth でつなぐ
 
-Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader に置きます（[決定](docs/decisions/mcp.md)の 3〜7）。使うには、Cloudflare の画面の変数に 2 つのオリジンを入れます（[設定を変える](#設定を変える)。2 つともなければ OAuth は使えません）。コンテナ版では `.env` に入れ、2 つとも sendo-reader のオリジンにします（[コンテナ版で動かす](#コンテナ版で動かす)）。手元では `pnpm dev --var PUBLIC_URL:http://localhost:8787 --var READER_URL:http://localhost:5173` のように入れます。
+Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader に置きます（[決定](docs/decisions/mcp.md)の 3〜7）。使うには、`.env` に 2 つのオリジンを入れます（2 つともなければ OAuth は使えません）。compose.yaml で sendo-reader と並べるなら、2 つとも sendo-reader のオリジンにします（[動かす](#動かす)）。手元では、`PUBLIC_URL=http://localhost:8787`、`READER_URL=http://localhost:5173` のように入れます。
 
 | 名前 | 入れるもの |
 |---|---|
-| `PUBLIC_URL` | Sendo を外から呼ぶときのオリジン（例：`https://sendo.example.workers.dev`）。OAuth の発行者になり、クライアントはこのオリジンの `/mcp` につなぐ |
+| `PUBLIC_URL` | Sendo を外から呼ぶときのオリジン（例：`https://reader.example.com`）。OAuth の発行者になり、クライアントはこのオリジンの `/mcp` につなぐ |
 | `READER_URL` | sendo-reader のオリジン。許可の画面（`/oauth/authorize`）がここにある |
 
 クライアントには `<PUBLIC_URL>/mcp` を渡します。クライアントは、`/mcp` の 401 からメタデータ（`/.well-known/oauth-protected-resource/mcp`、`/.well-known/oauth-authorization-server`）をたどり、Client ID Metadata Document か動的登録（`/oauth/register`）でクライアントを示して、許可の画面へ移ります。許可するとトークン（アクセストークンは 1 時間、リフレッシュトークンは 30 日。使うたびに作り直す）を受け取ります。最初は読むだけ（`read`）で、状態を変えるツールを呼ぶと、`write` を足す許可を求め直します。
@@ -194,114 +234,7 @@ Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader
 
 動的登録（`/oauth/register`）は、ログインせずに誰でも呼べます。Sendo は、一度も許可されていない登録を 1 日で消し、数も 100 件までにします（超えたら 429 で断る。[決定](docs/decisions/mcp.md)の 5）。連打されても、データベースの容量や書き込みを使い切ることはありません。その間は、動的登録のクライアントが新しくつなげなくなりますが、Client ID Metadata Document のクライアントと MCP 用のトークンは使えます。
 
-守り方は、どこで動かすかで 2 通りです。
-
-- **`workers.dev` で動かす**：上の上限だけで守ります。Cloudflare のレート制限のルール（WAF）は、自分のゾーン（ドメイン）を通るリクエストにしか効かず、`workers.dev` には効きません
-- **独自のドメインで動かす**：上限に加えて、Cloudflare のレート制限のルールで `/oauth/register` を絞ってください。無料プランでも 1 つ作れます（パスで絞り、IP ごとに 10 秒で数える）
-  1. Cloudflare の画面で、そのドメインの「セキュリティ」→「セキュリティ ルール」→「レート制限のルール」を作る
-  2. 条件は「URI のパス」が `/oauth/register` と等しい。同じ IP から 10 秒に 5 回を超えたら、10 秒ブロックする
-  3. `PUBLIC_URL` は独自のドメインのオリジンにする。`workers.dev` の URL も開いたままなので、そちらは上の上限で守られます
-
-## デプロイ
-
-Sendo には 2 つの版があり、同じコードから作っています（[決定](docs/decisions/container.md)）。
-
-- **Cloudflare 版**：自分の Cloudflare アカウントの無料プランで動きます。サーバーは要りません。載せるのは、無料プランで動く範囲の機能です（この節）
-- **コンテナ版**：自分のサーバー（手元の PC、自宅のサーバー、VPS など）で、Docker で動かします。CPU を多く使う機能も含めて、すべての機能を載せます。fork は要りません（[コンテナ版で動かす](#コンテナ版で動かす)）
-
-Cloudflare 版は、自分の Cloudflare アカウントに、GitHub の fork からデプロイします。fork の `main` に push するたびに、Cloudflare（Workers Builds）がビルドしてデプロイします（[決定](docs/decisions/deploy.md)）。Cloudflare の無料プランで動きます。
-
-### 初めてのデプロイ
-
-1. GitHub で `sendo-feed/sendo` を、自分のアカウントに fork する
-2. Cloudflare の画面で、Workers & Pages →「作成」→「リポジトリをインポート」を選び、GitHub につなぐ。Cloudflare の GitHub App を入れるときは、「Repository access」に fork を入れる
-   - 入れ忘れると、画面から始めたビルドは動くのに、push してもビルドが始まらない。あとからは、GitHub の Settings → Applications → Cloudflare Workers and Pages で直せる
-3. fork を選び、次のように入れてデプロイする
-
-   | 項目 | 値 |
-   |---|---|
-   | Worker の名前 | `sendo`（変えない。`wrangler.jsonc` の `name` と違うとビルドが失敗し、sendo-reader もこの名前で呼ぶ） |
-   | ビルドのコマンド | 空のまま（`pnpm run build` が入っていてもよい） |
-   | デプロイのコマンド | `pnpm run deploy`（`run` を付ける。`pnpm deploy` は pnpm 自身のコマンド） |
-
-   - 記事の本文を R2 に置くので、先に Cloudflare の画面の「R2」で、R2 を使えるようにしておく。バケット（`sendo-content`）は、D1 や Queues と同じくデプロイのときに作られる。作られずにデプロイが止まったら、`pnpm exec wrangler r2 bucket create sendo-content` で作ってから、やり直す
-4. 1 回目のビルドは、秘密がなくて止まる。D1 と Queues はもうできている。Worker の「設定」→「変数とシークレット」に、型を「**シークレット**」にして、次の 3 つを入れる（型を「変数」にすると、必須の確認を通らず、デプロイでも消える）
-   - `ALLOWED_EMAILS`：ユーザーになれるメール（カンマか空白で区切る）
-   - `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`：Google の OAuth クライアント（[ブラウザでログインする](#ブラウザでログインするgoogle)）。リダイレクト URI に入れる sendo-reader のオリジンは、`https://<sendo-reader の Worker の名前>.<自分のサブドメイン>.workers.dev` になる。まだなければ、仮の値を入れておき、あとで入れ直してよい
-5. Worker の「デプロイ」タブで、止まったビルドをやり直す。マイグレーションを当ててから、デプロイする
-6. 手元から、ユーザーとアクセストークンを作り、動くかを確かめる
-
-   ```sh
-   pnpm exec wrangler login                                 # 最初に 1 回
-   pnpm token:create --email you@example.com --remote
-   curl -H "Authorization: Bearer <トークン>" https://sendo.<自分のサブドメイン>.workers.dev/api/v1/feeds
-   # → {"items":[]}
-   ```
-
-デプロイの手順（`pnpm run deploy`）は、D1 がなければ先にデプロイして D1 と Queues を作らせ、マイグレーションを当ててから、もう一度デプロイします。D1 があれば、マイグレーションを当ててからデプロイします。
-
-手元から初めてデプロイするとき（Workers Builds を使わないとき）は、Worker がまだないので、画面にも `wrangler secret put` にも秘密を入れられません。秘密をファイル（1 行に `名前=値`）に書き、`pnpm run deploy --secrets-file <ファイル>` で渡します。ファイルは、リポジトリの外か、`.gitignore` 済みの名前（`.dev.vars.production` など）に置いてください。
-
-### 設定を変える
-
-秘密ではない設定は、Worker の「設定」→「変数とシークレット」に、型を「変数」にして入れます。保存すると、その場で新しい版がデプロイされて効きます。そのあとのデプロイでも消えません（`wrangler.jsonc` の `keep_vars`）。入れなければ、既定で動きます。
-
-| 名前 | 既定 | 中身 |
-|---|---|---|
-| `FETCH_INTERVAL_MINUTES` | 30 | フィードを取得する間隔の下限（分）。[取得の間隔](#取得の間隔) |
-| `STORAGE_LIMIT_MIB` | 256 | 記事と本文の保存容量（MiB）。コンテナ版の既定は 10240。[古い記事の片付け](#古い記事の片付け) |
-| `PUBLIC_URL`、`READER_URL` | なし | OAuth で MCP につなぐときのオリジン。[OAuth でつなぐ](#oauth-でつなぐ) |
-
-`PUBLIC_URL` と `READER_URL` を入れると OAuth が有効になり、動的登録を誰でも呼べるようになります。独自のドメインで動かすなら、レート制限のルールも作ってください（[OAuth でつなぐ](#oauth-でつなぐ)）。
-
-fork の `wrangler.jsonc` には書かないでください。fork は公開されるので、自分の Sendo の URL が誰にでも見えてしまいます。画面に「これらの変更で Wrangler 設定を更新し、デプロイを同期させてください」と出ますが、写さなくてかまいません。
-
-手元では、`pnpm dev --var FETCH_INTERVAL_MINUTES:60` のように入れます（`.dev.vars` からは、秘密の 3 つしか読まれません）。
-
-### 更新する
-
-GitHub の fork の画面で「Sync fork」→「Update branch」を押します。上流の変更が fork の `main` に入り、その push でデプロイされます（マイグレーションも当たります）。
-
-自動で取り込みたいときは、[sendo-updater](https://github.com/sendo-feed/sendo-updater) も fork してデプロイします。毎分、自分の sendo と sendo-reader の fork を上流と比べ、遅れていれば取り込みます（sendo-reader は、sendo のデプロイが成功してから）。入れ方は sendo-updater の README にあります（[決定](docs/decisions/deploy.md)の 7）。
-
-上流の更新によっては、Cloudflare の画面での準備（R2 を使えるようにする、など）が要ります。取り込んだあとのデプロイが止まったら、Workers Builds のログと、上の「初めてのデプロイ」を見て、準備してからビルドをやり直してください。
-
-## コンテナ版で動かす
-
-上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo` と、画面の `ghcr.io/sendo-feed/sendo-reader`）を、Docker Compose で並べて動かします。標準構成では fork もビルドも要りません（[決定](docs/decisions/container.md)の 7、10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。
-
-外に出すのは sendo-reader のコンテナだけです。sendo-reader が画面を返し、Sendo のパス（`/api`、`/mcp`、OAuth、Google Reader API など）を、compose の中の Sendo に中継します。画面・ブラウザのログイン・リーダーアプリ・MCP は、同じ sendo-reader のオリジンを使います（[sendo-reader の決定](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)）。
-
-1. [compose.yaml](compose.yaml) と [.env.example](.env.example) を、置き場にするディレクトリに写す。`.env.example` は `.env` という名前にして、設定を書く（名前と意味は Cloudflare 版と同じ）
-   - `PUBLIC_URL` と `READER_URL`：どちらも、外から開く sendo-reader のオリジン（例：`https://reader.example.com`）。`PUBLIC_URL` は欠かせません。ないと、ブラウザのログインの戻り先が合いません。2 つとも入れると、OAuth（[OAuth でつなぐ](#oauth-でつなぐ)）も使えます
-   - `ALLOWED_EMAILS`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`：ブラウザでログインするとき（[ブラウザでログインする](#ブラウザでログインするgoogle)）。Google の「承認済みのリダイレクト URI」には `https://reader.example.com/api/v1/auth/google/callback` を入れる
-2. 手前にリバースプロキシ（Caddy など）か Cloudflare Tunnel を置いて TLS を終え、sendo-reader のコンテナ（`127.0.0.1:8080`）に向ける
-3. 動かす
-
-   ```sh
-   docker compose up -d
-   ```
-
-4. `https://reader.example.com` を開き、Google でログインする。ブラウザでログインしないで使うときは、アクセストークンを発行する
-
-   ```sh
-   docker compose exec sendo node dist/node/sendo.mjs token:create --email you@example.com
-   # MCP 用なら --mcp（状態を変えるツールも使うなら --mcp --write）
-   ```
-
-リーダーアプリのサーバー（[リーダーアプリで読む](#リーダーアプリで読むgoogle-reader-api)）も、MCP の URL（`https://reader.example.com/mcp`）も、sendo-reader のオリジンにします。
-
-画面を使わず、リーダーアプリや MCP だけで使うときは、`compose.yaml` の `reader` を消して Sendo のポートを出し（`compose.yaml` のコメント）、`PUBLIC_URL` を Sendo のオリジンにします。`READER_URL` は空にします（OAuth は使えず、MCP 用のトークンでつなぎます）。
-
-### 標準構成を更新する
-
-上流の更新は、次で取り込みます。Sendo と sendo-reader が一緒に新しくなります。マイグレーションは、起動するときに当たります。
-
-```sh
-docker compose pull && docker compose up -d
-```
-
-手元でイメージを作るときは `docker build -t sendo .` で、作らずに Node で動かすときは `pnpm build:node` のあとに `DATA_DIR=./.data pnpm start:node` です。
+手前のリバースプロキシ（Caddy のレート制限のプラグインなど）で `/oauth/register` へのリクエストの回数を絞ると、守りを重ねられます。
 
 ### X の埋め込みを有効にする
 
@@ -320,62 +253,58 @@ services:
 
 | コマンド | すること |
 |---|---|
-| `pnpm dev` | 手元でサーバーを動かす |
+| `pnpm dev` | 手元でサーバーを動かす（`.env` を読み、データは `.data/`） |
 | `pnpm check` | 型チェック、lint、Rust の検査、ネイティブのモジュールのビルド、テストをまとめて実行する（PR を出す前に） |
 | `pnpm typecheck` | 型チェック |
 | `pnpm lint` | lint と整形の確認（Biome） |
 | `pnpm format` | 整形して、直せる lint の指摘を直す |
-| `pnpm test` | テスト（Workers のランタイムの中で動く。コンテナ版の緩衝層は Node で動く） |
-| `pnpm build` | デプロイせずにバンドルだけ作って確かめる |
+| `pnpm test` | テスト（Vitest。テストファイルごとに一時ディレクトリの SQLite を使う） |
 | `pnpm check:rust` | Rust（`crates/`）の整形の確認、lint（clippy）、テスト |
-| `pnpm build:native` | Rust をネイティブのモジュール（`native/sendo.node`）にする（コンテナ版のテストの前に要る） |
-| `pnpm build:node` | コンテナ版のバンドル（`dist/node/sendo.mjs`）を作る |
-| `pnpm start:node` | コンテナ版を手元の Node で動かす（`DATA_DIR` にデータを置く） |
-| `pnpm cf-typegen` | `wrangler.jsonc` から型（`worker-configuration.d.ts`）を作り直す |
+| `pnpm build:native` | Rust をネイティブのモジュール（`native/sendo.node`）にする（`pnpm dev` とテストの前に要る） |
+| `pnpm build` | バンドル（`dist/node/sendo.mjs`）を作る |
+| `pnpm start` | バンドルを手元の Node で動かす（`DATA_DIR` にデータを置く） |
 | `pnpm openapi:generate` | API の定義を `spec/openapi.json` に書き出す（API を変えたらコミットする） |
-| `pnpm db:generate` | `src/db/schema.ts` からマイグレーションの SQL を作る |
-| `pnpm db:migrate:local` | 手元の D1 にマイグレーションを当てる |
-| `pnpm db:migrate` | デプロイ先の D1 にマイグレーションを当てる |
-| `pnpm run deploy` | デプロイする（[デプロイ](#デプロイ)。マイグレーションも当てる） |
-| `pnpm token:create --email <メール>` | ユーザーとアクセストークンを作る（`--mcp` で MCP 用、`--remote` でデプロイ先） |
+| `pnpm db:generate` | `src/db/schema.ts` からマイグレーションの SQL を作る（起動時に当たる） |
+| `pnpm token:create --email <メール>` | 手元の DB に、ユーザーとアクセストークンを作る（`--mcp` で MCP 用） |
+
+手元でイメージを作るときは `docker build -t sendo .` です。
 
 ## ディレクトリ構成
 
 ```text
 sendo/
 ├── src/
-│   ├── index.ts        # Worker の入口（fetch ／ scheduled ／ queue）
 │   ├── app.ts          # HTTP のルーティング
 │   ├── api/            # REST API（/api/v1）
 │   ├── auth/           # ログイン（OpenID Connect の提供元、ID トークンの確認）
 │   ├── db/             # スキーマとデータの読み書き（Drizzle）。共有のフィード・記事と、人ごとの購読・受信箱
+│   ├── discord/        # Discord の API の呼び出し
 │   ├── feeds/          # 購読の手続き（REST API、Google Reader API で共通）
 │   ├── fetcher/        # フィードの取得と解析、SSRF 対策
 │   ├── greader/        # Google Reader API 互換（/accounts/ClientLogin、/reader/api/0）
 │   ├── mcp/            # リモート MCP サーバー（/mcp）
 │   ├── oauth/          # OAuth の認可サーバー（MCP 用。メタデータ、トークン、クライアントの登録）
-│   ├── jobs/           # キューと定期実行で動く処理
+│   ├── jobs/           # 仕事の表と定期実行で動く処理
 │   ├── opml/           # OPML の読み書き
-│   └── platform/       # 実行環境の緩衝層
-│       ├── cloudflare/ # Cloudflare 版の実装（D1・Queues など）
-│       └── node/       # コンテナ版の実装と入口（SQLite、ジョブの表など）
-├── crates/             # Rust（コンテナ版の重い処理と、napi-rs の結び）
-├── migrations/         # マイグレーション。2 つの版で同じものを使う（pnpm db:generate で作る）
+│   └── platform/       # 緩衝層（実行環境の入出力）のインターフェース
+│       └── node/       # 緩衝層の実装と入口（SQLite、ファイル、ジョブの表、Rust の読み込み）
+├── crates/             # Rust（重い処理と、napi-rs の結び）
+├── migrations/         # マイグレーション（pnpm db:generate で作る。起動時に当たる）
 ├── spec/openapi.json   # API の定義（pnpm openapi:generate で書き出す。sendo-reader が型を作る）
-├── test/               # テスト（Vitest ＋ Workers のランタイム。test/node/ は Node）
+├── test/               # テスト（Vitest）
 ├── docs/
 │   ├── decisions/      # 今の決定
 │   ├── inception-deck.md
 │   ├── tech-deck.md
 │   └── features.md
-├── wrangler.jsonc      # Cloudflare 版の設定
-├── Dockerfile          # コンテナ版のイメージ（compose.yaml で動かす）
+├── Dockerfile          # イメージ（compose.yaml で動かす）
+├── compose.yaml        # Sendo と sendo-reader を並べて動かす
 └── biome.json          # lint と整形の設定
 ```
 
 機能を足すときのディレクトリの分け方は、[技術構成](docs/tech-deck.md#6-ディレクトリ構成sendo)にあります。
 
-Cloudflare 固有の機能（`cloudflare:*`）に触れてよいのは `src/index.ts` と `src/platform/cloudflare/` だけで、Node.js の組み込みモジュール（`node:*`）を使ってよいのは `src/platform/node/` だけです。どちらも lint で検査しています（[決定](docs/decisions/tech-stack.md)）。
+Node.js の組み込みモジュール（`node:*`）と `process` を使ってよいのは `src/platform/node/` だけです。lint で検査しています（[決定](docs/decisions/tech-stack.md)）。
 
 ## 文書
 
@@ -383,7 +312,6 @@ Cloudflare 固有の機能（`cloudflare:*`）に触れてよいのは `src/inde
 - [機能一覧](docs/features.md)：何を作るか
 - [技術構成](docs/tech-deck.md)：どう作るか
 - [決定の一覧](docs/decisions/README.md)：今の決定とその理由
-- [コストの見積もり](docs/cost.md)：Cloudflare の無料プランと Workers Paid で、どれくらいの規模まで動かせるか
 
 ## 貢献
 

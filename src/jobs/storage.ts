@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { getRow } from "../db";
 import { DB_NOW_MS } from "../db/clock";
 import {
   configureStorage,
@@ -8,7 +9,7 @@ import {
 } from "../db/storage";
 import type { Platform } from "../platform";
 
-/** Cloudflare の仕事 1 つのクエリ数・書き込み量に収める */
+/** 1 つの仕事で扱う量を抑える（docs/decisions/jobs.md の 4）。残りは次の仕事に回す */
 export const EVICTION_BATCH = 100;
 export const MEASUREMENT_BATCH = 30;
 
@@ -65,21 +66,27 @@ export async function reclaimStorage(
   await configureStorage(platform.db, platform.retentionConfig.maxBytes);
   const token = crypto.randomUUID();
   // 不足量を読む前に所有権を取る。先行する回収が終わった後なら、最新の使用量から計画し直す。
-  const claimed = await platform.db.get<{ id: number }>(sql`update storage_usage set
+  const claimed = await getRow<{ id: number }>(
+    platform.db,
+    sql`update storage_usage set
     reclaim_token = ${token}, reclaim_until = ${DB_NOW_MS} + 60000,
     reclaiming = case when bytes >= limit_bytes * 0.9 then 1
       when bytes <= limit_bytes * 0.8 then 0 else reclaiming end
     where id = 1 and reclaim_until <= ${DB_NOW_MS}
-    returning id`);
+    returning id`,
+  );
   if (!claimed) return { inbox: 0, articles: 0 };
   try {
     const usage = await readStorageUsage(platform.db);
     if (usage.unmeasured > 0 || !usage.reclaiming) return { inbox: 0, articles: 0 };
-    const pending = await platform.db.get<{
+    const pending = await getRow<{
       bytes: number;
-    }>(sql`select coalesce(sum(s.bytes + s.article_bytes + 256), 0) as bytes
+    }>(
+      platform.db,
+      sql`select coalesce(sum(s.bytes + s.article_bytes + 256), 0) as bytes
       from content_notes n join content_sizes s on s.key = n.key
-      where not exists (select 1 from articles a where a.content_key = n.key)`);
+      where not exists (select 1 from articles a where a.content_key = n.key)`,
+    );
     const desiredBytes =
       usage.bytes - (pending?.bytes ?? 0) - platform.retentionConfig.maxBytes * 0.8;
     if (desiredBytes <= 0) return { inbox: 0, articles: 0 };
@@ -89,13 +96,16 @@ export async function reclaimStorage(
       return { inbox: 0, articles: 0 };
     }
     // UTC の 1 日に 10 回まで。期限を失った所有者は、回数の確保も削除も続けない。
-    const batch = await platform.db.get<{ id: number }>(sql`update storage_usage set
+    const batch = await getRow<{ id: number }>(
+      platform.db,
+      sql`update storage_usage set
       eviction_batches = case when eviction_day = cast(unixepoch() / 86400 as integer)
         then eviction_batches + 1 else 1 end,
       eviction_day = cast(unixepoch() / 86400 as integer)
       where id = 1 and reclaim_token = ${token} and reclaim_until > ${DB_NOW_MS}
         and (eviction_day != cast(unixepoch() / 86400 as integer) or eviction_batches < 10)
-      returning id`);
+      returning id`,
+    );
     if (!batch) return { inbox: 0, articles: 0 };
     return await evictArticles(platform.db, candidates, token);
   } finally {

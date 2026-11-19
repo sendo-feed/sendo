@@ -1,9 +1,9 @@
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { MAX_ITEMS } from "../fetcher/parse-feed";
 import type { Database } from ".";
 import { chunked } from "./chunk";
 import { DB_NOW_MS } from "./clock";
-import { articles, type NewArticle } from "./schema";
+import { articles, feeds, type NewArticle } from "./schema";
 
 /*
  * 記事は全員で共有し、取り込んだあとは変えない（docs/decisions/sync.md）。
@@ -15,7 +15,7 @@ export type ArticleInput = Omit<NewArticle, "createdAt" | "reservedInboxBytes"> 
   createdAt?: Date;
 };
 
-/** アイテムの ID の上限（含まない）。D1 から JavaScript の数で受け取っても丸められない範囲 */
+/** アイテムの ID の上限（含まない）。SQLite から JavaScript の数で受け取っても丸められない範囲 */
 export const ITEM_ID_LIMIT = 2 ** 53;
 
 /**
@@ -62,12 +62,17 @@ export async function insertArticles(
   return inserted;
 }
 
-/** 記事の URL を引く。記事がなければ undefined */
-export async function getArticleUrl(
+/** ページ抽出の取得先。Discord の投稿は認証が必要なため、Web のページを取りにいかない */
+export async function getArticlePageUrl(
   db: Database,
   articleId: string,
 ): Promise<{ url: string | null } | undefined> {
-  return db.select({ url: articles.url }).from(articles).where(eq(articles.id, articleId)).get();
+  return db
+    .select({ url: articles.url })
+    .from(articles)
+    .innerJoin(feeds, eq(articles.feedId, feeds.id))
+    .where(and(eq(articles.id, articleId), isNull(feeds.discordCursor)))
+    .get();
 }
 
 /**

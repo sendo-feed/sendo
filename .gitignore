@@ -3,7 +3,6 @@ node_modules
 
 # ビルドと実行の生成物
 dist/
-.wrangler/
 # Rust のビルドの生成物と、Node から読み込むネイティブのモジュール（pnpm build:native）
 target
 native/
@@ -11,13 +10,7 @@ native/
 .data/
 coverage/
 
-# wrangler types の生成物（pnpm install のときに生成する）
-worker-configuration.d.ts
-
-# 手元の秘密情報。.dev.vars.example を写して使う
-.dev.vars
-.dev.vars.*
-!.dev.vars.example
+# 手元の設定と秘密情報。.env.example を写して使う
 .env
 .env.*
 !.env.example

@@ -74,7 +74,7 @@
 | 既存のリーダーアプリ | Reeder、NetNewsWire、Fluent Reader など |
 | AI エージェント | Claude などの MCP クライアント |
 | フィードの提供元 | ブログ、ニュースサイト、メールマガジン |
-| デプロイ先 | VPS、Cloudflare など [ 各自記入 ] |
+| デプロイ先 | 手元の PC、自宅のサーバー、VPS など（コンテナで動かす）[ 各自記入 ] |
 
 > プロジェクトに関わる人・システムを洗い出す。OSS なので、利用者と既存エコシステム（リーダーアプリや MCP クライアント）がご近所さんになる。
 
@@ -106,7 +106,7 @@ flowchart LR
   S --> O3
 ```
 
-技術スタック：TypeScript（Hono）で、無料で動く Cloudflare 版と、CPU を多く使う機能も載せるコンテナ版を、緩衝層を挟んで同じコードから作る → [decisions/tech-stack.md](decisions/tech-stack.md)（提案中）
+技術スタック：TypeScript（Hono）をコンテナ（Node ＋ SQLite）で動かし、重い処理は Rust で書く → [decisions/tech-stack.md](decisions/tech-stack.md)（提案中）
 
 > 全体像。サーバーが本体で、リーダーは利用者の一つ。LLM 機能はすべてオプションで、なくても普通の RSS サーバーとして完結させる。
 
@@ -132,7 +132,7 @@ flowchart LR
 | フェーズ | 内容 | 状態（2026-11-17） | 目安 |
 |---|---|---|---|
 | **Phase 1：MVP** | 取得と保存、REST API、Google Reader API 互換、MCP サーバー、OPML | 完了 | — |
-| **Phase 2：Feedly 有料版の代わり** | 全文抽出、全文検索、フィルタとルール、通知、RSS のないサイトのフィード化 | 進行中。全文抽出はコンテナ版で実装済み | [ 　週間 ] |
+| **Phase 2：Feedly 有料版の代わり** | 全文抽出、全文検索、フィルタとルール、通知、RSS のないサイトのフィード化 | 進行中。全文抽出は実装済み | [ 　週間 ] |
 | **Phase 3：LLM 活用** | 要約とダイジェスト、自動分類、関連度スコア、クラスタリング、意味検索 | 未着手 | [ 　週間 ] |
 
 **最初のゴールは達成：Feedly の OPML の移行を終え、sendo-reader で毎日読んでいる。**
@@ -155,7 +155,7 @@ flowchart LR
 
 つまみの位置は仮。同じ高さに2つ並べない、が決まり。2人で動かして決める。
 
-> 何を優先し、何を譲るか。第1版は Cloudflare の無料枠で、試作を速く回すことを優先する（[decisions/tech-stack.md](decisions/tech-stack.md)）。移植しやすさは「すぐ移植できる」ではなく「緩衝層で移植の妨げを作らない」程度に留める。テストを中ほどに置くのは、作り直しを気軽にするための安全網だから。
+> 何を優先し、何を譲るか。はじめは Cloudflare の無料枠で試作を回したが、無料枠に収まる機能だけではほかの RSS リーダーと差が出ないと分かり、コンテナだけで動かすことにした（[decisions/tech-stack.md](decisions/tech-stack.md)）。ランニングコストは、手元の PC や安い VPS で動かせることで低く保つ。移植しやすさは「どこでもコンテナを動かせる」程度に留める。テストを中ほどに置くのは、作り直しを気軽にするための安全網だから。
 
 ---
 
@@ -182,7 +182,7 @@ flowchart LR
 
 ## 11. 次に決めること
 
-1. テックスタック：TypeScript ＋ Hono、Cloudflare 版とコンテナ版の 2 つ → [decisions/tech-stack.md](decisions/tech-stack.md)（提案中、2人で合意する）
+1. テックスタック：TypeScript ＋ Hono、コンテナだけで動かす → [decisions/tech-stack.md](decisions/tech-stack.md)（提案中、2人で合意する）
 2. 役割分担：サーバーの層と、MCP・LLM の層
 3. ライセンス：[ MIT ／ Apache-2.0 ／ AGPL-3.0 ]
 4. Phase 2 の優先順位と期日：[ 　年　月　日 ]（Phase 1 は完了）

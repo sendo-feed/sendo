@@ -4,7 +4,7 @@
  * - 同じホストの取得は、同時に 1 つだけ。前の取得が終わってから intervalMs 空けて、次を始める
  * - 待っている取得は、並んだ順に動かす。ただし interactive（読者が開いたとき）は、background
  *   （抜く仕事）より前に並べる。並んだあとで interactive に上げることもできる（GateTicket.promote）
- * - 数えるのはプロセスのメモリ。コンテナ版は 1 つのプロセスで動く（docs/decisions/container.md の 7）
+ * - 数えるのはプロセスのメモリ。Sendo は 1 つのプロセスで動く（docs/decisions/container.md の 7）
  *   ので、それで全体を絞れる
  */
 

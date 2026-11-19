@@ -50,27 +50,8 @@
       "linter": {
         "rules": {
           "correctness": {
-            "noNodejsModules": "error"
-          }
-        }
-      }
-    },
-    {
-      "includes": ["src/**", "!src/index.ts", "!src/platform/cloudflare/**"],
-      "linter": {
-        "rules": {
-          "style": {
-            "noRestrictedImports": {
-              "level": "error",
-              "options": {
-                "patterns": [
-                  {
-                    "group": ["cloudflare:*"],
-                    "message": "Cloudflare 固有の機能は src/index.ts と src/platform/cloudflare/ でだけ使う。それ以外は src/platform/ のインターフェース越しに使う（docs/decisions/tech-stack.md）。"
-                  }
-                ]
-              }
-            }
+            "noNodejsModules": "error",
+            "noProcessGlobal": "error"
           }
         }
       }

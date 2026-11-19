@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { sha256Hex } from "../lib/crypto";
-import type { Database } from ".";
+import { type Database, getRow } from ".";
 import { savedPageHorizons, savedPages } from "./schema";
 import { nextSeq } from "./seq";
 
@@ -32,7 +32,9 @@ export async function savePage(
   const { userId, url, title, now } = input;
   const id = await sha256Hex(url);
   const seq = nextSeq(savedPages);
-  const row = await db.get<{ id: string; url: string; title: string | null; saved_at: number }>(sql`
+  const row = await getRow<{ id: string; url: string; title: string | null; saved_at: number }>(
+    db,
+    sql`
     insert into saved_pages (user_id, id, url, title, saved_at, deleted_at, seq)
     select ${userId}, ${id}, ${url}, ${title}, ${now.getTime()}, null, ${seq}
     where exists (
@@ -49,7 +51,8 @@ export async function savePage(
       seq = case when saved_pages.deleted_at is null then saved_pages.seq else excluded.seq end,
       deleted_at = null
     returning id, url, title, saved_at
-  `);
+  `,
+  );
   return row
     ? { id: row.id, url: row.url, title: row.title, savedAt: new Date(row.saved_at) }
     : null;

@@ -1,7 +1,7 @@
-import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
 import { deliverNewArticles } from "../../src/db/inbox";
+import { testDb } from "../db";
 import {
   createTestPlatform,
   createUser,
@@ -40,8 +40,8 @@ function subscribe(platform: Parameters<typeof requestApp>[0], json: unknown) {
 }
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM feeds");
-  await env.DB.exec("DELETE FROM folders");
+  await testDb.exec("DELETE FROM feeds");
+  await testDb.exec("DELETE FROM folders");
 });
 
 describe("POST /api/v1/feeds", () => {
@@ -268,25 +268,25 @@ describe("PATCH ／ DELETE /api/v1/feeds/{id}", () => {
     const other = await createUser();
     await subscribeFeed(platform, { userId: other.id, url: feed.url });
     const readSync = async (cursor?: string) =>
-      (
+      (await (
         await requestApp(
           platform,
           cursor ? `/api/v1/sync?cursor=${encodeURIComponent(cursor)}` : "/api/v1/sync",
         )
-      ).json<{
+      ).json()) as {
         cursor: string;
         feeds: unknown[];
-      }>();
+      };
     const { cursor } = await readSync();
     const patch = (json: unknown) =>
       requestApp(platform, `/api/v1/feeds/${feed.id}`, { method: "PATCH", json });
 
-    const { folder } = await (
+    const { folder } = (await (
       await requestApp(platform, "/api/v1/folders", {
         method: "POST",
         json: { name: "Tech" },
       })
-    ).json<{ folder: { id: string } }>();
+    ).json()) as { folder: { id: string } };
     expect((await patch({ folderId: folder.id })).status).toBe(200);
     const changed = await patch({ displayName: "  ニュース  " });
     expect(changed.status).toBe(200);
@@ -365,13 +365,13 @@ describe("PATCH ／ DELETE /api/v1/feeds/{id}", () => {
     const res = await requestApp(platform, `/api/v1/feeds/${feed.id}`, { method: "DELETE" });
 
     expect(res.status).toBe(204);
-    const inbox = await env.DB.prepare(
-      "SELECT article_id FROM user_articles WHERE user_id = ? AND feed_id = ?",
-    )
+    const inbox = await testDb
+      .prepare("SELECT article_id FROM user_articles WHERE user_id = ? AND feed_id = ?")
       .bind(TEST_USER.id, feed.id)
       .all<{ article_id: string }>();
     expect(inbox.results.map((row) => row.article_id)).toEqual(["kept"]);
-    const articles = await env.DB.prepare("SELECT count(*) AS n FROM articles WHERE feed_id = ?")
+    const articles = await testDb
+      .prepare("SELECT count(*) AS n FROM articles WHERE feed_id = ?")
       .bind(feed.id)
       .first<{ n: number }>();
     expect(articles?.n).toBe(2);
@@ -453,7 +453,8 @@ describe("フォルダの API", () => {
       requestApp(platform, "/api/v1/folders", { method: "POST", json });
     const seqOf = async (id: string) =>
       (
-        await env.DB.prepare("SELECT seq FROM folders WHERE id = ?")
+        await testDb
+          .prepare("SELECT seq FROM folders WHERE id = ?")
           .bind(id)
           .first<{ seq: number }>()
       )?.seq;
