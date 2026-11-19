@@ -12,7 +12,7 @@
 
 | # | 方針 | 内容 |
 |---|---|---|
-| 01 | 2 つの版 | 無料で動く Cloudflare 版（Workers・D1・Queues・Cron）と、CPU を多く使う機能も載せるコンテナ版（Node ＋ SQLite）を、同じコードから作る。実行環境に固有の部分は緩衝層（`src/platform/`）に閉じ込める（[decisions/tech-stack.md](decisions/tech-stack.md)、[decisions/container.md](decisions/container.md)） |
+| 01 | コンテナだけで動かす | Node ＋ SQLite のコンテナで動かし、CPU を多く使う機能も含めてすべてを載せる。重い処理は Rust。実行環境の入出力は緩衝層（`src/platform/`）にまとめる（[decisions/tech-stack.md](decisions/tech-stack.md)、[decisions/container.md](decisions/container.md)） |
 | 02 | API を土台に、3つの入口 | REST API を正とし、CLI・Skill とリモート MCP を薄く乗せる。記事本文は信頼できないデータとして扱う |
 | 03 | ローカルファーストのクライアント | 画面はネットワークを待たない。起動時に差分を1回で同期する |
 | 04 | 既存のリーダーとつながる | Google Reader API 互換で Reeder Classic や NetNewsWire から読める |
@@ -34,9 +34,9 @@ flowchart LR
     A["AI エージェント（MCP）"]
   end
 
-  subgraph CF["Cloudflare"]
-    RW["reader Worker（sendo-reader）<br/>静的アセット / /api の中継"]
-    SW["sendo Worker<br/>REST API / Google Reader API / MCP<br/>Cron Triggers / Queues / D1 / Vectorize<br/>R2（任意）/ AI Gateway（任意）"]
+  subgraph Host["コンテナ（Docker Compose）"]
+    RW["sendo-reader<br/>画面 / sendo のパスの中継"]
+    SW["sendo（Node）<br/>REST API / Google Reader API / MCP<br/>ジョブの表 / タイマー / SQLite / Rust の重い処理"]
   end
 
   subgraph Ext["外部"]
@@ -47,17 +47,15 @@ flowchart LR
 
   R --> RW
   M --> RW
-  RW -- "Service binding" --> SW
-  X --> SW
-  A --> SW
+  RW -- "compose の中の HTTP" --> SW
+  X --> RW
+  A --> RW
   SW --> F
   SW --> L
   SW --> N
 ```
 
-> 自前のリーダーは reader Worker 経由で sendo とつながり、ブラウザからは同一オリジンに見える。外部のリーダーや AI エージェントは sendo に直接つながる。
->
-> コンテナ版（[decisions/container.md](decisions/container.md)）では、reader のコンテナが画面を返し、sendo のパスをすべて中継する。外に出るのは reader のオリジン 1 つで、外部のリーダーや AI エージェントも reader のコンテナを通って sendo につながる。
+> reader のコンテナが画面を返し、sendo のパスをすべて中継する（[decisions/container.md](decisions/container.md)）。外に出るのは reader のオリジン 1 つで、外部のリーダーや AI エージェントも reader のコンテナを通って sendo につながる。TLS は手前のリバースプロキシや Cloudflare Tunnel に任せる。
 
 ---
 
@@ -65,18 +63,18 @@ flowchart LR
 
 | 領域 | 選定（案） | メモ |
 |---|---|---|
-| ランタイム | Cloudflare Workers ／ Node（コンテナ版） | Cloudflare 版は無料枠に収まる想定 |
+| ランタイム | Node（コンテナ） | 手元の PC、自宅のサーバー、VPS で動かす |
 | 言語・FW | TypeScript ＋ Hono | MCP SDK が成熟。Node・Bun でも動く |
 | API 定義 | zod-openapi（コードから生成） | 生成した OpenAPI を reader が取り込む |
-| DB | D1 ／ SQLite のファイル（コンテナ版）＋ Drizzle | Postgres は今は支えない |
-| 非同期処理 | Cron Triggers ＋ Queues | 取得・全文抽出・LLM 処理を分ける |
-| 全文抽出 | dom_smoothie（Readability の Rust 版） | コンテナ版だけ。napi-rs で読み込む（[decisions/content.md](decisions/content.md)） |
-| 検索 | FTS5（D1）／ Vectorize | 意味検索は Phase 3 |
+| DB | SQLite のファイル（libsql）＋ Drizzle | Postgres は今は支えない |
+| 非同期処理 | SQLite のジョブの表 ＋ 同じプロセスのタイマー | 取得・全文抽出・LLM 処理を分ける |
+| 全文抽出 | rs-trafilatura ／ dom_smoothie（Rust） | napi-rs で読み込む（[decisions/content.md](decisions/content.md)） |
+| 検索 | FTS5 ／ sqlite-vec | 意味検索は Phase 3 |
 | エージェント連携 | リモート MCP ＋ CLI・Skill | MCP は仕様 2026-07-28 準拠で /mcp に直接載せる |
-| LLM | OpenAI 互換で差し替え | Claude・OpenAI・Workers AI・Ollama |
+| LLM | OpenAI 互換で差し替え | Claude・OpenAI・Ollama |
 | 認証 | 自前の OpenID Connect ／ アクセストークン ／ OAuth 2.1（MCP） | ブラウザはセッションのクッキー、それ以外は Bearer（[decisions/accounts.md](decisions/accounts.md)）。Claude.ai などは Sendo が出す OAuth のトークンで /mcp につなぐ（[decisions/mcp.md](decisions/mcp.md)） |
 
-> テストは Vitest と Workers 用のテストプール。コンテナ版の重い処理（全文抽出、画像の縮小、埋め込みなど）は Rust で書き、napi-rs で Node のプロセスに読み込む（[decisions/tech-stack.md](decisions/tech-stack.md)）。Cloudflare 版で Wasm にするかは、測ってから決める。
+> テストは Vitest で、Node で動かす。重い処理（全文抽出、言語判定、画像の処理、埋め込みなど）は Rust で書き、napi-rs で Node のプロセスに読み込む（[decisions/tech-stack.md](decisions/tech-stack.md)）。
 
 ---
 
@@ -194,10 +192,10 @@ sendo-reader/
 
 1. ~~UI：Svelte 5 か React か（ネイティブの方針しだい）~~ → sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md) で決めた（Svelte 5 ＋ Vite の SPA。SvelteKit は使わない）
 2. ~~ネイティブ：Capacitor か Expo か~~ → sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md) で決めた（Web のビルドを、あとで Capacitor で包む）
-3. ~~Cloudflare 以外（Docker・Postgres）をどこまで支えるか~~ → [decisions/container.md](decisions/container.md) で決めた（コンテナ版を Cloudflare 版と並べて作る。Postgres は今は支えない）
+3. ~~Cloudflare 以外（Docker・Postgres）をどこまで支えるか~~ → [decisions/container.md](decisions/container.md) で決めた（コンテナだけで動かし、Cloudflare 版は持たない。Postgres は今は支えない）
 4. ~~MCP の書き込み権限（OAuth スコープ）と、記事本文のインジェクション対策~~ → [decisions/mcp.md](decisions/mcp.md) で決めた（範囲は read と write、記事は構造化した JSON で信頼できないデータとして返す）
 5. ライセンス：[ MIT ／ Apache-2.0 ／ AGPL-3.0 ]
 6. ~~sendo-reader のツール：Void（Cloudflare）と Vite+ を使うか。Void の UI のアダプタは React と Vue なので、1 と一緒に決める~~ → sendo-reader の [decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md) で決めた（どちらも使わない。pnpm・Biome・Vitest で sendo と揃え、TypeScript だけは svelte-check に合わせて 6 系）
-7. ~~差分同期の目印：記事の公開日時（publishedAt）や作成時刻ではなく、サーバーが書き込み順に振る番号（D1 は書き込みを1つずつ順に処理するので、自動で増える番号が書き込み順になる）を目印にする案。公開日時が古い記事が後から入っても取りこぼさない。reader の同期を作るときに決める~~ → [decisions/sync.md](decisions/sync.md) で決めた（人ごとの行に変更番号 `seq` を振り、カーソルより後に変わった行を返す）
+7. ~~差分同期の目印：記事の公開日時（publishedAt）や作成時刻ではなく、サーバーが書き込み順に振る番号（SQLite は書き込みを1つずつ順に処理するので、自動で増える番号が書き込み順になる）を目印にする案。公開日時が古い記事が後から入っても取りこぼさない。reader の同期を作るときに決める~~ → [decisions/sync.md](decisions/sync.md) で決めた（人ごとの行に変更番号 `seq` を振り、カーソルより後に変わった行を返す）
 
 > 決まったものから docs/decisions/ に書く。テックスタックは sendo の tech-stack.md、リーダーのローカルファースト方針は sendo-reader の local-first.md。
