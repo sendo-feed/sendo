@@ -12,7 +12,8 @@ const FeaturesSchema = z
         "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。常に true",
     }),
     syncUpdates: z.boolean().openapi({
-      description: "受信箱の変更を WebSocket で受け取れるか（GET /sync/updates）。常に true",
+      description:
+        "Sendo が WebSocket 通知に対応しているか（GET /sync/updates）。対応前の Sendo はこの項目を返さない",
     }),
   })
   .openapi("Features");

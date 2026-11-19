@@ -7,12 +7,27 @@ import type { SyncUpdates } from "..";
 const SYNC_REQUIRED = JSON.stringify({ type: "sync_required" });
 const MAX_CONNECTIONS = 512;
 const MAX_CONNECTIONS_PER_USER = 8;
+const HEARTBEAT_INTERVAL_MS = 30_000;
 
 /** HTTP と取得ジョブが同じプロセスで動くので、接続はメモリに持つ。 */
-export function createNodeSyncUpdates(db: Database) {
+export function createNodeSyncUpdates(db: Database, heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS) {
   const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 1024 });
   const byUser = new Map<string, Map<WebSocket, SessionIdentity>>();
   let stopping = false;
+
+  // 切断が TCP から伝わらないときも、応答しない接続の枠を空ける。
+  const waitingForPong = new WeakSet<WebSocket>();
+  const heartbeat = setInterval(() => {
+    for (const socket of webSocketServer.clients) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      if (waitingForPong.has(socket)) {
+        socket.terminate();
+      } else {
+        waitingForPong.add(socket);
+        socket.ping();
+      }
+    }
+  }, heartbeatIntervalMs).unref();
 
   const updates: SyncUpdates = {
     async connect(context, session) {
@@ -58,6 +73,7 @@ export function createNodeSyncUpdates(db: Database) {
           };
           socket.on("close", remove);
           socket.on("error", remove);
+          socket.on("pong", () => waitingForPong.delete(socket));
         },
         onMessage(_event, socket) {
           socket.close(1008, "client messages are not supported");
@@ -90,6 +106,7 @@ export function createNodeSyncUpdates(db: Database) {
     webSocketServer: webSocketServer as unknown as WebSocketServerLike,
     stop() {
       stopping = true;
+      clearInterval(heartbeat);
       for (const socket of webSocketServer.clients) socket.terminate();
     },
   };

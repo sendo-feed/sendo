@@ -12,7 +12,7 @@ const updatesRoute = createRoute({
   path: "/sync/updates",
   summary: "受信箱の更新を WebSocket で受け取る",
   description:
-    '同じオリジンからセッションのクッキーで接続する。受信箱が変わると {"type":"sync_required"} が届くので、最後のカーソルから差分を取る。再接続時にも差分を取る。',
+    '同じオリジンからセッションのクッキーで接続する。受信箱が変わると {"type":"sync_required"} が届くので、最後のカーソルから差分を取る。初回の接続時と再接続時にも差分を取る。',
   security: [{ sessionCookie: [] }],
   responses: {
     101: { description: "WebSocket 接続を開始した" },

@@ -12,7 +12,6 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { serve } from "@hono/node-server";
 import { createApp } from "../../app";
 import { runJob } from "../../jobs";
 import { enqueueLanguageDetection, runScheduled } from "../../jobs/schedule";
@@ -22,6 +21,7 @@ import { createNodePlatform, dataDirectory, type NodeEnv, withPublicOrigin } fro
 import { createSqliteJobQueue } from "./job-queue";
 import { createLanguageDetector, createPageContentExtractor, loadNativeModule } from "./native";
 import { startScheduler } from "./scheduler";
+import { createNodeServer } from "./server";
 import { createNodeSyncUpdates } from "./sync-updates";
 import { createTokenForEmail } from "./token";
 
@@ -103,15 +103,16 @@ async function runServer(env: NodeEnv): Promise<void> {
   jobs.start((job) => runJob(platform, job));
   await enqueueLanguageDetection(platform);
   const scheduler = startScheduler((scheduledTime) => runScheduled(platform, scheduledTime));
-  const server = serve(
-    {
-      fetch: withPublicOrigin(app.fetch, readPublicOrigin(env)),
-      websocket: { server: sync.webSocketServer },
-      port,
-      hostname: env.HOST?.trim() || "0.0.0.0",
-    },
-    (info) => console.info("sendo is listening", { address: info.address, port: info.port }),
+  const server = createNodeServer(
+    withPublicOrigin(app.fetch, readPublicOrigin(env)),
+    sync.webSocketServer,
   );
+  server.listen(port, env.HOST?.trim() || "0.0.0.0", () => {
+    const info = server.address();
+    if (info && typeof info !== "string") {
+      console.info("sendo is listening", { address: info.address, port: info.port });
+    }
+  });
 
   let stopping = false;
   const shutdown = async (signal: string) => {
@@ -126,7 +127,7 @@ async function runServer(env: NodeEnv): Promise<void> {
     // 接続（keep-alive）は閉じる。終わらなければ、上の上限で打ち切る
     const closed = new Promise<void>((resolve) => server.close(() => resolve()));
     sync.stop();
-    if ("closeIdleConnections" in server) server.closeIdleConnections();
+    server.closeIdleConnections();
     await closed;
     await scheduler.stop();
     await jobs.stop();

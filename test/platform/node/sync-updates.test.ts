@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { createAdaptorServer } from "@hono/node-server";
+import { request } from "node:http";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { createApp } from "../../../src/app";
@@ -11,6 +11,7 @@ import { runJob } from "../../../src/jobs";
 import type { Platform } from "../../../src/platform";
 import { createNodePlatform, withPublicOrigin } from "../../../src/platform/node";
 import { createSqliteJobQueue, type SqliteJobQueue } from "../../../src/platform/node/job-queue";
+import { createNodeServer } from "../../../src/platform/node/server";
 import { createNodeSyncUpdates } from "../../../src/platform/node/sync-updates";
 import { openTestDatabase } from "../../db";
 import { unusedNative } from "../../helpers";
@@ -27,12 +28,12 @@ let database: Awaited<ReturnType<typeof openTestDatabase>>;
 let platform: Platform;
 let jobs: SqliteJobQueue;
 let hub: ReturnType<typeof createNodeSyncUpdates>;
-let server: ReturnType<typeof createAdaptorServer>;
+let server: ReturnType<typeof createNodeServer>;
 let httpUrl: string;
 
 beforeEach(async () => {
   database = await openTestDatabase();
-  hub = createNodeSyncUpdates(database.db);
+  hub = createNodeSyncUpdates(database.db, 200);
   jobs = createSqliteJobQueue(database.db);
   platform = createNodePlatform({
     env: { DATA_DIR: database.directory },
@@ -44,10 +45,7 @@ beforeEach(async () => {
       String(input) === FEED_URL ? new Response(RSS) : new Response(null, { status: 404 }),
   });
   const app = createApp(platform);
-  server = createAdaptorServer({
-    fetch: withPublicOrigin(app.fetch, ORIGIN),
-    websocket: { server: hub.webSocketServer },
-  });
+  server = createNodeServer(withPublicOrigin(app.fetch, ORIGIN), hub.webSocketServer);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -72,8 +70,8 @@ async function session(userId = crypto.randomUUID()) {
   return { userId, cookie: `__Host-sendo_session=${token}` };
 }
 
-const connect = (headers: Record<string, string>) =>
-  new WebSocket(`${httpUrl.replace("http:", "ws:")}${UPDATES}`, { headers });
+const connect = (headers: Record<string, string>, autoPong = true) =>
+  new WebSocket(`${httpUrl.replace("http:", "ws:")}${UPDATES}`, { headers, autoPong });
 
 async function openSocket(cookie: string) {
   const socket = connect({ cookie, origin: ORIGIN });
@@ -210,4 +208,35 @@ it("通知の失敗後も新着を差分で読めて、同じ記事の再取得�
   expect(await response.json()).toMatchObject({
     articles: [expect.any(Object), expect.any(Object)],
   });
+});
+
+it("WebSocket 以外の Upgrade を受けた接続を閉じる", async () => {
+  const closed = new Promise<void>((resolve, reject) => {
+    const outgoing = request(`${httpUrl}${UPDATES}`, {
+      headers: { connection: "Upgrade", upgrade: "h2c" },
+    });
+    outgoing.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ECONNRESET") resolve();
+      else reject(error);
+    });
+    outgoing.once("response", (response) => {
+      response.resume();
+      reject(new Error("unexpected HTTP response to unsupported upgrade"));
+    });
+    outgoing.once("upgrade", (_response, socket) => {
+      socket.destroy();
+      reject(new Error("unexpected protocol upgrade"));
+    });
+    outgoing.end();
+  });
+  await closed;
+});
+
+it("ping に応答しない接続を閉じ、ほかの接続は保つ", async () => {
+  const { cookie } = await session();
+  const responsive = await openSocket(cookie);
+  const unresponsive = connect({ cookie, origin: ORIGIN }, false);
+  await once(unresponsive, "open");
+  await once(unresponsive, "close");
+  expect(responsive.readyState).toBe(WebSocket.OPEN);
 });
