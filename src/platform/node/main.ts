@@ -103,11 +103,13 @@ async function runServer(env: NodeEnv): Promise<void> {
   jobs.start((job) => runJob(platform, job));
   await enqueueLanguageDetection(platform);
   const scheduler = startScheduler((scheduledTime) => runScheduled(platform, scheduledTime));
+  const hostname = env.HOST?.trim() || "0.0.0.0";
   const server = createNodeServer(
     withPublicOrigin(app.fetch, readPublicOrigin(env)),
     sync.webSocketServer,
+    hostname,
   );
-  server.listen(port, env.HOST?.trim() || "0.0.0.0", () => {
+  server.listen(port, hostname, () => {
     const info = server.address();
     if (info && typeof info !== "string") {
       console.info("sendo is listening", { address: info.address, port: info.port });

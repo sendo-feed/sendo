@@ -45,7 +45,7 @@ beforeEach(async () => {
       String(input) === FEED_URL ? new Response(RSS) : new Response(null, { status: 404 }),
   });
   const app = createApp(platform);
-  server = createNodeServer(withPublicOrigin(app.fetch, ORIGIN), hub.webSocketServer);
+  server = createNodeServer(withPublicOrigin(app.fetch, ORIGIN), hub.webSocketServer, "127.0.0.1");
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();

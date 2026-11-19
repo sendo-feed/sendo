@@ -6,10 +6,12 @@ import { createAdaptorServer, type WebSocketServerLike } from "@hono/node-server
 export function createNodeServer(
   fetch: Parameters<typeof createAdaptorServer>[0]["fetch"],
   webSocketServer: WebSocketServerLike,
+  hostname: string,
 ): Server {
   const server = createAdaptorServer({
     createServer,
     fetch,
+    hostname,
     websocket: { server: webSocketServer },
   }) as Server;
   const [upgrade] = server.listeners("upgrade") as Array<
