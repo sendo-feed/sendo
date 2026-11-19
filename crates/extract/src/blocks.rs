@@ -48,7 +48,7 @@ fn has_post_embed(block: &Selection<'_>, base: &str) -> bool {
             })
 }
 
-fn collect_imgur_images(doc: &Document, base: &str) -> Result<Vec<(NodeId, Url)>, ExtractError> {
+fn collect_imgur_images(doc: &Document, base: &str) -> Option<Vec<(NodeId, Url)>> {
     const MAX_CANDIDATES: usize = 50_000;
     const MAX_URL_BYTES: usize = 3 * 1024 * 1024;
     let mut url_bytes = 0;
@@ -61,30 +61,30 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Result<Vec<(NodeId, Url)>
         {
             url_bytes += url.as_str().len();
             if url_bytes > MAX_URL_BYTES {
-                return Err(ExtractError::NoContent);
+                return None;
             }
             links.insert(url);
         }
     }
     if links.is_empty() {
-        return Ok(Vec::new());
+        return Some(Vec::new());
     }
     let mut images = Vec::new();
     let mut remaining = MAX_CANDIDATES;
     let mut record = |node: NodeId, value: &str| {
-        remaining = remaining.checked_sub(1).ok_or(ExtractError::NoContent)?;
+        remaining = remaining.checked_sub(1)?;
         if let Some(url) = imgur_resource(value, base)
             && links.contains(&url)
         {
             url_bytes += url.as_str().len();
             if url_bytes > MAX_URL_BYTES {
-                return Err(ExtractError::NoContent);
+                return None;
             }
             images.push((node, url));
         }
-        Ok(())
+        Some(())
     };
-    let mut collect = |node: NodeRef<'_>| -> Result<(), ExtractError> {
+    let mut collect = |node: NodeRef<'_>| -> Option<()> {
         let sets: &[_] = if node.node_name().as_deref() == Some("img") {
             // 正規化で選ばれない URL も、直リンクから再生成しないように記録する。
             for name in ["src", "data-src", "data-original", "data-lazy-src"] {
@@ -96,7 +96,7 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Result<Vec<(NodeId, Url)>
         } else if Selection::from(node).parent().is("picture") {
             &["srcset"]
         } else {
-            return Ok(());
+            return Some(());
         };
         for name in sets {
             if let Some(value) = node.attr(name) {
@@ -105,7 +105,7 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Result<Vec<(NodeId, Url)>
                 }
             }
         }
-        Ok(())
+        Some(())
     };
     for node in doc.select("img, picture > source[srcset]").nodes() {
         collect(*node)?;
@@ -127,7 +127,7 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Result<Vec<(NodeId, Url)>
             }
         }
     }
-    Ok(images)
+    Some(images)
 }
 
 fn prune(doc: &Document, base: &str) {
@@ -213,50 +213,53 @@ fn prune(doc: &Document, base: &str) {
 // 本文に選ばれなかった領域の画像も、直リンクから生成し直さない。
 fn mark_removed_imgur_images(
     blocks: &[&Selection<'_>],
-    images: Vec<(NodeId, Url)>,
+    images: Option<Vec<(NodeId, Url)>>,
     used_sources: &HashMap<NodeId, NodeId>,
     base: &str,
 ) {
-    if images.is_empty() {
-        return;
-    }
-    let mut visible = HashSet::new();
-    let mut record = |node: &NodeRef<'_>| {
-        if let Some(url) = node
-            .attr("src")
-            .and_then(|value| imgur_resource(&value, base))
-        {
-            if let Some(source) = used_sources.get(&node.id) {
-                visible.insert((*source, url.clone()));
+    let removed = images.map(|images| {
+        if images.is_empty() {
+            return HashSet::new();
+        }
+        let mut visible = HashSet::new();
+        let mut record = |node: &NodeRef<'_>| {
+            if let Some(url) = node
+                .attr("src")
+                .and_then(|value| imgur_resource(&value, base))
+            {
+                if let Some(source) = used_sources.get(&node.id) {
+                    visible.insert((*source, url.clone()));
+                }
+                visible.insert((node.id, url));
             }
-            visible.insert((node.id, url));
+        };
+        for block in blocks {
+            if block.is("img") {
+                block.nodes().iter().for_each(&mut record);
+            }
+            block
+                .select("img[src]")
+                .nodes()
+                .iter()
+                .for_each(&mut record);
         }
-    };
-    for block in blocks {
-        if block.is("img") {
-            block.nodes().iter().for_each(&mut record);
-        }
-        block
-            .select("img[src]")
-            .nodes()
-            .iter()
-            .for_each(&mut record);
-    }
-    let removed: HashSet<_> = images
-        .into_iter()
-        .filter(|image| !visible.contains(image))
-        .map(|(_, url)| url)
-        .collect();
-    if removed.is_empty() {
+        images
+            .into_iter()
+            .filter(|image| !visible.contains(image))
+            .map(|(_, url)| url)
+            .collect::<HashSet<_>>()
+    });
+    if removed.as_ref().is_some_and(HashSet::is_empty) {
         return;
     }
     for block in blocks {
         for node in block.select(IMGUR_LINK).nodes() {
-            if let Some(href) = node
-                .attr("href")
-                .and_then(|href| imgur_resource(&href, base))
-                && removed.contains(&href)
-            {
+            // 照合の上限に達した場合は、本文とリンクを残して画像化だけを見送る。
+            if removed.as_ref().is_none_or(|urls| {
+                node.attr("href")
+                    .and_then(|href| imgur_resource(&href, base))
+                    .is_some_and(|url| urls.contains(&url))
+            }) {
                 Selection::from(*node).set_attr("data-sendo-imgur-image-removed", "true");
             }
         }
@@ -264,6 +267,8 @@ fn mark_removed_imgur_images(
 }
 
 fn related_heading_before<'a>(block: &Selection<'a>) -> Option<Selection<'a>> {
+    const CONTENT: &str =
+        "a, blockquote, figure, section, article, ul, ol, table, img, video, audio, iframe";
     let mut previous = block.prev_sibling();
     for _ in 0..6 {
         if !previous.is("br, hr") {
@@ -275,7 +280,9 @@ fn related_heading_before<'a>(block: &Selection<'a>) -> Option<Selection<'a>> {
             return (matches!(
                 label.to_ascii_lowercase().as_str(),
                 "関連記事" | "related articles" | "related posts"
-            ) && !previous.select("a, p, div, section, article, ul, ol, table, blockquote, img, video, audio, iframe").exists())
+            ) && !previous.is(CONTENT)
+                && !previous.select(CONTENT).exists()
+                && !previous.select("p, div").exists())
             .then_some(previous);
         }
         previous = previous.prev_sibling();
@@ -301,7 +308,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         }
         depths.insert(node.id, depth);
     }
-    let imgur_images = collect_imgur_images(&doc, url)?;
+    let imgur_images = collect_imgur_images(&doc, url);
     let used_sources = crate::normalize::normalize_document(&doc, url);
     prune(&doc, url);
     let page_title = doc.select("title").text().to_string();
@@ -562,9 +569,18 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
         });
     let boundary = article_boundary.or_else(|| {
         if root.is(ARTICLE_BODY) {
-            return ancestors.nodes().iter().find(|node| {
-                Selection::from(**node).is("section, [role=region], main, [role=main]")
-            });
+            return ancestors
+                .nodes()
+                .iter()
+                .find(|node| {
+                    Selection::from(**node).is("section, [role=region], main, [role=main]")
+                })
+                .or_else(|| {
+                    ancestors
+                        .nodes()
+                        .first()
+                        .filter(|node| Selection::from(**node).is("body"))
+                });
         }
         if root.is(REGION) {
             return ancestors.nodes().first().filter(|node| {
@@ -583,7 +599,12 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
     };
 
     let mut leading = Vec::new();
-    let outside_section = article_boundary.is_none() && root.is(REGION) && !root.is(ARTICLE_BODY);
+    let direct_embeds = article_boundary.is_none()
+        && if root.is(ARTICLE_BODY) {
+            Selection::from(*boundary).is("body")
+        } else {
+            root.is(REGION)
+        };
     let branches = std::iter::once(root.clone())
         .chain(ancestors.nodes().iter().map(|node| Selection::from(*node)));
     for branch in branches.take_while(|branch| branch.nodes()[0].id != boundary.id) {
@@ -605,10 +626,9 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                 {
                     break;
                 }
-                // 本文の印のない節では、直接並ぶ埋め込みだけを引き継ぐ。
-                if outside_section
-                    && (!branch.is(REGION)
-                        || !sibling.is("blockquote.twitter-tweet, blockquote.imgur-embed-pub, img, figure, picture"))
+                // 記事を囲む要素を特定できないときは、直接並ぶ埋め込みだけを引き継ぐ。
+                if direct_embeds
+                    && !sibling.is("blockquote.twitter-tweet, blockquote.imgur-embed-pub, img, figure, picture")
                 {
                     break;
                 }
@@ -793,7 +813,7 @@ mod tests {
             </blockquote></article>"#,
         );
         let base = "https://blog.example/post";
-        let images = collect_imgur_images(&doc, base).unwrap();
+        let images = collect_imgur_images(&doc, base);
         prune(&doc, base);
         mark_removed_imgur_images(&[&doc.select("article")], images, &HashMap::new(), base);
         assert!(!doc.select("img").exists());
@@ -817,7 +837,7 @@ mod tests {
             <div><img src="https://i.imgur.com/photo.jpeg" width="1" height="1"></div></article>"#,
         );
         let base = "https://blog.example/post";
-        let images = collect_imgur_images(&doc, base).unwrap();
+        let images = collect_imgur_images(&doc, base);
         prune(&doc, base);
         assert!(doc.select("img").exists());
         mark_removed_imgur_images(&[&doc.select("#body")], images, &HashMap::new(), base);
@@ -893,6 +913,39 @@ mod tests {
     }
 
     #[test]
+    fn keeps_direct_embeds_before_an_article_body_under_body() {
+        let doc = Document::from(
+            r#"<body><div><blockquote class="twitter-tweet">別の引用</blockquote></div>
+            <blockquote class="twitter-tweet">本文の引用</blockquote>
+            <div itemprop="articleBody">本文</div></body>"#,
+        );
+        let lead = leading_embeds(
+            &doc.select("[itemprop=articleBody]"),
+            "https://blog.example/post",
+        );
+        assert_eq!(lead.len(), 1);
+        assert_eq!(lead[0].text().trim(), "本文の引用");
+    }
+
+    #[test]
+    fn keeps_the_article_when_imgur_matching_exceeds_its_budget() {
+        let candidates = "/photo.jpg 1x, ".repeat(50_001);
+        let page = format!(
+            r#"<article><h1>本文</h1>{}<blockquote class="imgur-embed-pub">
+            <a href="https://i.imgur.com/photo.jpeg">写真</a></blockquote></article>
+            <aside><template><img srcset="{candidates}"></template></aside>"#,
+            paragraphs()
+        );
+        let result = extract(&page, "https://blog.example/post").unwrap();
+        assert!(result.html.contains("本文の段落0"));
+        assert!(
+            result
+                .html
+                .contains("data-sendo-imgur-image-removed=\"true\"")
+        );
+    }
+
+    #[test]
     fn does_not_take_a_promotion_before_the_section_that_contains_the_article() {
         let doc = Document::from(
             r#"<main><div><h2>編集部のおすすめ</h2>
@@ -911,6 +964,16 @@ mod tests {
         );
         prune(&doc, "https://blog.example/post");
         assert!(doc.select("#related-title blockquote").exists());
+    }
+
+    #[test]
+    fn keeps_a_quote_that_has_the_text_of_a_related_heading() {
+        let doc = Document::from(
+            r#"<article><blockquote class="twitter-tweet">関連記事</blockquote>
+            <ul class="manual-related"><li><a href="/a">別一</a></li><li><a href="/b">別二</a></li><li><a href="/c">別三</a></li></ul></article>"#,
+        );
+        prune(&doc, "https://blog.example/post");
+        assert!(doc.select("blockquote.twitter-tweet").exists());
     }
 
     #[test]
