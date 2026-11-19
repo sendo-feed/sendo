@@ -303,6 +303,19 @@ docker compose pull && docker compose up -d
 
 手元でイメージを作るときは `docker build -t sendo .` で、作らずに Node で動かすときは `pnpm build:node` のあとに `DATA_DIR=./.data pnpm start:node` です。
 
+### X の埋め込みを有効にする
+
+X の埋め込みに対応した reader を用意し、[reader の手順](https://github.com/sendo-feed/sendo-reader#x-の投稿の埋め込み)に従って、埋め込み用の静的ファイルを別の HTTPS ホストに置き、reader のイメージを `sendo-reader:x-embeds` として作ります。Compose の置き場に `compose.override.yaml` を作り、`reader` のイメージを差し替えます。
+
+```yaml
+services:
+  reader:
+    image: sendo-reader:x-embeds
+    pull_policy: never
+```
+
+`docker compose up -d` で起動します。更新するときは reader のイメージを新しいソースからビルドし、Sendo は `docker compose pull sendo` で更新してから `docker compose up -d` を実行します。
+
 ## コマンド
 
 | コマンド | すること |
