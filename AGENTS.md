@@ -29,7 +29,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/app.ts`：HTTP のルーティング。実行環境の入出力には直接触らず、`Platform` で受け取る
 - `crates/`：重い処理（Rust。docs/decisions/tech-stack.md の 5）。処理の本体の crate（`extract/` など。`#![forbid(unsafe_code)]`）と、Node から呼ぶための結び（`node/`。napi-rs）を分ける。外への取得と DB には触らず、TypeScript の側からバイト列を受け取って結果を返す。重い処理は `AsyncTask` でスレッドプールに出す
 - `src/platform/`：緩衝層。実行環境の入出力（DB、ファイル、外への取得、Rust のネイティブのモジュール、タイマー）をまとめる。インターフェースは `src/platform/index.ts`、実装と入口（`main.ts`）は `src/platform/node/` に置く（docs/decisions/tech-stack.md の 3、docs/decisions/container.md）。アプリはインターフェース越しに使い、テストでは差し替える。設定の読み方は `config.ts`
-  - Rust の処理（`pageContent`、`languageDetection`）は `Platform` の必須の項目。読み込めなければ起動しない（docs/decisions/container.md の 2）。`GET /api/v1/features` は sendo-reader の互換のために残し、常に true を返す（同じく 3）
+  - Rust の処理（`pageContent`、`languageDetection`）は `Platform` の必須の項目。読み込めなければ起動しない（docs/decisions/container.md の 2）。機能の有無を返す API は持たない。新しい機能に対応する前の Sendo と組み合わさる間は、クライアントが呼んで失敗したら使わない形で扱う（同じく 3）
   - Rust のネイティブのモジュールを読み込むのは `src/platform/node/native.ts` だけ
 - 機能のディレクトリ（`api/`、`fetcher/`、`jobs/` など）は `docs/tech-deck.md` の「6. ディレクトリ構成」に従う
 - `src/api/`：REST API。入力は zod のスキーマで検証し、OpenAPI の定義も同じスキーマから作る
