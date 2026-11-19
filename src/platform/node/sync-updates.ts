@@ -8,13 +8,19 @@ const SYNC_REQUIRED = JSON.stringify({ type: "sync_required" });
 const MAX_CONNECTIONS = 512;
 const MAX_CONNECTIONS_PER_USER = 8;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+/** 止めるときに、1001 の閉じる手続きが終わるのを待つ上限。過ぎたら切る */
+const CLOSE_TIMEOUT_MS = 1_000;
 
 type Connection = [WebSocket, SessionIdentity];
 
 /** HTTP と取得ジョブが同じプロセスで動くので、接続はメモリに持つ。 */
 export function createNodeSyncUpdates(
   db: Database,
-  options: { heartbeatIntervalMs?: number; invalidPublicOrigin?: boolean } = {},
+  options: {
+    heartbeatIntervalMs?: number;
+    closeTimeoutMs?: number;
+    invalidPublicOrigin?: boolean;
+  } = {},
 ) {
   const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 1024 });
   const byUser = new Map<string, Map<WebSocket, SessionIdentity>>();
@@ -123,10 +129,31 @@ export function createNodeSyncUpdates(
     updates,
     // ws の send オーバーロードと Hono の省略可能な options は、実行時は同じ呼び方を受ける。
     webSocketServer: webSocketServer as unknown as WebSocketServerLike,
-    stop() {
+    /**
+     * 接続を 1001（going away）で閉じる（docs/decisions/sync.md の 9）。切るだけだと、ブラウザには
+     * ネットワークの失敗（1006）に見え、入れ替わりを待てない。閉じる手続きに応えない接続は、
+     * 少し待ってから切る
+     */
+    stop(): Promise<void> {
       stopping = true;
       clearInterval(heartbeat);
-      for (const socket of webSocketServer.clients) socket.terminate();
+      const sockets = [...webSocketServer.clients];
+      const closed = sockets.map((socket) =>
+        socket.readyState === WebSocket.CLOSED
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => socket.once("close", () => resolve())),
+      );
+      for (const socket of sockets) socket.close(1001, "going away");
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          for (const socket of sockets) socket.terminate();
+          resolve();
+        }, options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS);
+        void Promise.all(closed).then(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
     },
   };
 }

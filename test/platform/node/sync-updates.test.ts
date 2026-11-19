@@ -1,5 +1,6 @@
 import { once } from "node:events";
 import { request } from "node:http";
+import { connect as connectTcp } from "node:net";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { createApp } from "../../../src/app";
@@ -54,7 +55,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  hub.stop();
+  await hub.stop();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await database.cleanup();
 });
@@ -116,8 +117,56 @@ it("PUBLIC_URL と同じオリジンの、有効なブラウザセッション�
 
   const socket = await openSocket(cookie);
   const closed = once(socket, "close");
-  hub.stop();
-  await closed;
+  await hub.stop();
+  const [code, reason] = await closed;
+  expect(code).toBe(1001);
+  expect(String(reason)).toBe("going away");
+});
+
+it("止めるとき、閉じる手続きに応えない接続も、待ってから切る", async () => {
+  const quick = createNodeSyncUpdates(database.db, { closeTimeoutMs: 100 });
+  const quickServer = createNodeServer(
+    withPublicOrigin(createApp({ ...platform, syncUpdates: quick.updates }).fetch, ORIGIN),
+    quick.webSocketServer,
+    "127.0.0.1",
+  );
+  quickServer.listen(0, "127.0.0.1");
+  await once(quickServer, "listening");
+  const address = quickServer.address();
+  if (!address || typeof address === "string") throw new Error("missing HTTP address");
+  try {
+    const { cookie } = await session();
+    // ハンドシェイクだけをして、届いたフレームには応えないクライアント
+    const raw = connectTcp(address.port, "127.0.0.1");
+    await once(raw, "connect");
+    const received: Buffer[] = [];
+    raw.on("data", (chunk: Buffer) => received.push(chunk));
+    raw.write(
+      [
+        `GET ${UPDATES} HTTP/1.1`,
+        `Host: 127.0.0.1:${address.port}`,
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+        `Origin: ${ORIGIN}`,
+        `Cookie: ${cookie}`,
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    await expect.poll(() => Buffer.concat(received).toString("latin1")).toContain(" 101 ");
+    const ended = once(raw, "close");
+    await quick.stop();
+    await ended;
+    const bytes = Buffer.concat(received);
+    const frame = bytes.subarray(bytes.indexOf("\r\n\r\n") + 4);
+    // 閉じるフレーム（0x88）と、コード 1001
+    expect(frame[0]).toBe(0x88);
+    expect(frame.readUInt16BE(2)).toBe(1001);
+  } finally {
+    await new Promise<void>((resolve) => quickServer.close(() => resolve()));
+  }
 });
 
 it("取得ジョブと既読・スターの更新を本人の接続に送り、ログアウト済みの接続を閉じる", async () => {
@@ -293,7 +342,7 @@ it("公開オリジンの設定が不正な場合は通知の接続を拒否す�
     expect(await rejectSocket({ cookie, origin: ORIGIN })).toBe(403);
     expect((await fetch(`${httpUrl}/healthz`)).status).toBe(200);
   } finally {
-    invalid.stop();
+    await invalid.stop();
   }
 });
 
