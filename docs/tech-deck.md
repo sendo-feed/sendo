@@ -122,40 +122,38 @@ sendo/
 ├── .claude/
 │   ├── settings.json          # 推奨プラグイン
 │   └── skills/                # Sendo 独自の規約
-├── .github/workflows/         # CI（デプロイは各自の fork から Workers Builds。decisions/deploy.md）
+├── .github/workflows/         # CI とイメージの作成（GHCR。decisions/container.md）
 ├── docs/
 │   └── decisions/             # tech-stack.md …
 ├── spec/
 │   └── openapi.json           # 生成物
 ├── src/
-│   ├── index.ts               # fetch / scheduled / queue
 │   ├── api/                   # REST API
 │   ├── auth/                  # ログイン（OpenID Connect の提供元）
 │   ├── greader/               # Google Reader API 互換
 │   ├── feeds/                 # 購読の手続き（REST API・Google Reader API・MCP で共通）
 │   ├── mcp/                   # ツール・リソース
 │   ├── oauth/                 # MCP 用の OAuth の認可サーバー
-│   ├── jobs/                  # Cron・Queues
+│   ├── jobs/                  # 定期実行・仕事の表で動く処理
 │   ├── fetcher/               # 取得・解析・全文抽出
 │   ├── search/                # FTS5・意味検索
 │   ├── llm/                   # 要約・分類（任意）
 │   ├── notify/                # Web Push・APNs・FCM
 │   ├── db/                    # Drizzle スキーマ
-│   ├── platform/              # 緩衝層のインターフェース
-│   │   ├── cloudflare/        # Cloudflare 版の実装（D1・Queues・R2 など）
-│   │   └── node/              # コンテナ版の実装と入口（SQLite・ジョブの表・ファイル。Rust のモジュールを読み込む）
+│   ├── platform/              # 緩衝層（実行環境の入出力）のインターフェース
+│   │   └── node/              # 緩衝層の実装と入口（SQLite・ジョブの表・ファイル。Rust のモジュールを読み込む）
 │   └── lib/
-├── crates/                    # Rust（コンテナ版の重い処理と、napi-rs の結び）
-├── migrations/                # 2 つの版で同じものを使う
+├── crates/                    # Rust（重い処理と、napi-rs の結び）
+├── migrations/                # 起動時に当てる
 ├── test/
-├── wrangler.jsonc             # Cloudflare 版の設定
-├── Dockerfile                 # コンテナ版のイメージ
+├── Dockerfile                 # イメージ
+├── compose.yaml               # Sendo と sendo-reader を並べて動かす
 ├── AGENTS.md                  # エージェント共通の指示・レビュー観点
 ├── CLAUDE.md                  # AGENTS.md を読み込む
 └── README.md
 ```
 
-> Cloudflare 版は、1つの Worker に fetch（API・MCP）、scheduled（Cron）、queue（Queues）の3つの入口があり、`index.ts` に集める。コンテナ版の入口は `platform/node/main.ts` で、HTTP、タイマー、ジョブの表を 1 つのプロセスで動かす。`src/` は機能ごとに分ける。Cloudflare のバインディングに触れてよいのは `index.ts` と `platform/cloudflare/` だけ、`node:*` を使ってよいのは `platform/node/` だけ。
+> 入口は `platform/node/main.ts` で、HTTP、タイマー、ジョブの表を 1 つのプロセスで動かす。`src/` は機能ごとに分ける。`node:*` と `process` を使ってよいのは `platform/node/` だけ。
 
 ---
 
