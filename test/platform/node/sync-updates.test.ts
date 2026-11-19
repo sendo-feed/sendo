@@ -298,3 +298,30 @@ it("公開オリジンの設定が不正な場合は通知の接続を拒否す�
     invalid.stop();
   }
 });
+
+it("形式が不正なハンドシェイクには 400 と説明を返す", async () => {
+  const { cookie } = await session();
+  const result = await new Promise<{ status: number | undefined; type: string | undefined }>(
+    (resolve, reject) => {
+      const outgoing = request(`${httpUrl}${UPDATES}`, {
+        headers: {
+          origin: ORIGIN,
+          cookie,
+          connection: "Upgrade",
+          upgrade: "websocket",
+          "sec-websocket-version": "13",
+        },
+      });
+      outgoing.once("error", reject);
+      outgoing.once("response", (response) => {
+        response.resume();
+        resolve({
+          status: response.statusCode,
+          type: response.headers["content-type"],
+        });
+      });
+      outgoing.end();
+    },
+  );
+  expect(result).toEqual({ status: 400, type: "text/html" });
+});

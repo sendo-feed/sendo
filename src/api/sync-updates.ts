@@ -1,4 +1,4 @@
-import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { findActiveSession } from "../db/sessions";
 import type { Platform } from "../platform";
 import { getSessionCookie } from "./auth";
@@ -13,7 +13,11 @@ const updatesRoute = createRoute({
   security: [{ sessionCookie: [] }],
   responses: {
     101: { description: "WebSocket 接続を開始した" },
-    400: { description: "WebSocket への切り替えが必要" },
+    400: {
+      description:
+        "切り替えが必要か、ハンドシェイクの形式が不正。通常の HTTP で受けた場合は本文なし",
+      content: { "text/html": { schema: z.string() } },
+    },
     401: { description: "有効なブラウザのセッションが必要" },
     403: { description: "公開オリジンと一致しないか、公開オリジンの設定が不正" },
     429: { description: "WebSocket の接続数の上限に達した" },

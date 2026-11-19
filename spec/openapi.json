@@ -1506,7 +1506,14 @@
             "description": "WebSocket 接続を開始した"
           },
           "400": {
-            "description": "WebSocket への切り替えが必要"
+            "description": "切り替えが必要か、ハンドシェイクの形式が不正。通常の HTTP で受けた場合は本文なし",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "有効なブラウザのセッションが必要"
