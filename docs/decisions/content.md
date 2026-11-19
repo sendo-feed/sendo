@@ -15,7 +15,7 @@
    - 取り込み済みの記事にはさかのぼって付けない
 2. **保存する前にサニタイズし、返すときにもう一度サニタイズする。**
    - 通すのは、決めたタグと属性だけ（段落、見出し、リスト、引用、コード、表、強調、リンク、画像、改行）。`script`、`style`、フォーム、`class` ／ `style` ／ `id`、イベントの属性、`data:` と `javascript:` の URL は落とす
-   - 埋め込み（`iframe`）と動画・音声はその URL へのリンクに替える。保存時に X の投稿の引用（`blockquote.twitter-tweet`）を `blockquote` の固定属性 `data-embed="x"` に正規化する。返却時のサニタイズでも `blockquote` 上のこの固定値を残す
+   - 埋め込み（`iframe`）と動画・音声はその URL へのリンクに替える。保存時に X の投稿の引用（`blockquote.twitter-tweet`）を `blockquote` の固定属性 `data-embed="x"` に正規化する。返却時のサニタイズでも `blockquote` 上のこの固定値を残す。対応前に保存したフィード本文と抽出済み本文には印をさかのぼって付けない
    - リンクと画像の URL は、記事の URL を基準に絶対の URL にし、http ／ https（リンクは `mailto:` も）だけを通す。リンクには `rel="noopener noreferrer nofollow"` を付ける
    - 計測用の画像（トラッキングピクセル）は落とす。落とすのは、次のどちらかに当たる `<img>`
      - 幅と高さが、ともに 1 以下と書かれている（`width` ／ `height` の属性。`1px` や `1.0` も同じに扱う。`style` は見ない）
