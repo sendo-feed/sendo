@@ -18,6 +18,8 @@ const ARTICLE: &str = "article, [role~=article], [itemscope][itemtype$='Article'
 const ARTICLE_BODY: &str = "[itemprop=articleBody]";
 const REGION: &str = "section, [role~=region]";
 const CONTENT_REGION: &str = "section, [role~=region], main, [role~=main]";
+const EMBED_BLOCK: &str =
+    "blockquote.twitter-tweet, blockquote.imgur-embed-pub, img, figure, picture";
 
 fn compact(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
@@ -133,7 +135,7 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Option<Vec<(NodeId, Url)>
 }
 
 fn prune(doc: &Document, base: &str) {
-    doc.select("nav, aside, script, style, noscript, template, form, [hidden], [aria-hidden=true], [role=navigation], [role=banner], [role=contentinfo], [role=complementary]").remove();
+    doc.select("nav, aside, script, style, noscript, template, form, [hidden], [aria-hidden=true], [role~=navigation], [role~=banner], [role~=contentinfo], [role~=complementary]").remove();
     // 完全な語か区切りで比較し、本文の単語の部分一致では消さない。
     const NOISE: &[&str] = &[
         "related-posts",
@@ -601,6 +603,7 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
         } else {
             root.is(REGION)
         };
+    let wrapped_embeds = root.is(ARTICLE_BODY) && !Selection::from(*boundary).is("body");
     let branches = std::iter::once(root.clone())
         .chain(ancestors.nodes().iter().map(|node| Selection::from(*node)));
     for branch in branches.take_while(|branch| branch.nodes()[0].id != boundary.id) {
@@ -624,7 +627,8 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                 }
                 // 記事を囲む要素を特定できないときは、直接並ぶ埋め込みだけを引き継ぐ。
                 if direct_embeds
-                    && !sibling.is("blockquote.twitter-tweet, blockquote.imgur-embed-pub, img, figure, picture")
+                    && !sibling.is(EMBED_BLOCK)
+                    && !(wrapped_embeds && is_embed_wrapper(&sibling))
                 {
                     break;
                 }
@@ -639,9 +643,35 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
     leading
 }
 
+fn is_embed_wrapper(block: &Selection<'_>) -> bool {
+    if block.is(EMBED_BLOCK) {
+        return true;
+    }
+    if !block.is("div, span") {
+        return false;
+    }
+    let mut has_embed = false;
+    for node in block.nodes()[0].children_it(false) {
+        if node.is_text() && !node.text().trim().is_empty() {
+            return false;
+        }
+        if node.is_element() {
+            let child = Selection::from(node);
+            if child.is("br, hr") {
+                continue;
+            }
+            if !is_embed_wrapper(&child) {
+                return false;
+            }
+            has_embed = true;
+        }
+    }
+    has_embed
+}
+
 // 記事や節を囲む header / footer は導入や出典になりうる。文書全体のものだけを除く。
 fn has_site_chrome(block: &Selection<'_>) -> bool {
-    const CHROME: &str = "header, footer, [role=banner], [role=contentinfo]";
+    const CHROME: &str = "header, footer, [role~=banner], [role~=contentinfo]";
     block
         .nodes()
         .iter()
@@ -650,7 +680,7 @@ fn has_site_chrome(block: &Selection<'_>) -> bool {
         .any(|node| {
             let region = Selection::from(*node);
             let ancestors = region.ancestors(Some(128));
-            region.is("[role=banner], [role=contentinfo]")
+            region.is("[role~=banner], [role~=contentinfo]")
                 || (!ancestors.is(REGION) && !ancestors.is(ARTICLE_BODY) && !ancestors.is(ARTICLE))
         })
 }
@@ -925,7 +955,8 @@ mod tests {
     #[test]
     fn keeps_direct_embeds_before_an_article_body_in_a_plain_wrapper() {
         let doc = Document::from(
-            r#"<div><aside><blockquote class="twitter-tweet">別の引用</blockquote></aside>
+            r#"<div><div>別の記事の紹介<blockquote class="twitter-tweet">別の引用</blockquote></div>
+            <div><blockquote class="twitter-tweet">もう一つの引用</blockquote></div>
             <blockquote class="twitter-tweet">本文の引用</blockquote>
             <div itemprop="articleBody">本文</div></div>"#,
         );
@@ -933,8 +964,20 @@ mod tests {
             &doc.select("[itemprop=articleBody]"),
             "https://blog.example/post",
         );
-        assert_eq!(lead.len(), 1);
-        assert_eq!(lead[0].text().trim(), "本文の引用");
+        assert_eq!(lead.len(), 2);
+        assert_eq!(lead[0].text().trim(), "もう一つの引用");
+        assert_eq!(lead[1].text().trim(), "本文の引用");
+    }
+
+    #[test]
+    fn prunes_embeds_in_a_sidebar_with_more_than_one_role_token() {
+        let doc = Document::from(
+            r#"<main><div role="complementary note"><blockquote class="twitter-tweet">サイドバーの引用</blockquote></div>
+            <div itemprop="articleBody">本文</div></main>"#,
+        );
+        let base = "https://blog.example/post";
+        prune(&doc, base);
+        assert!(leading_embeds(&doc.select("[itemprop=articleBody]"), base).is_empty());
     }
 
     #[test]
