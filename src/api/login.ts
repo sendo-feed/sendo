@@ -27,7 +27,7 @@ import { ErrorSchema, errorBody } from "./schemas";
  * ブラウザのログイン（docs/decisions/accounts.md の 2、6）。OpenID Connect の認可コードフロー
  * （PKCE 付き）で提供元にログインを頼み、セッションのクッキーを置く。
  *
- * sendo-reader からは、reader Worker の /api の中継を通るので、同じオリジンに見える。
+ * sendo-reader からは、reader のコンテナの中継（sendo-reader の apps/web/sendo-paths.ts）を通るので、同じオリジンに見える。
  * 提供元に登録するリダイレクト先は、ブラウザから見た <オリジン>/api/v1/auth/<提供元>/callback。
  */
 
