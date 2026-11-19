@@ -26,14 +26,14 @@
     "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.4",
+    "@biomejs/biome": "2.6.5",
     "@modelcontextprotocol/client": "2.4.0",
     "@types/node": "24.19.2",
     "drizzle-kit": "0.31.11",
     "esbuild": "0.28.2",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
-    "vitest": "5.0.5"
+    "vitest": "5.1.0"
   },
   "dependencies": {
     "@hono/node-server": "2.1.6",
@@ -44,7 +44,7 @@
     "entities": "9.0.0",
     "feedsmith": "3.0.1",
     "hono": "4.13.16",
-    "undici": "8.12.3",
+    "undici": "8.12.4",
     "zod": "4.6.7"
   }
 }
