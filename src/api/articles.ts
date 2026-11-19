@@ -289,13 +289,17 @@ export function articlesApi(platform: Platform) {
     .openapi(updateRoute, async (c) => {
       const { id } = c.req.valid("param");
       const body = c.req.valid("json");
-      const article = await setArticleState(db, {
-        userId: c.get("user").id,
-        articleId: id,
-        read: body.read,
-        starred: body.starred,
-        now: platform.now(),
-      });
+      const article = await setArticleState(
+        db,
+        {
+          userId: c.get("user").id,
+          articleId: id,
+          read: body.read,
+          starred: body.starred,
+          now: platform.now(),
+        },
+        platform.syncUpdates.notify,
+      );
       if (!article) return c.json(errorBody("not_found", "article does not exist"), 404);
       return c.json({ article: await toArticleResponse(article, imageSigner(db)) }, 200);
     })
@@ -331,11 +335,15 @@ export function articlesApi(platform: Platform) {
       if (scope === undefined) {
         return c.json(errorBody("invalid_request", "until or cursor: required"), 400);
       }
-      const updated = await markArticlesRead(db, {
-        userId: c.get("user").id,
-        scope,
-        now: platform.now(),
-      });
+      const updated = await markArticlesRead(
+        db,
+        {
+          userId: c.get("user").id,
+          scope,
+          now: platform.now(),
+        },
+        platform.syncUpdates.notify,
+      );
       return c.json({ updated }, 200);
     })
     .openapi(unreadCountsRoute, async (c) => {

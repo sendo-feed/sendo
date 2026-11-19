@@ -11,6 +11,9 @@ const FeaturesSchema = z
       description:
         "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。常に true",
     }),
+    syncUpdates: z.boolean().openapi({
+      description: "受信箱の変更を WebSocket で受け取れるか（GET /sync/updates）。常に true",
+    }),
   })
   .openapi("Features");
 
@@ -33,6 +36,6 @@ const featuresRoute = createRoute({
 export function featuresApi() {
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook }).openapi(
     featuresRoute,
-    (c) => c.json({ pageContent: true, languageDetection: true }, 200),
+    (c) => c.json({ pageContent: true, languageDetection: true, syncUpdates: true }, 200),
   );
 }

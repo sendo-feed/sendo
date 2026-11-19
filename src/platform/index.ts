@@ -5,8 +5,10 @@
  * アプリ（api/、jobs/ など）は、ここのインターフェース越しに使い、テストでは差し替える。
  * 実装は platform/node/ にある（docs/decisions/container.md）。
  */
+import type { Context } from "hono";
 import type { Database } from "../db";
-import type { ArticleCursor, ArticleListInput, InboxArticle } from "../db/inbox";
+import type { ArticleCursor, ArticleListInput, InboxArticle, InboxNotifier } from "../db/inbox";
+import type { SessionIdentity } from "../db/sessions";
 import type { Job } from "../jobs/job";
 
 /** 重い処理を、API の応答と切り離して後で実行する */
@@ -162,6 +164,12 @@ export interface ArticleSearch {
   }>;
 }
 
+/** 受信箱の次の差分同期を促す接続（docs/decisions/sync.md）。 */
+export interface SyncUpdates {
+  connect(context: Context, session: SessionIdentity): Promise<Response>;
+  notify: InboxNotifier;
+}
+
 /** アプリが実行環境から受け取るもの */
 export interface Platform {
   db: Database;
@@ -180,6 +188,7 @@ export interface Platform {
   pageContent: PageContentExtractor;
   /** 記事の主言語を調べる（Rust） */
   languageDetection: LanguageDetector;
+  syncUpdates: SyncUpdates;
 }
 
 /** 取得の間隔の既定（分） */

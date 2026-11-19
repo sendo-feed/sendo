@@ -82,11 +82,16 @@
           "pageContent": {
             "type": "boolean",
             "description": "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。常に true"
+          },
+          "syncUpdates": {
+            "type": "boolean",
+            "description": "受信箱の変更を WebSocket で受け取れるか（GET /sync/updates）。常に true"
           }
         },
         "required": [
           "languageDetection",
-          "pageContent"
+          "pageContent",
+          "syncUpdates"
         ]
       },
       "DiscordIntegration": {
@@ -1476,6 +1481,72 @@
           },
           "403": {
             "description": "ほかのオリジンから送られた",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sync/updates": {
+      "get": {
+        "summary": "受信箱の更新を WebSocket で受け取る",
+        "description": "同じオリジンからセッションのクッキーで接続する。受信箱が変わると {\"type\":\"sync_required\"} が届くので、最後のカーソルから差分を取る。再接続時にも差分を取る。",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "WebSocket 接続を開始した"
+          },
+          "400": {
+            "description": "WebSocket への切り替えが必要",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "有効なブラウザのセッションが必要",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "ほかのオリジンからは接続できない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "WebSocket の接続数の上限に達した",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "サーバーは終了処理中",
             "content": {
               "application/json": {
                 "schema": {

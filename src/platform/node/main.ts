@@ -22,6 +22,7 @@ import { createNodePlatform, dataDirectory, type NodeEnv, withPublicOrigin } fro
 import { createSqliteJobQueue } from "./job-queue";
 import { createLanguageDetector, createPageContentExtractor, loadNativeModule } from "./native";
 import { startScheduler } from "./scheduler";
+import { createNodeSyncUpdates } from "./sync-updates";
 import { createTokenForEmail } from "./token";
 
 /** 止めるときに、動いている仕事を待つ上限 */
@@ -89,10 +90,12 @@ async function runServer(env: NodeEnv): Promise<void> {
   const native = loadNativeFeatures(env);
   const database = await prepareDatabase(env);
   const jobs = createSqliteJobQueue(database.db);
+  const sync = createNodeSyncUpdates(database.db);
   const platform = createNodePlatform({
     env,
     db: database.db,
     jobs,
+    syncUpdates: sync.updates,
     ...native,
   });
   const app = createApp(platform);
@@ -102,7 +105,8 @@ async function runServer(env: NodeEnv): Promise<void> {
   const scheduler = startScheduler((scheduledTime) => runScheduled(platform, scheduledTime));
   const server = serve(
     {
-      fetch: withPublicOrigin((request) => app.fetch(request), readPublicOrigin(env)),
+      fetch: withPublicOrigin(app.fetch, readPublicOrigin(env)),
+      websocket: { server: sync.webSocketServer },
       port,
       hostname: env.HOST?.trim() || "0.0.0.0",
     },
@@ -121,6 +125,7 @@ async function runServer(env: NodeEnv): Promise<void> {
     // 新しい接続を受けるのをやめ、処理中のリクエストが終わるのを待つ。待っている間の、使われていない
     // 接続（keep-alive）は閉じる。終わらなければ、上の上限で打ち切る
     const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    sync.stop();
     if ("closeIdleConnections" in server) server.closeIdleConnections();
     await closed;
     await scheduler.stop();

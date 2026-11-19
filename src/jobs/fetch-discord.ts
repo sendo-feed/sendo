@@ -23,7 +23,10 @@ import { nextFetchInterval } from "./fetch-interval";
 import { reportStorageFull } from "./storage";
 
 export async function runFetchDiscord(
-  platform: Pick<Platform, "db" | "fetch" | "discord" | "fetchConfig" | "retentionConfig" | "jobs">,
+  platform: Pick<
+    Platform,
+    "db" | "fetch" | "discord" | "fetchConfig" | "retentionConfig" | "jobs" | "syncUpdates"
+  >,
   feed: Feed,
   startedAt: Date,
   canStore: boolean,
@@ -83,7 +86,7 @@ export async function runFetchDiscord(
     ? await insertDiscordArticles(db, feed.id, discordConnectionId, articles)
     : 0;
   // 記事を入れ終えてから配り、配り終えてから次に取得する位置を記録する。
-  await deliverNewArticles(db, { feedId: feed.id });
+  await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
   const usage = await readStorageUsage(db);
   if (inserted !== articles.length) {
     // 容量のトリガーで一部だけ入らなかった場合は、次回も同じ範囲を取り直す。
