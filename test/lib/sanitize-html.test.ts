@@ -105,13 +105,19 @@ describe("sanitizeHtml", () => {
   });
 
   it("計測画像と同じ直リンクから Imgur の画像を復元しない", () => {
-    const html = sanitizeHtml(
-      '<blockquote class="imgur-embed-pub"><a href="https://i.imgur.com/photo.jpeg#post"><img src="//i.imgur.com/photo.jpeg#pixel" width="1px" height="1.0">投稿</a></blockquote>',
-      BASE,
-      { expandImgurEmbeds: true },
-    );
-    expect(html).toContain('href="https://i.imgur.com/photo.jpeg#post"');
-    expect(html).not.toContain("<img");
+    const tracking = '<img src="//i.imgur.com/photo.jpeg#pixel" width="1px" height="1.0">';
+    const link = '<a href="https://i.imgur.com/photo.jpeg#post">投稿</a>';
+    for (const body of [
+      tracking + link,
+      link + tracking,
+      link.replace("投稿", `${tracking}投稿`),
+    ]) {
+      const html = sanitizeHtml(`<blockquote class="imgur-embed-pub">${body}</blockquote>`, BASE, {
+        expandImgurEmbeds: true,
+      });
+      expect(html).toContain('href="https://i.imgur.com/photo.jpeg#post"');
+      expect(html).not.toContain("<img");
+    }
   });
 
   it("X の引用には固定の埋め込みの印だけを残す", () => {

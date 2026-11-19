@@ -46,7 +46,7 @@ const MAX_DEPTH = 100;
 const DIGITS = /^\d{1,5}$/;
 
 /** サニタイズした HTML の部品。画像は、URL をあとで差し替えられるように分けて持つ */
-type Part = string | { image: string; rest: string };
+type Part = string | { image: string; rest: string; imgurFallback?: true };
 
 function toUrl(value: string | undefined, baseUrl: string, protocols: readonly string[]) {
   const trimmed = value === undefined ? "" : decodeHTML(value).trim();
@@ -78,6 +78,8 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
   /** 開いている（閉じタグを出していない）要素 */
   const open: string[] = [];
   const imgurQuotes = new Set<number>();
+  // URL の断片は画像の取得先を変えない。リンクの前後で除外した画像も差し替えに使わない。
+  const droppedTrackingImages = new Set<string>();
   let imgurLink: { index: number; href: string; needsImage: boolean; alt?: string } | undefined;
   /** 中身ごと落としている要素と、その入れ子の数 */
   let dropping: { name: string; depth: number; wantsLink: boolean } | null = null;
@@ -88,7 +90,11 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
     if (name === "a" && imgurLink !== undefined) {
       if (imgurLink.needsImage) {
         const alt = escapeHtml(imgurLink.alt ?? "Imgur");
-        parts.splice(imgurLink.index, 0, { image: imgurLink.href, rest: ` alt="${alt}"` });
+        parts.splice(imgurLink.index, 0, {
+          image: imgurLink.href,
+          rest: ` alt="${alt}"`,
+          imgurFallback: true,
+        });
       }
       imgurLink = undefined;
     }
@@ -154,13 +160,10 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
       // 計測用の画像（トラッキングピクセル）は落とす
       const alt = attributes.get("alt");
       if (!src || isTrackingImage(src, attributes)) {
-        if (imgurLink !== undefined) {
-          if (alt !== undefined) imgurLink.alt = decodeHTML(alt);
-          // フラグメントが違っても、同じ画像を計測用と判断した場合は差し替えない。
-          if (src !== null && src.split("#", 1)[0] === imgurLink.href.split("#", 1)[0]) {
-            imgurLink.needsImage = false;
-          }
+        if (expandImgurEmbeds && src !== null && isImgurImage(src)) {
+          droppedTrackingImages.add(src.split("#", 1)[0] ?? src);
         }
+        if (imgurLink !== undefined && alt !== undefined) imgurLink.alt = decodeHTML(alt);
         continue;
       }
       if (imgurLink !== undefined) imgurLink.needsImage = false;
@@ -212,7 +215,13 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
   }
 
   while (open.length > 0) closeLast();
-  return parts;
+  if (droppedTrackingImages.size === 0) return parts;
+  return parts.filter(
+    (part) =>
+      typeof part === "string" ||
+      !part.imgurFallback ||
+      !droppedTrackingImages.has(part.image.split("#", 1)[0] ?? part.image),
+  );
 }
 
 function link(href: string): string {

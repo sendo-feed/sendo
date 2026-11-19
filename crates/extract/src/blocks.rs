@@ -385,31 +385,49 @@ fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
         return Vec::new();
     };
 
-    let article_boundary = Selection::from(*boundary).is(ARTICLE);
     let mut leading = Vec::new();
     let branches = std::iter::once(root.clone())
         .chain(ancestors.nodes().iter().map(|node| Selection::from(*node)));
     for branch in branches.take_while(|branch| branch.nodes()[0].id != boundary.id) {
         let mut sibling = branch.prev_sibling();
-        for _ in 0..6 {
-            if !sibling.exists() {
-                break;
-            }
-            if sibling.is(ARTICLE) || sibling.select(ARTICLE).exists() {
+        let mut blocks = 0;
+        for _ in 0..32 {
+            if !sibling.exists() || blocks == 6 {
                 break;
             }
             let previous = sibling.prev_sibling();
-            let site_header =
-                !article_boundary && (sibling.is("header") || sibling.select("header").exists());
-            let contains_embed = sibling.is(POST_EMBEDS) || sibling.select(POST_EMBEDS).exists();
-            if contains_embed && !site_header {
-                leading.push(sibling);
+            if !sibling.is("br, hr") {
+                blocks += 1;
+                if sibling.is(ARTICLE) || sibling.select(ARTICLE).exists() {
+                    break;
+                }
+                let contains_embed =
+                    sibling.is(POST_EMBEDS) || sibling.select(POST_EMBEDS).exists();
+                if contains_embed && !has_site_chrome(&sibling) {
+                    leading.push(sibling);
+                }
             }
             sibling = previous;
         }
     }
     leading.reverse();
     leading
+}
+
+// 記事や節を囲む header / footer は導入や出典になりうる。文書全体のものだけを除く。
+fn has_site_chrome(block: &Selection<'_>) -> bool {
+    const CHROME: &str = "header, footer, [role=banner], [role=contentinfo]";
+    const SECTION: &str = "article, section, main, nav, aside, [role=main], [itemprop=articleBody]";
+    block
+        .nodes()
+        .iter()
+        .filter(|node| Selection::from(**node).is(CHROME))
+        .chain(block.select(CHROME).nodes())
+        .any(|node| {
+            let region = Selection::from(*node);
+            region.is("[role=banner], [role=contentinfo]")
+                || !region.ancestors(Some(128)).is(SECTION)
+        })
 }
 
 #[cfg(test)]
@@ -497,11 +515,22 @@ mod tests {
     }
 
     #[test]
-    fn does_not_bring_a_site_header_into_the_body() {
+    fn does_not_bring_shared_page_regions_into_the_body() {
         let doc = Document::from(
-            r#"<body><div><header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">注目</a></blockquote></header><div id="body">記事本文</div></div></body>"#,
+            r#"<body><div><header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">注目</a></blockquote></header><footer><blockquote class="twitter-tweet"><a href="https://x.com/example/status/456">おすすめ</a></blockquote></footer><div id="body">記事本文</div></div></body>"#,
         );
         assert!(leading_embeds(&doc.select("#body")).is_empty());
+    }
+
+    #[test]
+    fn keeps_an_intro_heading_separated_by_line_breaks() {
+        let doc = Document::from(format!(
+            r#"<main><section><header><h2>導入</h2></header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">引用</a></blockquote></section>{}<section id="body">記事本文</section></main>"#,
+            "<br>".repeat(8)
+        ));
+        let leads = leading_embeds(&doc.select("#body"));
+        assert_eq!(leads.len(), 1);
+        assert!(leads[0].select("h2").exists());
     }
 
     #[test]
