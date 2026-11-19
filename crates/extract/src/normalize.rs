@@ -118,6 +118,13 @@ fn imgur_image(value: &str, base: &str) -> Option<Url> {
     .then_some(url)
 }
 
+fn pixel_size(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    let number = value.strip_suffix("px").unwrap_or(&value).trim_end();
+    number.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && number.parse::<f64>().is_ok_and(|size| size <= 1.0)
+}
+
 pub(crate) fn normalize(html: &str, base: &str) -> String {
     let doc = Document::from(html);
     for node in doc.select("img").nodes() {
@@ -195,10 +202,15 @@ pub(crate) fn normalize(html: &str, base: &str) -> String {
         };
         let images = link.select("img");
         if images.nodes().iter().any(|node| {
-            Selection::from(*node)
-                .attr("src")
-                .and_then(|src| http(&src, base))
-                .is_some_and(|src| !placeholder(&src))
+            let image = Selection::from(*node);
+            let tiny = ["width", "height"]
+                .iter()
+                .all(|attr| image.attr(attr).is_some_and(|value| pixel_size(&value)));
+            !tiny
+                && image
+                    .attr("src")
+                    .and_then(|src| http(&src, base))
+                    .is_some_and(|src| !placeholder(&src))
         }) {
             continue;
         }
@@ -270,7 +282,7 @@ mod tests {
     #[test]
     fn imgur_conversion_uses_the_direct_link_for_an_unusable_image() {
         let doc = Document::from(normalize(
-            r#"<blockquote class="imgur-embed-pub"><a href="//i.imgur.com/photo.jpeg"><img src="data:image/gif;base64,AA" width="1" height="1" alt="画像の説明"></a></blockquote>"#,
+            r#"<blockquote class="imgur-embed-pub"><a href="//i.imgur.com/photo.jpeg"><img src="https://site.example/tiny.gif" width="1px" height="1.0" alt="画像の説明"></a></blockquote>"#,
             "https://site.example/post",
         ));
         let image = doc.select("img");

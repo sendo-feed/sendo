@@ -9,7 +9,7 @@ use crate::{ExtractError, Extracted};
 const BODY_BLOCKS: &str =
     "p, pre, td, th, blockquote, div, section, article, main, body, li, dt, dd";
 
-const POST_EMBEDS: &str = "blockquote.twitter-tweet a[href], blockquote.imgur-embed-pub img[src], img[src^='https://i.imgur.com/']";
+const POST_EMBEDS: &str = "blockquote.twitter-tweet a[href], blockquote.imgur-embed-pub a[href], img[src^='https://i.imgur.com/']";
 
 fn compact(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
@@ -22,7 +22,6 @@ fn prune(doc: &Document) {
         "related-posts",
         "related-articles",
         "related-entries",
-        "related-title",
         "recommended",
         "recommendations",
         "ranking",
@@ -69,11 +68,7 @@ fn prune(doc: &Document) {
         let related_list = block.is("ul")
             && links.length() >= 3
             && !block.select("img, video, audio, iframe").exists()
-            && block.attr("class").is_some_and(|value| {
-                value
-                    .split_whitespace()
-                    .any(|name| name.ends_with("-related"))
-            });
+            && follows_related_heading(&block);
         if ((20..240).contains(&text) || related_list)
             && link_text * 10 >= text * 9
             && (links.length() >= 3 || block.select("img").length() > 0)
@@ -83,6 +78,18 @@ fn prune(doc: &Document) {
             block.remove();
         }
     }
+    doc.select("#related-title, .related-title").remove();
+}
+
+fn follows_related_heading(block: &Selection<'_>) -> bool {
+    let mut previous = block.prev_sibling();
+    for _ in 0..6 {
+        if !previous.is("br, hr") {
+            return previous.is("#related-title, .related-title");
+        }
+        previous = previous.prev_sibling();
+    }
+    false
 }
 
 pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> {
@@ -372,16 +379,22 @@ fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
     let branches = std::iter::once(root.clone())
         .chain(ancestors.nodes().iter().map(|node| Selection::from(*node)));
     for branch in branches.take_while(|branch| branch.nodes()[0].id != boundary.id) {
+        let top_level = branch.parent().is("body");
         let mut sibling = branch.prev_sibling();
         for _ in 0..6 {
             if !sibling.exists() {
                 break;
             }
             let previous = sibling.prev_sibling();
-            if sibling.is("div, section, header, figure, blockquote")
+            let site_header =
+                top_level && (sibling.is("header") || sibling.select("header").exists());
+            let contains_embed = sibling.is(POST_EMBEDS)
+                || (sibling.is("div, section, header, figure, blockquote, a")
+                    && sibling.select(POST_EMBEDS).exists());
+            if contains_embed
+                && !site_header
                 && !sibling.is(ARTICLE)
                 && !sibling.select(ARTICLE).exists()
-                && sibling.select(POST_EMBEDS).exists()
             {
                 leading.push(sibling);
             }
@@ -464,11 +477,24 @@ mod tests {
     #[test]
     fn keeps_a_direct_imgur_image_in_the_lead_without_article_markup() {
         let doc = Document::from(
-            r#"<main><div><img src="https://i.imgur.com/example.jpeg"></div><section><div id="body">記事本文</div></section></main>"#,
+            r#"<main><img src="https://i.imgur.com/example.jpeg">
+            <a href="/photo"><img src="https://i.imgur.com/link.jpeg"></a>
+            <blockquote class="imgur-embed-pub"><a href="https://imgur.com/a/link">投稿</a></blockquote>
+            <section><div id="body">記事本文</div></section></main>"#,
         );
         let leads = leading_embeds(&doc.select("#body"));
-        assert_eq!(leads.len(), 1);
-        assert!(leads[0].select("img").exists());
+        assert_eq!(leads.len(), 3);
+        assert!(leads[0].is("img"));
+        assert!(leads[1].select("img").exists());
+        assert!(leads[2].text().contains("投稿"));
+    }
+
+    #[test]
+    fn does_not_bring_a_site_header_into_the_body() {
+        let doc = Document::from(
+            r#"<body><header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">注目</a></blockquote></header><div id="body">記事本文</div></body>"#,
+        );
+        assert!(leading_embeds(&doc.select("#body")).is_empty());
     }
 
     #[test]
