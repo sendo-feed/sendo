@@ -36,9 +36,11 @@ describe("Rust のモジュール（記事のページから本文を抜く）",
     const photo = "https://i.imgur.com/photo.jpeg";
     const pixel = "https://i.imgur.com/pixel.jpeg";
     const hidden = "https://i.imgur.com/hidden.jpeg";
+    const small = "https://i.imgur.com/small.jpeg";
+    const large = "https://i.imgur.com/large.jpeg";
     const page = articlePage().replace(
       "</h1>",
-      `</h1><blockquote class="imgur-embed-pub"><a href="${pixel}">元のリンク</a><template><img src="${pixel}" width="1" height="1"></template><img hidden src="${hidden}" data-src="https://example.com/other.png" width="1" height="1"><a href="${hidden}">非表示画像のリンク</a></blockquote><blockquote class="imgur-embed-pub"><a href="${photo}">写真</a></blockquote>`,
+      `</h1><blockquote class="imgur-embed-pub"><a href="${pixel}">元のリンク</a><template><img src="${pixel}" width="1" height="1"></template><img hidden src="${hidden}" srcset="${small} 320w, ${large} 640w" width="1" height="1"><a href="${small}">別の候補</a><a href="${hidden}">非表示画像のリンク</a></blockquote><blockquote class="imgur-embed-pub"><a href="${photo}">写真</a></blockquote>`,
     );
     const result = await extractor.extract({
       bytes: new TextEncoder().encode(page),
@@ -51,6 +53,8 @@ describe("Rust のモジュール（記事のページから本文を抜く）",
     expect(html).not.toContain(`src="${pixel}"`);
     expect(html).toContain(`href="${hidden}"`);
     expect(html).not.toContain(`src="${hidden}"`);
+    expect(html).toContain(`href="${small}"`);
+    expect(html).not.toContain(`src="${small}"`);
     expect(html).toContain(`src="${photo}"`);
   });
 

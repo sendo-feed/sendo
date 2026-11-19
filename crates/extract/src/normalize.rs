@@ -16,7 +16,7 @@ pub(crate) fn http(value: &str, base: &str) -> Option<String> {
     }
     Some(url.into())
 }
-fn srcset(value: &str, base: &str) -> Vec<(String, f64, char)> {
+pub(crate) fn srcset(value: &str, base: &str) -> Vec<(String, f64, char)> {
     let chars: Vec<char> = value.chars().collect();
     let mut i = 0;
     let mut out = Vec::new();

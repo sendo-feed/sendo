@@ -61,6 +61,29 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
                 .and_then(|src| imgur_resource(&src, base)),
         ];
         images.extend(urls.into_iter().flatten().map(|url| (node.id, url)));
+        for name in ["srcset", "data-srcset"] {
+            if let Some(value) = image.attr(name) {
+                images.extend(
+                    crate::normalize::srcset(&value, base)
+                        .into_iter()
+                        .filter_map(|(url, _, _)| imgur_resource(&url, base))
+                        .map(|url| (node.id, url)),
+                );
+            }
+        }
+        let parent = image.parent();
+        if parent.is("picture") {
+            for source in parent.select("source[srcset]").nodes() {
+                if let Some(value) = source.attr("srcset") {
+                    images.extend(
+                        crate::normalize::srcset(&value, base)
+                            .into_iter()
+                            .filter_map(|(url, _, _)| imgur_resource(&url, base))
+                            .map(|url| (node.id, url)),
+                    );
+                }
+            }
+        }
     };
     for node in doc.select("img").nodes() {
         collect(*node);
@@ -481,6 +504,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
 
 /// 選ばれた本文と同じ記事の範囲で、手前に分かれた埋め込みを含むブロックを探す。
 fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
+    const REGION: &str = "section, [role=region]";
     if root.is(ARTICLE) || root.is("body") {
         return Vec::new();
     }
@@ -496,12 +520,18 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                 .find(|node| Selection::from(**node).is(ARTICLE_BODY))
         });
     let boundary = article_boundary.or_else(|| {
+        if root.is(REGION) {
+            return ancestors
+                .nodes()
+                .first()
+                .filter(|node| Selection::from(**node).is("main, [role=main]"));
+        }
         if root.is(ARTICLE_BODY) {
             return ancestors.nodes().iter().find(|node| {
                 Selection::from(**node).is("section, [role=region], main, [role=main]")
             });
         }
-        if root.is("main, section, [role=main], [role=region]") {
+        if root.is("main, [role=main]") {
             return None;
         }
         ancestors.nodes().iter().find(|node| {
@@ -513,6 +543,7 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
     };
 
     let mut leading = Vec::new();
+    let outside_section = article_boundary.is_none() && root.is(REGION);
     let branches = std::iter::once(root.clone())
         .chain(ancestors.nodes().iter().map(|node| Selection::from(*node)));
     for branch in branches.take_while(|branch| branch.nodes()[0].id != boundary.id) {
@@ -530,8 +561,14 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                     || sibling.select(ARTICLE).exists()
                     || sibling.select(ARTICLE_BODY).exists()
                     || (article_boundary.is_none()
-                        && (sibling.is("section, [role=region]")
-                            || sibling.select("section, [role=region]").exists()))
+                        && (sibling.is(REGION) || sibling.select(REGION).exists()))
+                {
+                    break;
+                }
+                // 共通の main の下では、本文の節に直接並ぶ埋め込みだけを引き継ぐ。
+                if outside_section
+                    && (!branch.is(REGION)
+                        || !sibling.is("blockquote.twitter-tweet, blockquote.imgur-embed-pub, img, figure, picture"))
                 {
                     break;
                 }
@@ -758,6 +795,19 @@ mod tests {
             <div id="body">本文</div></main>"#,
         );
         assert!(leading_embeds(&doc.select("#body"), "https://blog.example/post").is_empty());
+    }
+
+    #[test]
+    fn keeps_direct_embeds_next_to_the_selected_section_without_crossing_another_section() {
+        let doc = Document::from(
+            r#"<main><blockquote class="twitter-tweet"><a href="https://x.com/user/status/789">手前の別の記事</a></blockquote>
+            <section>別の記事</section>
+            <blockquote class="twitter-tweet"><a href="https://x.com/user/status/123">本文の直前</a></blockquote>
+            <section id="body">本文</section></main>"#,
+        );
+        let lead = leading_embeds(&doc.select("#body"), "https://blog.example/post");
+        assert_eq!(lead.len(), 1);
+        assert_eq!(lead[0].text().trim(), "本文の直前");
     }
 
     #[test]
