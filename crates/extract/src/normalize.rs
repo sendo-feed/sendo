@@ -1,4 +1,6 @@
 //! 遅延画像と srcset を、位置・リンクを保ったまま img.src にそろえる。
+use std::collections::HashMap;
+
 use dom_query::{Document, Selection};
 use url::Url;
 
@@ -102,7 +104,7 @@ fn placeholder(url: &str) -> bool {
     .iter()
     .any(|x| u.contains(x))
 }
-pub(crate) fn normalized_image_url(im: &Selection<'_>, base: &str) -> Option<String> {
+fn normalized_image_url(im: &Selection<'_>, base: &str) -> Option<String> {
     let original = im.attr("src").map(|x| x.to_string());
     let mut choice = None;
     for name in ["data-srcset", "srcset"] {
@@ -131,30 +133,6 @@ pub(crate) fn normalized_image_url(im: &Selection<'_>, base: &str) -> Option<Str
     {
         choice = Some((u, "src"));
     }
-    if choice.is_none() {
-        let parent = im.parent();
-        if parent
-            .nodes()
-            .first()
-            .and_then(|n| n.node_name())
-            .map(|x| x.to_string())
-            .as_deref()
-            == Some("picture")
-        {
-            for node in parent.select("source[srcset]").nodes() {
-                let source = Selection::from(*node);
-                if source.attr("media").is_some() {
-                    continue;
-                }
-                if let Some(v) = source.attr("srcset")
-                    && let Some(u) = best_srcset(&v, base)
-                {
-                    choice = Some((u, "picture"));
-                    break;
-                }
-            }
-        }
-    }
     choice.map(|(url, _reason)| url)
 }
 
@@ -165,9 +143,30 @@ pub(crate) fn normalize(html: &str, base: &str) -> String {
 }
 
 pub(crate) fn normalize_document(doc: &Document, base: &str) {
+    let mut picture_urls = HashMap::new();
     for node in doc.select("img").nodes() {
         let im = Selection::from(*node);
-        if let Some(url) = normalized_image_url(&im, base) {
+        let url = normalized_image_url(&im, base).or_else(|| {
+            let parent = im.parent();
+            if !parent.is("picture") {
+                return None;
+            }
+            // 同じ picture に img が複数あっても、直下の source は一度だけ調べる。
+            picture_urls
+                .entry(parent.nodes()[0].id)
+                .or_insert_with(|| {
+                    parent.children().nodes().iter().find_map(|node| {
+                        if node.node_name().as_deref() != Some("source")
+                            || node.attr("media").is_some()
+                        {
+                            return None;
+                        }
+                        best_srcset(&node.attr("srcset")?, base)
+                    })
+                })
+                .clone()
+        });
+        if let Some(url) = url {
             im.set_attr("src", &url);
             im.remove_attrs(&[
                 "srcset",

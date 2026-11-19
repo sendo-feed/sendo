@@ -53,16 +53,24 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
     }
     let mut images = Vec::new();
     let mut collect = |node: NodeRef<'_>| {
-        let image = Selection::from(node);
-        // 元の src と、遅延読み込みなどの正規化で選ばれる URL の両方を記録する。
-        let urls = [
-            image.attr("src").and_then(|src| imgur_resource(&src, base)),
-            crate::normalize::normalized_image_url(&image, base)
-                .and_then(|src| imgur_resource(&src, base)),
-        ];
-        images.extend(urls.into_iter().flatten().map(|url| (node.id, url)));
-        for name in ["srcset", "data-srcset"] {
-            if let Some(value) = image.attr(name) {
+        let sets: &[_] = if node.node_name().as_deref() == Some("img") {
+            // 正規化で選ばれない URL も、直リンクから再生成しないように記録する。
+            for name in ["src", "data-src", "data-original", "data-lazy-src"] {
+                if let Some(url) = node
+                    .attr(name)
+                    .and_then(|value| imgur_resource(&value, base))
+                {
+                    images.push((node.id, url));
+                }
+            }
+            &["srcset", "data-srcset"]
+        } else if Selection::from(node).parent().is("picture") {
+            &["srcset"]
+        } else {
+            return;
+        };
+        for name in sets {
+            if let Some(value) = node.attr(name) {
                 images.extend(
                     crate::normalize::srcset(&value, base)
                         .into_iter()
@@ -71,21 +79,8 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
                 );
             }
         }
-        let parent = image.parent();
-        if parent.is("picture") {
-            for source in parent.select("source[srcset]").nodes() {
-                if let Some(value) = source.attr("srcset") {
-                    images.extend(
-                        crate::normalize::srcset(&value, base)
-                            .into_iter()
-                            .filter_map(|(url, _, _)| imgur_resource(&url, base))
-                            .map(|url| (node.id, url)),
-                    );
-                }
-            }
-        }
     };
-    for node in doc.select("img").nodes() {
+    for node in doc.select("img, picture > source[srcset]").nodes() {
         collect(*node);
     }
 
@@ -98,7 +93,7 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
         if let Some(fragment) = fragment.and_then(|id| doc.tree.get(&id)) {
             for node in fragment.descendants_it() {
                 match node.node_name().as_deref() {
-                    Some("img") => collect(node),
+                    Some("img" | "source") => collect(node),
                     Some("template") => templates.push(node),
                     _ => {}
                 }
@@ -520,14 +515,13 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                 .find(|node| Selection::from(**node).is(ARTICLE_BODY))
         });
     let boundary = article_boundary.or_else(|| {
-        if root.is(REGION) {
-            return ancestors
-                .nodes()
-                .first()
-                .filter(|node| Selection::from(**node).is("main, [role=main]"));
-        }
         if root.is(ARTICLE_BODY) {
             return ancestors.nodes().iter().find(|node| {
+                Selection::from(**node).is("section, [role=region], main, [role=main]")
+            });
+        }
+        if root.is(REGION) {
+            return ancestors.nodes().first().filter(|node| {
                 Selection::from(**node).is("section, [role=region], main, [role=main]")
             });
         }
@@ -543,7 +537,7 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
     };
 
     let mut leading = Vec::new();
-    let outside_section = article_boundary.is_none() && root.is(REGION);
+    let outside_section = article_boundary.is_none() && root.is(REGION) && !root.is(ARTICLE_BODY);
     let branches = std::iter::once(root.clone())
         .chain(ancestors.nodes().iter().map(|node| Selection::from(*node)));
     for branch in branches.take_while(|branch| branch.nodes()[0].id != boundary.id) {
@@ -565,7 +559,7 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                 {
                     break;
                 }
-                // 共通の main の下では、本文の節に直接並ぶ埋め込みだけを引き継ぐ。
+                // 本文の印のない節では、直接並ぶ埋め込みだけを引き継ぐ。
                 if outside_section
                     && (!branch.is(REGION)
                         || !sibling.is("blockquote.twitter-tweet, blockquote.imgur-embed-pub, img, figure, picture"))
@@ -806,6 +800,21 @@ mod tests {
             <section id="body">本文</section></main>"#,
         );
         let lead = leading_embeds(&doc.select("#body"), "https://blog.example/post");
+        assert_eq!(lead.len(), 1);
+        assert_eq!(lead[0].text().trim(), "本文の直前");
+    }
+
+    #[test]
+    fn keeps_embeds_in_the_section_surrounding_the_explicit_article_body() {
+        let doc = Document::from(
+            r#"<main><blockquote class="twitter-tweet"><a href="https://x.com/user/status/789">別の記事</a></blockquote>
+            <section><div><blockquote class="twitter-tweet"><a href="https://x.com/user/status/123">本文の直前</a></blockquote></div>
+            <section itemprop="articleBody">本文</section></section></main>"#,
+        );
+        let lead = leading_embeds(
+            &doc.select("[itemprop=articleBody]"),
+            "https://blog.example/post",
+        );
         assert_eq!(lead.len(), 1);
         assert_eq!(lead[0].text().trim(), "本文の直前");
     }
