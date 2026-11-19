@@ -15,6 +15,12 @@ export function createNodeServer(
     createServer,
     fetch,
     hostname,
+    serverOptions: {
+      shouldUpgradeCallback: (request) =>
+        request.method === "GET" &&
+        request.url?.split("?", 1)[0] === SYNC_UPDATES_PATH &&
+        request.headers.upgrade?.toLowerCase() === "websocket",
+    },
     websocket: { server: webSocketServer },
   }) as Server;
   const [upgrade] = server.listeners("upgrade") as Array<
@@ -32,15 +38,6 @@ export function createNodeServer(
   // Hono の拒否応答を保つため、upgrade のリスナーは 1 つにする。
   server.off("upgrade", upgrade);
   server.on("upgrade", (request, socket, head) => {
-    if (
-      request.method !== "GET" ||
-      request.url?.split("?", 1)[0] !== SYNC_UPDATES_PATH ||
-      request.headers.upgrade?.toLowerCase() !== "websocket"
-    ) {
-      socket.destroy();
-      return;
-    }
-
     // 接続が成立するか閉じるまで期限を置き、ハンドシェイク途中のソケットを回収する。
     pending.set(request, setTimeout(() => socket.destroy(), UPGRADE_TIMEOUT_MS).unref());
     socket.once("close", () => clearDeadline(request));

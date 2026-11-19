@@ -9,14 +9,29 @@ const MAX_CONNECTIONS = 512;
 const MAX_CONNECTIONS_PER_USER = 8;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
+type Connection = [WebSocket, SessionIdentity];
+
 /** HTTP と取得ジョブが同じプロセスで動くので、接続はメモリに持つ。 */
 export function createNodeSyncUpdates(db: Database, heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS) {
   const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 1024 });
   const byUser = new Map<string, Map<WebSocket, SessionIdentity>>();
   let stopping = false;
 
+  async function activeConnections(connections: Connection[]): Promise<Connection[]> {
+    if (connections.length === 0) return [];
+    const identities = new Map(connections.map(([, session]) => [session.id, session]));
+    const active = await activeSessionIds(db, [...identities.values()], new Date());
+    return connections.filter(([socket, session]) => {
+      if (socket.readyState !== WebSocket.OPEN) return false;
+      if (active.has(session.id)) return true;
+      socket.close(1008, "session ended");
+      return false;
+    });
+  }
+
   // 切断が TCP から伝わらないときも、応答しない接続の枠を空ける。
   const waitingForPong = new WeakSet<WebSocket>();
+  let checkingSessions = false;
   const heartbeat = setInterval(() => {
     for (const socket of webSocketServer.clients) {
       if (socket.readyState !== WebSocket.OPEN) continue;
@@ -27,6 +42,14 @@ export function createNodeSyncUpdates(db: Database, heartbeatIntervalMs = HEARTB
         socket.ping();
       }
     }
+    if (checkingSessions || byUser.size === 0) return;
+    checkingSessions = true;
+    const connections = [...byUser.values()].flatMap((sockets) => [...sockets]);
+    void activeConnections(connections)
+      .catch(() => console.warn("could not check notification sessions"))
+      .finally(() => {
+        checkingSessions = false;
+      });
   }, heartbeatIntervalMs).unref();
 
   const updates: SyncUpdates = {
@@ -83,16 +106,11 @@ export function createNodeSyncUpdates(db: Database, heartbeatIntervalMs = HEARTB
 
     async notify(userIds) {
       const connections = userIds.flatMap((userId) => [...(byUser.get(userId) ?? [])]);
-      if (connections.length === 0) return;
-      const identities = new Map(connections.map(([, session]) => [session.id, session]));
-      const active = await activeSessionIds(db, [...identities.values()], new Date());
-
-      for (const [socket, session] of connections) {
+      for (const [socket] of await activeConnections(connections)) {
         if (socket.readyState !== WebSocket.OPEN) continue;
         try {
           if (socket.bufferedAmount > 64 * 1024) socket.terminate();
-          else if (active.has(session.id)) socket.send(SYNC_REQUIRED);
-          else socket.close(1008, "session ended");
+          else socket.send(SYNC_REQUIRED);
         } catch {
           // 接続が途中で切れても、残りの端末への通知は続ける。
         }

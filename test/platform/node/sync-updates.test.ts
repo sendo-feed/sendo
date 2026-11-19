@@ -174,12 +174,12 @@ it("取得ジョブと既読・スターの更新を本人の接続に送り、�
     }),
   ]);
 
+  const closed = once(unrelated, "close");
   const logout = await fetch(`${httpUrl}/api/v1/auth/logout`, {
     method: "POST",
     headers: { origin: ORIGIN, cookie: other.cookie },
   });
   expect(logout.status).toBe(204);
-  const closed = once(unrelated, "close");
   await hub.updates.notify([other.userId]);
   expect((await closed)[0]).toBe(1008);
   expect(unrelatedMessages).toEqual([]);
@@ -211,30 +211,58 @@ it("通知の失敗後も新着を差分で読めて、同じ記事の再取得�
 });
 
 it.each([
-  ["GET", UPDATES, "h2c"],
-  ["GET", "/healthz", "websocket"],
-  ["POST", UPDATES, "websocket"],
-])("通知用の GET 以外の Upgrade を閉じる（%s %s %s）", async (method, route, upgrade) => {
-  const closed = new Promise<void>((resolve, reject) => {
-    const outgoing = request(`${httpUrl}${route}`, {
-      method,
-      headers: { connection: "Upgrade", upgrade },
+  ["GET", "/healthz", "h2c", 200],
+  ["GET", "/healthz", "websocket", 200],
+  ["POST", UPDATES, "websocket", 401],
+])(
+  "通知以外の Upgrade を通常の HTTP で扱う（%s %s %s）",
+  async (method, route, upgrade, status) => {
+    const result = new Promise<number | undefined>((resolve, reject) => {
+      const outgoing = request(`${httpUrl}${route}`, {
+        method,
+        headers: { connection: "Upgrade", upgrade },
+      });
+      outgoing.once("error", reject);
+      outgoing.once("response", (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      });
+      outgoing.once("upgrade", (_response, socket) => {
+        socket.destroy();
+        reject(new Error("unexpected protocol upgrade"));
+      });
+      outgoing.end();
     });
-    outgoing.once("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ECONNRESET") resolve();
-      else reject(error);
+    expect(await result).toBe(status);
+  },
+);
+
+it("Connection ヘッダーのない Upgrade に 400 を返す", async () => {
+  const { cookie } = await session();
+  const result = new Promise<number | undefined>((resolve, reject) => {
+    const outgoing = request(`${httpUrl}${UPDATES}`, {
+      headers: { origin: ORIGIN, cookie, upgrade: "websocket" },
     });
+    outgoing.once("error", reject);
     outgoing.once("response", (response) => {
       response.resume();
-      reject(new Error("unexpected HTTP response to unsupported upgrade"));
-    });
-    outgoing.once("upgrade", (_response, socket) => {
-      socket.destroy();
-      reject(new Error("unexpected protocol upgrade"));
+      resolve(response.statusCode);
     });
     outgoing.end();
   });
-  await closed;
+  expect(await result).toBe(400);
+});
+
+it("更新通知がなくてもログアウト済みの接続を回収する", async () => {
+  const { cookie } = await session();
+  const socket = await openSocket(cookie);
+  const closed = once(socket, "close");
+  const logout = await fetch(`${httpUrl}/api/v1/auth/logout`, {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie },
+  });
+  expect(logout.status).toBe(204);
+  expect((await closed)[0]).toBe(1008);
 });
 
 it("ping に応答しない接続を閉じ、ほかの接続は保つ", async () => {

@@ -34,7 +34,11 @@ export function syncUpdatesApi(platform: Platform) {
     if (!session) {
       return c.json(errorBody("unauthorized", "a valid browser session is required"), 401);
     }
-    if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
+    const upgradeRequested = c.req
+      .header("connection")
+      ?.split(",")
+      .some((token) => token.trim().toLowerCase() === "upgrade");
+    if (!upgradeRequested || c.req.header("upgrade")?.toLowerCase() !== "websocket") {
       return c.json(errorBody("invalid_request", "WebSocket upgrade required"), 400);
     }
     return platform.syncUpdates.connect(c, session);
