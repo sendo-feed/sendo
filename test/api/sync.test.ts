@@ -354,7 +354,15 @@ describe("差分", () => {
     const response = await requestApp(platform, "/api/v1/feeds");
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      items: [{ id: feed.id, status: "stalled", lastErrorCode: "gone", errorCount: 3 }],
+      items: [
+        {
+          id: feed.id,
+          status: "stalled",
+          lastErrorCode: "gone",
+          errorCount: 3,
+          lastSuccessfulFetchAt: null,
+        },
+      ],
     });
 
     now = new Date(now.getTime() + 7 * DAY);
@@ -363,6 +371,23 @@ describe("差分", () => {
     expect((await client.sync()).feeds).toMatchObject([
       { id: feed.id, status: "active", lastErrorCode: null },
     ]);
+
+    now = new Date(now.getTime() + DAY);
+    const successfulAt = now.toISOString();
+    await runFetchFeed(platform, feed.id);
+    expect((await client.sync()).feeds).toEqual([]);
+    expect(await (await requestApp(platform, "/api/v1/feeds")).json()).toMatchObject({
+      items: [{ id: feed.id, lastFetchedAt: successfulAt, lastSuccessfulFetchAt: successfulAt }],
+    });
+
+    now = new Date(now.getTime() + DAY);
+    status = 429;
+    await runFetchFeed(platform, feed.id);
+    expect(await (await requestApp(platform, "/api/v1/feeds")).json()).toMatchObject({
+      items: [
+        { id: feed.id, lastFetchedAt: now.toISOString(), lastSuccessfulFetchAt: successfulAt },
+      ],
+    });
   });
 
   it("404 の移転先候補を同期で届け、読者が新しい購読として追加できる", async () => {

@@ -252,6 +252,8 @@ export const feeds = sqliteTable(
     lastModified: text("last_modified"),
     /** 取得を試した時刻 */
     lastFetchedAt: integer("last_fetched_at", { mode: "timestamp_ms" }),
+    /** 取得に成功した最後の試行の開始時刻（304 を含む） */
+    lastSuccessfulFetchAt: integer("last_successful_fetch_at", { mode: "timestamp_ms" }),
     /** この時刻を過ぎたら、定期実行で取得のキューに積む（購読している人がいるときだけ） */
     nextFetchAt: integer("next_fetch_at", { mode: "timestamp_ms" }).notNull(),
     /**

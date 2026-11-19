@@ -210,6 +210,14 @@
             "format": "date-time",
             "description": "最後に取得を試した時刻"
           },
+          "lastSuccessfulFetchAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "最後に成功した取得（HTTP 304 を含む）を試した時刻。記録がなければ null"
+          },
           "nextFetchAt": {
             "type": "string",
             "format": "date-time"
@@ -300,6 +308,7 @@
           "iconUrl",
           "folderId",
           "lastFetchedAt",
+          "lastSuccessfulFetchAt",
           "nextFetchAt",
           "status",
           "errorCount",

@@ -153,6 +153,7 @@ describe("runFetchFeed", () => {
       siteUrl: "https://blog.example/",
       etag: '"e1"',
       lastFetchedAt: NOW,
+      lastSuccessfulFetchAt: NOW,
       // 記事は 1 日前に 1 件、今（日付のない 2 件）。1 日 ÷ 3 件 ＝ 8 時間の 3 分の 1
       // （docs/decisions/jobs.md の 7）
       nextFetchAt: new Date(NOW.getTime() + (8 * HOUR) / 3),
@@ -215,7 +216,11 @@ describe("runFetchFeed", () => {
     const first = await runFetchFeed(platform, feed.id);
     expect(first).toMatchObject({ status: "failed" });
     const once = await getFeed(platform.db, feed.id);
-    expect(once).toMatchObject({ errorCount: 1, lastError: expect.stringContaining("500") });
+    expect(once).toMatchObject({
+      errorCount: 1,
+      lastError: expect.stringContaining("500"),
+      lastSuccessfulFetchAt: null,
+    });
     expect(once?.nextFetchAt).toEqual(new Date(NOW.getTime() + INTERVAL_MS * 2));
 
     const next = new Date(NOW.getTime() + 2 * INTERVAL_MS);
@@ -383,7 +388,42 @@ describe("runFetchFeed", () => {
     expect(await getFeed(platform.db, feed.id)).toMatchObject({
       fetchStalled: false,
       errorCount: 0,
+      lastSuccessfulFetchAt: new Date(NOW.getTime() + 1),
       nextFetchAt: new Date(NOW.getTime() + 1 + MAX_FETCH_INTERVAL_MS),
+    });
+  });
+
+  it("後から完了した古い成功の時刻を、最新の失敗とともに残す", async () => {
+    const pending = Promise.withResolvers<Response>();
+    const started = Promise.withResolvers<void>();
+    const { platform, feed } = await setup(() => {
+      started.resolve();
+      return pending.promise;
+    });
+    const slow = runFetchFeed(platform, feed.id);
+    await started.promise;
+
+    const failedAt = new Date(NOW.getTime() + 1);
+    try {
+      await runFetchFeed(
+        {
+          ...platform,
+          now: () => failedAt,
+          fetch: fakeFetch(() => new Response(null, { status: 410 })).fetch,
+        },
+        feed.id,
+      );
+    } finally {
+      pending.resolve(new Response(RSS));
+      await slow;
+    }
+
+    expect(await getFeed(platform.db, feed.id)).toMatchObject({
+      title: null,
+      fetchStalled: true,
+      lastErrorCode: "gone",
+      lastFetchedAt: failedAt,
+      lastSuccessfulFetchAt: NOW,
     });
   });
 

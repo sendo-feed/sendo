@@ -218,6 +218,7 @@ describe("Discord の購読", () => {
 
     expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
     expect(await runFetchFeed(platform, feedId)).toEqual({ status: "not-modified" });
+    expect((await getFeed(platform.db, feedId))?.lastSuccessfulFetchAt).toEqual(FIXED_NOW);
     const owners = await (
       await requestApp(platform, "/api/v1/articles", { token: owner.token })
     ).json();
@@ -286,16 +287,24 @@ describe("Discord の購読", () => {
     ).toBe(404);
   });
 
-  it("連携解除と並行した取得では記事を残さない", async () => {
+  it.each([
+    { count: 0, ids: [] },
+    { count: 1, ids: [MESSAGE_ID] },
+  ])("連携解除と並行した取得では投稿 $count 件の結果を残さない", async ({ ids }) => {
     const { platform, remote } = await setup();
     const user = await createUser();
     await connectDiscord(platform.db, user.id, DISCORD_USER);
     const feedId = await subscribe(await browser(platform, user.id));
+    remote.setMessageIds(ids);
     remote.beforeMessages(() => disconnectDiscord(platform.db, user.id));
     await runFetchFeed(platform, feedId);
     expect(await platform.db.select().from(articles).where(eq(articles.feedId, feedId))).toEqual(
       [],
     );
+    expect(await getFeed(platform.db, feedId)).toMatchObject({
+      discordConnectionId: null,
+      lastSuccessfulFetchAt: null,
+    });
     expect(await (await (await browser(platform, user.id))(BASE)).json()).toMatchObject({
       connected: false,
       subscriptions: [],
