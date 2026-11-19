@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d4d68646-fe7a-4d26-8c86-c60f8d4b1506",
+  "id": "c130c344-8630-4943-8274-d43390fcab43",
   "prevId": "ac43eb77-925d-4b20-ba8a-4270d74fb3b4",
   "tables": {
     "access_tokens": {
@@ -864,6 +864,59 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "discord_connections": {
+      "name": "discord_connections",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "discord_user_id": {
+          "name": "discord_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "discord_connections_user_id_unique": {
+          "name": "discord_connections_user_id_unique",
+          "columns": [
+            "user_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "discord_connections_user_id_users_id_fk": {
+          "name": "discord_connections_user_id_users_id_fk",
+          "tableFrom": "discord_connections",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "feeds": {
       "name": "feeds",
       "columns": {
@@ -879,6 +932,20 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "discord_connection_id": {
+          "name": "discord_connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "discord_cursor": {
+          "name": "discord_cursor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "title": {
@@ -911,13 +978,6 @@
         },
         "last_fetched_at": {
           "name": "last_fetched_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "last_successful_fetch_at": {
-          "name": "last_successful_fetch_at",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,
@@ -1011,22 +1071,45 @@
         }
       },
       "indexes": {
-        "feeds_url_unique": {
-          "name": "feeds_url_unique",
-          "columns": [
-            "url"
-          ],
-          "isUnique": true
-        },
         "feeds_next_fetch_at_idx": {
           "name": "feeds_next_fetch_at_idx",
           "columns": [
             "next_fetch_at"
           ],
           "isUnique": false
+        },
+        "feeds_public_url_idx": {
+          "name": "feeds_public_url_idx",
+          "columns": [
+            "url"
+          ],
+          "isUnique": true,
+          "where": "\"feeds\".\"discord_cursor\" is null"
+        },
+        "feeds_discord_connection_url_idx": {
+          "name": "feeds_discord_connection_url_idx",
+          "columns": [
+            "discord_connection_id",
+            "url"
+          ],
+          "isUnique": true
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "feeds_discord_connection_id_discord_connections_id_fk": {
+          "name": "feeds_discord_connection_id_discord_connections_id_fk",
+          "tableFrom": "feeds",
+          "tableTo": "discord_connections",
+          "columnsFrom": [
+            "discord_connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}

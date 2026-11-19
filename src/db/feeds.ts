@@ -8,11 +8,24 @@ import { type Feed, type FeedErrorCode, feeds, type NewFeed, subscriptions } fro
  */
 
 export async function findFeedByUrl(db: Database, url: string): Promise<Feed | undefined> {
-  return db.select().from(feeds).where(eq(feeds.url, url)).get();
+  return db
+    .select()
+    .from(feeds)
+    .where(and(eq(feeds.url, url), isNull(feeds.discordCursor)))
+    .get();
 }
 
 export async function getFeed(db: Database, id: string): Promise<Feed | undefined> {
   return db.select().from(feeds).where(eq(feeds.id, id)).get();
+}
+
+/** URL を使う公開購読の入口から、Discord のフィードを引けないようにする */
+export async function getPublicFeed(db: Database, id: string): Promise<Feed | undefined> {
+  return db
+    .select()
+    .from(feeds)
+    .where(and(eq(feeds.id, id), isNull(feeds.discordCursor)))
+    .get();
 }
 
 /**
@@ -32,7 +45,7 @@ export async function insertFeed(
       nextFetchAt: input.now,
       createdAt: input.now,
     })
-    .onConflictDoNothing({ target: feeds.url })
+    .onConflictDoNothing()
     .returning()
     .get();
   if (inserted) return { feed: inserted, created: true };
@@ -52,7 +65,7 @@ export async function insertFeeds(db: Database, rows: readonly NewFeed[]): Promi
     const result = await db
       .insert(feeds)
       .values(chunk)
-      .onConflictDoNothing({ target: feeds.url })
+      .onConflictDoNothing()
       .returning({ id: feeds.id })
       .all();
     created.push(...result.map((row) => row.id));
@@ -70,7 +83,7 @@ export async function findFeedIdsByUrls(
     const rows = await db
       .select({ id: feeds.id, url: feeds.url })
       .from(feeds)
-      .where(inArray(feeds.url, chunk))
+      .where(and(inArray(feeds.url, chunk), isNull(feeds.discordCursor)))
       .all();
     for (const row of rows) ids.set(row.url, row.id);
   }
@@ -119,7 +132,7 @@ export async function leaseDueFeeds(
   return ids.filter((id) => leasedIds.has(id));
 }
 
-type FetchTarget = Pick<Feed, "id" | "lastFetchedAt">;
+type FetchTarget = Pick<Feed, "id" | "lastFetchedAt" | "discordConnectionId">;
 
 function fetchedBefore(now: Date) {
   return or(isNull(feeds.lastFetchedAt), lt(feeds.lastFetchedAt, now));
@@ -135,10 +148,12 @@ export async function recordFetchSuccess(
     fetchIntervalMs: number;
     etag?: string | null;
     lastModified?: string | null;
+    discord?: { cursor: string; connectionId: string };
     title?: string | null;
     siteUrl?: string | null;
   },
 ): Promise<Pick<Feed, "id" | "siteUrl" | "iconUrl" | "iconCheckedAt"> | undefined> {
+  const sameConnection = input.discord && eq(feeds.discordConnectionId, input.discord.connectionId);
   const recorded = await db
     .update(feeds)
     .set({
@@ -154,10 +169,16 @@ export async function recordFetchSuccess(
       failureStartedAt: null,
       fetchStalled: false,
       relocationCandidate: null,
+      ...(input.discord && {
+        discordCursor: sql`case when
+          (length(${input.discord.cursor}), ${input.discord.cursor}) >
+          (length(${feeds.discordCursor}), ${feeds.discordCursor})
+          then ${input.discord.cursor} else ${feeds.discordCursor} end`,
+      }),
       ...(input.title !== undefined && { title: input.title }),
       ...(input.siteUrl !== undefined && { siteUrl: input.siteUrl }),
     })
-    .where(and(eq(feeds.id, id), fetchedBefore(input.now)))
+    .where(and(eq(feeds.id, id), fetchedBefore(input.now), sameConnection))
     .returning({
       id: feeds.id,
       siteUrl: feeds.siteUrl,
@@ -173,6 +194,7 @@ export async function recordFetchSuccess(
       .where(
         and(
           eq(feeds.id, id),
+          sameConnection,
           or(isNull(feeds.lastSuccessfulFetchAt), lt(feeds.lastSuccessfulFetchAt, input.now)),
         ),
       );
@@ -229,6 +251,7 @@ export async function recordFetchFailure(
       and(
         eq(feeds.id, feed.id),
         fetchedBefore(input.now),
+        sql`${feeds.discordConnectionId} IS ${feed.discordConnectionId}`,
         sql`${feeds.lastFetchedAt} IS ${previous}`,
       ),
     )

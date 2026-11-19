@@ -132,6 +132,23 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 
 ログインしたら、アクセストークン（リーダーアプリのアプリ用パスワード）を `/api/v1/tokens` で発行・一覧・取り消しできます。これはブラウザのセッションでだけ使え、アクセストークンでは使えません（漏れたトークンで新しいトークンを発行させないため）。定期的な取得（Cron）は、`pnpm dev --test-scheduled` で起動して `http://localhost:8787/__scheduled` を開くと、すぐに試せます。
 
+### Discord のチャンネルを購読する
+
+管理者が追加した Discord Bot で、指定したテキストチャンネルとアナウンスチャンネルの新着を受信箱に取り込みます。投稿のテキストと元投稿へのリンクが記事に並びます。添付ファイルや会話は Discord で開きます。
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) でアプリを作り、サーバーへのインストールと、Bot の **Message Content Intent** を有効にします。OAuth2 のリダイレクト先に `<READER_URL>/api/v1/integrations/discord/callback` を登録します。
+2. Sendo に `DISCORD_CLIENT_ID`（Application ID）、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN`、`READER_URL` を設定します。Cloudflare にデプロイする場合は `DISCORD_CLIENT_SECRET` と `DISCORD_BOT_TOKEN` をシークレットに、`DISCORD_CLIENT_ID` と `READER_URL` を変数に設定します。コンテナ版では 4 つとも `.env` に設定します。
+3. `GET /api/v1/integrations/discord` が返す `inviteUrl` をサーバーの管理者が開いて Bot を追加します。Bot に購読するチャンネルの「チャンネルを見る」と「メッセージ履歴を読む」を許可します。
+4. ブラウザで Sendo にログインし、`POST /api/v1/integrations/discord/connect` の `authorizationUrl` を開いて Discord アカウントを接続します。`POST /api/v1/integrations/discord/subscriptions` にチャンネル URL を渡すと、その時点からの新着を取得します。接続と購読の API は [OpenAPI](spec/openapi.json) にあります。
+
+購読の解除、Discord 連携の解除、取得時に Discord 側の閲覧権限がなくなったことを検出した場合は、取り込んだ記事をスター付きも含めて削除します。
+
+Cloudflare 版を手元で試すときは、次の手順で起動します。
+
+1. `.dev.vars` に Discord の ID、Client Secret、Bot Token を設定します。
+2. `wrangler.jsonc` を `wrangler.discord.local.jsonc` にコピーします。コピーしたファイルの `secrets.required` に `DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN` を追加します。Wrangler はこの一覧にあるキーを `.dev.vars` から読み込みます。
+3. `pnpm dev --config wrangler.discord.local.jsonc --var READER_URL:http://localhost:5173` で起動します。`READER_URL` にはブラウザで開く sendo-reader のオリジンを指定します。
+
 ### リーダーアプリで読む（Google Reader API）
 
 Reeder、NetNewsWire など、Google Reader API（FreshRSS 互換）に対応したリーダーアプリから読めます。アカウントの種類は「FreshRSS」か「Google Reader API」を選び、次のように入れます。

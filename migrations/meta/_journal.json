@@ -271,15 +271,29 @@
     {
       "idx": 38,
       "version": "6",
-      "when": 1795093919210,
-      "tag": "0038_feed-last-successful-fetch",
+      "when": 1795093332078,
+      "tag": "0038_discord-subscriptions",
       "breakpoints": true
     },
     {
       "idx": 39,
       "version": "6",
-      "when": 1795093929046,
-      "tag": "0039_fill-last-successful-fetch",
+      "when": 1795093332481,
+      "tag": "0039_discord-feed-removal",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1795094766982,
+      "tag": "0040_feed-last-successful-fetch",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1795094767449,
+      "tag": "0041_fill-last-successful-fetch",
       "breakpoints": true
     }
   ]

@@ -1,6 +1,6 @@
 import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { z } from "zod";
-import { getFeed } from "../db/feeds";
+import { getPublicFeed } from "../db/feeds";
 import {
   deleteFolderByName,
   ensureFolders,
@@ -505,7 +505,7 @@ export function greaderApp(platform: Platform) {
       if (stream?.kind !== "feed") return badRequest(c, "UnknownStream");
       if (action === "subscribe") {
         // feed/<フィードの ID> ならそのフィード、そうでなければ feed/<URL> として購読する
-        const feed = await getFeed(db, stream.feedId);
+        const feed = await getPublicFeed(db, stream.feedId);
         try {
           if (feed) {
             await subscribeFeed(platform, {
