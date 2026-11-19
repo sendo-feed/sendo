@@ -19,7 +19,7 @@ import type { Platform } from "../platform";
  * @returns 新しく購読したフィードの数
  */
 export async function runImportFeeds(
-  platform: Pick<Platform, "db" | "jobs" | "now">,
+  platform: Pick<Platform, "db" | "jobs" | "now" | "syncUpdates">,
   input: { userId: string; entries: readonly OpmlEntry[] },
 ): Promise<{ subscribed: number }> {
   const { db } = platform;
@@ -86,5 +86,7 @@ export async function runImportFeeds(
       [...createdFeeds].map((feedId) => ({ type: "fetch-feed", feedId })),
     );
   }
+  // 購読、フォルダ、受信箱を変えたので、開いている画面に知らせる（docs/decisions/sync.md の 9）
+  if (rows.length > 0) await platform.syncUpdates.notify([userId]);
   return { subscribed: subscribed.size };
 }

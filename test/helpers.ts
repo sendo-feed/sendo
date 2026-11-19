@@ -90,6 +90,18 @@ export const unusedSyncUpdates: SyncUpdates = {
   async notify() {},
 };
 
+/** 知らせを受けた利用者を記録する通知。知らせる範囲（docs/decisions/sync.md の 9）を確かめるのに使う */
+export function recordingSyncUpdates() {
+  const notified: string[] = [];
+  const syncUpdates: SyncUpdates = {
+    ...unusedSyncUpdates,
+    async notify(userIds) {
+      notified.push(...userIds);
+    },
+  };
+  return { syncUpdates, notified };
+}
+
 /** テスト用の Platform。DB はテストファイルの SQLite（test/db.ts）、キューと fetch は差し替える */
 export function createTestPlatform(overrides: Partial<Platform> = {}) {
   const enqueued: Job[] = [];

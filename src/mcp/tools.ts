@@ -197,6 +197,11 @@ export function createMcpServer(
 ): McpServer {
   const { db } = platform;
   const userId = userIdOf(authInfo);
+  /**
+   * 購読やフォルダを変えたあとに、開いている画面に知らせる（docs/decisions/sync.md の 9）。
+   * 既読とスターは、受信箱の書き込みの中で知らせる
+   */
+  const changed = () => platform.syncUpdates.notify([userId]);
   const server = new McpServer({
     name: "sendo",
     version: "0.0.0",
@@ -569,6 +574,7 @@ export function createMcpServer(
           folderId: folderId ?? null,
         });
         const { feed } = subscription;
+        await changed();
         return result({ feed: { id: feed.id, title: feed.title, url: feed.url }, created });
       } catch (e) {
         if (e instanceof UrlNotAllowedError || e instanceof DiscoverError) {
@@ -611,6 +617,7 @@ export function createMcpServer(
       }
       const subscription = updated && (await getSubscription(db, { userId, feedId }));
       if (!subscription) return failure("feed is not subscribed");
+      await changed();
       return result({
         feed: { id: feedId, folderId: subscription.folderId, folder: subscription.folderName },
       });
@@ -636,6 +643,7 @@ export function createMcpServer(
     async ({ feedId, displayName }) => {
       const updated = await updateSubscription(db, { userId, feedId, displayName });
       if (!updated) return failure("feed is not subscribed");
+      await changed();
       return result({ feed: { id: feedId, displayName: updated.displayName } });
     },
   );
@@ -651,8 +659,11 @@ export function createMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
       scopeChallenge: writeScope,
     },
-    async ({ feedId }) =>
-      result({ unsubscribed: await unsubscribe(db, { userId, feedId, now: platform.now() }) }),
+    async ({ feedId }) => {
+      const unsubscribed = await unsubscribe(db, { userId, feedId, now: platform.now() });
+      if (unsubscribed) await changed();
+      return result({ unsubscribed });
+    },
   );
 
   const idsSchema = z

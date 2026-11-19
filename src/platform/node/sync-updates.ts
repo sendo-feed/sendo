@@ -10,6 +10,11 @@ const MAX_CONNECTIONS_PER_USER = 8;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 /** 止めるときに、1001 の閉じる手続きが終わるのを待つ上限。過ぎたら切る */
 const CLOSE_TIMEOUT_MS = 1_000;
+/**
+ * 知らせを利用者ごとにまとめる長さ（docs/decisions/sync.md の 9）。取得のジョブはフィードごとに
+ * 知らせるので、定期実行の直後に何度も続く。その間に何度変わっても 1 回だけ送る
+ */
+const COALESCE_MS = 1_000;
 
 type Connection = [WebSocket, SessionIdentity];
 
@@ -19,11 +24,14 @@ export function createNodeSyncUpdates(
   options: {
     heartbeatIntervalMs?: number;
     closeTimeoutMs?: number;
+    coalesceMs?: number;
     invalidPublicOrigin?: boolean;
   } = {},
 ) {
   const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 1024 });
   const byUser = new Map<string, Map<WebSocket, SessionIdentity>>();
+  const pending = new Set<string>();
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
   let stopping = false;
 
   async function activeConnections(connections: Connection[]): Promise<Connection[]> {
@@ -112,18 +120,32 @@ export function createNodeSyncUpdates(
     },
 
     async notify(userIds) {
-      const connections = userIds.flatMap((userId) => [...(byUser.get(userId) ?? [])]);
-      for (const [socket] of await activeConnections(connections)) {
-        if (socket.readyState !== WebSocket.OPEN) continue;
-        try {
-          if (socket.bufferedAmount > 64 * 1024) socket.terminate();
-          else socket.send(SYNC_REQUIRED);
-        } catch {
-          // 接続が途中で切れても、残りの端末への通知は続ける。
-        }
-      }
+      // つないでいない利用者は、つないだときに差分を取るので、知らせを貯めない
+      for (const userId of userIds) if (byUser.has(userId)) pending.add(userId);
+      if (stopping || pending.size === 0 || flushTimer !== undefined) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = undefined;
+        const ids = [...pending];
+        pending.clear();
+        void send(ids).catch(() => console.warn("could not send notifications"));
+      }, options.coalesceMs ?? COALESCE_MS);
+      flushTimer.unref();
     },
   };
+
+  /** まとめた知らせを、有効なセッションの接続にだけ送る */
+  async function send(userIds: readonly string[]) {
+    const connections = userIds.flatMap((userId) => [...(byUser.get(userId) ?? [])]);
+    for (const [socket] of await activeConnections(connections)) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      try {
+        if (socket.bufferedAmount > 64 * 1024) socket.terminate();
+        else socket.send(SYNC_REQUIRED);
+      } catch {
+        // 接続が途中で切れても、残りの端末への通知は続ける。
+      }
+    }
+  }
 
   return {
     updates,
@@ -137,6 +159,8 @@ export function createNodeSyncUpdates(
     stop(): Promise<void> {
       stopping = true;
       clearInterval(heartbeat);
+      clearTimeout(flushTimer);
+      pending.clear();
       const sockets = [...webSocketServer.clients];
       const closed = sockets.map((socket) =>
         socket.readyState === WebSocket.CLOSED

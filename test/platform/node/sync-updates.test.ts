@@ -34,7 +34,7 @@ let httpUrl: string;
 
 beforeEach(async () => {
   database = await openTestDatabase();
-  hub = createNodeSyncUpdates(database.db, { heartbeatIntervalMs: 200 });
+  hub = createNodeSyncUpdates(database.db, { heartbeatIntervalMs: 200, coalesceMs: 100 });
   jobs = createSqliteJobQueue(database.db);
   platform = createNodePlatform({
     env: { DATA_DIR: database.directory },
@@ -121,6 +121,31 @@ it("PUBLIC_URL と同じオリジンの、有効なブラウザセッション�
   const [code, reason] = await closed;
   expect(code).toBe(1001);
   expect(String(reason)).toBe("going away");
+});
+
+it("短いあいだの知らせを利用者ごとにまとめて、1 回だけ送る", async () => {
+  const reader = await session();
+  const other = await session();
+  const socket = await openSocket(reader.cookie);
+  const otherSocket = await openSocket(other.cookie);
+  const messages: string[] = [];
+  socket.on("message", (data) => messages.push(data.toString()));
+  const otherMessages: string[] = [];
+  otherSocket.on("message", (data) => otherMessages.push(data.toString()));
+
+  await hub.updates.notify([reader.userId]);
+  await hub.updates.notify([reader.userId, other.userId]);
+  await hub.updates.notify([reader.userId]);
+  await expect.poll(() => messages.length + otherMessages.length).toBe(2);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(messages).toEqual([JSON.stringify({ type: "sync_required" })]);
+  expect(otherMessages).toEqual([JSON.stringify({ type: "sync_required" })]);
+
+  // まとめる長さが過ぎたあとの知らせは、また送る
+  await hub.updates.notify([reader.userId]);
+  await expect.poll(() => messages.length).toBe(2);
+  socket.close();
+  otherSocket.close();
 });
 
 it("止めるとき、閉じる手続きに応えない接続も、待ってから切る", async () => {

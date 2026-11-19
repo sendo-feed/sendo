@@ -11,6 +11,7 @@ import { defaultHook } from "./hook";
 import { imagesApi } from "./images";
 import { loginApi } from "./login";
 import { meApi } from "./me";
+import { notifyChanges } from "./notify-changes";
 import { oauthApi } from "./oauth";
 import { opmlApi } from "./opml";
 import { savedApi } from "./saved";
@@ -79,6 +80,8 @@ export function createApi(platform: Platform) {
 
   const protectedApi = new OpenAPIHono({ defaultHook });
   protectedApi.use("*", authenticate(platform));
+  // 状態を変えるリクエストが成功したら、通知の接続に知らせる（docs/decisions/sync.md の 9）
+  protectedApi.use("*", notifyChanges(platform));
   protectedApi.route("/", meApi());
   protectedApi.route("/", discordApi(platform));
   protectedApi.route("/", feedsApi(platform));
