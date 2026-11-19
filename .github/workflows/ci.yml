@@ -18,31 +18,54 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # pull_request では、マージコミットとその第1親（マージ先）を比べて、変わったファイルを見る
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 2
           persist-credentials: false
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # PR で変わったのが Markdown だけなら、決定の文書の検査だけを動かし、残りの段は飛ばす。
+      # ジョブごと飛ばさないのは、Check をマージに必須の検査にしても、成功として残すため。
+      # main への push では、いつもすべてを動かす
+      - name: Detect docs-only change
+        id: changes
+        if: github.event_name == 'pull_request'
+        run: |
+          files=$(git -c core.quotePath=false diff --name-only HEAD^1 HEAD)
+          if grep -qv '\.md$' <<<"$files"; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::変わったのは Markdown だけなので、決定の文書の検査だけを動かす"
+          fi
 
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: steps.changes.outputs.docs_only != 'true'
+
+      # pnpm のキャッシュは pnpm がないと使えないので、文書だけのとき（pnpm を入れない）は使わない
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
-          cache: pnpm
+          cache: ${{ steps.changes.outputs.docs_only != 'true' && 'pnpm' || '' }}
 
       - name: Check decision docs
         run: node scripts/check-decisions.mjs
 
       - name: Install
+        if: steps.changes.outputs.docs_only != 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Lint
+        if: steps.changes.outputs.docs_only != 'true'
         run: pnpm exec biome ci .
 
       - name: Typecheck
+        if: steps.changes.outputs.docs_only != 'true'
         run: pnpm typecheck
 
       # スキーマ（src/db/schema.ts）を変えたのに、マイグレーションを作り忘れていないか
       - name: Check migrations
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           pnpm db:generate
           if [ -n "$(git status --porcelain -- migrations)" ]; then
@@ -53,6 +76,7 @@ jobs:
 
       # API を変えたのに、OpenAPI の定義（spec/openapi.json）を書き出し忘れていないか
       - name: Check OpenAPI spec
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           pnpm openapi:generate
           if [ -n "$(git status --porcelain -- spec)" ]; then
@@ -63,14 +87,18 @@ jobs:
 
       # Rust（crates/）の整形、lint、テスト。版は rust-toolchain.toml のものを rustup が入れる
       - name: Rust
+        if: steps.changes.outputs.docs_only != 'true'
         run: pnpm check:rust
 
       # テスト（test/platform/node/）が読み込む、Rust のネイティブのモジュールを作る
       - name: Build native module
+        if: steps.changes.outputs.docs_only != 'true'
         run: pnpm build:native
 
       - name: Test
+        if: steps.changes.outputs.docs_only != 'true'
         run: pnpm test
 
       - name: Build
+        if: steps.changes.outputs.docs_only != 'true'
         run: pnpm build
