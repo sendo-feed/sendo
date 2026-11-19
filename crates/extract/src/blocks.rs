@@ -2,7 +2,10 @@
 //!
 //! 抽出器が作り直した HTML を配らない。元の DOM を使うので、段落間の画像・リンク・導入文を
 //! 保てる。ホスト名やサイト別のセレクタは使わない。
+use std::collections::HashSet;
+
 use dom_query::{Document, Selection};
+use url::Url;
 
 use crate::{ExtractError, Extracted};
 
@@ -15,7 +18,26 @@ fn compact(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-fn prune(doc: &Document) {
+fn imgur_resource(value: &str, base: &str) -> Option<Url> {
+    let mut url = Url::parse(&crate::normalize::http(value, base)?).ok()?;
+    if url.scheme() != "https" || url.host_str() != Some("i.imgur.com") {
+        return None;
+    }
+    url.set_fragment(None);
+    Some(url)
+}
+
+fn prune(doc: &Document, base: &str) {
+    const IMGUR_LINK: &str = "blockquote.imgur-embed-pub a[href]";
+    let images: Vec<_> = if doc.select(IMGUR_LINK).exists() {
+        doc.select("img[src]")
+            .nodes()
+            .iter()
+            .filter_map(|node| Some((node.id, imgur_resource(&node.attr("src")?, base)?)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     doc.select("nav, aside, script, style, noscript, template, form, [hidden], [aria-hidden=true], [role=navigation], [role=banner], [role=contentinfo], [role=complementary]").remove();
     // 完全な語か区切りで比較し、本文の単語の部分一致では消さない。
     const NOISE: &[&str] = &[
@@ -85,6 +107,29 @@ fn prune(doc: &Document) {
             block.remove();
         }
     }
+    if !images.is_empty() {
+        let visible: HashSet<_> = doc
+            .select("img[src]")
+            .nodes()
+            .iter()
+            .map(|node| node.id)
+            .collect();
+        let removed: HashSet<_> = images
+            .into_iter()
+            .filter(|(id, _)| !visible.contains(id))
+            .map(|(_, url)| url)
+            .collect();
+        // 取り除いた画像は、リンクだけが残ってもサニタイズ時に画像へ戻さない。
+        for node in doc.select(IMGUR_LINK).nodes() {
+            if let Some(href) = node
+                .attr("href")
+                .and_then(|href| imgur_resource(&href, base))
+                && removed.contains(&href)
+            {
+                Selection::from(*node).set_attr("data-sendo-imgur-image-removed", "true");
+            }
+        }
+    }
 }
 
 fn related_heading_before<'a>(block: &Selection<'a>) -> Option<Selection<'a>> {
@@ -120,7 +165,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         }
         depths.insert(node.id, depth);
     }
-    prune(&doc);
+    prune(&doc, url);
     let page_title = doc.select("title").text().to_string();
     // 記事を明示した領域は、短い記事をサイドバーの長文に負けさせない手掛かりにする。
     // 見出しや表紙しかない article には絞らず、body に残した文章も調べる。
@@ -361,7 +406,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
 /// 選ばれた本文と同じ記事の範囲で、手前に分かれた埋め込みを含むブロックを探す。
 fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
     const ARTICLE: &str = "article, [itemprop=articleBody]";
-    if root.is("article, main, [role=main], body") {
+    if root.is("article, body") {
         return Vec::new();
     }
     let ancestors = root.ancestors(Some(128));
@@ -376,6 +421,9 @@ fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
                 .find(|node| Selection::from(**node).is(ARTICLE))
         })
         .or_else(|| {
+            if root.is("main, [role=main]") {
+                return None;
+            }
             ancestors
                 .nodes()
                 .iter()
@@ -541,6 +589,29 @@ mod tests {
         let leads = leading_embeds(&doc.select("#body"));
         assert_eq!(leads.len(), 1);
         assert!(leads[0].is("header"));
+        doc.select("#body").set_attr("role", "main");
+        let leads = leading_embeds(&doc.select("#body"));
+        assert_eq!(leads.len(), 1);
+        assert!(leads[0].is("header"));
+    }
+
+    #[test]
+    fn keeps_the_removal_of_hidden_imgur_images() {
+        let doc = Document::from(
+            r#"<article><blockquote class="imgur-embed-pub">
+            <a href="https://i.imgur.com/photo.jpeg#post">投稿</a>
+            <span hidden><img src="//i.imgur.com/photo.jpeg#pixel" width="1" height="1"></span>
+            <a href="https://i.imgur.com/other.jpeg">別の投稿</a>
+            </blockquote></article>"#,
+        );
+        prune(&doc, "https://blog.example/post");
+        assert!(!doc.select("img").exists());
+        let links = doc.select("a[data-sendo-imgur-image-removed=true]");
+        assert_eq!(
+            links.attr("href").as_deref(),
+            Some("https://i.imgur.com/photo.jpeg#post")
+        );
+        assert_eq!(links.length(), 1);
     }
 
     #[test]

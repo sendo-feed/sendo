@@ -45,8 +45,10 @@ const MAX_DEPTH = 100;
 
 const DIGITS = /^\d{1,5}$/;
 
+type ImgurQuote = { hasImage: boolean };
+
 /** サニタイズした HTML の部品。画像は、URL をあとで差し替えられるように分けて持つ */
-type Part = string | { image: string; rest: string; imgurFallback?: true };
+type Part = string | { image: string; rest: string; imgurFallback?: ImgurQuote };
 
 function toUrl(value: string | undefined, baseUrl: string, protocols: readonly string[]) {
   const trimmed = value === undefined ? "" : decodeHTML(value).trim();
@@ -77,10 +79,10 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
   const parts: Part[] = [];
   /** 開いている（閉じタグを出していない）要素 */
   const open: string[] = [];
-  const imgurQuotes = new Set<number>();
+  const imgurQuotes = new Map<number, ImgurQuote>();
   // URL の断片は画像の取得先を変えない。リンクの前後で除外した画像も差し替えに使わない。
   const droppedTrackingImages = new Set<string>();
-  let imgurLink: { index: number; href: string; needsImage: boolean; alt?: string } | undefined;
+  let imgurLink: { index: number; href: string; quote: ImgurQuote; alt?: string } | undefined;
   /** 中身ごと落としている要素と、その入れ子の数 */
   let dropping: { name: string; depth: number; wantsLink: boolean } | null = null;
 
@@ -88,12 +90,12 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
     imgurQuotes.delete(open.length);
     const name = open.pop();
     if (name === "a" && imgurLink !== undefined) {
-      if (imgurLink.needsImage) {
+      if (!imgurLink.quote.hasImage) {
         const alt = escapeHtml(imgurLink.alt ?? "Imgur");
         parts.splice(imgurLink.index, 0, {
           image: imgurLink.href,
           rest: ` alt="${alt}"`,
-          imgurFallback: true,
+          imgurFallback: imgurLink.quote,
         });
       }
       imgurLink = undefined;
@@ -166,7 +168,7 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
         if (imgurLink !== undefined && alt !== undefined) imgurLink.alt = decodeHTML(alt);
         continue;
       }
-      if (imgurLink !== undefined) imgurLink.needsImage = false;
+      for (const quote of imgurQuotes.values()) quote.hasImage = true;
       let rest = "";
       if (alt !== undefined) rest += ` alt="${escapeHtml(decodeHTML(alt))}"`;
       for (const key of ["width", "height"] as const) {
@@ -190,15 +192,20 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
       // 行き先のないリンクは、タグを落として中身だけ残す
       if (!href) continue;
       parts.push(link(href));
-      if (imgurQuotes.size > 0 && isImgurImage(href)) {
-        imgurLink = { index: parts.length, href, needsImage: true };
+      if (
+        imgurQuotes.size > 0 &&
+        isImgurImage(href) &&
+        !attributes.has("data-sendo-imgur-image-removed")
+      ) {
+        const quote = Array.from(imgurQuotes.values()).at(-1);
+        if (quote !== undefined) imgurLink = { index: parts.length, href, quote };
       }
     } else {
       let extra = "";
       if (name === "blockquote") {
         const classes = decodeHTML(attributes.get("class") ?? "").split(/[\t\n\f\r ]+/);
         if (expandImgurEmbeds && classes.includes("imgur-embed-pub"))
-          imgurQuotes.add(open.length + 1);
+          imgurQuotes.set(open.length + 1, { hasImage: false });
         if (attributes.get("data-embed") === "x" || classes.includes("twitter-tweet")) {
           extra = ' data-embed="x"';
         }
@@ -215,12 +222,13 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
   }
 
   while (open.length > 0) closeLast();
-  if (droppedTrackingImages.size === 0) return parts;
+  if (!expandImgurEmbeds) return parts;
   return parts.filter(
     (part) =>
       typeof part === "string" ||
       !part.imgurFallback ||
-      !droppedTrackingImages.has(part.image.split("#", 1)[0] ?? part.image),
+      (!part.imgurFallback.hasImage &&
+        !droppedTrackingImages.has(part.image.split("#", 1)[0] ?? part.image)),
   );
 }
 

@@ -120,6 +120,29 @@ describe("sanitizeHtml", () => {
     }
   });
 
+  it("同じ Imgur の引用にある画像を重ねて生成しない", () => {
+    const image = '<img src="https://example.com/photo.jpeg">';
+    const link = '<a href="https://i.imgur.com/photo.jpeg">投稿</a>';
+    for (const body of [image + link, link + image]) {
+      const html = sanitizeHtml(`<blockquote class="imgur-embed-pub">${body}</blockquote>`, BASE, {
+        expandImgurEmbeds: true,
+      });
+      expect(html.match(/<img /g)).toHaveLength(1);
+      expect(html).toContain(image);
+    }
+  });
+
+  it("抽出時に取り除いた Imgur の画像へのリンクはそのまま残す", () => {
+    const html = sanitizeHtml(
+      '<blockquote class="imgur-embed-pub"><a href="https://i.imgur.com/photo.jpeg" data-sendo-imgur-image-removed="true">投稿</a></blockquote>',
+      BASE,
+      { expandImgurEmbeds: true },
+    );
+    expect(html).toContain('href="https://i.imgur.com/photo.jpeg"');
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("data-sendo-imgur-image-removed");
+  });
+
   it("X の引用には固定の埋め込みの印だけを残す", () => {
     const raw =
       '<blockquote class="twitter&#45;tweet article" onclick="x()"><a href="https://x.com/example/status/123"></a></blockquote><script src="https://platform.twitter.com/widgets.js"></script>';
@@ -381,6 +404,9 @@ describe("hasMarkupBeyondText", () => {
     expect(hasMarkupBeyondText("<p>a<strong>b</strong></p><div>c</div>")).toBe(false);
     expect(hasMarkupBeyondText('<p><img src="https://img.example.com/a.png"></p>')).toBe(true);
     expect(hasMarkupBeyondText("<pre>x</pre>")).toBe(true);
+    expect(hasMarkupBeyondText(clean('<blockquote class="twitter-tweet">引用</blockquote>'))).toBe(
+      true,
+    );
     expect(hasMarkupBeyondText("<p>&lt;img src=x&gt;</p>")).toBe(false);
   });
 });
