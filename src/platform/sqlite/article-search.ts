@@ -1,5 +1,5 @@
 import { and, eq, isNull, or, sql } from "drizzle-orm";
-import type { Database } from "../../db";
+import { type Database, getRow } from "../../db";
 import { inboxConditions, inboxOrder, inboxPage, inboxSelection } from "../../db/inbox";
 import { articleSearchDocuments, articles, userArticles } from "../../db/schema";
 import type { ArticleSearch, SearchInput } from "..";
@@ -15,11 +15,14 @@ end`;
 export function createSqliteArticleSearch(db: Database): ArticleSearch {
   return {
     async pending(limit) {
-      const state = await db.get<{ after: string | null; done: number; writes: number }>(sql`
+      const state = await getRow<{ after: string | null; done: number; writes: number }>(
+        db,
+        sql`
         select backfill_after as "after", backfill_done as done,
           case when day = unixepoch() / 86400 then writes else 0 end as writes
         from article_search_state where id = 1
-      `);
+      `,
+      );
       if (!state || state.writes >= DAILY_INDEX_LIMIT) return [];
       if (!state.done) {
         // 先に候補を置いてから進める。途中で落ちたら同じ範囲を再送できる。
@@ -73,7 +76,9 @@ export function createSqliteArticleSearch(db: Database): ArticleSearch {
       `);
     },
     async store(input) {
-      const stored = await db.get<{ id: number }>(sql`
+      const stored = await getRow<{ id: number }>(
+        db,
+        sql`
         insert into article_search_documents (article_id, revision, content, bytes)
         select ${input.articleId}, ${input.revision}, ${input.content}, ${input.bytes}
         where exists (
@@ -92,7 +97,8 @@ export function createSqliteArticleSearch(db: Database): ArticleSearch {
           revision = excluded.revision, content = excluded.content, bytes = excluded.bytes
         where article_search_documents.revision != excluded.revision
         returning id
-      `);
+      `,
+      );
       return stored != null;
     },
     async find(input) {

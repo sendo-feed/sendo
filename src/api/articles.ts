@@ -92,7 +92,7 @@ const contentRoute = createRoute({
   description: [
     "記事の本文（HTML）を返す。出どころは 2 つあり、source で選ぶ。",
     "- feed（既定）：フィードに入っていた本文。記事の hasContent が true のときだけ、取りにいく。",
-    "- page：記事のページから抜いた本文。まだ抜いていなければ、このリクエストの中でページを取りにいって抜く（数秒かかることがある）。使える版だけ（GET /features の pageContent）。抜けなかったら 404（page_content_unavailable）で、1 日たつまで取りにいき直さない。",
+    "- page：記事のページから抜いた本文。まだ抜いていなければ、このリクエストの中でページを取りにいって抜く（数秒かかることがある）。抜けなかったら 404（page_content_unavailable）で、1 日たつまで取りにいき直さない。",
     "HTML は Sendo がサニタイズしてある（決めたタグと属性だけ。スクリプトやスタイルはない）。それでも外部から来たデータなので、クライアントの側でも、信頼できない HTML として扱う。",
     "本文の中の画像は、中継を通る URL（/api/v1/images?…。オリジンは付けない）に書き換えてある。リンクは絶対の URL。",
     "本文は、いったん返したらあとから変わらないので、手元に置いてよい。",
@@ -132,11 +132,6 @@ const contentRoute = createRoute({
     404: {
       description:
         "記事がない（not_found）か、その記事にフィードの本文がない（no_content）か、ページから本文を抜けなかった（page_content_unavailable）",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    501: {
-      description:
-        "この版では、ページから本文を抜けない（feature_unavailable。GET /features を見る）",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -265,19 +260,11 @@ export function articlesApi(platform: Platform) {
     .openapi(contentRoute, async (c) => {
       const { id } = c.req.valid("param");
       const { source } = c.req.valid("query");
-      // ページから抜けない版では、記事を読む前に断る（docs/decisions/content.md の 11）
-      const extractor = platform.pageContent;
-      if (source === "page" && extractor === undefined) {
-        return c.json(
-          errorBody("feature_unavailable", "page content is not available on this edition"),
-          501,
-        );
-      }
       const article = await getInboxArticle(db, { userId: c.get("user").id, articleId: id });
       if (!article) return c.json(errorBody("not_found", "article does not exist"), 404);
       let stored: string | null;
-      if (source === "page" && extractor !== undefined) {
-        const result = await loadPageContent(platform, extractor, article);
+      if (source === "page") {
+        const result = await loadPageContent(platform, platform.pageContent, article);
         if (result.status !== "ok") {
           return c.json(
             errorBody("page_content_unavailable", "could not extract the article page"),

@@ -10,7 +10,7 @@ import type { Platform } from "./platform";
 /**
  * HTTP の入口になるアプリを組み立てる。
  *
- * 実行環境（Cloudflare など）には依存させない。必要なものは Platform として受け取る。
+ * 実行環境の I/O には直接触らない。必要なものは Platform として受け取る（テストで差し替える）。
  */
 export function createApp(platform: Platform) {
   const app = new Hono();

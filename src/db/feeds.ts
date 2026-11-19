@@ -88,7 +88,7 @@ export async function leaseDueFeeds(
   db: Database,
   input: { now: Date; leaseUntil: Date; limit: number },
 ): Promise<string[]> {
-  // D1 は1つの文に渡せる変数が 100 個まで。IN 句と更新値の分を残して上限を設ける
+  // 1 つの文の変数は MAX_BOUND_PARAMETERS（db/chunk.ts）まで。IN 句と更新値の分を残して上限を設ける
   if (input.limit < 1 || input.limit > MAX_LEASE) {
     throw new RangeError(`limit must be between 1 and ${MAX_LEASE}`);
   }

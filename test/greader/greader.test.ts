@@ -1,20 +1,17 @@
-import { env } from "cloudflare:workers";
-import { drizzle } from "drizzle-orm/d1";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
 import { ITEM_ID_LIMIT, insertArticles } from "../../src/db/articles";
-import { QUERY_BUDGET } from "../../src/db/chunk";
 import { createFolder } from "../../src/db/folders";
-import * as schema from "../../src/db/schema";
 import { parseItemId, parseStreamId, toLongItemId } from "../../src/greader/ids";
 import type { Platform } from "../../src/platform";
+import { testDb } from "../db";
 import {
   addToInbox,
   createTestPlatform,
   createUser,
-  d1BeforeStatement,
   fakeFetch,
   requestApp,
+  statementHook,
   subscribeFeed,
 } from "../helpers";
 
@@ -94,13 +91,15 @@ async function seed(
   const ids = new Map<string, number>();
   for (const row of input.rows) {
     if (row.read || row.starred) {
-      await env.DB.prepare(
-        "UPDATE user_articles SET read_at = ?, starred_at = ? WHERE user_id = ? AND article_id = ?",
-      )
+      await testDb
+        .prepare(
+          "UPDATE user_articles SET read_at = ?, starred_at = ? WHERE user_id = ? AND article_id = ?",
+        )
         .bind(row.read ? 1 : null, row.starred ? 1 : null, input.userId, row.id)
         .run();
     }
-    const found = await env.DB.prepare("SELECT item_id FROM articles WHERE id = ?")
+    const found = await testDb
+      .prepare("SELECT item_id FROM articles WHERE id = ?")
       .bind(row.id)
       .first<{ item_id: number }>();
     ids.set(row.id, found?.item_id ?? 0);
@@ -109,9 +108,10 @@ async function seed(
 }
 
 async function state(userId: string, articleId: string) {
-  return env.DB.prepare(
-    "SELECT read_at IS NOT NULL AS read, starred_at IS NOT NULL AS starred FROM user_articles WHERE user_id = ? AND article_id = ?",
-  )
+  return testDb
+    .prepare(
+      "SELECT read_at IS NOT NULL AS read, starred_at IS NOT NULL AS starred FROM user_articles WHERE user_id = ? AND article_id = ?",
+    )
     .bind(userId, articleId)
     .first<{ read: number; starred: number }>();
 }
@@ -131,7 +131,7 @@ async function setup() {
 }
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM feeds");
+  await testDb.exec("DELETE FROM feeds");
 });
 
 describe("ログイン（ClientLogin）", () => {
@@ -429,7 +429,7 @@ describe("状態を変える", () => {
       ],
     });
     const items = ["e1", "e2"].map((id) => toLongItemId(ids.get(id) ?? 0));
-    const before = await env.DB.prepare("SELECT max(seq) AS seq FROM user_articles").first<{
+    const before = await testDb.prepare("SELECT max(seq) AS seq FROM user_articles").first<{
       seq: number;
     }>();
 
@@ -439,9 +439,8 @@ describe("状態を変える", () => {
     expect(await state(user.id, "e1")).toEqual({ read: 1, starred: 1 });
     expect(await state(user.id, "e2")).toEqual({ read: 1, starred: 1 });
     // 変更番号が進むので、同期（sendo-reader）にも届く
-    const changed = await env.DB.prepare(
-      "SELECT count(*) AS n FROM user_articles WHERE user_id = ? AND seq > ?",
-    )
+    const changed = await testDb
+      .prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ? AND seq > ?")
       .bind(user.id, before?.seq ?? 0)
       .first<{ n: number }>();
     expect(changed?.n).toBe(2);
@@ -661,14 +660,15 @@ describe("購読を変える", () => {
       now: new Date(),
     });
     // 購読のフォルダを書き換える文の直前に、ほかのリクエストが News へ移す
-    const hooked = d1BeforeStatement(/^\s*update\s+"subscriptions"/i, async () => {
-      await env.DB.prepare(
-        "UPDATE subscriptions SET folder_id = ? WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
-      )
+    const hooked = statementHook(/^\s*update\s+"subscriptions"/i, async () => {
+      await testDb
+        .prepare(
+          "UPDATE subscriptions SET folder_id = ? WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
+        )
         .bind(news.id, user.id, feed.id)
         .run();
     });
-    const { platform } = createTestPlatform({ db: drizzle(hooked.db, { schema }) });
+    const { platform } = createTestPlatform({ db: hooked.db });
 
     const res = await reader(platform, user.token)("/reader/api/0/subscription/edit", {
       form: [
@@ -680,9 +680,10 @@ describe("購読を変える", () => {
 
     expect(res.status).toBe(200);
     expect(hooked.fired()).toBe(true);
-    const row = await env.DB.prepare(
-      "SELECT folder_id FROM subscriptions WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
-    )
+    const row = await testDb
+      .prepare(
+        "SELECT folder_id FROM subscriptions WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
+      )
       .bind(user.id, feed.id)
       .first<{ folder_id: string | null }>();
     expect(row?.folder_id).toBe(news.id);
@@ -690,10 +691,10 @@ describe("購読を変える", () => {
 
   it("disable-tag がフォルダに消した印を付けたあとで落ちても、送り直せば購読をフォルダから外す（#38 のレビュー）", async () => {
     const { user, feed } = await setup();
-    const failing = d1BeforeStatement(/^\s*update\s+"subscriptions"/i, async () => {
+    const failing = statementHook(/^\s*update\s+"subscriptions"/i, async () => {
       throw new Error("injected failure");
     });
-    const broken = createTestPlatform({ db: drizzle(failing.db, { schema }) }).platform;
+    const broken = createTestPlatform({ db: failing.db }).platform;
 
     const first = await reader(broken, user.token)("/reader/api/0/disable-tag", {
       form: [["s", "user/-/label/Tech"]],
@@ -711,9 +712,10 @@ describe("購読を変える", () => {
       subscriptions: { id: string; categories: unknown[] }[];
     };
     expect(list.subscriptions.find((s) => s.id === `feed/${feed.id}`)?.categories).toEqual([]);
-    const row = await env.DB.prepare(
-      "SELECT folder_id FROM subscriptions WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
-    )
+    const row = await testDb
+      .prepare(
+        "SELECT folder_id FROM subscriptions WHERE user_id = ? AND feed_id = ? AND deleted_at IS NULL",
+      )
       .bind(user.id, feed.id)
       .first<{ folder_id: string | null }>();
     expect(row?.folder_id).toBeNull();
@@ -789,8 +791,8 @@ describe("アイテムの ID", () => {
   });
 });
 
-describe("D1 のクエリの上限", () => {
-  it("記事を上限（1000 件）まで一度に読む ／ 変えても、QUERY_BUDGET に収まる", async () => {
+describe("一度に扱う記事の上限", () => {
+  it("記事を上限（1000 件）まで一度に読み、変えられる", async () => {
     const { platform, user, feed } = await setup();
     const now = Date.now();
     await insertArticles(
@@ -807,41 +809,35 @@ describe("D1 のクエリの上限", () => {
         createdAt: new Date(now - i),
       })),
     );
-    await env.DB.prepare(
-      `INSERT INTO user_articles (user_id, article_id, feed_id, published_at, created_at, seq, read_seq)
+    await testDb
+      .prepare(
+        `INSERT INTO user_articles (user_id, article_id, feed_id, published_at, created_at, seq, read_seq)
        SELECT ?, id, feed_id, published_at, created_at, 1, 1 FROM articles WHERE feed_id = ?`,
-    )
+      )
       .bind(user.id, feed.id)
       .run();
     const itemIds = (
-      await env.DB.prepare("SELECT item_id FROM articles WHERE feed_id = ?")
+      await testDb
+        .prepare("SELECT item_id FROM articles WHERE feed_id = ?")
         .bind(feed.id)
         .all<{ item_id: number }>()
     ).results.map((row) => String(row.item_id));
     expect(itemIds).toHaveLength(1000);
 
-    const counted = createTestPlatform();
-    const send = reader(counted.platform, user.token);
+    const send = reader(platform, user.token);
     const form = itemIds.map((i): [string, string] => ["i", i]);
 
-    counted.resetQueryCount();
     const ids = await send(`/reader/api/0/stream/items/ids?s=${READING_LIST}&n=1000`);
     expect(((await ids.json()) as { itemRefs: unknown[] }).itemRefs).toHaveLength(1000);
-    expect(counted.queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
 
-    counted.resetQueryCount();
     const contents = await send("/reader/api/0/stream/items/contents", { form });
     expect(((await contents.json()) as { items: unknown[] }).items).toHaveLength(1000);
-    expect(counted.queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
 
-    counted.resetQueryCount();
     await send("/reader/api/0/edit-tag", {
       form: [...form, ["a", READ], ["a", STARRED]],
     });
-    expect(counted.queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
-    const unread = await env.DB.prepare(
-      "SELECT count(*) AS n FROM user_articles WHERE user_id = ? AND read_at IS NULL",
-    )
+    const unread = await testDb
+      .prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ? AND read_at IS NULL")
       .bind(user.id)
       .first<{ n: number }>();
     expect(unread?.n).toBe(0);

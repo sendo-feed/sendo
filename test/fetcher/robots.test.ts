@@ -186,7 +186,7 @@ describe("照合", () => {
     expect(allowed("User-agent: *\nDisallow: /a*b*c$\n", "/aXbYcZ")).toBe(true);
   });
 
-  // workerd の中では、同期の処理の間は時計が進まない。遅ければ、テストの全体が遅くなって分かる
+  // 遅ければ、テストの全体が遅くなって分かる
   it("* がたくさんあっても、時間がかからない", () => {
     const txt = `User-agent: *\nDisallow: /${"*a".repeat(200)}$\n`;
     expect(allowed(txt, `/${"a".repeat(5000)}b`)).toBe(true);

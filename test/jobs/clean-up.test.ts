@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
 import { readRemovalHorizon } from "../../src/db/retention";
@@ -6,6 +5,7 @@ import { unsubscribe } from "../../src/db/subscriptions";
 import { runJob } from "../../src/jobs";
 import { runCleanUp } from "../../src/jobs/clean-up";
 import { CLEAN_UP_HOUR_UTC, enqueueDailyCleanUp } from "../../src/jobs/schedule";
+import { testDb } from "../db";
 import { addToInbox, createTestPlatform, subscribeFeed, TEST_USER } from "../helpers";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -36,12 +36,12 @@ async function seed(platform: Platform, feedId: string, ids: string[], createdAt
 }
 
 const count = async (sql: string) =>
-  (await env.DB.prepare(sql).first<{ n: number }>())?.n ?? Number.NaN;
+  (await testDb.prepare(sql).first<{ n: number }>())?.n ?? Number.NaN;
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM feeds");
-  await env.DB.exec("DELETE FROM user_article_removals");
-  await env.DB.exec("DELETE FROM removal_horizons");
+  await testDb.exec("DELETE FROM feeds");
+  await testDb.exec("DELETE FROM user_article_removals");
+  await testDb.exec("DELETE FROM removal_horizons");
 });
 
 describe("runCleanUp", () => {
@@ -49,13 +49,15 @@ describe("runCleanUp", () => {
     const { platform } = createTestPlatform({ now: () => NOW });
     const feed = await subscribeFeed(platform, {});
     await seed(platform, feed.id, ["old", "young"], daysAgo(120));
-    await env.DB.exec("UPDATE articles SET created_at = 0 WHERE id = 'old'");
-    await env.DB.prepare("UPDATE articles SET created_at = ? WHERE id = 'young'")
+    await testDb.exec("UPDATE articles SET created_at = 0 WHERE id = 'old'");
+    await testDb
+      .prepare("UPDATE articles SET created_at = ? WHERE id = 'young'")
       .bind(daysAgo(10).getTime())
       .run();
     await unsubscribe(platform.db, { userId: TEST_USER.id, feedId: feed.id, now: NOW });
     // 購読をやめると、受信箱の行は消える（消した記録が残る）。消えた時刻を 31 日前にする
-    await env.DB.prepare("UPDATE user_article_removals SET removed_at = ?")
+    await testDb
+      .prepare("UPDATE user_article_removals SET removed_at = ?")
       .bind(daysAgo(31).getTime())
       .run();
 

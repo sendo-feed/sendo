@@ -5,14 +5,13 @@ import { MAX_URL_LENGTH } from "../opml";
 /**
  * インポートを 1 つのジョブで処理する件数。
  *
- * 1 件ずつ別のフォルダに入れ直す最悪の場合でも、フォルダの作成と検索（2）、フィードの登録（2）、
- * フォルダの割り当て（件数分）で 14 クエリに収まり、D1 のクエリの上限（QUERY_BUDGET）を守れる。
- * Queues のメッセージの大きさの上限（128KB）にも十分に収まる
+ * 1 つの仕事が扱う量を抑える（docs/decisions/jobs.md の 4）。1 件ずつ別のフォルダに入れ直す最悪の
+ * 場合でも、フォルダの作成と検索（2）、フィードの登録（2）、フォルダの割り当て（件数分）で 14 クエリで済む
  */
 export const IMPORT_CHUNK_SIZE = 10;
 
 /**
- * キューに流す仕事。キューの中身は外から書き換えられうるので、受け取る側で必ず検証する。
+ * キューに流す仕事。表に積んだ中身は、取り出す側で必ず検証する（壊れた行や古い形の仕事を動かさない）。
  * 種類を足すときは、ここに足して runJob（index.ts）で受ける。
  */
 export const jobSchema = z.discriminatedUnion("type", [
@@ -20,7 +19,7 @@ export const jobSchema = z.discriminatedUnion("type", [
   /** 1 日 1 回の片付け（docs/decisions/retention.md の 4、5）。定期実行が積む */
   z.object({ type: z.literal("clean-up") }),
   z.object({ type: z.literal("index-article-search") }),
-  /** 未処理・古い版の言語判定を小分けに進める。判定器のある版だけが積む */
+  /** 未処理・古い版の言語判定を小分けに進める。定期実行と起動時に積む */
   z.object({
     type: z.literal("detect-article-languages"),
     after: z
@@ -30,10 +29,7 @@ export const jobSchema = z.discriminatedUnion("type", [
       })
       .optional(),
   }),
-  /**
-   * 記事のページから本文を抜く（docs/decisions/content.md の 10）。ページから抜ける版（コンテナ版）
-   * だけが、取得の仕事のあとで積む
-   */
+  /** 記事のページから本文を抜く（docs/decisions/content.md の 10）。取得の仕事のあとで積む */
   z.object({ type: z.literal("extract-page"), articleId: z.string().min(1) }),
   z.object({
     type: z.literal("import-feeds"),

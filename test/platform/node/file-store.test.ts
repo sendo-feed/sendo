@@ -2,8 +2,8 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ObjectStore } from "../../src/platform";
-import { createFileObjectStore } from "../../src/platform/node/file-store";
+import type { ObjectStore } from "../../../src/platform";
+import { createFileObjectStore } from "../../../src/platform/node/file-store";
 
 describe("ファイルの置き場", () => {
   let root: string;

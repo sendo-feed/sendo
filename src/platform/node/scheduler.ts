@@ -1,6 +1,5 @@
 /**
- * コンテナ版の定期実行（docs/decisions/container.md の 6）。Cloudflare 版の Cron Triggers
- * （wrangler.jsonc の "*\/10 * * * *"）と同じく、時計の 10 分の区切りごとに動かし、
+ * 定期実行（docs/decisions/container.md の 6）。時計の 10 分の区切りごとに動かし、
  * 予定した区切りの時刻を渡す（片付けは、その時刻で日本時間 3:00 かを見る。jobs/schedule.ts）。
  */
 import { MIN_FETCH_INTERVAL_MINUTES } from "..";

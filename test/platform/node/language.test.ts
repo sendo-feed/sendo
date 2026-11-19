@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createLanguageDetector, loadNativeModule } from "../../src/platform/node/native";
-import { NATIVE_MODULE } from "./helpers";
+import { createLanguageDetector, loadNativeModule } from "../../../src/platform/node/native";
+import { NATIVE_MODULE } from "../../db";
 
 const JA =
   "記事の言語を調べるときは、タイトルだけでなく本文も確認します。英語の製品名が含まれていても、日本語で書かれた説明文を英語の記事として扱わないことが大切です。判定が難しい場合は、結果を確定せずに保留します。";

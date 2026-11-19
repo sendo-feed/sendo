@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { identities, users } from "../../src/db/schema";
+import { testDb } from "../db";
 import { createTestPlatform } from "../helpers";
 
 describe("提供元のログイン（identities）", () => {
@@ -33,9 +33,8 @@ describe("提供元のログイン（identities）", () => {
       ])
       .run();
 
-    const rows = await env.DB.prepare(
-      "SELECT issuer FROM identities WHERE user_id = ? ORDER BY issuer",
-    )
+    const rows = await testDb
+      .prepare("SELECT issuer FROM identities WHERE user_id = ? ORDER BY issuer")
       .bind("multi")
       .all<{ issuer: string }>();
     expect(rows.results.map((row) => row.issuer)).toEqual([
@@ -92,9 +91,10 @@ describe("提供元のログイン（identities）", () => {
       })
       .run();
 
-    await env.DB.prepare("DELETE FROM users WHERE id = ?").bind("gone").run();
+    await testDb.prepare("DELETE FROM users WHERE id = ?").bind("gone").run();
 
-    const left = await env.DB.prepare("SELECT count(*) AS n FROM identities WHERE id = ?")
+    const left = await testDb
+      .prepare("SELECT count(*) AS n FROM identities WHERE id = ?")
       .bind("ig")
       .first<{ n: number }>();
     expect(left?.n).toBe(0);

@@ -74,8 +74,8 @@ export async function applySettings(
   const seq = nextSeq(clientSettings);
 
   if (input.remove.length > 0) {
-    // 名前は 1 つの変数（JSON の配列）で渡す。項目の数だけ変数を並べると、D1 の「1 文あたり
-    // 100 個まで」に当たる
+    // 名前は 1 つの変数（JSON の配列）で渡す。項目の数だけ変数を並べると、文の大きさが項目の数で
+    // 変わる（db/chunk.ts の MAX_BOUND_PARAMETERS）
     await db.run(sql`
       update client_settings
       set value = null, size = 0, seq = ${seq}, updated_at = ${now}, deleted_at = ${now}

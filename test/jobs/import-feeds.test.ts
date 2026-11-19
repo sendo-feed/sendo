@@ -1,9 +1,9 @@
-import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { insertArticles } from "../../src/db/articles";
 import { listFolders } from "../../src/db/folders";
 import { listSubscriptions } from "../../src/db/subscriptions";
 import { runImportFeeds } from "../../src/jobs/import-feeds";
+import { testDb } from "../db";
 import { createTestPlatform, createUser, subscribeFeed, TEST_USER } from "../helpers";
 
 const NOW = new Date("2026-11-14T00:00:00Z");
@@ -19,8 +19,8 @@ async function subscriptionsOf(id: string) {
 
 describe("runImportFeeds", () => {
   beforeEach(async () => {
-    await env.DB.exec("DELETE FROM feeds");
-    await env.DB.exec("DELETE FROM folders");
+    await testDb.exec("DELETE FROM feeds");
+    await testDb.exec("DELETE FROM folders");
   });
 
   it("フォルダとフィードと購読を作り、新しいフィードの取得を積む", async () => {
@@ -106,7 +106,8 @@ describe("runImportFeeds", () => {
 
     expect(await subscriptionsOf(other.id)).toEqual([["https://shared.example/feed", "Shared"]]);
     expect(enqueued).toEqual([]);
-    const inbox = await env.DB.prepare("SELECT article_id FROM user_articles WHERE user_id = ?")
+    const inbox = await testDb
+      .prepare("SELECT article_id FROM user_articles WHERE user_id = ?")
       .bind(other.id)
       .all<{ article_id: string }>();
     expect(inbox.results.map((row) => row.article_id)).toEqual(["shared-1"]);
@@ -114,7 +115,7 @@ describe("runImportFeeds", () => {
     expect(await subscriptionsOf(userId)).toEqual([["https://shared.example/feed", null]]);
   });
 
-  it("D1 の変数の上限を超える件数でも、分けて書き込む", async () => {
+  it("1 文の変数の上限（MAX_BOUND_PARAMETERS）を超える件数でも、分けて書き込む", async () => {
     const { platform } = createTestPlatform({ now: () => NOW });
     const entries = Array.from({ length: 120 }, (_, i) => ({
       url: `https://f${i}.example/feed`,
@@ -126,8 +127,8 @@ describe("runImportFeeds", () => {
   });
 
   // 本番のジョブは IMPORT_CHUNK_SIZE 件ずつだが、ここで使う関数は件数を問わず分けて書き込む約束なので、
-  // 条件の変数を足しても D1 の上限（1 文あたり 100 個）に収まることを確かめる
-  it("D1 の変数の上限を超える件数の既存の購読も、分けてフォルダに入れる", async () => {
+  // 条件の変数を足しても 1 文の変数の上限（MAX_BOUND_PARAMETERS）に収まることを確かめる
+  it("1 文の変数の上限を超える件数の既存の購読も、分けてフォルダに入れる", async () => {
     const { platform } = createTestPlatform({ now: () => NOW });
     const urls = Array.from({ length: 120 }, (_, i) => `https://f${i}.example/feed`);
     await runImportFeeds(platform, { userId, entries: urls.map((url) => ({ url, folder: null })) });
@@ -141,7 +142,7 @@ describe("runImportFeeds", () => {
     expect(folders).toEqual(urls.map(() => "Big"));
   });
 
-  it("ほかの人が購読しているフィードを D1 の変数の上限を超える件数取り込んでも、最近の記事を受信箱に入れる", async () => {
+  it("ほかの人が購読しているフィードを 1 文の変数の上限を超える件数取り込んでも、最近の記事を受信箱に入れる", async () => {
     const { platform } = createTestPlatform({ now: () => new Date() });
     const entries = Array.from({ length: 120 }, (_, i) => ({
       url: `https://f${i}.example/feed`,
@@ -149,7 +150,8 @@ describe("runImportFeeds", () => {
     }));
     const other = await createUser();
     await runImportFeeds(platform, { userId: other.id, entries });
-    const last = await env.DB.prepare("SELECT id FROM feeds WHERE url = ?")
+    const last = await testDb
+      .prepare("SELECT id FROM feeds WHERE url = ?")
       .bind(entries[119]?.url)
       .first<{ id: string }>();
     const past = new Date(Date.now() - 60_000);
@@ -168,7 +170,8 @@ describe("runImportFeeds", () => {
     ]);
 
     expect(await runImportFeeds(platform, { userId, entries })).toEqual({ subscribed: 120 });
-    const inbox = await env.DB.prepare("SELECT article_id FROM user_articles WHERE user_id = ?")
+    const inbox = await testDb
+      .prepare("SELECT article_id FROM user_articles WHERE user_id = ?")
       .bind(userId)
       .all<{ article_id: string }>();
     expect(inbox.results.map((row) => row.article_id)).toEqual(["last-1"]);

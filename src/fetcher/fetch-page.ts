@@ -5,7 +5,7 @@ import { toFetchableUrl, UrlNotAllowedError } from "./url-guard";
 /*
  * 記事のページの取得（docs/decisions/content.md の 12）。本文を抜く前に、ページの HTML を取ってくる。
  * フィードの取得（fetch-feed.ts）と同じ守りをかける。接続する IP アドレスの確認は、緩衝層の fetch
- * （コンテナ版の platform/node/safe-fetch.ts）が行う。
+ * （platform/node/safe-fetch.ts）が行う。
  *
  * robots.txt（決定の 18）は、isAllowed で受け取り、取りにいく URL ごと（リダイレクトの行き先も）に
  * 確かめる。同じホストへの取得を 1 本ずつにする（決定の 17）のは、呼ぶ側（page-content.ts）が行う。

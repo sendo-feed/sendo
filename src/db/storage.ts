@@ -1,20 +1,23 @@
 import { sql } from "drizzle-orm";
-import type { Database } from ".";
+import { type Database, getRow } from ".";
 import { DB_NOW_MS } from "./clock";
 
 /** 書き込みと同時にトリガーが集計した使用量。未集計の本文があれば削除しない */
 export async function readStorageUsage(
   db: Database,
 ): Promise<{ bytes: number; unmeasured: number; reclaiming: boolean; limitBytes: number }> {
-  const row = await db.get<{
+  const row = await getRow<{
     bytes: number;
     unmeasured: number;
     reclaiming: boolean;
     limitBytes: number;
-  }>(sql`
+  }>(
+    db,
+    sql`
     select bytes, reclaiming, limit_bytes as limitBytes, (select count(*) from content_sizes where bytes is null) as unmeasured
     from storage_usage where id = 1
-  `);
+  `,
+  );
   if (!row) throw new Error("storage accounting is not initialized");
   return row;
 }

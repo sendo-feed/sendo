@@ -15,7 +15,7 @@ export type ArticleInput = Omit<NewArticle, "createdAt" | "reservedInboxBytes"> 
   createdAt?: Date;
 };
 
-/** アイテムの ID の上限（含まない）。D1 から JavaScript の数で受け取っても丸められない範囲 */
+/** アイテムの ID の上限（含まない）。SQLite から JavaScript の数で受け取っても丸められない範囲 */
 export const ITEM_ID_LIMIT = 2 ** 53;
 
 /**

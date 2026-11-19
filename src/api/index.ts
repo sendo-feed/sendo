@@ -77,7 +77,7 @@ export function createApi(platform: Platform) {
   const protectedApi = new OpenAPIHono({ defaultHook });
   protectedApi.use("*", authenticate(platform));
   protectedApi.route("/", meApi());
-  protectedApi.route("/", featuresApi(platform));
+  protectedApi.route("/", featuresApi());
   protectedApi.route("/", feedsApi(platform));
   protectedApi.route("/", articlesApi(platform));
   protectedApi.route("/", activityApi(platform));

@@ -1,6 +1,6 @@
 /**
- * コンテナ版で、アクセストークンを発行する（Cloudflare 版の scripts/create-token.mjs に当たる）。
- * ブラウザでログインせずに使い始めるときに、コンテナの中で動かす。
+ * アクセストークンを発行する。ブラウザでログインせずに使い始めるときに、コンテナの中で動かす
+ * （手元では pnpm token:create）。
  *
  *   docker compose exec sendo node dist/node/sendo.mjs token:create --email you@example.com
  */

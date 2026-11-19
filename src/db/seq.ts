@@ -21,12 +21,12 @@ export type SeqTable =
  *
  * 「その表の最大」と「下限」の大きいほうに 1 を足す。下限は、行が物理的に消えたときにトリガーが
  * 引き上げる（migrations/0001_seq_floor_triggers.sql。受信箱は
- * 0005_user_article_removals_trigger.sql、設定は 0018_client_settings_seq_floor_trigger.sql）。D1 は文を 1 つずつ順に処理するので、同じ文の中で
+ * 0005_user_article_removals_trigger.sql、設定は 0018_client_settings_seq_floor_trigger.sql）。SQLite は書き込みを 1 つずつ順に処理するので、同じ文の中で
  * 振れば、番号の順が書き込みの順と一致する。同じ文で変えた行は、同じ番号になってよい。
  */
 export function nextSeq(table: SeqTable): SQL<number> {
   // 表の名前はコードで決まる定数なので、変数にせず SQL に直接書く。変数にすると、複数行を
-  // まとめて入れるときに 1 行ごとに変数が増え、D1 の「1 文あたり 100 個まで」の計算が狂う
+  // まとめて入れるときに 1 行ごとに変数が増え、chunked の「1 文あたりの変数の数」の計算が狂う
   const name = sql.raw(`'${getTableName(table)}'`);
   return sql<number>`(select max(
     coalesce((select max(${sql.identifier("seq")}) from ${table}), 0),
