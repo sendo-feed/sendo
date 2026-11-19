@@ -2208,7 +2208,7 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 name = "sendo-extract"
 version = "0.0.0"
 dependencies = [
- "dom_query 0.24.0",
+ "dom_query 0.29.0",
  "dom_smoothie",
  "encoding_rs",
  "image",
@@ -2220,7 +2220,7 @@ dependencies = [
 name = "sendo-language"
 version = "0.0.0"
 dependencies = [
- "dom_query 0.24.0",
+ "dom_query 0.29.0",
  "lingua",
  "regex",
  "sha2",
