@@ -1,5 +1,6 @@
 import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { z } from "zod";
+import { notifyChanges } from "../api/notify-changes";
 import { getPublicFeed } from "../db/feeds";
 import {
   deleteFolderByName,
@@ -180,6 +181,8 @@ export function greaderApp(platform: Platform) {
   const api = new Hono<{ Variables: Variables }>();
   api.onError(onError);
   api.use("*", readerAuth(platform));
+  // 状態を変えるリクエストが成功したら、通知の接続に知らせる（docs/decisions/sync.md の 9）
+  api.use("*", notifyChanges(platform));
 
   /** 書き込みに付ける T。配るが確かめない（決定の 2）。トークンから作るので、毎回同じ値になる */
   api.get("/token", async (c) => {

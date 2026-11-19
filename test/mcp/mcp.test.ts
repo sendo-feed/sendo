@@ -14,6 +14,7 @@ import {
   createTestPlatform,
   createUser,
   fakeFetch,
+  recordingSyncUpdates,
   requestApp,
   subscribeFeed,
 } from "../helpers";
@@ -684,6 +685,28 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       feed: { id: feed.id, displayName: null },
     });
     expect(await rename("missing", "ニュース")).toMatchObject({ isError: true });
+  });
+
+  it("購読を変える書き込みのツールは、成功したときだけ開いている画面に知らせる", async () => {
+    const { platform, token, feed, user } = await setup(["read", "write"]);
+    const recording = recordingSyncUpdates();
+    platform.syncUpdates = recording.syncUpdates;
+    const { client } = await connect(platform, token, era);
+
+    await client.callTool({ name: "list_feeds" });
+    await client.callTool({
+      name: "rename_feed",
+      arguments: { feedId: "missing", displayName: "x" },
+    });
+    expect(recording.notified).toEqual([]);
+
+    await client.callTool({
+      name: "rename_feed",
+      arguments: { feedId: feed.id, displayName: "x" },
+    });
+    await client.callTool({ name: "move_feed", arguments: { feedId: feed.id, folderId: null } });
+    await client.callTool({ name: "unsubscribe", arguments: { feedId: feed.id } });
+    expect(recording.notified).toEqual([user.id, user.id, user.id]);
   });
 
   it("取得してはいけない URL は購読せず、エラーの結果を返す", async () => {

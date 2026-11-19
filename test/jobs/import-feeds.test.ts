@@ -4,7 +4,13 @@ import { listFolders } from "../../src/db/folders";
 import { listSubscriptions } from "../../src/db/subscriptions";
 import { runImportFeeds } from "../../src/jobs/import-feeds";
 import { testDb } from "../db";
-import { createTestPlatform, createUser, subscribeFeed, TEST_USER } from "../helpers";
+import {
+  createTestPlatform,
+  createUser,
+  recordingSyncUpdates,
+  subscribeFeed,
+  TEST_USER,
+} from "../helpers";
 
 const NOW = new Date("2026-11-14T00:00:00Z");
 const userId = TEST_USER.id;
@@ -21,6 +27,23 @@ describe("runImportFeeds", () => {
   beforeEach(async () => {
     await testDb.exec("DELETE FROM feeds");
     await testDb.exec("DELETE FROM folders");
+  });
+
+  it("購読を足したら、開いている画面に知らせる。足すものがなければ知らせない", async () => {
+    const recording = recordingSyncUpdates();
+    const { platform } = createTestPlatform({ now: () => NOW, syncUpdates: recording.syncUpdates });
+
+    await runImportFeeds(platform, {
+      userId,
+      entries: [{ url: "http://127.0.0.1/feed", folder: null }],
+    });
+    expect(recording.notified).toEqual([]);
+
+    await runImportFeeds(platform, {
+      userId,
+      entries: [{ url: "https://a.example/feed", folder: null }],
+    });
+    expect(recording.notified).toEqual([userId]);
   });
 
   it("フォルダとフィードと購読を作り、新しいフィードの取得を積む", async () => {
