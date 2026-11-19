@@ -1,4 +1,4 @@
-import { readLimited, TooLargeError } from "../lib/read-limited";
+import { readLimited, readPrefix, TooLargeError } from "../lib/read-limited";
 import { toFetchableUrl, UrlNotAllowedError } from "./url-guard";
 
 export type FetchFeedOptions = {
@@ -9,21 +9,31 @@ export type FetchFeedOptions = {
   timeoutMs?: number;
   maxBytes?: number;
   maxRedirects?: number;
+  /** 移転先候補を探すときに読む、404 の応答の先頭のバイト数 */
+  notFoundPageBytes?: number;
   /** Retry-After の日付を、応答に Date がないときに比べる時刻。省くと今 */
   now?: Date;
 };
 
+export type FetchedFeedPage = { url: string; body: string };
+
 export type FetchFeedResult =
   | { status: "not-modified"; url: string }
-  | { status: "ok"; url: string; body: string; etag: string | null; lastModified: string | null };
+  | (FetchedFeedPage & { status: "ok"; etag: string | null; lastModified: string | null });
 
-export type FetchFeedErrorCode =
-  | "blocked_url"
-  | "http_status"
-  | "too_large"
-  | "too_many_redirects"
-  | "timeout"
-  | "network";
+export const FETCH_FEED_ERROR_CODES = [
+  "blocked_url",
+  "http_status",
+  "too_large",
+  "too_many_redirects",
+  "timeout",
+  "network",
+  "dns",
+  "gone",
+  "rate_limited",
+] as const;
+
+export type FetchFeedErrorCode = (typeof FETCH_FEED_ERROR_CODES)[number];
 
 /** フィードを取得できなかった。フィードの側の問題で、すぐにやり直しても直らない */
 export class FetchFeedError extends Error {
@@ -37,6 +47,7 @@ export class FetchFeedError extends Error {
      * なければ、読めなければ、過ぎた時刻なら undefined。上限はかけていない
      */
     readonly retryAfterMs?: number,
+    readonly notFoundPage?: FetchedFeedPage,
   ) {
     super(message);
   }
@@ -93,7 +104,16 @@ export async function fetchFeed(url: string, options: FetchFeedOptions): Promise
         return { status: "not-modified", url: current.href };
       }
       if (!res.ok) {
-        await res.body?.cancel();
+        let notFoundPage: FetchedFeedPage | undefined;
+        if (res.status === 404 && options.notFoundPageBytes !== undefined) {
+          notFoundPage = await readNotFoundPage(res, current.href, options.notFoundPageBytes);
+        } else if (res.status === 530) {
+          if (await isCloudflareDnsError(res)) {
+            throw new FetchFeedError("dns", "DNS resolution failed (Cloudflare 1016)", res.status);
+          }
+        } else {
+          await res.body?.cancel();
+        }
         const retryAfterMs =
           res.status === 429 || res.status === 503
             ? parseRetryAfter(res.headers.get("retry-after"), {
@@ -101,11 +121,14 @@ export async function fetchFeed(url: string, options: FetchFeedOptions): Promise
                 now: options.now ?? new Date(),
               })
             : undefined;
+        const code =
+          res.status === 410 ? "gone" : res.status === 429 ? "rate_limited" : "http_status";
         throw new FetchFeedError(
-          "http_status",
+          code,
           `unexpected status ${res.status}`,
           res.status,
           retryAfterMs,
+          notFoundPage,
         );
       }
 
@@ -122,7 +145,68 @@ export async function fetchFeed(url: string, options: FetchFeedOptions): Promise
     if (error instanceof FetchFeedError) throw error;
     if (error instanceof TooLargeError) throw new FetchFeedError("too_large", error.message);
     if (signal.aborted) throw new FetchFeedError("timeout", `timed out after ${timeoutMs}ms`);
-    throw new FetchFeedError("network", error instanceof Error ? error.message : String(error));
+    if (error instanceof Error && isDnsLookupError(error.cause)) {
+      throw new FetchFeedError("dns", "DNS resolution failed");
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    // workerd の内部エラーは原因を含まない。応答や DB に参照 ID を残さない
+    throw new FetchFeedError(
+      "network",
+      /^internal error(?:; reference = .*)?$/i.test(message) ? "network request failed" : message,
+    );
+  }
+}
+
+async function readNotFoundPage(
+  response: Response,
+  url: string,
+  maxBytes: number,
+): Promise<FetchedFeedPage | undefined> {
+  try {
+    const { bytes } = await readPrefix(response.body, maxBytes);
+    return { url, body: decode(bytes, response.headers.get("content-type")) };
+  } catch {
+    // 移転先の調査に使う本文が読めなくても、404 は記録する
+    return undefined;
+  }
+}
+
+function isDnsLookupError(cause: unknown): boolean {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "code" in cause &&
+    (cause.code === "ENOTFOUND" || cause.code === "EAI_AGAIN")
+  );
+}
+
+async function isCloudflareDnsError(response: Response): Promise<boolean> {
+  try {
+    const errorType = response.headers.get("cf-error-type");
+    if (errorType !== null) {
+      await response.body?.cancel();
+      return errorType === "1016";
+    }
+    // 診断ヘッダーがなければ、短いテキストか構造化されたエラー応答を確かめる
+    const { bytes, truncated } = await readPrefix(response.body, 4096);
+    if (truncated) return false;
+    const body = new TextDecoder().decode(bytes).trim();
+    const mediaType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+    if (mediaType === "application/json" || mediaType === "application/problem+json") {
+      const error: unknown = JSON.parse(body);
+      return (
+        typeof error === "object" &&
+        error !== null &&
+        "cloudflare_error" in error &&
+        error.cloudflare_error === true &&
+        "error_code" in error &&
+        error.error_code === 1016
+      );
+    }
+    return /^error code:\s*1016$/i.test(body);
+  } catch {
+    // エラーの本文を読めなくても、受け取った HTTP ステータスを記録する
+    return false;
   }
 }
 

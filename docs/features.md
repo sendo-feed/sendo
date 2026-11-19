@@ -38,7 +38,7 @@ Phase 1 の完了条件：
 - [x] フィードの一覧と今日の未読を MCP の Resources として公開する
 - [x] Feedly の OPML を移し、sendo-reader で日常的に読む（利用者が移行と日常利用の開始を確認）
 
-Google Reader API 互換は実装と自動テストを完了している。日常利用には sendo-reader を使うため、Reeder ／ NetNewsWire の実アプリでの確認は継続する検証とし、Phase 1 の完了条件には含めない。取得の失敗理由の表示や、止まったフィード・移転先候補の案内は継続する改善として扱う。
+Google Reader API 互換は実装と自動テストを完了している。日常利用には sendo-reader を使うため、Reeder ／ NetNewsWire の実アプリでの確認は継続する検証とし、Phase 1 の完了条件には含めない。購読の取得状態、失敗理由、確認できた移転先候補は REST API と差分同期で返す。Reader での表示は継続する改善として扱う。
 
 ## Phase 2：Feedly のプレミアム機能に当たるもの
 

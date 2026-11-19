@@ -14,6 +14,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** 取得の間隔の上限。設定の間隔がこれより長ければ、設定の間隔 */
 export const MAX_FETCH_INTERVAL_MS = DAY_MS;
 
+/** 失敗を記録し始めてから、取得を週 1 回にするまでの期間（docs/decisions/jobs.md の 9） */
+export const FETCH_FAILURE_WINDOW_MS = 30 * DAY_MS;
+export const STALLED_FETCH_INTERVAL_MS = 7 * DAY_MS;
+
 /** 記事の出るペースを見る期間 */
 export const PACE_WINDOW_MS = 7 * DAY_MS;
 

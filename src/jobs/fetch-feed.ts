@@ -15,7 +15,8 @@ import { getFeed, recordFeedIcon, recordFetchFailure, recordFetchSuccess } from 
 import { deliverNewArticles } from "../db/inbox";
 import type { Feed } from "../db/schema";
 import { isStorageLimitError, readStorageUsage } from "../db/storage";
-import { FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
+import { findFeedRelocation, MAX_FEED_LINK_PAGE_BYTES } from "../fetcher/discover";
+import { type FetchedFeedPage, FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
 import { findFeedIcon } from "../fetcher/find-icon";
 import { htmlToText, type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
@@ -23,8 +24,10 @@ import type { Platform } from "../platform";
 import {
   backoffInterval,
   currentFetchInterval,
+  FETCH_FAILURE_WINDOW_MS,
   nextFetchInterval,
   retryAfterWait,
+  STALLED_FETCH_INTERVAL_MS,
 } from "./fetch-interval";
 import { canStoreArticles, measureExistingContents, reportStorageFull } from "./storage";
 
@@ -76,12 +79,14 @@ export async function runFetchFeed(
   await measureExistingContents(platform);
   const canStore = await canStoreArticles(platform);
 
+  let fetchedPage: FetchedFeedPage | undefined;
   try {
     const result = await fetchFeed(feed.url, {
       fetch: platform.fetch,
       etag: feed.etag,
       lastModified: feed.lastModified,
       now: startedAt,
+      notFoundPageBytes: MAX_FEED_LINK_PAGE_BYTES,
     });
 
     if (result.status === "not-modified") {
@@ -93,7 +98,7 @@ export async function runFetchFeed(
         now: startedAt,
         minMs: minIntervalMs,
       });
-      await recordFetchSuccess(db, feed.id, {
+      await recordFetchSuccess(db, feed, {
         now: startedAt,
         nextFetchAt: new Date(startedAt.getTime() + nextIntervalMs),
         fetchIntervalMs: nextIntervalMs,
@@ -105,6 +110,7 @@ export async function runFetchFeed(
       return { status: "not-modified" };
     }
 
+    fetchedPage = result;
     const parsed = parseFeed(result.body, result.url);
     const rows = await Promise.all(parsed.items.map((item) => toArticle(feed.id, item, startedAt)));
     await recordCurrentFeed(
@@ -164,7 +170,7 @@ export async function runFetchFeed(
       minMs: minIntervalMs,
     });
     // 記事を入れ終えてから、取得済みとして記録する。途中で落ちても、次の取得でやり直せる
-    await recordFetchSuccess(db, feed.id, {
+    await recordFetchSuccess(db, feed, {
       now: startedAt,
       nextFetchAt: new Date(startedAt.getTime() + nextIntervalMs),
       fetchIntervalMs: nextIntervalMs,
@@ -190,10 +196,21 @@ export async function runFetchFeed(
     }
     if (!(error instanceof FetchFeedError || error instanceof ParseFeedError)) throw error;
 
-    const errorCount = feed.errorCount + 1;
-    // フィードの今の間隔を、失敗の回数で延ばす。上限は取得の間隔の上限と同じ（設定の間隔が 1 日より
-    // 長いとき、失敗中のフィードのほうが頻繁に取得されないように）
-    const backoff = backoffInterval({ intervalMs, errorCount, minMs: minIntervalMs });
+    const errorCode = error instanceof FetchFeedError ? error.code : "invalid_feed";
+    const rateLimited = errorCode === "rate_limited";
+    const errorCount = rateLimited ? feed.errorCount : feed.errorCount + 1;
+    const failureStartedAt = rateLimited
+      ? feed.failureStartedAt
+      : (feed.failureStartedAt ?? startedAt);
+    const fetchStalled =
+      feed.fetchStalled ||
+      errorCode === "gone" ||
+      (!rateLimited &&
+        failureStartedAt !== null &&
+        startedAt.getTime() - failureStartedAt.getTime() >= FETCH_FAILURE_WINDOW_MS);
+    const backoff = fetchStalled
+      ? Math.max(STALLED_FETCH_INTERVAL_MS, minIntervalMs)
+      : backoffInterval({ intervalMs, errorCount: Math.max(errorCount, 1), minMs: minIntervalMs });
     // 429 ／ 503 の Retry-After を守る（docs/decisions/jobs.md の 8）。待つ長さは、応答を受けた
     // 時刻から数える
     const retryAfter =
@@ -203,11 +220,19 @@ export async function runFetchFeed(
       platform.now().getTime() + retryAfter,
     );
     const message = `${error.name}: ${error.message}`;
-    await recordFetchFailure(db, feed.id, {
+    const page = error instanceof FetchFeedError ? error.notFoundPage : fetchedPage;
+    const relocationCandidate = page
+      ? await findFeedRelocation(page, feed.url, platform.fetch)
+      : undefined;
+    await recordFetchFailure(db, feed, {
       now: startedAt,
       nextFetchAt: new Date(nextFetchAt),
       errorCount,
       error: message,
+      errorCode,
+      failureStartedAt,
+      fetchStalled,
+      relocationCandidate,
     });
     return { status: "failed", error: message };
   }

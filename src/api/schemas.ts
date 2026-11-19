@@ -1,7 +1,8 @@
 import { z } from "@hono/zod-openapi";
 import type { InboxArticle } from "../db/inbox";
-import type { Folder } from "../db/schema";
+import type { Feed, Folder } from "../db/schema";
 import type { SubscriptionWithFeed } from "../db/subscriptions";
+import { FETCH_FEED_ERROR_CODES } from "../fetcher/fetch-feed";
 import type { ImageSigner } from "../lib/image-url";
 
 export const ErrorSchema = z
@@ -40,6 +41,41 @@ export const FeedDisplayNameSchema = z.string().nullable().openapi({
   description: "この購読の表示名。null なら配信元の title（なければ URL）を使う",
 });
 
+export const FeedStatusSchema = z.enum(["active", "failing", "stalled"]).openapi({
+  description:
+    "Sendo からの取得状態。active は数えた失敗なし（429 を除く）、failing は失敗中、stalled は長期の失敗または HTTP 410",
+});
+
+export const FeedErrorCodeSchema = z
+  .enum([...FETCH_FEED_ERROR_CODES, "invalid_feed"])
+  .nullable()
+  .openapi({
+    description: "直近の取得失敗の理由。成功後や、理由を記録していない場合は null",
+  });
+
+export const FeedRelocationCandidateSchema = z
+  .object({
+    url: z.string().openapi({ description: "確認できた候補のフィード URL" }),
+    title: z.string().nullable().openapi({ description: "プレーンテキストのタイトル" }),
+    siteUrl: z.string().nullable(),
+  })
+  .nullable()
+  .openapi({ description: "取得に失敗した応答から確認した移転先候補" });
+
+export function toFeedHealthResponse(
+  feed: Pick<Feed, "fetchStalled" | "errorCount" | "lastErrorCode" | "relocationCandidate">,
+): {
+  status: z.infer<typeof FeedStatusSchema>;
+  lastErrorCode: z.infer<typeof FeedErrorCodeSchema>;
+  relocationCandidate: z.infer<typeof FeedRelocationCandidateSchema>;
+} {
+  return {
+    status: feed.fetchStalled ? "stalled" : feed.errorCount > 0 ? "failing" : "active",
+    lastErrorCode: feed.lastErrorCode,
+    relocationCandidate: feed.relocationCandidate,
+  };
+}
+
 export const FeedSchema = z
   .object({
     id: z.string(),
@@ -49,9 +85,12 @@ export const FeedSchema = z
     siteUrl: z.string().nullable(),
     iconUrl: FeedIconUrlSchema,
     folderId: z.string().nullable(),
-    lastFetchedAt: dateTime.nullable(),
+    lastFetchedAt: dateTime.nullable().openapi({ description: "最後に取得を試した時刻" }),
     nextFetchAt: dateTime,
-    errorCount: z.int().nonnegative(),
+    status: FeedStatusSchema,
+    errorCount: z.int().nonnegative().openapi({ description: "連続した失敗の回数（429 を除く）" }),
+    lastErrorCode: FeedErrorCodeSchema,
+    relocationCandidate: FeedRelocationCandidateSchema,
     lastError: z.string().nullable(),
     createdAt: dateTime.openapi({ description: "購読した時刻" }),
   })
@@ -106,6 +145,7 @@ export async function toFeedResponse(
     folderId: subscription.folderId,
     lastFetchedAt: feed.lastFetchedAt?.toISOString() ?? null,
     nextFetchAt: feed.nextFetchAt.toISOString(),
+    ...toFeedHealthResponse(feed),
     errorCount: feed.errorCount,
     lastError: feed.lastError,
     createdAt: subscription.createdAt.toISOString(),
