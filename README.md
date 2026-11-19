@@ -40,6 +40,19 @@ Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS �
 
 画面を使わず、リーダーアプリや MCP だけで使うときは、`compose.yaml` の `reader` を消して Sendo のポートを出し（`compose.yaml` のコメント）、`PUBLIC_URL` を Sendo のオリジンにします。`READER_URL` は空にします（OAuth は使えず、MCP 用のトークンでつなぎます）。
 
+### X の埋め込みを有効にする
+
+X の埋め込みに対応した reader を用意し、[reader の手順](https://github.com/sendo-feed/sendo-reader#x-の投稿の埋め込み)に従って、埋め込み用の静的ファイルを別の HTTPS ホストに置き、reader のイメージを `sendo-reader:x-embeds` として作ります。Compose の置き場に `compose.override.yaml` を作り、`reader` のイメージを差し替えます。
+
+```yaml
+services:
+  reader:
+    image: sendo-reader:x-embeds
+    pull_policy: never
+```
+
+初回は `docker compose pull sendo` で対応版の Sendo に更新してから、`docker compose up -d` で起動します。以後の更新では reader のイメージも新しいソースからビルドし直します。
+
 ### 標準構成を更新する
 
 上流の更新は、次で取り込みます。Sendo と sendo-reader が一緒に新しくなります。マイグレーションは、起動するときに当たります。
@@ -235,19 +248,6 @@ Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader
 動的登録（`/oauth/register`）は、ログインせずに誰でも呼べます。Sendo は、一度も許可されていない登録を 1 日で消し、数も 100 件までにします（超えたら 429 で断る。[決定](docs/decisions/mcp.md)の 5）。連打されても、データベースの容量や書き込みを使い切ることはありません。その間は、動的登録のクライアントが新しくつなげなくなりますが、Client ID Metadata Document のクライアントと MCP 用のトークンは使えます。
 
 手前のリバースプロキシ（Caddy のレート制限のプラグインなど）で `/oauth/register` へのリクエストの回数を絞ると、守りを重ねられます。
-
-### X の埋め込みを有効にする
-
-X の埋め込みに対応した reader を用意し、[reader の手順](https://github.com/sendo-feed/sendo-reader#x-の投稿の埋め込み)に従って、埋め込み用の静的ファイルを別の HTTPS ホストに置き、reader のイメージを `sendo-reader:x-embeds` として作ります。Compose の置き場に `compose.override.yaml` を作り、`reader` のイメージを差し替えます。
-
-```yaml
-services:
-  reader:
-    image: sendo-reader:x-embeds
-    pull_policy: never
-```
-
-初回は `docker compose pull sendo` で対応版の Sendo に更新してから、`docker compose up -d` で起動します。以後の更新では reader のイメージも新しいソースからビルドし直します。
 
 ## コマンド
 
