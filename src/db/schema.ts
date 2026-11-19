@@ -221,13 +221,26 @@ export const folders = sqliteTable(
   ],
 );
 
-/** フィード。全員で共有し、取得は 1 回だけ */
+/** Discord OAuth で確認した、Sendo のユーザーと Discord のアカウントの結び付き */
+export const discordConnections = sqliteTable("discord_connections", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: "cascade" }),
+  discordUserId: text("discord_user_id").notNull(),
+});
+
+/** フィード。公開フィードは共有し、Discord のフィードは接続ごとに持つ */
 export const feeds = sqliteTable(
   "feeds",
   {
     id: text("id").primaryKey(),
     /** 取得に使う URL。正規化してから保存する */
-    url: text("url").notNull().unique(),
+    url: text("url").notNull(),
+    discordConnectionId: text("discord_connection_id").references(() => discordConnections.id),
+    /** Discord の新着取得の位置。解除後も、公開フィードと区別するため null には戻さない */
+    discordCursor: text("discord_cursor"),
     title: text("title"),
     siteUrl: text("site_url"),
     /** 条件付き GET に使う。前回の応答の ETag ／ Last-Modified */
@@ -260,7 +273,11 @@ export const feeds = sqliteTable(
     iconCheckedAt: integer("icon_checked_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   },
-  (t) => [index("feeds_next_fetch_at_idx").on(t.nextFetchAt)],
+  (t) => [
+    index("feeds_next_fetch_at_idx").on(t.nextFetchAt),
+    uniqueIndex("feeds_public_url_idx").on(t.url).where(sql`${t.discordCursor} is null`),
+    uniqueIndex("feeds_discord_connection_url_idx").on(t.discordConnectionId, t.url),
+  ],
 );
 
 /** ユーザーの購読。フィードは共有で、どのフォルダに入れるかは人ごと */

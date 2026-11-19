@@ -1,0 +1,323 @@
+import { eq } from "drizzle-orm";
+import { describe, expect, it } from "vitest";
+import { connectDiscord, disconnectDiscord } from "../../src/db/discord";
+import { findFeedByUrl } from "../../src/db/feeds";
+import { articles } from "../../src/db/schema";
+import { createSession } from "../../src/db/sessions";
+import { subscribeMany } from "../../src/db/subscriptions";
+import { runFetchFeed } from "../../src/jobs/fetch-feed";
+import type { Platform } from "../../src/platform";
+import { createTestPlatform, createUser, fakeFetch, requestApp } from "../helpers";
+
+const BASE = "/api/v1/integrations/discord";
+const ORIGIN = "https://reader.example.com";
+const DISCORD_USER = "102";
+const SECOND_DISCORD_USER = "103";
+const CONFIG = {
+  clientId: "101",
+  clientSecret: "test-discord-secret",
+  botToken: "test-bot-token",
+  redirectUri: `${ORIGIN + BASE}/callback`,
+};
+const CHANNEL = "https://discord.com/channels/201/301";
+const READ = String((1 << 10) | (1 << 16));
+const FIXED_NOW = new Date("2026-11-19T00:00:00Z");
+const MESSAGE_ID = ((BigInt(FIXED_NOW.getTime() - 1420070400000) << 22n) + 1n).toString();
+
+function discordFetch() {
+  let canRead = true;
+  let beforeMessages: (() => Promise<void>) | undefined;
+  let messageStatus = 200;
+  let errorCode: number | undefined;
+  const result = fakeFetch(async (url, init) => {
+    expect(url.origin).toBe("https://discord.com");
+    expect(init?.redirect).toBe("manual");
+    const path = url.pathname;
+    const auth = new Headers(init?.headers).get("authorization");
+    if (path === "/api/v10/oauth2/token") {
+      expect(init?.method).toBe("POST");
+      const body = new URLSearchParams(String(init?.body));
+      expect(body.get("client_secret")).toBe(CONFIG.clientSecret);
+      expect(body.get("redirect_uri")).toBe(CONFIG.redirectUri);
+      expect(body.get("code")).toBe("test-code");
+      return Response.json({ access_token: "fake-access-token" });
+    }
+    if (path === "/api/v10/users/@me") {
+      expect(auth).toBe("Bearer fake-access-token");
+      return Response.json({ id: DISCORD_USER });
+    }
+    expect(auth).toBe(`Bot ${CONFIG.botToken}`);
+    if (path === "/api/v10/guilds/201") {
+      return Response.json({ owner_id: "104", roles: [{ id: "201", permissions: READ }] });
+    }
+    if (path === "/api/v10/channels/301") {
+      return Response.json({
+        id: "301",
+        guild_id: "201",
+        type: 5,
+        name: "releases",
+        permission_overwrites: canRead
+          ? []
+          : [{ id: DISCORD_USER, type: 1, deny: READ, allow: "0" }],
+      });
+    }
+    if (path.startsWith("/api/v10/guilds/201/members/")) {
+      return Response.json({ roles: [] });
+    }
+    if (path === "/api/v10/channels/301/messages") {
+      if (beforeMessages) await beforeMessages();
+      if (messageStatus !== 200) {
+        return Response.json(
+          { code: errorCode },
+          { status: messageStatus, headers: { "retry-after": "3600.5" } },
+        );
+      }
+      return Response.json(
+        url.searchParams.get("after") === MESSAGE_ID
+          ? []
+          : [
+              {
+                id: MESSAGE_ID,
+                channel_id: "301",
+                type: 0,
+                content: "Version 1.0\n<script>literal text</script>",
+                author: { username: "alice" },
+                timestamp: FIXED_NOW.toISOString(),
+                attachments: [],
+                embeds: [],
+              },
+            ],
+      );
+    }
+    return new Response(null, { status: 404 });
+  });
+  return {
+    ...result,
+    deny: () => {
+      canRead = false;
+    },
+    setMessageStatus: (status: number, code?: number) => {
+      messageStatus = status;
+      errorCode = code;
+    },
+    beforeMessages: (fn: () => Promise<void>) => {
+      beforeMessages = fn;
+    },
+  };
+}
+
+async function browser(platform: Platform, userId: string) {
+  const { token } = await createSession(platform.db, { userId, now: platform.now() });
+  const session = `__Host-sendo_session=${token}`;
+  return (path: string, init: RequestInit & { json?: unknown; cookie?: string } = {}) => {
+    const { cookie, ...rest } = init;
+    const headers = new Headers(rest.headers);
+    headers.set("cookie", cookie ? `${session}; ${cookie}` : session);
+    if (!headers.has("sec-fetch-site")) headers.set("sec-fetch-site", "same-origin");
+    return requestApp(platform, ORIGIN + path, { ...rest, token: null, headers });
+  };
+}
+
+async function setup() {
+  const remote = discordFetch();
+  return {
+    remote,
+    ...createTestPlatform({ discord: CONFIG, fetch: remote.fetch, now: () => FIXED_NOW }),
+  };
+}
+
+async function subscribe(request: Awaited<ReturnType<typeof browser>>) {
+  const result = await request(`${BASE}/subscriptions`, { method: "POST", json: { url: CHANNEL } });
+  expect(result.status).toBe(201);
+  return ((await result.json()) as { feedId: string }).feedId;
+}
+
+describe("Discord の購読", () => {
+  it("同じブラウザとセッションで許可した Discord アカウントを接続する", async () => {
+    const { platform, remote } = await setup();
+    const user = await createUser();
+    const request = await browser(platform, user.id);
+    expect((await requestApp(platform, BASE, { token: user.token })).status).toBe(403);
+    expect(
+      (
+        await request(`${BASE}/connect`, {
+          method: "POST",
+          json: {},
+          headers: { "sec-fetch-site": "cross-site" },
+        })
+      ).status,
+    ).toBe(403);
+    const start = await request(`${BASE}/connect`, {
+      method: "POST",
+      json: { returnTo: "/settings?tab=integrations#discord" },
+    });
+    expect(start.status).toBe(200);
+    const { authorizationUrl } = (await start.json()) as { authorizationUrl: string };
+    const url = new URL(authorizationUrl);
+    expect(url.searchParams.get("scope")).toBe("identify");
+    expect(url.searchParams.get("redirect_uri")).toBe(CONFIG.redirectUri);
+    const cookie = start.headers
+      .getSetCookie()
+      .find((header) => header.startsWith("__Host-sendo_discord="))
+      ?.split(";")[0];
+    expect(cookie).toBeDefined();
+    const path = `${BASE}/callback?code=test-code&state=${url.searchParams.get("state")}`;
+    const otherSession = await browser(platform, user.id);
+    const rejected = await otherSession(path, cookie ? { cookie } : {});
+    expect(rejected.headers.get("location")).toBe("/?discord=invalid_state");
+    expect(remote.calls).toEqual([]);
+
+    const accepted = await request(path, cookie ? { cookie } : {});
+    expect(accepted.headers.get("location")).toBe(
+      "/settings?tab=integrations&discord=connected#discord",
+    );
+    expect(await (await request(BASE)).json()).toMatchObject({
+      available: true,
+      connected: true,
+      subscriptions: [],
+    });
+  });
+
+  it("同じチャンネルでもユーザーごとに購読し、取り込んだ投稿を他の人に渡さない", async () => {
+    const { platform, enqueued, remote } = await setup();
+    platform.pageContent = {
+      async extract() {
+        throw new Error("Discord の投稿では実行しない");
+      },
+    };
+    const owner = await createUser();
+    const other = await createUser();
+    await connectDiscord(platform.db, owner.id, DISCORD_USER);
+    await connectDiscord(platform.db, other.id, SECOND_DISCORD_USER);
+    const request = await browser(platform, owner.id);
+    const feedId = await subscribe(request);
+    const repeated = await request(`${BASE}/subscriptions`, {
+      method: "POST",
+      json: { url: CHANNEL },
+    });
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toMatchObject({ feedId });
+    expect(await findFeedByUrl(platform.db, CHANNEL)).toBeUndefined();
+    await expect(
+      subscribeMany(platform.db, {
+        userId: other.id,
+        rows: [{ feedId, folderId: null }],
+        now: FIXED_NOW,
+      }),
+    ).rejects.toThrow();
+    const otherFeed = await subscribe(await browser(platform, other.id));
+    expect(otherFeed).not.toBe(feedId);
+    expect(enqueued).toEqual([
+      { type: "fetch-feed", feedId },
+      { type: "fetch-feed", feedId: otherFeed },
+    ]);
+
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "not-modified" });
+    const owners = await (
+      await requestApp(platform, "/api/v1/articles", { token: owner.token })
+    ).json();
+    const first = (owners as { items: { id: string }[] }).items[0];
+    expect(first).toBeDefined();
+    const fetchCount = remote.calls.length;
+    const content = await requestApp(
+      platform,
+      `/api/v1/articles/${first?.id}/content?source=page`,
+      {
+        token: owner.token,
+      },
+    );
+    expect(content.status).toBe(404);
+    expect(remote.calls).toHaveLength(fetchCount);
+    expect(owners).toMatchObject({
+      items: [
+        {
+          feedId,
+          url: `${CHANNEL}/${MESSAGE_ID}`,
+          title: "Version 1.0",
+          summary: "Version 1.0\n<script>literal text</script>",
+        },
+      ],
+    });
+    expect(
+      await (await requestApp(platform, "/api/v1/articles", { token: other.token })).json(),
+    ).toMatchObject({ items: [] });
+  });
+
+  it("閲覧権限の喪失で、投稿と購読の削除を同期に届ける", async () => {
+    const { platform, remote } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const request = await browser(platform, user.id);
+    const feedId = await subscribe(request);
+    await runFetchFeed(platform, feedId);
+    const sync = async (cursor?: string) => {
+      const url = `/api/v1/sync${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
+      const response = await requestApp(platform, url, { token: user.token });
+      expect(response.status).toBe(200);
+      return (await response.json()) as {
+        cursor: string;
+        feeds: { id: string; deleted: boolean }[];
+        articles: { id: string; deleted: boolean }[];
+      };
+    };
+    const initial = await sync();
+    expect(initial.feeds).toMatchObject([{ id: feedId, deleted: false }]);
+    const firstArticle = initial.articles[0];
+    expect(firstArticle).toBeDefined();
+    const starred = await requestApp(platform, `/api/v1/articles/${firstArticle?.id}`, {
+      method: "PATCH",
+      json: { starred: true },
+      token: user.token,
+    });
+    expect(starred.ok).toBe(true);
+
+    remote.deny();
+    expect(await runFetchFeed(platform, feedId)).toMatchObject({ status: "missing" });
+    const changed = await sync(initial.cursor);
+    expect(changed.feeds).toMatchObject([{ id: feedId, deleted: true }]);
+    expect(changed.articles).toMatchObject([{ id: firstArticle?.id, deleted: true }]);
+    expect(
+      (await request(`${BASE}/subscriptions`, { method: "POST", json: { url: CHANNEL } })).status,
+    ).toBe(404);
+  });
+
+  it("連携解除と並行した取得では記事を残さない", async () => {
+    const { platform, remote } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const feedId = await subscribe(await browser(platform, user.id));
+    remote.beforeMessages(() => disconnectDiscord(platform.db, user.id));
+    await runFetchFeed(platform, feedId);
+    expect(await platform.db.select().from(articles).where(eq(articles.feedId, feedId))).toEqual(
+      [],
+    );
+    expect(await (await (await browser(platform, user.id))(BASE)).json()).toMatchObject({
+      connected: false,
+      subscriptions: [],
+    });
+  });
+
+  it("レート制限は解除と区別し、Retry-After を守る", async () => {
+    const { platform, remote } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const request = await browser(platform, user.id);
+    const feedId = await subscribe(request);
+    remote.setMessageStatus(429);
+    expect(await runFetchFeed(platform, feedId)).toMatchObject({ status: "failed" });
+    const feed = await platform.db.query.feeds.findFirst({
+      where: (f, { eq }) => eq(f.id, feedId),
+    });
+    expect(feed?.nextFetchAt.getTime()).toBeGreaterThanOrEqual(FIXED_NOW.getTime() + 3600500);
+    expect(await (await request(BASE)).json()).toMatchObject({ subscriptions: [{ feedId }] });
+
+    remote.setMessageStatus(403, 40333);
+    expect(await runFetchFeed(platform, feedId)).toMatchObject({ status: "failed" });
+    expect(await (await request(BASE)).json()).toMatchObject({ subscriptions: [{ feedId }] });
+
+    remote.setMessageStatus(403, 50001);
+    expect(await runFetchFeed(platform, feedId)).toMatchObject({ status: "missing" });
+    expect(await (await request(BASE)).json()).toMatchObject({ subscriptions: [] });
+  });
+});

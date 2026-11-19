@@ -1,7 +1,13 @@
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../../db/schema";
 import type { ObjectStore, Platform } from "..";
-import { readAuthConfig, readFetchConfig, readRetentionConfig } from "../config";
+import {
+  type DiscordEnvName,
+  readAuthConfig,
+  readDiscordConfig,
+  readFetchConfig,
+  readRetentionConfig,
+} from "../config";
 import { createSqliteArticleSearch } from "../sqlite/article-search";
 import { createQueueJobQueue } from "./queue";
 
@@ -21,9 +27,11 @@ type SettingName =
 
 /** Cloudflare の env から、アプリが使う Platform を組み立てる */
 export function createCloudflarePlatform(workerEnv: Env): Platform {
-  const env: Env & Partial<Record<SettingName, string>> = workerEnv;
+  const env: Env & Partial<Record<SettingName | DiscordEnvName, string>> = workerEnv;
+  const discord = readDiscordConfig(env);
   const db = drizzle(env.DB, { schema });
   return {
+    ...(discord && { discord }),
     db,
     articleSearch: createSqliteArticleSearch(db),
     jobs: createQueueJobQueue(env.JOBS),

@@ -20,6 +20,7 @@ import { findFeedIcon } from "../fetcher/find-icon";
 import { htmlToText, type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
+import { runFetchDiscord } from "./fetch-discord";
 import {
   backoffInterval,
   currentFetchInterval,
@@ -60,14 +61,23 @@ export type FetchFeedOutcome =
 export async function runFetchFeed(
   platform: Pick<
     Platform,
-    "db" | "content" | "fetch" | "now" | "fetchConfig" | "retentionConfig" | "jobs" | "pageContent"
+    | "db"
+    | "content"
+    | "fetch"
+    | "now"
+    | "fetchConfig"
+    | "retentionConfig"
+    | "jobs"
+    | "pageContent"
+    | "discord"
   >,
   feedId: string,
 ): Promise<FetchFeedOutcome> {
   const { db } = platform;
   const minIntervalMs = platform.fetchConfig.intervalMs;
   const feed = await getFeed(db, feedId);
-  if (!feed) return { status: "missing" };
+  if (!feed || (feed.discordCursor !== null && feed.discordConnectionId === null))
+    return { status: "missing" };
 
   const startedAt = platform.now();
   // 前回の取得で決めた間隔。片付けの幅と、失敗したときに延ばす間隔のもとにする
@@ -77,6 +87,9 @@ export async function runFetchFeed(
   const canStore = await canStoreArticles(platform);
 
   try {
+    if (feed.discordCursor !== null)
+      return await runFetchDiscord(platform, feed, startedAt, canStore);
+
     const result = await fetchFeed(feed.url, {
       fetch: platform.fetch,
       etag: feed.etag,
@@ -208,6 +221,7 @@ export async function runFetchFeed(
       nextFetchAt: new Date(nextFetchAt),
       errorCount,
       error: message,
+      discordConnectionId: feed.discordConnectionId,
     });
     return { status: "failed", error: message };
   }

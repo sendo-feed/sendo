@@ -17,3 +17,10 @@ GOOGLE_CLIENT_SECRET=
 # 秘密ではない設定（取得の間隔、OAuth のオリジンなど）は、ここに書いても読まれない（wrangler.jsonc の
 # secrets.required に挙げたものしか読まれない）。手元では pnpm dev --var <名前>:<値> で入れる。例：
 #   pnpm dev --var PUBLIC_URL:http://localhost:8787 --var READER_URL:http://localhost:5173
+
+# Discord の購読を使うときに設定する。リダイレクト先は
+# <READER_URL>/api/v1/integrations/discord/callback
+DISCORD_CLIENT_ID=
+DISCORD_CLIENT_SECRET=
+DISCORD_BOT_TOKEN=
+READER_URL=

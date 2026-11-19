@@ -10,7 +10,7 @@ import {
   type PageContentExtractor,
   type Platform,
 } from "..";
-import { readAuthConfig, readFetchConfig, readRetentionConfig } from "../config";
+import { readAuthConfig, readDiscordConfig, readFetchConfig, readRetentionConfig } from "../config";
 import { createSqliteArticleSearch } from "../sqlite/article-search";
 import { createFileObjectStore } from "./file-store";
 import type { SqliteJobQueue } from "./job-queue";
@@ -45,7 +45,9 @@ export function createNodePlatform(input: {
   languageDetection?: LanguageDetector | undefined;
 }): Platform {
   const settings = definedSettings(input.env);
+  const discord = readDiscordConfig(settings);
   return {
+    ...(discord && { discord }),
     ...(input.pageContent && { pageContent: input.pageContent }),
     ...(input.languageDetection && { languageDetection: input.languageDetection }),
     db: input.db,

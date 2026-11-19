@@ -277,7 +277,7 @@ export function articlesApi(platform: Platform) {
       if (!article) return c.json(errorBody("not_found", "article does not exist"), 404);
       let stored: string | null;
       if (source === "page" && extractor !== undefined) {
-        const result = await loadPageContent(platform, extractor, article);
+        const result = await loadPageContent(platform, extractor, id);
         if (result.status !== "ok") {
           return c.json(
             errorBody("page_content_unavailable", "could not extract the article page"),

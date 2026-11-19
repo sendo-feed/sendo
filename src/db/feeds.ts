@@ -8,11 +8,24 @@ import { type Feed, feeds, type NewFeed, subscriptions } from "./schema";
  */
 
 export async function findFeedByUrl(db: Database, url: string): Promise<Feed | undefined> {
-  return db.select().from(feeds).where(eq(feeds.url, url)).get();
+  return db
+    .select()
+    .from(feeds)
+    .where(and(eq(feeds.url, url), isNull(feeds.discordCursor)))
+    .get();
 }
 
 export async function getFeed(db: Database, id: string): Promise<Feed | undefined> {
   return db.select().from(feeds).where(eq(feeds.id, id)).get();
+}
+
+/** URL を使う公開購読の入口から、Discord のフィードを引けないようにする */
+export async function getPublicFeed(db: Database, id: string): Promise<Feed | undefined> {
+  return db
+    .select()
+    .from(feeds)
+    .where(and(eq(feeds.id, id), isNull(feeds.discordCursor)))
+    .get();
 }
 
 /**
@@ -32,7 +45,7 @@ export async function insertFeed(
       nextFetchAt: input.now,
       createdAt: input.now,
     })
-    .onConflictDoNothing({ target: feeds.url })
+    .onConflictDoNothing()
     .returning()
     .get();
   if (inserted) return { feed: inserted, created: true };
@@ -52,7 +65,7 @@ export async function insertFeeds(db: Database, rows: readonly NewFeed[]): Promi
     const result = await db
       .insert(feeds)
       .values(chunk)
-      .onConflictDoNothing({ target: feeds.url })
+      .onConflictDoNothing()
       .returning({ id: feeds.id })
       .all();
     created.push(...result.map((row) => row.id));
@@ -70,7 +83,7 @@ export async function findFeedIdsByUrls(
     const rows = await db
       .select({ id: feeds.id, url: feeds.url })
       .from(feeds)
-      .where(inArray(feeds.url, chunk))
+      .where(and(inArray(feeds.url, chunk), isNull(feeds.discordCursor)))
       .all();
     for (const row of rows) ids.set(row.url, row.id);
   }
@@ -123,6 +136,7 @@ export async function recordFetchSuccess(
     fetchIntervalMs: number;
     etag: string | null;
     lastModified: string | null;
+    discord?: { cursor: string; connectionId: string };
     title?: string | null;
     siteUrl?: string | null;
   },
@@ -137,10 +151,21 @@ export async function recordFetchSuccess(
       fetchIntervalMs: input.fetchIntervalMs,
       errorCount: 0,
       lastError: null,
+      ...(input.discord && {
+        discordCursor: sql`case when
+          (length(${input.discord.cursor}), ${input.discord.cursor}) >
+          (length(${feeds.discordCursor}), ${feeds.discordCursor})
+          then ${input.discord.cursor} else ${feeds.discordCursor} end`,
+      }),
       ...(input.title !== undefined && { title: input.title }),
       ...(input.siteUrl !== undefined && { siteUrl: input.siteUrl }),
     })
-    .where(eq(feeds.id, id));
+    .where(
+      and(
+        eq(feeds.id, id),
+        input.discord && eq(feeds.discordConnectionId, input.discord.connectionId),
+      ),
+    );
 }
 
 /**
@@ -166,6 +191,7 @@ export async function recordFetchFailure(
     nextFetchAt: Date;
     errorCount: number;
     error: string;
+    discordConnectionId?: string | null;
   },
 ): Promise<void> {
   await db
@@ -176,5 +202,12 @@ export async function recordFetchFailure(
       errorCount: input.errorCount,
       lastError: input.error,
     })
-    .where(eq(feeds.id, id));
+    .where(
+      and(
+        eq(feeds.id, id),
+        input.discordConnectionId
+          ? eq(feeds.discordConnectionId, input.discordConnectionId)
+          : undefined,
+      ),
+    );
 }
