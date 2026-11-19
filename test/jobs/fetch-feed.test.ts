@@ -387,6 +387,56 @@ describe("runFetchFeed", () => {
     });
   });
 
+  it.each([
+    { status: 429, errorCount: 1, lastErrorCode: "rate_limited", wait: 3 * HOUR },
+    { status: 304, errorCount: 0, lastErrorCode: null, wait: MAX_FETCH_INTERVAL_MS },
+  ])(
+    "先に開始した失敗が先に記録されても、後続の $status の結果を記録する",
+    async ({ status, errorCount, lastErrorCode, wait }) => {
+      const olderResponse = Promise.withResolvers<Response>();
+      const olderStarted = Promise.withResolvers<void>();
+      const { platform, feed } = await setup(() => {
+        olderStarted.resolve();
+        return olderResponse.promise;
+      });
+      const older = runFetchFeed(platform, feed.id);
+      await olderStarted.promise;
+
+      const newerResponse = Promise.withResolvers<Response>();
+      const newerStarted = Promise.withResolvers<void>();
+      const newerAt = new Date(NOW.getTime() + 1);
+      const newer = runFetchFeed(
+        {
+          ...platform,
+          now: () => newerAt,
+          fetch: fakeFetch(() => {
+            newerStarted.resolve();
+            return newerResponse.promise;
+          }).fetch,
+        },
+        feed.id,
+      );
+      await newerStarted.promise;
+
+      try {
+        olderResponse.resolve(new Response(null, { status: 500 }));
+        await older;
+      } finally {
+        const headers = new Headers();
+        if (status === 429) headers.set("retry-after", "10800");
+        newerResponse.resolve(new Response(null, { status, headers }));
+        await newer;
+      }
+
+      expect(await getFeed(platform.db, feed.id)).toMatchObject({
+        lastFetchedAt: newerAt,
+        errorCount,
+        lastErrorCode,
+        nextFetchAt: new Date(newerAt.getTime() + wait),
+      });
+    },
+  );
+
   it("消されたフィードなら何もしない", async () => {
     const { platform } = createTestPlatform();
     expect(await runFetchFeed(platform, crypto.randomUUID())).toEqual({ status: "missing" });

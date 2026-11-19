@@ -1,4 +1,4 @@
-import { and, asc, eq, exists, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { Database } from ".";
 import { chunked } from "./chunk";
 import { type Feed, type FeedErrorCode, feeds, type NewFeed, subscriptions } from "./schema";
@@ -121,35 +121,29 @@ export async function leaseDueFeeds(
 
 type FetchTarget = Pick<Feed, "id" | "lastFetchedAt">;
 
-function unchangedFetch(feed: FetchTarget, now: Date) {
-  // 同じフィードの別の仕事が結果を先に記録した場合、古い取得で状態や次の時刻を上書きしない
-  const previous = feed.lastFetchedAt?.getTime() ?? null;
-  return and(
-    eq(feeds.id, feed.id),
-    sql`${feeds.lastFetchedAt} IS ${previous}`,
-    sql`(${feeds.lastFetchedAt} IS NULL OR ${feeds.lastFetchedAt} < ${now.getTime()})`,
-  );
+function fetchedBefore(now: Date) {
+  return or(isNull(feeds.lastFetchedAt), lt(feeds.lastFetchedAt, now));
 }
 
 export async function recordFetchSuccess(
   db: Database,
-  feed: FetchTarget,
+  id: string,
   input: {
     now: Date;
     nextFetchAt: Date;
     /** 決め直した取得の間隔（docs/decisions/jobs.md の 7） */
     fetchIntervalMs: number;
-    etag: string | null;
-    lastModified: string | null;
+    etag?: string | null;
+    lastModified?: string | null;
     title?: string | null;
     siteUrl?: string | null;
   },
-): Promise<void> {
-  await db
+): Promise<Pick<Feed, "id" | "siteUrl" | "iconUrl" | "iconCheckedAt"> | undefined> {
+  return db
     .update(feeds)
     .set({
-      etag: input.etag,
-      lastModified: input.lastModified,
+      ...(input.etag !== undefined && { etag: input.etag }),
+      ...(input.lastModified !== undefined && { lastModified: input.lastModified }),
       lastFetchedAt: input.now,
       nextFetchAt: input.nextFetchAt,
       fetchIntervalMs: input.fetchIntervalMs,
@@ -162,7 +156,14 @@ export async function recordFetchSuccess(
       ...(input.title !== undefined && { title: input.title }),
       ...(input.siteUrl !== undefined && { siteUrl: input.siteUrl }),
     })
-    .where(unchangedFetch(feed, input.now));
+    .where(and(eq(feeds.id, id), fetchedBefore(input.now)))
+    .returning({
+      id: feeds.id,
+      siteUrl: feeds.siteUrl,
+      iconUrl: feeds.iconUrl,
+      iconCheckedAt: feeds.iconCheckedAt,
+    })
+    .get();
 }
 
 /**
@@ -193,8 +194,9 @@ export async function recordFetchFailure(
     fetchStalled: boolean;
     relocationCandidate?: Feed["relocationCandidate"] | undefined;
   },
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const previous = feed.lastFetchedAt?.getTime() ?? null;
+  const updated = await db
     .update(feeds)
     .set({
       lastFetchedAt: input.now,
@@ -208,5 +210,15 @@ export async function recordFetchFailure(
         relocationCandidate: input.relocationCandidate,
       }),
     })
-    .where(unchangedFetch(feed, input.now));
+    // 失敗回数と次の間隔は、呼び出し元が読んだ結果がまだ最新のときだけ書く
+    .where(
+      and(
+        eq(feeds.id, feed.id),
+        fetchedBefore(input.now),
+        sql`${feeds.lastFetchedAt} IS ${previous}`,
+      ),
+    )
+    .returning({ id: feeds.id })
+    .get();
+  return updated !== undefined;
 }
