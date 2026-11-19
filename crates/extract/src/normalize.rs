@@ -1,7 +1,7 @@
 //! 遅延画像と srcset を、位置・リンクを保ったまま img.src にそろえる。
 use std::collections::HashMap;
 
-use dom_query::{Document, Selection};
+use dom_query::{Document, NodeId, Selection};
 use url::Url;
 
 pub(crate) fn http(value: &str, base: &str) -> Option<String> {
@@ -142,8 +142,9 @@ pub(crate) fn normalize(html: &str, base: &str) -> String {
     doc.html().to_string()
 }
 
-pub(crate) fn normalize_document(doc: &Document, base: &str) {
+pub(crate) fn normalize_document(doc: &Document, base: &str) -> HashMap<NodeId, NodeId> {
     let mut picture_urls = HashMap::new();
+    let mut used_sources = HashMap::new();
     for node in doc.select("img").nodes() {
         let im = Selection::from(*node);
         let url = normalized_image_url(&im, base).or_else(|| {
@@ -152,7 +153,7 @@ pub(crate) fn normalize_document(doc: &Document, base: &str) {
                 return None;
             }
             // 同じ picture に img が複数あっても、直下の source は一度だけ調べる。
-            picture_urls
+            let (url, source) = picture_urls
                 .entry(parent.nodes()[0].id)
                 .or_insert_with(|| {
                     parent.children().nodes().iter().find_map(|node| {
@@ -161,10 +162,12 @@ pub(crate) fn normalize_document(doc: &Document, base: &str) {
                         {
                             return None;
                         }
-                        best_srcset(&node.attr("srcset")?, base)
+                        Some((best_srcset(&node.attr("srcset")?, base)?, node.id))
                     })
                 })
-                .clone()
+                .as_ref()?;
+            used_sources.insert(node.id, *source);
+            Some(url.clone())
         });
         if let Some(url) = url {
             im.set_attr("src", &url);
@@ -181,6 +184,7 @@ pub(crate) fn normalize_document(doc: &Document, base: &str) {
     for n in doc.select("picture source").nodes() {
         Selection::from(*n).remove();
     }
+    used_sources
 }
 
 #[cfg(test)]

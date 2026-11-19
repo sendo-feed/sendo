@@ -2,7 +2,7 @@
 //!
 //! 抽出器が作り直した HTML を配らない。元の DOM を使うので、段落間の画像・リンク・導入文を
 //! 保てる。ホスト名やサイト別のセレクタは使わない。
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use dom_query::{Document, NodeId, NodeRef, Selection};
 use url::Url;
@@ -14,8 +14,7 @@ const BODY_BLOCKS: &str =
 
 const POST_LINKS: &str = "blockquote.twitter-tweet a[href], blockquote.imgur-embed-pub a[href]";
 const IMGUR_LINK: &str = "blockquote.imgur-embed-pub a[href]";
-const ARTICLE: &str =
-    "article, [itemscope][itemtype$='Article'], [itemscope][itemtype$='BlogPosting']";
+const ARTICLE: &str = "article, [role=article], [itemscope][itemtype$='Article'], [itemscope][itemtype$='BlogPosting']";
 const ARTICLE_BODY: &str = "[itemprop=articleBody]";
 
 fn compact(text: &str) -> String {
@@ -184,17 +183,36 @@ fn prune(doc: &Document, base: &str) {
 }
 
 // 本文に選ばれなかった領域の画像も、直リンクから生成し直さない。
-fn mark_removed_imgur_images(blocks: &[&Selection<'_>], images: Vec<(NodeId, Url)>, base: &str) {
+fn mark_removed_imgur_images(
+    blocks: &[&Selection<'_>],
+    images: Vec<(NodeId, Url)>,
+    used_sources: &HashMap<NodeId, NodeId>,
+    base: &str,
+) {
     if images.is_empty() {
         return;
     }
     let mut visible = HashSet::new();
-    let source = |node: &NodeRef<'_>| Some((node.id, imgur_resource(&node.attr("src")?, base)?));
+    let mut record = |node: &NodeRef<'_>| {
+        if let Some(url) = node
+            .attr("src")
+            .and_then(|value| imgur_resource(&value, base))
+        {
+            if let Some(source) = used_sources.get(&node.id) {
+                visible.insert((*source, url.clone()));
+            }
+            visible.insert((node.id, url));
+        }
+    };
     for block in blocks {
         if block.is("img") {
-            visible.extend(block.nodes().iter().filter_map(source));
+            block.nodes().iter().for_each(&mut record);
         }
-        visible.extend(block.select("img[src]").nodes().iter().filter_map(source));
+        block
+            .select("img[src]")
+            .nodes()
+            .iter()
+            .for_each(&mut record);
     }
     let removed: HashSet<_> = images
         .into_iter()
@@ -256,7 +274,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         depths.insert(node.id, depth);
     }
     let imgur_images = collect_imgur_images(&doc, url);
-    crate::normalize::normalize_document(&doc, url);
+    let used_sources = crate::normalize::normalize_document(&doc, url);
     prune(&doc, url);
     let page_title = doc.select("title").text().to_string();
     // 記事を明示した領域は、短い記事をサイドバーの長文に負けさせない手掛かりにする。
@@ -466,7 +484,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
     }
     let leading = leading_embeds(&root, url);
     let blocks: Vec<_> = leading.iter().chain(std::iter::once(&root)).collect();
-    mark_removed_imgur_images(&blocks, imgur_images, url);
+    mark_removed_imgur_images(&blocks, imgur_images, &used_sources, url);
     let mut html = String::new();
     let mut text_length = 0;
     for block in blocks {
@@ -749,7 +767,7 @@ mod tests {
         let base = "https://blog.example/post";
         let images = collect_imgur_images(&doc, base);
         prune(&doc, base);
-        mark_removed_imgur_images(&[&doc.select("article")], images, base);
+        mark_removed_imgur_images(&[&doc.select("article")], images, &HashMap::new(), base);
         assert!(!doc.select("img").exists());
         let links = doc.select("a[data-sendo-imgur-image-removed=true]");
         assert_eq!(
@@ -774,7 +792,7 @@ mod tests {
         let images = collect_imgur_images(&doc, base);
         prune(&doc, base);
         assert!(doc.select("img").exists());
-        mark_removed_imgur_images(&[&doc.select("#body")], images, base);
+        mark_removed_imgur_images(&[&doc.select("#body")], images, &HashMap::new(), base);
         assert!(
             doc.select("a[data-sendo-imgur-image-removed=true]")
                 .exists()
@@ -817,6 +835,19 @@ mod tests {
         );
         assert_eq!(lead.len(), 1);
         assert_eq!(lead[0].text().trim(), "本文の直前");
+    }
+
+    #[test]
+    fn does_not_take_an_embed_from_a_sibling_with_an_article_role() {
+        let doc = Document::from(
+            r#"<main><div role="article"><blockquote class="twitter-tweet"><a href="https://x.com/user/status/789">別の記事</a></blockquote></div>
+            <div itemprop="articleBody">本文</div></main>"#,
+        );
+        let lead = leading_embeds(
+            &doc.select("[itemprop=articleBody]"),
+            "https://blog.example/post",
+        );
+        assert!(lead.is_empty());
     }
 
     #[test]

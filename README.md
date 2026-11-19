@@ -67,7 +67,7 @@ services:
 
 初回は `docker compose pull sendo` で対応版の Sendo に更新してから、`docker compose up -d` で起動します。以後の更新でも Sendo のイメージを取り込み、reader のイメージをビルドし直してコンテナを作り直します。別ホストのファイルや配信用ヘッダーに変更があれば、reader と同じ版の `apps/web/x-embed/` を再配信します。旧 reader との互換性を保つ更新手順は [reader のコンテナ構成の決定](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md#決定)に従います。
 
-配備後は、新規のブラウザープロファイルで配備した reader を開き、X の引用を表示範囲に入れます。ウィジェットの表示、隔離フレームの接続先、専用 HTTPS ホストのルートのヘッダー（CSP と Referrer-Policy を含む）を照合します。[配備後の確認](docs/decisions/container.md#決定)
+配備後は、新規のブラウザープロファイルで配備した reader を開き、対応版の Sendo が取得して保存した本文をオンラインで表示します。[投稿 ID が一意に決まる引用](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/local-first.md#記事の本文)までスクロールし、ウィジェットの表示、隔離フレームの接続先、専用 HTTPS ホストのルートのヘッダー（CSP と Referrer-Policy を含む）を照合します。[配備後の確認](docs/decisions/container.md#決定)
 
 ### 標準構成を更新する
 

@@ -66,6 +66,23 @@ describe("Rust のモジュール（記事のページから本文を抜く）",
     expect(html).toContain(`src="${photo}"`);
   });
 
+  it("picture から本文に残した画像を Imgur の引用にも表示する", async () => {
+    const url = "https://news.example.com/posts/1";
+    const photo = "https://i.imgur.com/photo.jpeg";
+    const page = articlePage().replace(
+      "</h1>",
+      `</h1><picture><source srcset="${photo} 2x"><img></picture><blockquote class="imgur-embed-pub"><a href="${photo}">写真</a></blockquote>`,
+    );
+    const result = await extractor.extract({
+      bytes: new TextEncoder().encode(page),
+      contentType: "text/html; charset=utf-8",
+      url,
+    });
+    expect(result).not.toBeNull();
+    const html = sanitizeHtml(result?.html ?? "", url, { expandImgurEmbeds: true });
+    expect(html.split(`src="${photo}"`)).toHaveLength(3);
+  });
+
   it("本文が見つからなければ null を返す", async () => {
     const result = await extractor.extract({
       bytes: new TextEncoder().encode("<html><body></body></html>"),
