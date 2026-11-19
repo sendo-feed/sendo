@@ -152,6 +152,13 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       parts.push(link(href));
     } else {
       let extra = "";
+      if (
+        name === "blockquote" &&
+        (attributes.get("data-embed") === "x" ||
+          attributes.get("class")?.split(/\s+/).includes("twitter-tweet"))
+      ) {
+        extra = ' data-embed="x"';
+      }
       const numeric =
         name === "td" || name === "th" ? ["colspan", "rowspan"] : name === "ol" ? ["start"] : [];
       for (const key of numeric) {

@@ -9,6 +9,8 @@ use crate::{ExtractError, Extracted};
 const BODY_BLOCKS: &str =
     "p, pre, td, th, blockquote, div, section, article, main, body, li, dt, dd";
 
+const POST_EMBEDS: &str = "blockquote.twitter-tweet a[href], blockquote.imgur-embed-pub img[src]";
+
 fn compact(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
 }
@@ -20,6 +22,7 @@ fn prune(doc: &Document) {
         "related-posts",
         "related-articles",
         "related-entries",
+        "related-title",
         "recommended",
         "recommendations",
         "ranking",
@@ -48,6 +51,7 @@ fn prune(doc: &Document) {
             NOISE
                 .iter()
                 .any(|word| part == *word || part.starts_with(&format!("{word}-")))
+                || (block.is("ul, ol") && part.ends_with("-related"))
         }) {
             block.remove();
         }
@@ -67,6 +71,7 @@ fn prune(doc: &Document) {
             && link_text * 10 >= text * 9
             && (links.length() >= 3 || block.select("img").length() > 0)
             && block.select("figure, p, pre, table").length() == 0
+            && !block.select(POST_EMBEDS).exists()
         {
             block.remove();
         }
@@ -298,8 +303,31 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
             break;
         }
     }
+    // 同じ記事の中で、本文の直前に分かれた埋め込みのある導入を残す。
+    let mut lead = Selection::default();
+    if root
+        .ancestors(Some(128))
+        .is("article, main, [itemprop=articleBody]")
+    {
+        let mut sibling = root.prev_sibling();
+        for _ in 0..6 {
+            if !sibling.exists() {
+                break;
+            }
+            if sibling.is("div, section, header, figure") && sibling.select(POST_EMBEDS).exists() {
+                lead = sibling;
+                break;
+            }
+            sibling = sibling.prev_sibling();
+        }
+    }
     // 相対 URL はリダイレクト後の記事 URL を基準にする。HTML の base タグは信用しない。
-    for node in root.select("a[href], img[src]").nodes() {
+    for node in lead
+        .select("a[href], img[src]")
+        .nodes()
+        .iter()
+        .chain(root.select("a[href], img[src]").nodes())
+    {
         let el = Selection::from(*node);
         let attr = if el.attr("src").is_some() {
             "src"
@@ -312,8 +340,8 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
             el.set_attr(attr, &value);
         }
     }
-    let html = root.html().to_string();
-    let text_length = root.text().trim().chars().count();
+    let html = format!("{}{}", lead.html(), root.html());
+    let text_length = lead.text().trim().chars().count() + root.text().trim().chars().count();
     if text_length == 0 {
         return Err(ExtractError::NoContent);
     }
@@ -352,6 +380,32 @@ mod tests {
             .find("https://magazine.example/photo/two.html")
             .unwrap();
         assert!(first < second);
+    }
+    #[test]
+    fn keeps_embedded_posts_in_the_preceding_body_block() {
+        let html = format!(
+            "<title>埋め込みが先にある記事</title><article><div><section><p>導入文</p>            <blockquote class='twitter-tweet'><a href='https://twitter.com/example/status/123'></a></blockquote>            <blockquote class='imgur-embed-pub'><a href='https://i.imgur.com/example.jpeg'>Imgur</a></blockquote>            <div id='related-title'>関連記事</div><ul class='manual-related'><li><a href='/other'>対象外</a></li></ul>            </section><div class='social-share'>共有</div><section>{}</section></div></article>",
+            paragraphs()
+        );
+        let result = crate::extract(
+            html.as_bytes(),
+            Some("text/html;charset=utf-8"),
+            "https://blog.example/post",
+        )
+        .unwrap();
+        let doc = Document::from(result.html);
+        assert!(doc.select("blockquote.twitter-tweet a[href]").exists());
+        assert_eq!(
+            doc.select("blockquote.imgur-embed-pub img")
+                .attr("src")
+                .as_deref(),
+            Some("https://i.imgur.com/example.jpeg"),
+        );
+        assert!(!doc.text().contains("関連記事"));
+        assert!(!doc.text().contains("対象外"));
+        assert!(!doc.text().contains("共有"));
+        let text = doc.text();
+        assert!(text.find("導入文").unwrap() < text.find("本文の段落0").unwrap());
     }
     #[test]
     fn does_not_confine_body_to_a_header_only_article() {

@@ -85,6 +85,19 @@ describe("sanitizeHtml", () => {
     expect(clean("<img>")).toBe("");
   });
 
+  it("X の引用には固定の埋め込みの印だけを残す", () => {
+    const raw =
+      '<blockquote class="twitter-tweet article" onclick="x()"><a href="https://x.com/example/status/123"></a></blockquote><script src="https://platform.twitter.com/widgets.js"></script>';
+    const sanitized = clean(raw);
+    expect(sanitized).toBe(
+      '<blockquote data-embed="x"><a href="https://x.com/example/status/123" rel="noopener noreferrer nofollow"></a></blockquote>',
+    );
+    expect(clean(sanitized)).toBe(sanitized);
+    expect(clean('<a data-embed="x" href="https://example.com">通常のリンク</a>')).not.toContain(
+      "data-embed",
+    );
+  });
+
   it("埋め込みと動画・音声は、その URL へのリンクに替える", () => {
     expect(clean('<iframe src="https://www.youtube.com/embed/x"><p>中</p></iframe>後')).toBe(
       '<a href="https://www.youtube.com/embed/x" rel="noopener noreferrer nofollow">https://www.youtube.com/embed/x</a>後',

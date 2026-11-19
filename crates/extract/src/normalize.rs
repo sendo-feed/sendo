@@ -102,6 +102,22 @@ fn placeholder(url: &str) -> bool {
     .iter()
     .any(|x| u.contains(x))
 }
+/// Imgur の埋め込みが持つ画像への直リンク。投稿ページや動画はここでは扱わない。
+fn imgur_image(value: &str) -> Option<Url> {
+    let url = Url::parse(value).ok()?;
+    let extension = url.path().rsplit_once('.')?.1.to_ascii_lowercase();
+    (url.scheme() == "https"
+        && url.host_str() == Some("i.imgur.com")
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && matches!(
+            extension.as_str(),
+            "jpg" | "jpeg" | "png" | "gif" | "webp" | "avif"
+        ))
+    .then_some(url)
+}
+
 pub(crate) fn normalize(html: &str, base: &str) -> String {
     let doc = Document::from(html);
     for node in doc.select("img").nodes() {
@@ -167,6 +183,13 @@ pub(crate) fn normalize(html: &str, base: &str) -> String {
                 "data-original",
                 "data-lazy-src",
             ]);
+        }
+    }
+    for node in doc.select("blockquote.imgur-embed-pub a[href]").nodes() {
+        let link = Selection::from(*node);
+        if let Some(url) = link.attr("href").and_then(|value| imgur_image(&value)) {
+            link.set_html(r#"<img alt="Imgur">"#);
+            link.select("img").set_attr("src", url.as_str());
         }
     }
     // 選んだ画像は img.src に入れた。文章と画像の位置は変えない。
