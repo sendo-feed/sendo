@@ -14,12 +14,125 @@ const BODY_BLOCKS: &str =
 
 const IMGUR_LINK: &str = "blockquote.imgur-embed-pub a[href]";
 const X_QUOTE: &str = "blockquote.twitter-tweet";
-const ARTICLE: &str = "article, [role~=article], [itemscope][itemtype$='Article'], [itemscope][itemtype$='BlogPosting']";
+const ARTICLE: &str = "article, [role=article]";
 const ARTICLE_BODY: &str = "[itemprop=articleBody]";
-const REGION: &str = "section, [role~=region]";
-const CONTENT_REGION: &str = "section, [role~=region], main, [role~=main]";
+const REGION: &str = "section, [role=region]";
+const CONTENT_REGION: &str = "section, [role=region], main, [role=main]";
 const EMBED_BLOCK: &str =
     "blockquote.twitter-tweet, blockquote.imgur-embed-pub, img, figure, picture";
+
+fn is_article(block: &Selection<'_>) -> bool {
+    block.is(ARTICLE)
+        || (block.is("[itemscope]")
+            && block.attr("itemtype").is_some_and(|types| {
+                types
+                    .split_ascii_whitespace()
+                    .any(|item| item.ends_with("Article") || item.ends_with("BlogPosting"))
+            }))
+}
+
+// WAI-ARIA 1.2 §4.1: 先頭の、認識できる非抽象ロールで領域を判定する。
+// https://www.w3.org/TR/wai-aria-1.2/#roles
+fn normalize_roles(doc: &Document) {
+    for node in doc.select("[role]").nodes() {
+        let Some(value) = node.attr("role") else {
+            continue;
+        };
+        let role = value.split_ascii_whitespace().find(|role| {
+            matches!(
+                *role,
+                "alert"
+                    | "alertdialog"
+                    | "application"
+                    | "article"
+                    | "banner"
+                    | "blockquote"
+                    | "button"
+                    | "caption"
+                    | "cell"
+                    | "checkbox"
+                    | "code"
+                    | "columnheader"
+                    | "combobox"
+                    | "complementary"
+                    | "contentinfo"
+                    | "definition"
+                    | "deletion"
+                    | "dialog"
+                    | "directory"
+                    | "document"
+                    | "emphasis"
+                    | "feed"
+                    | "figure"
+                    | "form"
+                    | "generic"
+                    | "grid"
+                    | "gridcell"
+                    | "group"
+                    | "heading"
+                    | "img"
+                    | "insertion"
+                    | "link"
+                    | "list"
+                    | "listbox"
+                    | "listitem"
+                    | "log"
+                    | "main"
+                    | "marquee"
+                    | "math"
+                    | "menu"
+                    | "menubar"
+                    | "menuitem"
+                    | "menuitemcheckbox"
+                    | "menuitemradio"
+                    | "meter"
+                    | "navigation"
+                    | "none"
+                    | "note"
+                    | "option"
+                    | "paragraph"
+                    | "presentation"
+                    | "progressbar"
+                    | "radio"
+                    | "radiogroup"
+                    | "region"
+                    | "row"
+                    | "rowgroup"
+                    | "rowheader"
+                    | "scrollbar"
+                    | "search"
+                    | "searchbox"
+                    | "separator"
+                    | "slider"
+                    | "spinbutton"
+                    | "status"
+                    | "strong"
+                    | "subscript"
+                    | "superscript"
+                    | "switch"
+                    | "tab"
+                    | "table"
+                    | "tablist"
+                    | "tabpanel"
+                    | "term"
+                    | "textbox"
+                    | "time"
+                    | "timer"
+                    | "toolbar"
+                    | "tooltip"
+                    | "tree"
+                    | "treegrid"
+                    | "treeitem"
+            )
+        });
+        let block = Selection::from(*node);
+        if let Some(role) = role {
+            block.set_attr("role", role);
+        } else {
+            block.remove_attr("role");
+        }
+    }
+}
 
 fn compact(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
@@ -135,7 +248,8 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Option<Vec<(NodeId, Url)>
 }
 
 fn prune(doc: &Document, base: &str) {
-    doc.select("nav, aside, script, style, noscript, template, form, [hidden], [aria-hidden=true], [role~=navigation], [role~=banner], [role~=contentinfo], [role~=complementary]").remove();
+    normalize_roles(doc);
+    doc.select("nav, aside, script, style, noscript, template, form, [hidden], [aria-hidden=true], [role=navigation], [role=banner], [role=contentinfo], [role=complementary]").remove();
     // 完全な語か区切りで比較し、本文の単語の部分一致では消さない。
     const NOISE: &[&str] = &[
         "related-posts",
@@ -556,14 +670,14 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
 
 /// 選ばれた本文と同じ記事の範囲で、手前に分かれた埋め込みを含むブロックを探す。
 fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
-    if root.is(ARTICLE) || root.is("body") {
+    if is_article(root) || root.is("body") {
         return Vec::new();
     }
     let ancestors = root.ancestors(Some(128));
     let article_boundary = ancestors
         .nodes()
         .iter()
-        .find(|node| Selection::from(**node).is(ARTICLE))
+        .find(|node| is_article(&Selection::from(**node)))
         .or_else(|| {
             ancestors
                 .nodes()
@@ -584,7 +698,7 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                 .first()
                 .filter(|node| Selection::from(**node).is(CONTENT_REGION));
         }
-        if root.is("main, [role~=main]") {
+        if root.is("main, [role=main]") {
             return None;
         }
         ancestors.nodes().iter().find(|node| {
@@ -604,7 +718,7 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
             root.is(REGION)
         };
     let explicit_body = root.is(ARTICLE_BODY);
-    let wrapped_embeds = explicit_body && !Selection::from(*boundary).is("body");
+    let wrapped_embeds = !Selection::from(*boundary).is("body");
     let branches = std::iter::once(root.clone())
         .chain(ancestors.nodes().iter().map(|node| Selection::from(*node)));
     for branch in branches.take_while(|branch| branch.nodes()[0].id != boundary.id) {
@@ -617,9 +731,13 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
             let previous = sibling.prev_sibling();
             if !sibling.is("br, hr") {
                 blocks += 1;
-                if sibling.is(ARTICLE)
+                if is_article(&sibling)
                     || sibling.is(ARTICLE_BODY)
-                    || sibling.select(ARTICLE).exists()
+                    || sibling
+                        .select("article, [role=article], [itemscope][itemtype]")
+                        .nodes()
+                        .iter()
+                        .any(|node| is_article(&Selection::from(*node)))
                     || sibling.select(ARTICLE_BODY).exists()
                     || (article_boundary.is_none()
                         && (sibling.is(REGION) || sibling.select(REGION).exists()))
@@ -633,7 +751,7 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
                 {
                     break;
                 }
-                if has_post_embed(&sibling, base) && !has_site_chrome(&sibling, explicit_body) {
+                if prune_leading_chrome(&sibling, explicit_body) && has_post_embed(&sibling, base) {
                     leading.push(sibling);
                 }
             }
@@ -649,7 +767,7 @@ fn is_embed_wrapper(block: &Selection<'_>) -> bool {
         return true;
     }
     let image_link = block.is("a[href]");
-    if !image_link && !block.is("div, span") {
+    if !image_link && !block.is("div, span, p") {
         return false;
     }
     let mut has_embed = false;
@@ -676,25 +794,37 @@ fn is_embed_wrapper(block: &Selection<'_>) -> bool {
     has_embed
 }
 
-// 記事や節を囲む header / footer は導入や出典になりうる。文書全体のものだけを除く。
-fn has_site_chrome(block: &Selection<'_>, explicit_body: bool) -> bool {
-    const CHROME: &str = "header, footer, [role~=banner], [role~=contentinfo]";
-    block
-        .nodes()
-        .iter()
-        .filter(|node| Selection::from(**node).is(CHROME))
-        .chain(block.select(CHROME).nodes())
-        .any(|node| {
-            let region = Selection::from(*node);
-            let ancestors = region.ancestors(Some(128));
-            let article_intro =
-                explicit_body && region.is("header") && ancestors.is("main, [role~=main]");
-            region.is("[role~=banner], [role~=contentinfo]")
-                || (!article_intro
-                    && !ancestors.is(REGION)
-                    && !ancestors.is(ARTICLE_BODY)
-                    && !ancestors.is(ARTICLE))
-        })
+// 記事や節を囲む header / footer は導入や出典になりうる。共通部分の外にある引用は残す。
+fn prune_leading_chrome(block: &Selection<'_>, explicit_body: bool) -> bool {
+    const CHROME: &str = "header, footer, [role=banner], [role=contentinfo]";
+    let is_chrome = |region: &Selection<'_>| {
+        if region.is("[role=banner], [role=contentinfo]") {
+            return true;
+        }
+        if !region.is(CHROME) {
+            return false;
+        }
+        let ancestors = region.ancestors(Some(128));
+        let article_intro =
+            explicit_body && region.is("header") && ancestors.is("main, [role=main]");
+        !article_intro
+            && !ancestors.is(REGION)
+            && !ancestors.is(ARTICLE_BODY)
+            && !ancestors
+                .nodes()
+                .iter()
+                .any(|node| is_article(&Selection::from(*node)))
+    };
+    if is_chrome(block) {
+        return false;
+    }
+    for node in block.select(CHROME).nodes() {
+        let region = Selection::from(*node);
+        if is_chrome(&region) {
+            region.remove();
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -928,6 +1058,7 @@ mod tests {
             r#"<main><div role="article region"><blockquote class="twitter-tweet"><a href="https://x.com/user/status/789">別の記事</a></blockquote></div>
             <div itemprop="articleBody">本文</div></main>"#,
         );
+        normalize_roles(&doc);
         let lead = leading_embeds(
             &doc.select("[itemprop=articleBody]"),
             "https://blog.example/post",
@@ -984,12 +1115,49 @@ mod tests {
     #[test]
     fn prunes_embeds_in_a_sidebar_with_more_than_one_role_token() {
         let doc = Document::from(
-            r#"<main><div role="complementary note"><blockquote class="twitter-tweet">サイドバーの引用</blockquote></div>
+            r#"<main role="main complementary"><div role="unknown complementary note"><blockquote class="twitter-tweet">サイドバーの引用</blockquote></div>
             <div itemprop="articleBody">本文</div></main>"#,
         );
         let base = "https://blog.example/post";
         prune(&doc, base);
+        assert!(doc.select("[role=main] [itemprop=articleBody]").exists());
         assert!(leading_embeds(&doc.select("[itemprop=articleBody]"), base).is_empty());
+    }
+
+    #[test]
+    fn keeps_a_wrapped_embed_before_a_section_in_main() {
+        let doc = Document::from(
+            r#"<main><div><blockquote class="twitter-tweet">前の引用</blockquote></div>
+            <section id="body">本文</section></main>"#,
+        );
+        let lead = leading_embeds(&doc.select("#body"), "https://blog.example/post");
+        assert_eq!(lead.len(), 1);
+        assert_eq!(lead[0].text().trim(), "前の引用");
+    }
+
+    #[test]
+    fn keeps_a_quote_outside_the_shared_header_in_a_leading_wrapper() {
+        let doc = Document::from(
+            r#"<main><div><header>サイト共通の見出し</header><blockquote class="twitter-tweet">前の引用</blockquote></div>
+            <div id="body">本文</div></main>"#,
+        );
+        let lead = leading_embeds(&doc.select("#body"), "https://blog.example/post");
+        assert_eq!(lead.len(), 1);
+        assert_eq!(lead[0].text().trim(), "前の引用");
+    }
+
+    #[test]
+    fn does_not_cross_an_article_with_a_multi_value_itemtype() {
+        let doc = Document::from(
+            r#"<main><div itemscope itemtype="https://schema.org/NewsArticle https://schema.org/CreativeWork">
+            <blockquote class="twitter-tweet">別の記事</blockquote></div>
+            <div itemprop="articleBody">本文</div></main>"#,
+        );
+        let lead = leading_embeds(
+            &doc.select("[itemprop=articleBody]"),
+            "https://blog.example/post",
+        );
+        assert!(lead.is_empty());
     }
 
     #[test]
@@ -1014,6 +1182,7 @@ mod tests {
             <header><blockquote class="twitter-tweet">本文の引用</blockquote></header>
             <div itemprop="articleBody">本文</div></div>"#,
         );
+        normalize_roles(&doc);
         let lead = leading_embeds(
             &doc.select("[itemprop=articleBody]"),
             "https://blog.example/post",
