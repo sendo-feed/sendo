@@ -12,7 +12,7 @@ use crate::{ExtractError, Extracted};
 const BODY_BLOCKS: &str =
     "p, pre, td, th, blockquote, div, section, article, main, body, li, dt, dd";
 
-const POST_EMBEDS: &str = "blockquote.twitter-tweet a[href], blockquote.imgur-embed-pub a[href], img[src^='https://i.imgur.com/']";
+const POST_LINKS: &str = "blockquote.twitter-tweet a[href], blockquote.imgur-embed-pub a[href]";
 
 fn compact(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
@@ -20,11 +20,27 @@ fn compact(text: &str) -> String {
 
 fn imgur_resource(value: &str, base: &str) -> Option<Url> {
     let mut url = Url::parse(&crate::normalize::http(value, base)?).ok()?;
-    if url.scheme() != "https" || url.host_str() != Some("i.imgur.com") {
+    if url.host_str() != Some("i.imgur.com") {
         return None;
     }
     url.set_fragment(None);
     Some(url)
+}
+
+fn has_post_embed(block: &Selection<'_>, base: &str) -> bool {
+    block.is(POST_LINKS)
+        || block.select(POST_LINKS).exists()
+        || block
+            .nodes()
+            .iter()
+            .filter(|node| node.node_name().as_deref() == Some("img"))
+            .chain(block.select("img[src]").nodes())
+            .any(|image| {
+                image
+                    .attr("src")
+                    .and_then(|src| imgur_resource(&src, base))
+                    .is_some()
+            })
 }
 
 fn prune(doc: &Document, base: &str) {
@@ -103,7 +119,7 @@ fn prune(doc: &Document, base: &str) {
             .iter()
             .map(|n| compact(&Selection::from(*n).text()).chars().count())
             .sum();
-        let related = if block.is("ul")
+        let related = if block.is("ul.manual-related")
             && links.length() >= 3
             && !block.select("img, video, audio, iframe").exists()
         {
@@ -115,7 +131,7 @@ fn prune(doc: &Document, base: &str) {
             && link_text * 10 >= text * 9
             && (links.length() >= 3 || block.select("img").length() > 0)
             && block.select("figure, p, pre, table").length() == 0
-            && !block.select(POST_EMBEDS).exists()
+            && !has_post_embed(&block, base)
         {
             if let Some(heading) = related {
                 heading.remove();
@@ -388,7 +404,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
             break;
         }
     }
-    let leading = leading_embeds(&root);
+    let leading = leading_embeds(&root, url);
     let mut html = String::new();
     let mut text_length = 0;
     for block in leading.iter().chain(std::iter::once(&root)) {
@@ -420,7 +436,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
 }
 
 /// 選ばれた本文と同じ記事の範囲で、手前に分かれた埋め込みを含むブロックを探す。
-fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
+fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
     const ARTICLE: &str =
         "article, [itemscope][itemtype$='Article'], [itemscope][itemtype$='BlogPosting']";
     const ARTICLE_BODY: &str = "[itemprop=articleBody]";
@@ -471,9 +487,7 @@ fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
                 {
                     break;
                 }
-                let contains_embed =
-                    sibling.is(POST_EMBEDS) || sibling.select(POST_EMBEDS).exists();
-                if contains_embed && !has_site_chrome(&sibling) {
+                if has_post_embed(&sibling, base) && !has_site_chrome(&sibling) {
                     leading.push(sibling);
                 }
             }
@@ -570,18 +584,36 @@ mod tests {
         assert!(text.find("導入文").unwrap() < text.find("本文の段落0").unwrap());
     }
     #[test]
+    fn keeps_short_reference_lists_with_related_headings() {
+        let page = Document::from(
+            r#"<article><h2 class="related-title">関連する一次資料</h2>
+            <ul><li><a href="/one">資料一</a></li><li><a href="/two">資料二</a></li><li><a href="/three">資料三</a></li></ul>
+            <h2 class="related-title">関連記事</h2>
+            <ul class="manual-related"><li><a href="/a">別一</a></li><li><a href="/b">別二</a></li><li><a href="/c">別三</a></li></ul></article>"#,
+        );
+        prune(&page, "https://blog.example/post");
+        assert!(page.text().contains("関連する一次資料"));
+        assert!(page.text().contains("資料三"));
+        assert!(!page.text().contains("関連記事"));
+        assert!(!page.text().contains("別三"));
+    }
+
+    #[test]
     fn keeps_a_direct_imgur_image_in_the_lead_without_article_markup() {
         let doc = Document::from(
             r#"<main><img src="https://i.imgur.com/example.jpeg">
-            <picture><img src="https://i.imgur.com/link.jpeg"></picture>
+            <picture><img src="http://i.imgur.com/link.jpeg"></picture>
+            <figure><img src="//I.IMGUR.COM/protocol-relative.jpeg"><figcaption>冒頭の画像</figcaption></figure>
+            <img src="https://i.imgur.com.example/unrelated.jpeg">
             <blockquote class="imgur-embed-pub"><a href="https://imgur.com/a/link">投稿</a></blockquote>
             <section><div id="body">記事本文</div></section></main>"#,
         );
-        let leads = leading_embeds(&doc.select("#body"));
-        assert_eq!(leads.len(), 3);
+        let leads = leading_embeds(&doc.select("#body"), "https://blog.example/post");
+        assert_eq!(leads.len(), 4);
         assert!(leads[0].is("img"));
         assert!(leads[1].select("img").exists());
-        assert!(leads[2].text().contains("投稿"));
+        assert!(leads[2].text().contains("冒頭の画像"));
+        assert!(leads[3].text().contains("投稿"));
     }
 
     #[test]
@@ -591,7 +623,7 @@ mod tests {
             let doc = Document::from(format!(
                 r#"<body><{container}><header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">注目</a></blockquote></header><footer><blockquote class="twitter-tweet"><a href="https://x.com/example/status/456">おすすめ</a></blockquote></footer><div id="body">記事本文</div></{tag}></body>"#,
             ));
-            assert!(leading_embeds(&doc.select("#body")).is_empty());
+            assert!(leading_embeds(&doc.select("#body"), "https://blog.example/post").is_empty());
         }
     }
 
@@ -601,7 +633,7 @@ mod tests {
             r#"<main><section><header><h2>導入</h2></header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">引用</a></blockquote></section>{}<section id="body">記事本文</section></main>"#,
             "<br>".repeat(8)
         ));
-        let leads = leading_embeds(&doc.select("#body"));
+        let leads = leading_embeds(&doc.select("#body"), "https://blog.example/post");
         assert_eq!(leads.len(), 1);
         assert!(leads[0].select("h2").exists());
     }
@@ -611,11 +643,11 @@ mod tests {
         let doc = Document::from(
             r#"<main><article><header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">引用</a></blockquote></header><div id="body">記事本文</div></article></main>"#,
         );
-        let leads = leading_embeds(&doc.select("#body"));
+        let leads = leading_embeds(&doc.select("#body"), "https://blog.example/post");
         assert_eq!(leads.len(), 1);
         assert!(leads[0].is("header"));
         doc.select("#body").set_attr("role", "main");
-        let leads = leading_embeds(&doc.select("#body"));
+        let leads = leading_embeds(&doc.select("#body"), "https://blog.example/post");
         assert_eq!(leads.len(), 1);
         assert!(leads[0].is("header"));
     }
@@ -649,10 +681,13 @@ mod tests {
     fn uses_the_explicit_article_as_the_boundary_of_an_article_body() {
         let dom = r#"<main><section><blockquote class="twitter-tweet"><a href="https://x.com/user/status/123">別の記事</a></blockquote></section><div id="body" itemprop="articleBody">本文</div></main>"#;
         let doc = Document::from(dom);
-        assert!(leading_embeds(&doc.select("#body")).is_empty());
+        assert!(leading_embeds(&doc.select("#body"), "https://blog.example/post").is_empty());
 
         let within_article = Document::from(dom.replace("main", "article"));
-        assert_eq!(leading_embeds(&within_article.select("#body")).len(), 1);
+        assert_eq!(
+            leading_embeds(&within_article.select("#body"), "https://blog.example/post").len(),
+            1
+        );
     }
 
     #[test]

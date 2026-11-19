@@ -1,6 +1,7 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { imageSigner } from "../db/secrets";
 import { FetchImageError, fetchImage } from "../fetcher/fetch-image";
+import { IMAGE_URL_MAX_LENGTH } from "../lib/image-url";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
@@ -44,7 +45,7 @@ const imageRoute = createRoute({
   ].join("\n"),
   request: {
     query: z.object({
-      url: z.string().max(4096).openapi({ description: "もとの画像の URL" }),
+      url: z.string().max(IMAGE_URL_MAX_LENGTH).openapi({ description: "もとの画像の URL" }),
       sig: z.string().max(64).openapi({ description: "sendo が付けた署名" }),
     }),
   },

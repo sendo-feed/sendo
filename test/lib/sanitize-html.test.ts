@@ -133,6 +133,14 @@ describe("sanitizeHtml", () => {
     }
   });
 
+  it("一つの Imgur の引用で同じ画像のリンクが重なっても画像は一枚にする", () => {
+    const quote =
+      '<blockquote class="imgur-embed-pub"><a href="https://i.imgur.com/photo.jpeg">写真</a><a href="https://i.imgur.com/photo.jpeg#original">元画像を開く</a></blockquote>';
+    const html = sanitizeHtml(quote + quote, BASE, { expandImgurEmbeds: true });
+    expect(html.match(/<img /g)).toHaveLength(2);
+    expect(html.split('#original"')).toHaveLength(3);
+  });
+
   it("中継できない画像だけがある Imgur の引用では直リンクを画像にする", () => {
     const html = sanitizeHtml(
       '<blockquote class="imgur-embed-pub"><img src="https://example.com:444/unavailable.jpeg"><a href="https://i.imgur.com/photo.jpeg">投稿</a></blockquote>',
@@ -151,6 +159,18 @@ describe("sanitizeHtml", () => {
       );
       expect(html.includes("<img")).toBe(port === ":8443");
     }
+  });
+
+  it("中継できない長さの URL は Imgur の画像の候補に数えない", () => {
+    const longUrl = `https://i.imgur.com/photo.jpeg?${"a".repeat(4096)}`;
+    const html = sanitizeHtml(
+      `<blockquote class="imgur-embed-pub"><img src="${longUrl}"><a href="${longUrl}">長い URL</a><a href="https://i.imgur.com/short.jpeg">写真</a></blockquote>`,
+      BASE,
+      { expandImgurEmbeds: true },
+    );
+    expect(html).toContain(`href="${longUrl}"`);
+    expect(html.match(/<img /g)).toHaveLength(2);
+    expect(html).toContain('<img src="https://i.imgur.com/short.jpeg" alt="Imgur">');
   });
 
   it("抽出時に取り除いた Imgur の画像へのリンクはそのまま残す", () => {

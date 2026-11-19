@@ -1,6 +1,7 @@
 import { decodeHTML } from "entities";
 import { toFetchableUrl } from "../fetcher/url-guard";
 import { escapeHtml, parseAttributes, tokenizeHtml } from "./html";
+import { IMAGE_URL_MAX_LENGTH } from "./image-url";
 import { isTrackingImage } from "./tracking-image";
 
 /*
@@ -46,7 +47,7 @@ const MAX_DEPTH = 100;
 
 const DIGITS = /^\d{1,5}$/;
 
-type ImgurQuote = { hasImage: boolean };
+type ImgurQuote = { hasImage: boolean; addedImages?: Set<string> };
 
 /** サニタイズした HTML の部品。画像は、URL をあとで差し替えられるように分けて持つ */
 type Part = string | { image: string; rest: string; imgurFallback?: ImgurQuote };
@@ -74,6 +75,7 @@ function isImgurImage(href: string): boolean {
 }
 
 function canRelayImage(src: string): boolean {
+  if (src.length > IMAGE_URL_MAX_LENGTH) return false;
   try {
     toFetchableUrl(src);
     return true;
@@ -239,13 +241,16 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
 
   while (open.length > 0) closeLast();
   if (!expandImgurEmbeds) return parts;
-  return parts.filter(
-    (part) =>
-      typeof part === "string" ||
-      !part.imgurFallback ||
-      (!part.imgurFallback.hasImage &&
-        !removedImgurImages.has(part.image.split("#", 1)[0] ?? part.image)),
-  );
+  return parts.filter((part) => {
+    if (typeof part === "string" || part.imgurFallback === undefined) return true;
+    const quote = part.imgurFallback;
+    const resource = part.image.split("#", 1)[0] ?? part.image;
+    if (quote.hasImage || removedImgurImages.has(resource)) return false;
+    quote.addedImages ??= new Set();
+    if (quote.addedImages.has(resource)) return false;
+    quote.addedImages.add(resource);
+    return true;
+  });
 }
 
 function link(href: string): string {

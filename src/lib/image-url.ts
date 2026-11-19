@@ -10,6 +10,9 @@ import { base64UrlDecode, base64UrlEncode } from "./crypto";
 /** 中継の入口のパス。クライアントには、このパスに url と sig を付けたものをそのまま配る */
 export const IMAGE_PATH = "/api/v1/images";
 
+/** 中継の入口が受け付ける、もとの画像 URL の長さ */
+export const IMAGE_URL_MAX_LENGTH = 4096;
+
 /** 署名の長さ（バイト）。HMAC-SHA-256 の先頭を使う */
 const SIGNATURE_BYTES = 16;
 
