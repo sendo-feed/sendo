@@ -57,7 +57,7 @@ flowchart LR
 
 > 自前のリーダーは reader Worker 経由で sendo とつながり、ブラウザからは同一オリジンに見える。外部のリーダーや AI エージェントは sendo に直接つながる。
 >
-> コンテナ版（[decisions/container.md](decisions/container.md)）では、reader のコンテナが画面を返し、sendo のパスをすべて中継する。外に出るのは reader のオリジン 1 つで、外部のリーダーや AI エージェントも reader のコンテナを通って sendo につながる。
+> コンテナ版（[decisions/container.md](decisions/container.md)）では、reader のコンテナが画面を返し、sendo のパスをすべて中継する。画面・API・認証は reader のオリジン 1 つから使う。外部のリーダーや AI エージェントも reader のコンテナを通って sendo につながる。
 
 ---
 

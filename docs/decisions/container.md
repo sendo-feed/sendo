@@ -33,7 +33,7 @@ Sendo は、重い処理も扱うコンテナ版と、無料プランの範囲�
    - 失敗した仕事は、Cloudflare 版と同じく、少し間を置いてやり直す。3 回失敗したら諦める
 7. **sendo は、1 つのコンテナ・1 つのプロセスで動かす。** データ（SQLite のファイルと記事の本文）は、1 つのボリューム（`/data`）にまとめる。記事の本文は、そのボリュームにファイルとして置く。
    - 既存のサーバー（関連検索の RustXNG など）を使う機能は、そのサーバーを別のコンテナとして `compose.yaml` に並べる（[テックスタック](tech-stack.md)の 6）。その機能を使わない人は、入れなくてよい
-   - 画面（sendo-reader）も、別のコンテナ（`ghcr.io/sendo-feed/sendo-reader`）として `compose.yaml` に並べる。外に出すのは sendo-reader のコンテナだけにし、sendo のポートは出さない。sendo-reader が画面を返し、sendo のパスを中継するので、外からは sendo-reader のオリジン 1 つに見える。`PUBLIC_URL` と `READER_URL` には、どちらもそのオリジンを入れる（sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)の 1〜4）
+   - 画面（sendo-reader）も、別のコンテナ（`ghcr.io/sendo-feed/sendo-reader`）として `compose.yaml` に並べる。外に出すのは sendo-reader のコンテナだけにし、sendo のポートは出さない。sendo-reader が画面を返し、sendo のパスを中継するので、画面・API・認証は sendo-reader のオリジン 1 つから使う。`PUBLIC_URL` と `READER_URL` には、どちらもそのオリジンを入れる（sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)の 1〜4）
    - 画面を使わない人は、sendo-reader のコンテナを外し、sendo のポートを出してよい（`PUBLIC_URL` は sendo のオリジン、`READER_URL` は空。OAuth は使えない）
 8. **外への取得では、接続する IP アドレスも確かめる。**
    - 名前解決の結果が内部用・予約済みの範囲なら、接続しない。リダイレクトの行き先にも同じ確認をかける
