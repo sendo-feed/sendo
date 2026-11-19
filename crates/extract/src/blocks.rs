@@ -385,11 +385,11 @@ fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
         return Vec::new();
     };
 
+    let article_boundary = Selection::from(*boundary).is(ARTICLE);
     let mut leading = Vec::new();
     let branches = std::iter::once(root.clone())
         .chain(ancestors.nodes().iter().map(|node| Selection::from(*node)));
     for branch in branches.take_while(|branch| branch.nodes()[0].id != boundary.id) {
-        let top_level = branch.parent().is("body");
         let mut sibling = branch.prev_sibling();
         for _ in 0..6 {
             if !sibling.exists() {
@@ -400,10 +400,8 @@ fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
             }
             let previous = sibling.prev_sibling();
             let site_header =
-                top_level && (sibling.is("header") || sibling.select("header").exists());
-            let contains_embed = sibling.is(POST_EMBEDS)
-                || (sibling.is("div, section, header, figure, blockquote, p, a")
-                    && sibling.select(POST_EMBEDS).exists());
+                !article_boundary && (sibling.is("header") || sibling.select("header").exists());
+            let contains_embed = sibling.is(POST_EMBEDS) || sibling.select(POST_EMBEDS).exists();
             if contains_embed && !site_header {
                 leading.push(sibling);
             }
@@ -487,7 +485,7 @@ mod tests {
     fn keeps_a_direct_imgur_image_in_the_lead_without_article_markup() {
         let doc = Document::from(
             r#"<main><img src="https://i.imgur.com/example.jpeg">
-            <p><a href="/photo"><img src="https://i.imgur.com/link.jpeg"></a></p>
+            <picture><img src="https://i.imgur.com/link.jpeg"></picture>
             <blockquote class="imgur-embed-pub"><a href="https://imgur.com/a/link">投稿</a></blockquote>
             <section><div id="body">記事本文</div></section></main>"#,
         );
@@ -501,9 +499,19 @@ mod tests {
     #[test]
     fn does_not_bring_a_site_header_into_the_body() {
         let doc = Document::from(
-            r#"<body><header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">注目</a></blockquote></header><div id="body">記事本文</div></body>"#,
+            r#"<body><div><header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">注目</a></blockquote></header><div id="body">記事本文</div></div></body>"#,
         );
         assert!(leading_embeds(&doc.select("#body")).is_empty());
+    }
+
+    #[test]
+    fn keeps_the_header_inside_the_article() {
+        let doc = Document::from(
+            r#"<main><article><header><blockquote class="twitter-tweet"><a href="https://x.com/example/status/123">引用</a></blockquote></header><div id="body">記事本文</div></article></main>"#,
+        );
+        let leads = leading_embeds(&doc.select("#body"));
+        assert_eq!(leads.len(), 1);
+        assert!(leads[0].is("header"));
     }
 
     #[test]

@@ -78,7 +78,7 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
   /** 開いている（閉じタグを出していない）要素 */
   const open: string[] = [];
   const imgurQuotes = new Set<number>();
-  let imgurLink: { index: number; href: string; hasImage: boolean; alt?: string } | undefined;
+  let imgurLink: { index: number; href: string; needsImage: boolean; alt?: string } | undefined;
   /** 中身ごと落としている要素と、その入れ子の数 */
   let dropping: { name: string; depth: number; wantsLink: boolean } | null = null;
 
@@ -86,7 +86,7 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
     imgurQuotes.delete(open.length);
     const name = open.pop();
     if (name === "a" && imgurLink !== undefined) {
-      if (!imgurLink.hasImage) {
+      if (imgurLink.needsImage) {
         const alt = escapeHtml(imgurLink.alt ?? "Imgur");
         parts.splice(imgurLink.index, 0, { image: imgurLink.href, rest: ` alt="${alt}"` });
       }
@@ -154,10 +154,16 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
       // 計測用の画像（トラッキングピクセル）は落とす
       const alt = attributes.get("alt");
       if (!src || isTrackingImage(src, attributes)) {
-        if (imgurLink !== undefined && alt !== undefined) imgurLink.alt = decodeHTML(alt);
+        if (imgurLink !== undefined) {
+          if (alt !== undefined) imgurLink.alt = decodeHTML(alt);
+          // フラグメントが違っても、同じ画像を計測用と判断した場合は差し替えない。
+          if (src !== null && src.split("#", 1)[0] === imgurLink.href.split("#", 1)[0]) {
+            imgurLink.needsImage = false;
+          }
+        }
         continue;
       }
-      if (imgurLink !== undefined) imgurLink.hasImage = true;
+      if (imgurLink !== undefined) imgurLink.needsImage = false;
       let rest = "";
       if (alt !== undefined) rest += ` alt="${escapeHtml(decodeHTML(alt))}"`;
       for (const key of ["width", "height"] as const) {
@@ -182,7 +188,7 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
       if (!href) continue;
       parts.push(link(href));
       if (imgurQuotes.size > 0 && isImgurImage(href)) {
-        imgurLink = { index: parts.length, href, hasImage: false };
+        imgurLink = { index: parts.length, href, needsImage: true };
       }
     } else {
       let extra = "";

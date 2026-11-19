@@ -104,6 +104,16 @@ describe("sanitizeHtml", () => {
     ).not.toContain("<img");
   });
 
+  it("計測画像と同じ直リンクから Imgur の画像を復元しない", () => {
+    const html = sanitizeHtml(
+      '<blockquote class="imgur-embed-pub"><a href="https://i.imgur.com/photo.jpeg#post"><img src="//i.imgur.com/photo.jpeg#pixel" width="1px" height="1.0">投稿</a></blockquote>',
+      BASE,
+      { expandImgurEmbeds: true },
+    );
+    expect(html).toContain('href="https://i.imgur.com/photo.jpeg#post"');
+    expect(html).not.toContain("<img");
+  });
+
   it("X の引用には固定の埋め込みの印だけを残す", () => {
     const raw =
       '<blockquote class="twitter&#45;tweet article" onclick="x()"><a href="https://x.com/example/status/123"></a></blockquote><script src="https://platform.twitter.com/widgets.js"></script>';

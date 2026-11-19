@@ -314,7 +314,7 @@ services:
     pull_policy: never
 ```
 
-`docker compose up -d` で起動します。更新するときは reader のイメージを新しいソースからビルドし、Sendo は `docker compose pull sendo` で更新してから `docker compose up -d` を実行します。
+初回は `docker compose pull sendo` で対応版の Sendo に更新してから、`docker compose up -d` で起動します。以後の更新では reader のイメージも新しいソースからビルドし直します。
 
 ## コマンド
 
