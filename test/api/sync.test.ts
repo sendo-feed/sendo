@@ -325,6 +325,118 @@ describe("差分", () => {
     expect(empty.feeds).toEqual([]);
   });
 
+  it("取得状態と理由の変化を購読 API と差分同期に反映する", async () => {
+    let now = new Date("2026-11-14T00:00:00Z");
+    let status = 520;
+    const { platform } = createTestPlatform({
+      now: () => now,
+      fetch: fakeFetch(() => new Response(null, { status })).fetch,
+    });
+    const feed = await subscribeFeed(platform, { now });
+    const client = createClient(platform);
+    expect((await client.sync()).feeds).toMatchObject([{ status: "active", lastErrorCode: null }]);
+
+    await runFetchFeed(platform, feed.id);
+    expect((await client.sync()).feeds).toMatchObject([
+      { id: feed.id, status: "failing", lastErrorCode: "http_status" },
+    ]);
+
+    now = new Date(now.getTime() + DAY);
+    await runFetchFeed(platform, feed.id);
+    expect((await client.sync()).feeds).toEqual([]);
+
+    now = new Date(now.getTime() + DAY);
+    status = 410;
+    await runFetchFeed(platform, feed.id);
+    expect((await client.sync()).feeds).toMatchObject([
+      { id: feed.id, status: "stalled", lastErrorCode: "gone" },
+    ]);
+    const response = await requestApp(platform, "/api/v1/feeds");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      items: [{ id: feed.id, status: "stalled", lastErrorCode: "gone", errorCount: 3 }],
+    });
+
+    now = new Date(now.getTime() + 7 * DAY);
+    status = 304;
+    await runFetchFeed(platform, feed.id);
+    expect((await client.sync()).feeds).toMatchObject([
+      { id: feed.id, status: "active", lastErrorCode: null },
+    ]);
+  });
+
+  it("404 の移転先候補を同期で届け、読者が新しい購読として追加できる", async () => {
+    let now = new Date("2026-11-14T00:00:00Z");
+    let status = 404;
+    const oldUrl = "https://old.example/feed.xml";
+    const pageUrl = "https://new.example/blog/not-found";
+    const candidateUrl = "https://new.example/blog/rss.xml";
+    const candidate = {
+      url: candidateUrl,
+      title: "New feed",
+      siteUrl: "https://new.example/blog/",
+    };
+    const { fetch, calls } = fakeFetch((url) => {
+      if (url.href === oldUrl && status === 404) {
+        return new Response(null, { status: 302, headers: { location: pageUrl } });
+      }
+      if (url.href === oldUrl) return new Response(null, { status });
+      if (url.href === pageUrl) {
+        return new Response('<link rel="alternate" type="application/rss+xml" href="rss.xml">', {
+          status: 404,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      if (url.href === candidateUrl) {
+        return new Response(
+          "<rss version='2.0'><channel><title>New feed</title><link>./</link></channel></rss>",
+        );
+      }
+      throw new Error(`unexpected fetch: ${url.href}`);
+    });
+    const { platform } = createTestPlatform({ now: () => now, fetch });
+    const feed = await subscribeFeed(platform, { url: oldUrl, now });
+    const client = createClient(platform);
+    expect((await client.sync()).feeds).toMatchObject([{ relocationCandidate: null }]);
+
+    await runFetchFeed(platform, feed.id);
+    expect(calls.map(({ url }) => url)).toEqual([oldUrl, pageUrl, candidateUrl]);
+    expect((await client.sync()).feeds).toMatchObject([
+      { id: feed.id, status: "failing", relocationCandidate: candidate },
+    ]);
+
+    now = new Date(now.getTime() + DAY);
+    await runFetchFeed(platform, feed.id);
+    expect((await client.sync()).feeds).toEqual([]);
+
+    const before = await requestApp(platform, "/api/v1/feeds");
+    expect(await before.json()).toMatchObject({
+      items: [{ id: feed.id, relocationCandidate: candidate }],
+    });
+    const accepted = await requestApp(platform, "/api/v1/feeds", {
+      method: "POST",
+      json: { url: candidateUrl },
+    });
+    expect(accepted.status).toBe(201);
+    const after = await requestApp(platform, "/api/v1/feeds");
+    expect(await after.json()).toMatchObject({ items: [{ url: oldUrl }, { url: candidateUrl }] });
+    await client.sync();
+
+    now = new Date(now.getTime() + DAY);
+    status = 429;
+    await runFetchFeed(platform, feed.id);
+    expect((await client.sync()).feeds).toMatchObject([
+      { id: feed.id, lastErrorCode: "rate_limited", relocationCandidate: candidate },
+    ]);
+
+    now = new Date(now.getTime() + DAY);
+    status = 304;
+    await runFetchFeed(platform, feed.id);
+    expect((await client.sync()).feeds).toMatchObject([
+      { id: feed.id, status: "active", relocationCandidate: null },
+    ]);
+  });
+
   it("購読し直したあとに元のフォルダを消しても、今の購読は手元から消えない（#25 のレビュー）", async () => {
     const { platform } = createTestPlatform();
     const { folder: tech } = await createFolder(platform.db, {

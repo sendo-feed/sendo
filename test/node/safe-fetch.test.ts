@@ -2,6 +2,7 @@ import type { LookupAddress } from "node:dns";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { fetchFeed } from "../../src/fetcher/fetch-feed";
 import {
   createGuardedLookup,
   createSafeFetch,
@@ -99,6 +100,13 @@ describe("createSafeFetch", () => {
     );
     const error = await safeFetch(`http://rebind.example:${port}/`).catch((e: unknown) => e);
     expect((error as Error).cause).toBeInstanceOf(PrivateAddressError);
+  });
+
+  it("名前解決のエラーがフィード取得に DNS の失敗として届く", async () => {
+    const fetch = createSafeFetch(fakeResolver({}));
+    await expect(fetchFeed("https://missing.example/feed", { fetch })).rejects.toMatchObject({
+      code: "dns",
+    });
   });
 
   it("Request は受けない（URL か文字列だけ）", () => {

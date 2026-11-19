@@ -24,6 +24,16 @@ describe("enqueueDueFeeds", () => {
     );
   });
 
+  it("定期実行が重なっても、同じフィードを二重に借りない", async () => {
+    await env.DB.exec("DELETE FROM feeds");
+    const { platform, enqueued } = createTestPlatform({ now: () => NOW });
+    const feed = await subscribeFeed(platform, { now: NOW });
+
+    const results = await Promise.all([enqueueDueFeeds(platform), enqueueDueFeeds(platform)]);
+    expect(results.sort()).toEqual([0, 1]);
+    expect(enqueued).toEqual([{ type: "fetch-feed", feedId: feed.id }]);
+  });
+
   it("一度に借りられる数を超えても、すべて積む", async () => {
     await env.DB.exec("DELETE FROM feeds");
     const { platform, enqueued } = createTestPlatform({ now: () => NOW });

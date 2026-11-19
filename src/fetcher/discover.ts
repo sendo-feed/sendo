@@ -1,6 +1,11 @@
 import { decodeHTMLAttribute } from "entities";
 import { parseAttributes, tokenizeHtml } from "../lib/html";
-import { FetchFeedError, fetchFeed } from "./fetch-feed";
+import {
+  type FetchedFeedPage,
+  FetchFeedError,
+  type FetchFeedOptions,
+  fetchFeed,
+} from "./fetch-feed";
 import { ParseFeedError, parseFeed, toHttpUrl } from "./parse-feed";
 import { toFetchableUrl, UrlNotAllowedError } from "./url-guard";
 
@@ -9,6 +14,8 @@ export type FeedCandidate = { url: string; title: string | null };
 
 /** フィードとして読める URL と、そのフィードのタイトル */
 export type DiscoveredFeed = { url: string; title: string | null };
+
+export type FeedRelocationCandidate = DiscoveredFeed & { siteUrl: string | null };
 
 export class DiscoverError extends Error {
   override readonly name = "DiscoverError";
@@ -31,11 +38,13 @@ const FEED_TYPES = new Set([
 // type="application/json"> をどのページにも置くので、フィードでない候補が混ざる
 
 /** HTML のうち、<link> を探す範囲。<link> はふつう <head> にあるので、先頭だけで足りる */
-const MAX_SCAN_LENGTH = 512 * 1024;
+export const MAX_FEED_LINK_PAGE_BYTES = 512 * 1024;
 /** 1 つのタグとして読む長さの上限 */
 const MAX_TAG_LENGTH = 4096;
 /** 候補を確かめる数の上限。外部への取得の回数を抑える */
 const MAX_TRIES = 3;
+const RELOCATION_TIMEOUT_MS = 5_000;
+const MAX_RELOCATION_URL_LENGTH = 2048;
 
 /**
  * URL がフィードならそのまま、Web ページなら <link rel="alternate"> からフィードを見つける。
@@ -53,27 +62,85 @@ export async function discoverFeed(
     if (!(error instanceof ParseFeedError)) throw error;
   }
 
-  const candidates = findFeedLinks(page.body, page.url);
-  for (const candidate of candidates.slice(0, MAX_TRIES)) {
-    let candidateUrl: string;
-    try {
-      candidateUrl = toFetchableUrl(candidate.url).href;
-    } catch (error) {
-      if (error instanceof UrlNotAllowedError) continue;
-      throw error;
-    }
-    try {
-      const feed = await fetchOrFail(candidateUrl, options);
-      return { url: candidateUrl, title: parseFeed(feed.body, feed.url).title ?? candidate.title };
-    } catch (error) {
-      if (error instanceof DiscoverError || error instanceof ParseFeedError) continue;
-      throw error;
-    }
-  }
+  const found = await firstReadableFeedLink(page, options);
+  if (found) return { url: found.url, title: found.title };
   throw new DiscoverError("feed_not_found", "no feed found at this URL");
 }
 
-async function fetchOrFail(url: string, options: { fetch: typeof fetch }) {
+/** 失敗した URL のページに残っているリンクから、読める移転先候補を 1 件探す */
+export function findFeedRelocation(
+  page: FetchedFeedPage,
+  originalUrl: string,
+  fetch: typeof globalThis.fetch,
+): Promise<FeedRelocationCandidate | null> {
+  return firstReadableFeedLink(page, {
+    fetch,
+    relocation: {
+      excludedUrls: new Set([originalUrl, page.url]),
+      deadline: performance.now() + RELOCATION_TIMEOUT_MS,
+    },
+  });
+}
+
+async function firstReadableFeedLink(
+  page: FetchedFeedPage,
+  options: {
+    fetch: typeof globalThis.fetch;
+    relocation?: { excludedUrls: ReadonlySet<string>; deadline: number };
+  },
+): Promise<FeedRelocationCandidate | null> {
+  const { fetch, relocation } = options;
+  const candidates = findFeedLinks(page.body, page.url);
+  for (const candidate of candidates.slice(0, MAX_TRIES)) {
+    try {
+      const candidateUrl = toFetchableUrl(candidate.url).href;
+      if (relocation?.excludedUrls.has(candidateUrl)) continue;
+      if (relocation && candidateUrl.length > MAX_RELOCATION_URL_LENGTH) continue;
+
+      const fetchOptions: Pick<FetchFeedOptions, "fetch" | "timeoutMs" | "maxBytes"> = { fetch };
+      if (relocation) {
+        const remaining = Math.ceil(relocation.deadline - performance.now());
+        if (remaining <= 0) break;
+        fetchOptions.timeoutMs = remaining;
+        fetchOptions.maxBytes = MAX_FEED_LINK_PAGE_BYTES;
+      }
+      const feed = await fetchOrFail(candidateUrl, fetchOptions);
+      if (relocation?.excludedUrls.has(feed.url)) continue;
+      const parsed = parseFeed(feed.body, feed.url);
+      const title = parsed.title ?? candidate.title;
+      return {
+        url: candidateUrl,
+        title: relocation ? (title?.slice(0, 500) ?? null) : title,
+        siteUrl: relocation ? relocationSiteUrl(parsed.siteUrl) : parsed.siteUrl,
+      };
+    } catch (error) {
+      if (
+        error instanceof UrlNotAllowedError ||
+        error instanceof DiscoverError ||
+        error instanceof ParseFeedError
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return null;
+}
+
+function relocationSiteUrl(url: string | null): string | null {
+  if (url === null || url.length > MAX_RELOCATION_URL_LENGTH) return null;
+  try {
+    return toFetchableUrl(url).href;
+  } catch (error) {
+    if (error instanceof UrlNotAllowedError) return null;
+    throw error;
+  }
+}
+
+async function fetchOrFail(
+  url: string,
+  options: Pick<FetchFeedOptions, "fetch" | "timeoutMs" | "maxBytes">,
+) {
   try {
     const result = await fetchFeed(url, options);
     if (result.status !== "ok") throw new DiscoverError("fetch_failed", "unexpected 304");
@@ -96,7 +163,7 @@ export function findFeedLinks(html: string, pageUrl: string): FeedCandidate[] {
   // HTML の決まりでは、<link> より後に書かれていても文書全体に効くので、最後まで読んでから解決する
   let base: string | null = null;
 
-  for (const token of tokenizeHtml(html.slice(0, MAX_SCAN_LENGTH))) {
+  for (const token of tokenizeHtml(html.slice(0, MAX_FEED_LINK_PAGE_BYTES))) {
     if (token.type !== "tag" || token.closing) continue;
     if (token.name !== "link" && token.name !== "base") continue;
     if (token.attributes.length > MAX_TAG_LENGTH) continue;

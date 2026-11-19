@@ -1,7 +1,7 @@
-import { and, asc, eq, exists, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { Database } from ".";
 import { chunked } from "./chunk";
-import { type Feed, feeds, type NewFeed, subscriptions } from "./schema";
+import { type Feed, type FeedErrorCode, feeds, type NewFeed, subscriptions } from "./schema";
 
 /*
  * フィードは全員で共有する。誰がどのフォルダで購読しているかは subscriptions.ts。
@@ -109,8 +109,20 @@ export async function leaseDueFeeds(
   if (due.length === 0) return [];
 
   const ids = due.map(({ id }) => id);
-  await db.update(feeds).set({ nextFetchAt: input.leaseUntil }).where(inArray(feeds.id, ids));
-  return ids;
+  const leased = await db
+    .update(feeds)
+    .set({ nextFetchAt: input.leaseUntil })
+    .where(and(inArray(feeds.id, ids), lte(feeds.nextFetchAt, input.now), subscribed))
+    .returning({ id: feeds.id })
+    .all();
+  const leasedIds = new Set(leased.map(({ id }) => id));
+  return ids.filter((id) => leasedIds.has(id));
+}
+
+type FetchTarget = Pick<Feed, "id" | "lastFetchedAt">;
+
+function fetchedBefore(now: Date) {
+  return or(isNull(feeds.lastFetchedAt), lt(feeds.lastFetchedAt, now));
 }
 
 export async function recordFetchSuccess(
@@ -121,26 +133,37 @@ export async function recordFetchSuccess(
     nextFetchAt: Date;
     /** 決め直した取得の間隔（docs/decisions/jobs.md の 7） */
     fetchIntervalMs: number;
-    etag: string | null;
-    lastModified: string | null;
+    etag?: string | null;
+    lastModified?: string | null;
     title?: string | null;
     siteUrl?: string | null;
   },
-): Promise<void> {
-  await db
+): Promise<Pick<Feed, "id" | "siteUrl" | "iconUrl" | "iconCheckedAt"> | undefined> {
+  return db
     .update(feeds)
     .set({
-      etag: input.etag,
-      lastModified: input.lastModified,
+      ...(input.etag !== undefined && { etag: input.etag }),
+      ...(input.lastModified !== undefined && { lastModified: input.lastModified }),
       lastFetchedAt: input.now,
       nextFetchAt: input.nextFetchAt,
       fetchIntervalMs: input.fetchIntervalMs,
       errorCount: 0,
       lastError: null,
+      lastErrorCode: null,
+      failureStartedAt: null,
+      fetchStalled: false,
+      relocationCandidate: null,
       ...(input.title !== undefined && { title: input.title }),
       ...(input.siteUrl !== undefined && { siteUrl: input.siteUrl }),
     })
-    .where(eq(feeds.id, id));
+    .where(and(eq(feeds.id, id), fetchedBefore(input.now)))
+    .returning({
+      id: feeds.id,
+      siteUrl: feeds.siteUrl,
+      iconUrl: feeds.iconUrl,
+      iconCheckedAt: feeds.iconCheckedAt,
+    })
+    .get();
 }
 
 /**
@@ -160,21 +183,42 @@ export async function recordFeedIcon(
 
 export async function recordFetchFailure(
   db: Database,
-  id: string,
+  feed: FetchTarget,
   input: {
     now: Date;
     nextFetchAt: Date;
     errorCount: number;
     error: string;
+    errorCode: FeedErrorCode;
+    failureStartedAt: Date | null;
+    fetchStalled: boolean;
+    relocationCandidate?: Feed["relocationCandidate"] | undefined;
   },
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const previous = feed.lastFetchedAt?.getTime() ?? null;
+  const updated = await db
     .update(feeds)
     .set({
       lastFetchedAt: input.now,
       nextFetchAt: input.nextFetchAt,
       errorCount: input.errorCount,
       lastError: input.error,
+      lastErrorCode: input.errorCode,
+      failureStartedAt: input.failureStartedAt,
+      fetchStalled: input.fetchStalled,
+      ...(input.relocationCandidate !== undefined && {
+        relocationCandidate: input.relocationCandidate,
+      }),
     })
-    .where(eq(feeds.id, id));
+    // 失敗回数と次の間隔は、呼び出し元が読んだ結果がまだ最新のときだけ書く
+    .where(
+      and(
+        eq(feeds.id, feed.id),
+        fetchedBefore(input.now),
+        sql`${feeds.lastFetchedAt} IS ${previous}`,
+      ),
+    )
+    .returning({ id: feeds.id })
+    .get();
+  return updated !== undefined;
 }
