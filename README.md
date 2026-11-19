@@ -258,7 +258,7 @@ fork の `wrangler.jsonc` には書かないでください。fork は公開さ�
 
 手元では、`pnpm dev --var FETCH_INTERVAL_MINUTES:60` のように入れます（`.dev.vars` からは、秘密の 3 つしか読まれません）。
 
-### 更新する
+### 標準構成を更新する
 
 GitHub の fork の画面で「Sync fork」→「Update branch」を押します。上流の変更が fork の `main` に入り、その push でデプロイされます（マイグレーションも当たります）。
 
