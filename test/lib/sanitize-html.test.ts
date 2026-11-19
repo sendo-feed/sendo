@@ -85,6 +85,25 @@ describe("sanitizeHtml", () => {
     expect(clean("<img>")).toBe("");
   });
 
+  it("Imgur の埋め込みの画像直リンクは、表示できる画像がない場合に本文画像にする", () => {
+    const cleanPage = (html: string) => sanitizeHtml(html, BASE, { expandImgurEmbeds: true });
+    const html = cleanPage(
+      '<blockquote class="imgur-embed-pub"><a href="//i.imgur.com/photo.jpeg"><img src="https://pixel.wp.com/b.gif" alt="画像の説明">写真</a></blockquote>',
+    );
+    expect(html).toContain('<img src="https://i.imgur.com/photo.jpeg" alt="画像の説明">写真');
+    expect(clean(html)).toBe(html);
+    expect(
+      cleanPage(
+        '<blockquote class="imgur-embed-pub"><a href="https://i.imgur.com/photo.jpeg"><img src="https://example.com/thumbnail.jpeg" alt="元の画像">説明</a></blockquote>',
+      ),
+    ).toContain('<img src="https://example.com/thumbnail.jpeg" alt="元の画像">説明');
+    expect(
+      cleanPage(
+        '<blockquote class="imgur-embed-pub"><a href="https://imgur.com/a/post">投稿</a></blockquote>',
+      ),
+    ).not.toContain("<img");
+  });
+
   it("X の引用には固定の埋め込みの印だけを残す", () => {
     const raw =
       '<blockquote class="twitter&#45;tweet article" onclick="x()"><a href="https://x.com/example/status/123"></a></blockquote><script src="https://platform.twitter.com/widgets.js"></script>';

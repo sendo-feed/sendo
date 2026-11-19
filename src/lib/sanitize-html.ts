@@ -61,17 +61,44 @@ function toUrl(value: string | undefined, baseUrl: string, protocols: readonly s
 
 const HTTP = ["http:", "https:"] as const;
 
-function sanitizeToParts(html: string, baseUrl: string): Part[] {
+function isImgurImage(href: string): boolean {
+  const url = new URL(href);
+  return (
+    url.protocol === "https:" &&
+    url.hostname === "i.imgur.com" &&
+    url.port === "" &&
+    url.username === "" &&
+    url.password === "" &&
+    /\.(?:jpe?g|png|gif|webp|avif)$/i.test(url.pathname)
+  );
+}
+
+function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = false): Part[] {
   const parts: Part[] = [];
   /** 開いている（閉じタグを出していない）要素 */
   const open: string[] = [];
+  const imgurQuotes = new Set<number>();
+  let imgurLink: { index: number; href: string; hasImage: boolean; alt?: string } | undefined;
   /** 中身ごと落としている要素と、その入れ子の数 */
   let dropping: { name: string; depth: number; wantsLink: boolean } | null = null;
+
+  const closeLast = () => {
+    imgurQuotes.delete(open.length);
+    const name = open.pop();
+    if (name === "a" && imgurLink !== undefined) {
+      if (!imgurLink.hasImage) {
+        const alt = escapeHtml(imgurLink.alt ?? "Imgur");
+        parts.splice(imgurLink.index, 0, { image: imgurLink.href, rest: ` alt="${alt}"` });
+      }
+      imgurLink = undefined;
+    }
+    parts.push(`</${name}>`);
+  };
 
   const closeUntil = (name: string) => {
     const index = open.lastIndexOf(name);
     if (index === -1) return;
-    while (open.length > index) parts.push(`</${open.pop()}>`);
+    while (open.length > index) closeLast();
   };
 
   for (const token of tokenizeHtml(html)) {
@@ -125,9 +152,13 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
     if (name === "img") {
       const src = toUrl(attributes.get("src"), baseUrl, HTTP);
       // 計測用の画像（トラッキングピクセル）は落とす
-      if (!src || isTrackingImage(src, attributes)) continue;
-      let rest = "";
       const alt = attributes.get("alt");
+      if (!src || isTrackingImage(src, attributes)) {
+        if (imgurLink !== undefined && alt !== undefined) imgurLink.alt = decodeHTML(alt);
+        continue;
+      }
+      if (imgurLink !== undefined) imgurLink.hasImage = true;
+      let rest = "";
       if (alt !== undefined) rest += ` alt="${escapeHtml(decodeHTML(alt))}"`;
       for (const key of ["width", "height"] as const) {
         const value = attributes.get(key);
@@ -150,16 +181,18 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       // 行き先のないリンクは、タグを落として中身だけ残す
       if (!href) continue;
       parts.push(link(href));
+      if (imgurQuotes.size > 0 && isImgurImage(href)) {
+        imgurLink = { index: parts.length, href, hasImage: false };
+      }
     } else {
       let extra = "";
-      if (
-        name === "blockquote" &&
-        (attributes.get("data-embed") === "x" ||
-          decodeHTML(attributes.get("class") ?? "")
-            .split(/[\t\n\f\r ]+/)
-            .includes("twitter-tweet"))
-      ) {
-        extra = ' data-embed="x"';
+      if (name === "blockquote") {
+        const classes = decodeHTML(attributes.get("class") ?? "").split(/[\t\n\f\r ]+/);
+        if (expandImgurEmbeds && classes.includes("imgur-embed-pub"))
+          imgurQuotes.add(open.length + 1);
+        if (attributes.get("data-embed") === "x" || classes.includes("twitter-tweet")) {
+          extra = ' data-embed="x"';
+        }
       }
       const numeric =
         name === "td" || name === "th" ? ["colspan", "rowspan"] : name === "ol" ? ["start"] : [];
@@ -172,7 +205,7 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
     open.push(name);
   }
 
-  while (open.length > 0) parts.push(`</${open.pop()}>`);
+  while (open.length > 0) closeLast();
   return parts;
 }
 
@@ -186,8 +219,12 @@ const image = (src: string, rest: string) => `<img src="${escapeHtml(src)}"${res
  * 外部から来た HTML をサニタイズする。リンクと画像の URL は、baseUrl を基準に絶対の URL にする。
  * 画像の URL は、もとのまま（保存するときに使う）
  */
-export function sanitizeHtml(html: string, baseUrl: string): string {
-  return sanitizeToParts(html, baseUrl)
+export function sanitizeHtml(
+  html: string,
+  baseUrl: string,
+  { expandImgurEmbeds = false }: { expandImgurEmbeds?: boolean } = {},
+): string {
+  return sanitizeToParts(html, baseUrl, expandImgurEmbeds)
     .map((part) => (typeof part === "string" ? part : image(part.image, part.rest)))
     .join("");
 }

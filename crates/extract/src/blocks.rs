@@ -65,31 +65,41 @@ fn prune(doc: &Document) {
             .iter()
             .map(|n| compact(&Selection::from(*n).text()).chars().count())
             .sum();
-        let related_list = block.is("ul")
+        let related = if block.is("ul")
             && links.length() >= 3
             && !block.select("img, video, audio, iframe").exists()
-            && follows_related_heading(&block);
-        if ((20..240).contains(&text) || related_list)
+        {
+            related_heading_before(&block)
+        } else {
+            None
+        };
+        if ((20..240).contains(&text) || related.is_some())
             && link_text * 10 >= text * 9
             && (links.length() >= 3 || block.select("img").length() > 0)
             && block.select("figure, p, pre, table").length() == 0
             && !block.select(POST_EMBEDS).exists()
         {
+            if let Some(heading) = related {
+                heading.remove();
+            }
             block.remove();
         }
     }
-    doc.select("#related-title, .related-title").remove();
 }
 
-fn follows_related_heading(block: &Selection<'_>) -> bool {
+fn related_heading_before<'a>(block: &Selection<'a>) -> Option<Selection<'a>> {
     let mut previous = block.prev_sibling();
     for _ in 0..6 {
         if !previous.is("br, hr") {
-            return previous.is("#related-title, .related-title");
+            return (previous.is("#related-title, .related-title")
+                && !previous
+                    .select("p, div, section, article, ul, ol, table")
+                    .exists())
+            .then_some(previous);
         }
         previous = previous.prev_sibling();
     }
-    false
+    None
 }
 
 pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> {
@@ -385,17 +395,16 @@ fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
             if !sibling.exists() {
                 break;
             }
+            if sibling.is(ARTICLE) || sibling.select(ARTICLE).exists() {
+                break;
+            }
             let previous = sibling.prev_sibling();
             let site_header =
                 top_level && (sibling.is("header") || sibling.select("header").exists());
             let contains_embed = sibling.is(POST_EMBEDS)
-                || (sibling.is("div, section, header, figure, blockquote, a")
+                || (sibling.is("div, section, header, figure, blockquote, p, a")
                     && sibling.select(POST_EMBEDS).exists());
-            if contains_embed
-                && !site_header
-                && !sibling.is(ARTICLE)
-                && !sibling.select(ARTICLE).exists()
-            {
+            if contains_embed && !site_header {
                 leading.push(sibling);
             }
             sibling = previous;
@@ -458,8 +467,8 @@ mod tests {
         let doc = Document::from(result.html);
         assert!(doc.select("blockquote.twitter-tweet a[href]").exists());
         assert_eq!(
-            doc.select("blockquote.imgur-embed-pub img")
-                .attr("src")
+            doc.select("blockquote.imgur-embed-pub a")
+                .attr("href")
                 .as_deref(),
             Some("https://i.imgur.com/example.jpeg"),
         );
@@ -478,7 +487,7 @@ mod tests {
     fn keeps_a_direct_imgur_image_in_the_lead_without_article_markup() {
         let doc = Document::from(
             r#"<main><img src="https://i.imgur.com/example.jpeg">
-            <a href="/photo"><img src="https://i.imgur.com/link.jpeg"></a>
+            <p><a href="/photo"><img src="https://i.imgur.com/link.jpeg"></a></p>
             <blockquote class="imgur-embed-pub"><a href="https://imgur.com/a/link">投稿</a></blockquote>
             <section><div id="body">記事本文</div></section></main>"#,
         );

@@ -186,7 +186,7 @@ async function extract(
   }
 
   // 抜いた HTML は、外から来たもの。保存する前にサニタイズする（決定の 2）
-  let html = sanitizeHtml(extracted.html, page.url);
+  let html = sanitizeHtml(extracted.html, page.url, { expandImgurEmbeds: true });
   const text = htmlToText(html, Number.POSITIVE_INFINITY) ?? "";
   const textLength = [...text].length;
   if (textLength < MIN_PAGE_TEXT_LENGTH) {

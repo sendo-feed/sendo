@@ -102,29 +102,6 @@ fn placeholder(url: &str) -> bool {
     .iter()
     .any(|x| u.contains(x))
 }
-/// Imgur の埋め込みが持つ画像への直リンク。投稿ページや動画はここでは扱わない。
-fn imgur_image(value: &str, base: &str) -> Option<Url> {
-    let url = Url::parse(base).ok()?.join(value.trim()).ok()?;
-    let extension = url.path().rsplit_once('.')?.1.to_ascii_lowercase();
-    (url.scheme() == "https"
-        && url.host_str() == Some("i.imgur.com")
-        && url.port().is_none()
-        && url.username().is_empty()
-        && url.password().is_none()
-        && matches!(
-            extension.as_str(),
-            "jpg" | "jpeg" | "png" | "gif" | "webp" | "avif"
-        ))
-    .then_some(url)
-}
-
-fn pixel_size(value: &str) -> bool {
-    let value = value.trim().to_ascii_lowercase();
-    let number = value.strip_suffix("px").unwrap_or(&value).trim_end();
-    number.chars().all(|c| c.is_ascii_digit() || c == '.')
-        && number.parse::<f64>().is_ok_and(|size| size <= 1.0)
-}
-
 pub(crate) fn normalize(html: &str, base: &str) -> String {
     let doc = Document::from(html);
     for node in doc.select("img").nodes() {
@@ -192,42 +169,6 @@ pub(crate) fn normalize(html: &str, base: &str) -> String {
             ]);
         }
     }
-    for node in doc.select("blockquote.imgur-embed-pub a[href]").nodes() {
-        let link = Selection::from(*node);
-        let Some(url) = link
-            .attr("href")
-            .and_then(|value| imgur_image(&value, base))
-        else {
-            continue;
-        };
-        let images = link.select("img");
-        if images.nodes().iter().any(|node| {
-            let image = Selection::from(*node);
-            let tiny = ["width", "height"]
-                .iter()
-                .all(|attr| image.attr(attr).is_some_and(|value| pixel_size(&value)));
-            !tiny
-                && image
-                    .attr("src")
-                    .and_then(|src| http(&src, base))
-                    .is_some_and(|src| !placeholder(&src))
-        }) {
-            continue;
-        }
-        if images.exists() {
-            let image = images.first();
-            image.set_attr("src", url.as_str());
-            image.remove_attrs(&["width", "height"]);
-            continue;
-        }
-        let image = r#"<img alt="Imgur">"#;
-        if link.children().length() == 0 && link.text().trim() == "View post on imgur.com" {
-            link.set_html(image);
-        } else {
-            link.prepend_html(image);
-        }
-        link.select("img").set_attr("src", url.as_str());
-    }
     // 選んだ画像は img.src に入れた。文章と画像の位置は変えない。
     for n in doc.select("picture source").nodes() {
         Selection::from(*n).remove();
@@ -262,38 +203,6 @@ mod tests {
             .is_none()
         );
     }
-    #[test]
-    fn imgur_conversion_preserves_existing_images_and_rejects_other_hosts() {
-        let doc = Document::from(normalize(
-            r#"<blockquote class="imgur-embed-pub"><a href="https://i.imgur.com/original.jpeg"><img src="/thumbnail.jpg" alt="元の代替文">元のキャプション</a></blockquote>
-            <blockquote class="imgur-embed-pub"><a href="https://i.imgur.com.example/example.jpeg">外部</a></blockquote>"#,
-            "https://site.example/post",
-        ));
-        let image = doc.select("img");
-        assert_eq!(image.length(), 1);
-        assert_eq!(
-            image.attr("src").as_deref(),
-            Some("https://site.example/thumbnail.jpg")
-        );
-        assert_eq!(image.attr("alt").as_deref(), Some("元の代替文"));
-        assert!(doc.text().contains("元のキャプション"));
-    }
-
-    #[test]
-    fn imgur_conversion_uses_the_direct_link_for_an_unusable_image() {
-        let doc = Document::from(normalize(
-            r#"<blockquote class="imgur-embed-pub"><a href="//i.imgur.com/photo.jpeg"><img src="https://site.example/tiny.gif" width="1px" height="1.0" alt="画像の説明"></a></blockquote>"#,
-            "https://site.example/post",
-        ));
-        let image = doc.select("img");
-        assert_eq!(
-            image.attr("src").as_deref(),
-            Some("https://i.imgur.com/photo.jpeg")
-        );
-        assert_eq!(image.attr("alt").as_deref(), Some("画像の説明"));
-        assert!(image.attr("width").is_none());
-    }
-
     #[test]
     fn keeps_lazy_images_in_their_original_links() {
         let html = normalize(
