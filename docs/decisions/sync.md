@@ -30,8 +30,8 @@ sendo-reader はローカルファーストで作る（画面はネットワー�
 9. **人ごとの同期の対象が変わったら、WebSocket で知らせる。** 入口は `GET /api/v1/sync/updates`。
    - `101` を返す前に、有効なブラウザのセッションクッキーを必須とし、接続をそのセッションのユーザーにひも付ける。`Origin` が公開オリジンと厳密に一致することを確かめ、欠けていれば拒否する
    - reader が中継する構成では、`PUBLIC_URL` に有効な公開 HTTPS オリジンを設定する。Sendo に直接接続する構成で `PUBLIC_URL` がなければ、リクエスト URL のオリジンと照合する
-   - ブラウザは reader 自身の `/api/v1/sync/updates` へ接続する。reader のコンテナはこのパスの WebSocket Upgrade を通常の HTTP 中継とは別に扱い、ブラウザの `Origin` とクッキーを Sendo へ渡す（[コンテナ版](container.md#動かし方)の 7）。reader 側の実装時に、その中継の決定も更新する
-   - 本番では reader の公開 URL と同じホストとポートの `wss:` に接続する。reader 側で本番の CSP を使い、対応ブラウザで接続を確かめる。CSP の変更が要る場合は reader 自身の通知先に絞り、reader 側の決定にも記録する
+   - ブラウザは reader 自身の `/api/v1/sync/updates` へ接続する。reader のコンテナは、このパスの WebSocket の Upgrade を書き換えずに中継し、`Origin`、`Cookie`、`Sec-WebSocket-*` をそのまま Sendo へ渡す。`101` のあとは、フレームを読まずに両方向へ流す（sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)の 4。Sendo の側の構成は[コンテナ版](container.md#動かし方)の 7）
+   - 本番では reader の公開 URL と同じホストとポートの `wss:` に接続する。reader は CSP を変えずに（`connect-src 'self'` のまま）つなぐ。CSP の決まりは、sendo-reader の[ローカルファースト](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/local-first.md#ページの守り)の「ページの守り」が正
    - reader は、`/api/v1/sync/updates` につないでみて、つながれば通知を使う。つながらないとき（対応前の Sendo、中継に対応する前の reader、ネットワークの都合）は、間を空けてつなぎ直しながら、定期同期を続ける。Sendo が通知に対応しているかを、別の API で問い合わせない
    - 書き込みの後で、対象ユーザーの接続へ `{"type":"sync_required"}` を送る。reader は通知を受けたら手元のカーソルから差分を取る。知らせるのは次のとき
      - REST API と Google Reader API で、利用者の状態を変えるリクエスト（`GET` と `HEAD` 以外）が成功したとき（2xx）。認証のミドルウェアの後ろの 1 か所で、そのリクエストの利用者に知らせる。購読、フォルダ、設定、あとで読むページ、受信箱のどれを変えても届く
