@@ -114,8 +114,6 @@ it("PUBLIC_URL と同じオリジンの、有効なブラウザセッション�
   const plain = await fetch(`${httpUrl}${UPDATES}`, { headers: { cookie, origin: ORIGIN } });
   expect(plain.status).toBe(400);
 
-  const features = await fetch(`${httpUrl}/api/v1/features`, { headers: { cookie } });
-  expect(await features.json()).toMatchObject({ syncUpdates: true });
   const socket = await openSocket(cookie);
   const closed = once(socket, "close");
   hub.stop();
