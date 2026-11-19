@@ -258,7 +258,7 @@ fork の `wrangler.jsonc` には書かないでください。fork は公開さ�
 
 手元では、`pnpm dev --var FETCH_INTERVAL_MINUTES:60` のように入れます（`.dev.vars` からは、秘密の 3 つしか読まれません）。
 
-### 標準構成を更新する
+### 更新する
 
 GitHub の fork の画面で「Sync fork」→「Update branch」を押します。上流の変更が fork の `main` に入り、その push でデプロイされます（マイグレーションも当たります）。
 
@@ -293,18 +293,7 @@ GitHub の fork の画面で「Sync fork」→「Update branch」を押します
 
 画面を使わず、リーダーアプリや MCP だけで使うときは、`compose.yaml` の `reader` を消して Sendo のポートを出し（`compose.yaml` のコメント）、`PUBLIC_URL` を Sendo のオリジンにします。`READER_URL` は空にします（OAuth は使えず、MCP 用のトークンでつなぎます）。
 
-### X の埋め込みを有効にする
-
-[reader の手順](https://github.com/sendo-feed/sendo-reader#x-の投稿の埋め込み)に従って、埋め込み用の静的ファイルを別の HTTPS ホストに置き、reader のイメージを `sendo-reader:x-embeds` として作ります。Compose の置き場に `compose.override.yaml` を作り、`reader` のイメージを差し替えます。
-
-```yaml
-services:
-  reader:
-    image: sendo-reader:x-embeds
-    pull_policy: never
-```
-
-`docker compose up -d` で起動します。更新するときは reader のイメージを新しいソースからビルドし、Sendo は `docker compose pull sendo` で更新してから `docker compose up -d` を実行します。
+### 標準構成を更新する
 
 上流の更新は、次で取り込みます。Sendo と sendo-reader が一緒に新しくなります。マイグレーションは、起動するときに当たります。
 
