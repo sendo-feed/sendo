@@ -14,6 +14,9 @@ const BODY_BLOCKS: &str =
 
 const POST_LINKS: &str = "blockquote.twitter-tweet a[href], blockquote.imgur-embed-pub a[href]";
 const IMGUR_LINK: &str = "blockquote.imgur-embed-pub a[href]";
+const ARTICLE: &str =
+    "article, [itemscope][itemtype$='Article'], [itemscope][itemtype$='BlogPosting']";
+const ARTICLE_BODY: &str = "[itemprop=articleBody]";
 
 fn compact(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
@@ -67,6 +70,9 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
                         let image = Selection::from(node);
                         if let Some(url) = crate::normalize::normalized_image_url(&image, base)
                             .and_then(|src| imgur_resource(&src, base))
+                            .or_else(|| {
+                                image.attr("src").and_then(|src| imgur_resource(&src, base))
+                            })
                         {
                             images.push((node.id, url));
                         }
@@ -474,9 +480,6 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
 
 /// 選ばれた本文と同じ記事の範囲で、手前に分かれた埋め込みを含むブロックを探す。
 fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
-    const ARTICLE: &str =
-        "article, [itemscope][itemtype$='Article'], [itemscope][itemtype$='BlogPosting']";
-    const ARTICLE_BODY: &str = "[itemprop=articleBody]";
     if root.is(ARTICLE) || root.is("body") {
         return Vec::new();
     }
@@ -493,10 +496,9 @@ fn leading_embeds<'a>(root: &Selection<'a>, base: &str) -> Vec<Selection<'a>> {
         });
     let boundary = article_boundary.or_else(|| {
         if root.is(ARTICLE_BODY) {
-            return ancestors
-                .nodes()
-                .iter()
-                .find(|node| Selection::from(**node).is("section, [role=region]"));
+            return ancestors.nodes().iter().find(|node| {
+                Selection::from(**node).is("section, [role=region], main, [role=main]")
+            });
         }
         if root.is("main, section, [role=main], [role=region]") {
             return None;
@@ -555,8 +557,9 @@ fn has_site_chrome(block: &Selection<'_>) -> bool {
         .chain(block.select(CHROME).nodes())
         .any(|node| {
             let region = Selection::from(*node);
+            let ancestors = region.ancestors(Some(128));
             region.is("[role=banner], [role=contentinfo]")
-                || !region.ancestors(Some(128)).is(SECTION)
+                || (!ancestors.is(SECTION) && !ancestors.is(ARTICLE))
         })
 }
 
@@ -705,9 +708,10 @@ mod tests {
             <a href="https://i.imgur.com/photo.jpeg#post">投稿</a>
             <span hidden><img src="//i.imgur.com/photo.jpeg#pixel" width="1" height="1"></span>
             <template><template><img data-src="https://i.imgur.com/template.jpeg" width="1" height="1"></template>
-            <img srcset="https://i.imgur.com/responsive.jpeg 2x"></template>
+            <img srcset="https://i.imgur.com/responsive.jpeg 2x"><img src="https://i.imgur.com/blank.gif" width="1" height="1"></template>
             <a href="https://i.imgur.com/template.jpeg">ひな形の投稿</a>
             <a href="https://i.imgur.com/responsive.jpeg">レスポンシブ画像</a>
+            <a href="https://i.imgur.com/blank.gif">空欄の画像</a>
             <a href="https://i.imgur.com/other.jpeg">別の投稿</a>
             </blockquote></article>"#,
         );
@@ -721,7 +725,7 @@ mod tests {
             links.attr("href").as_deref(),
             Some("https://i.imgur.com/photo.jpeg#post")
         );
-        assert_eq!(links.length(), 3);
+        assert_eq!(links.length(), 4);
         assert!(
             doc.select("a[href$='template.jpeg'][data-sendo-imgur-image-removed]")
                 .exists()
@@ -765,6 +769,28 @@ mod tests {
         );
         prune(&doc, "https://blog.example/post");
         assert!(doc.select("#related-title blockquote").exists());
+    }
+
+    #[test]
+    fn keeps_the_header_in_a_structured_article_and_adjacent_embeds_under_main() {
+        let body = r#"<main><div id="embed"><blockquote class="twitter-tweet"><a href="https://x.com/user/status/123">本文の引用</a></blockquote></div>
+            <div id="body" itemprop="articleBody">本文</div></main>"#;
+        let base = "https://blog.example/post";
+        let page = Document::from(body);
+        assert_eq!(leading_embeds(&page.select("#body"), base).len(), 1);
+
+        let structured = body
+            .replace(
+                "<main>",
+                r#"<div itemscope itemtype="https://schema.org/BlogPosting">"#,
+            )
+            .replace("</main>", "</div>")
+            .replace(r#"<div id="embed">"#, "<header>")
+            .replace("</blockquote></div>", "</blockquote></header>");
+        let page = Document::from(structured);
+        let leading = leading_embeds(&page.select("#body"), base);
+        assert_eq!(leading.len(), 1);
+        assert!(leading[0].is("header"));
     }
 
     #[test]
