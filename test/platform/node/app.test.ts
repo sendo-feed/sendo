@@ -150,13 +150,9 @@ describe("本番の組み立てでアプリを動かす", () => {
     return id;
   };
 
-  it("使える機能として、ページの本文を抜けることを返す", async () => {
+  it("機能の有無を返す API は持たない（古い画面が呼んでも 404 を返す）", async () => {
     const res = await request("/api/v1/features");
-    expect(await res.json()).toEqual({
-      pageContent: true,
-      languageDetection: true,
-      syncUpdates: true,
-    });
+    expect(res.status).toBe(404);
   });
 
   it("抽出したページの主言語をネイティブで調べ、実SQLiteの別表に保存する", async () => {
