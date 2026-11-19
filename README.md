@@ -268,11 +268,9 @@ GitHub の fork の画面で「Sync fork」→「Update branch」を押します
 
 ## コンテナ版で動かす
 
-上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo` と、画面の `ghcr.io/sendo-feed/sendo-reader`）を、Docker Compose で並べて動かします。fork もビルドも要りません（[決定](docs/decisions/container.md)の 7、10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。
+上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo` と、画面の `ghcr.io/sendo-feed/sendo-reader`）を、Docker Compose で並べて動かします。標準構成では fork もビルドも要りません（[決定](docs/decisions/container.md)の 7、10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。
 
 外に出すのは sendo-reader のコンテナだけです。sendo-reader が画面を返し、Sendo のパス（`/api`、`/mcp`、OAuth、Google Reader API など）を、compose の中の Sendo に中継します。画面・ブラウザのログイン・リーダーアプリ・MCP は、同じ sendo-reader のオリジンを使います（[sendo-reader の決定](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)）。
-
-X の埋め込みを有効にする場合は、埋め込み用の静的ファイルを reader とホスト名が異なる HTTPS オリジンに置きます。reader のビルド方法は [sendo-reader](https://github.com/sendo-feed/sendo-reader#x-の投稿の埋め込み) を参照してください。
 
 1. [compose.yaml](compose.yaml) と [.env.example](.env.example) を、置き場にするディレクトリに写す。`.env.example` は `.env` という名前にして、設定を書く（名前と意味は Cloudflare 版と同じ）
    - `PUBLIC_URL` と `READER_URL`：どちらも、外から開く sendo-reader のオリジン（例：`https://reader.example.com`）。`PUBLIC_URL` は欠かせません。ないと、ブラウザのログインの戻り先が合いません。2 つとも入れると、OAuth（[OAuth でつなぐ](#oauth-でつなぐ)）も使えます
@@ -294,6 +292,19 @@ X の埋め込みを有効にする場合は、埋め込み用の静的ファイ
 リーダーアプリのサーバー（[リーダーアプリで読む](#リーダーアプリで読むgoogle-reader-api)）も、MCP の URL（`https://reader.example.com/mcp`）も、sendo-reader のオリジンにします。
 
 画面を使わず、リーダーアプリや MCP だけで使うときは、`compose.yaml` の `reader` を消して Sendo のポートを出し（`compose.yaml` のコメント）、`PUBLIC_URL` を Sendo のオリジンにします。`READER_URL` は空にします（OAuth は使えず、MCP 用のトークンでつなぎます）。
+
+### X の埋め込みを有効にする
+
+[reader の手順](https://github.com/sendo-feed/sendo-reader#x-の投稿の埋め込み)に従って、埋め込み用の静的ファイルを別の HTTPS ホストに置き、reader のイメージを `sendo-reader:x-embeds` として作ります。Compose の置き場に `compose.override.yaml` を作り、`reader` のイメージを差し替えます。
+
+```yaml
+services:
+  reader:
+    image: sendo-reader:x-embeds
+    pull_policy: never
+```
+
+`docker compose up -d` で起動します。更新するときは reader のイメージを新しいソースからビルドし、Sendo は `docker compose pull sendo` で更新してから `docker compose up -d` を実行します。
 
 上流の更新は、次で取り込みます。Sendo と sendo-reader が一緒に新しくなります。マイグレーションは、起動するときに当たります。
 
