@@ -51,7 +51,6 @@ fn prune(doc: &Document) {
             NOISE
                 .iter()
                 .any(|word| part == *word || part.starts_with(&format!("{word}-")))
-                || (block.is("ul, ol") && part.ends_with("-related"))
         }) {
             block.remove();
         }
@@ -67,7 +66,14 @@ fn prune(doc: &Document) {
             .iter()
             .map(|n| compact(&Selection::from(*n).text()).chars().count())
             .sum();
-        if (20..240).contains(&text)
+        let related_list = block.is("ul")
+            && block.children().filter("li").length() >= 3
+            && block.attr("class").is_some_and(|value| {
+                value
+                    .split_whitespace()
+                    .any(|name| name.ends_with("-related"))
+            });
+        if ((20..240).contains(&text) || related_list)
             && link_text * 10 >= text * 9
             && (links.length() >= 3 || block.select("img").length() > 0)
             && block.select("figure, p, pre, table").length() == 0
@@ -303,45 +309,27 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
             break;
         }
     }
-    // 同じ記事の中で、本文の直前に分かれた埋め込みのある導入を残す。
-    let mut lead = Selection::default();
-    if root
-        .ancestors(Some(128))
-        .is("article, main, [itemprop=articleBody]")
-    {
-        let mut sibling = root.prev_sibling();
-        for _ in 0..6 {
-            if !sibling.exists() {
-                break;
+    let leading = leading_embeds(&root);
+    let mut html = String::new();
+    let mut text_length = 0;
+    for block in leading.iter().chain(std::iter::once(&root)) {
+        // 相対 URL はリダイレクト後の記事 URL を基準にする。HTML の base タグは信用しない。
+        for node in block.select("a[href], img[src]").nodes() {
+            let el = Selection::from(*node);
+            let attr = if el.attr("src").is_some() {
+                "src"
+            } else {
+                "href"
+            };
+            if let Some(value) = el.attr(attr)
+                && let Some(value) = crate::normalize::http(&value, url)
+            {
+                el.set_attr(attr, &value);
             }
-            if sibling.is("div, section, header, figure") && sibling.select(POST_EMBEDS).exists() {
-                lead = sibling;
-                break;
-            }
-            sibling = sibling.prev_sibling();
         }
+        html.push_str(&block.html());
+        text_length += block.text().trim().chars().count();
     }
-    // 相対 URL はリダイレクト後の記事 URL を基準にする。HTML の base タグは信用しない。
-    for node in lead
-        .select("a[href], img[src]")
-        .nodes()
-        .iter()
-        .chain(root.select("a[href], img[src]").nodes())
-    {
-        let el = Selection::from(*node);
-        let attr = if el.attr("src").is_some() {
-            "src"
-        } else {
-            "href"
-        };
-        if let Some(value) = el.attr(attr)
-            && let Some(value) = crate::normalize::http(&value, url)
-        {
-            el.set_attr(attr, &value);
-        }
-    }
-    let html = format!("{}{}", lead.html(), root.html());
-    let text_length = lead.text().trim().chars().count() + root.text().trim().chars().count();
     if text_length == 0 {
         return Err(ExtractError::NoContent);
     }
@@ -350,6 +338,51 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         html,
         text_length,
     })
+}
+
+/// 選ばれた本文と同じ記事の範囲で、手前に分かれた埋め込みを含むブロックを探す。
+fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
+    const ARTICLE: &str = "article, [itemprop=articleBody]";
+    if root.is("article") {
+        return Vec::new();
+    }
+    let ancestors = root.ancestors(Some(128));
+    let boundary = ancestors
+        .nodes()
+        .iter()
+        .find(|node| Selection::from(**node).is("article"))
+        .or_else(|| {
+            ancestors
+                .nodes()
+                .iter()
+                .find(|node| Selection::from(**node).is(ARTICLE))
+        });
+    let Some(boundary) = boundary else {
+        return Vec::new();
+    };
+
+    let mut leading = Vec::new();
+    let branches = std::iter::once(root.clone())
+        .chain(ancestors.nodes().iter().map(|node| Selection::from(*node)));
+    for branch in branches.take_while(|branch| branch.nodes()[0].id != boundary.id) {
+        let mut sibling = branch.prev_sibling();
+        for _ in 0..6 {
+            if !sibling.exists() {
+                break;
+            }
+            let previous = sibling.prev_sibling();
+            if sibling.is("div, section, header, figure, blockquote")
+                && !sibling.is(ARTICLE)
+                && !sibling.select(ARTICLE).exists()
+                && sibling.select(POST_EMBEDS).exists()
+            {
+                leading.push(sibling);
+            }
+            sibling = previous;
+        }
+    }
+    leading.reverse();
+    leading
 }
 
 #[cfg(test)]
@@ -384,7 +417,16 @@ mod tests {
     #[test]
     fn keeps_embedded_posts_in_the_preceding_body_block() {
         let html = format!(
-            "<title>埋め込みが先にある記事</title><article><div><section><p>導入文</p>            <blockquote class='twitter-tweet'><a href='https://twitter.com/example/status/123'></a></blockquote>            <blockquote class='imgur-embed-pub'><a href='https://i.imgur.com/example.jpeg'>Imgur</a></blockquote>            <div id='related-title'>関連記事</div><ul class='manual-related'><li><a href='/other'>対象外</a></li></ul>            </section><div class='social-share'>共有</div><section>{}</section></div></article>",
+            r#"<title>埋め込みが先にある記事</title><main>
+            <section><article><blockquote class="twitter-tweet"><a href="https://x.com/example/status/999">別記事</a></blockquote></article></section>
+            <article>
+              <section><p>導入文</p><blockquote class="twitter-tweet"><a href="https://twitter.com/example/status/123"></a></blockquote>
+              <div id="related-title">関連記事</div><ul class="manual-related"><li><a href="/one">対象外</a></li><li><a href="/two">対象外</a></li><li><a href="/three">対象外</a></li></ul>
+              </section>
+              <blockquote class="imgur-embed-pub"><a href="//i.imgur.com/example.jpeg">画像の説明</a></blockquote>
+              <div class="social-share">共有</div>
+              <section><div>{}<ul class="work-related"><li>手順を残す</li></ul></div></section>
+            </article></main>"#,
             paragraphs()
         );
         let result = crate::extract(
@@ -404,6 +446,11 @@ mod tests {
         assert!(!doc.text().contains("関連記事"));
         assert!(!doc.text().contains("対象外"));
         assert!(!doc.text().contains("共有"));
+        assert!(!doc.text().contains("別記事"));
+        assert!(doc.text().contains("画像の説明"));
+        assert!(doc.text().contains("手順を残す"));
+        let html = doc.html();
+        assert!(html.find("/status/123").unwrap() < html.find("example.jpeg").unwrap());
         let text = doc.text();
         assert!(text.find("導入文").unwrap() < text.find("本文の段落0").unwrap());
     }

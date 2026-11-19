@@ -103,8 +103,8 @@ fn placeholder(url: &str) -> bool {
     .any(|x| u.contains(x))
 }
 /// Imgur の埋め込みが持つ画像への直リンク。投稿ページや動画はここでは扱わない。
-fn imgur_image(value: &str) -> Option<Url> {
-    let url = Url::parse(value).ok()?;
+fn imgur_image(value: &str, base: &str) -> Option<Url> {
+    let url = Url::parse(base).ok()?.join(value.trim()).ok()?;
     let extension = url.path().rsplit_once('.')?.1.to_ascii_lowercase();
     (url.scheme() == "https"
         && url.host_str() == Some("i.imgur.com")
@@ -187,10 +187,22 @@ pub(crate) fn normalize(html: &str, base: &str) -> String {
     }
     for node in doc.select("blockquote.imgur-embed-pub a[href]").nodes() {
         let link = Selection::from(*node);
-        if let Some(url) = link.attr("href").and_then(|value| imgur_image(&value)) {
-            link.set_html(r#"<img alt="Imgur">"#);
-            link.select("img").set_attr("src", url.as_str());
+        let Some(url) = link
+            .attr("href")
+            .and_then(|value| imgur_image(&value, base))
+        else {
+            continue;
+        };
+        if link.select("img").exists() {
+            continue;
         }
+        let image = r#"<img alt="Imgur">"#;
+        if link.children().length() == 0 && link.text().trim() == "View post on imgur.com" {
+            link.set_html(image);
+        } else {
+            link.prepend_html(image);
+        }
+        link.select("img").set_attr("src", url.as_str());
     }
     // 選んだ画像は img.src に入れた。文章と画像の位置は変えない。
     for n in doc.select("picture source").nodes() {
@@ -226,6 +238,23 @@ mod tests {
             .is_none()
         );
     }
+    #[test]
+    fn imgur_conversion_preserves_existing_images_and_rejects_other_hosts() {
+        let doc = Document::from(normalize(
+            r#"<blockquote class="imgur-embed-pub"><a href="https://i.imgur.com/original.jpeg"><img src="/thumbnail.jpg" alt="元の代替文">元のキャプション</a></blockquote>
+            <blockquote class="imgur-embed-pub"><a href="https://i.imgur.com.example/example.jpeg">外部</a></blockquote>"#,
+            "https://site.example/post",
+        ));
+        let image = doc.select("img");
+        assert_eq!(image.length(), 1);
+        assert_eq!(
+            image.attr("src").as_deref(),
+            Some("https://site.example/thumbnail.jpg")
+        );
+        assert_eq!(image.attr("alt").as_deref(), Some("元の代替文"));
+        assert!(doc.text().contains("元のキャプション"));
+    }
+
     #[test]
     fn keeps_lazy_images_in_their_original_links() {
         let html = normalize(

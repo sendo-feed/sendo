@@ -155,7 +155,9 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       if (
         name === "blockquote" &&
         (attributes.get("data-embed") === "x" ||
-          attributes.get("class")?.split(/\s+/).includes("twitter-tweet"))
+          decodeHTML(attributes.get("class") ?? "")
+            .split(/[\t\n\f\r ]+/)
+            .includes("twitter-tweet"))
       ) {
         extra = ' data-embed="x"';
       }

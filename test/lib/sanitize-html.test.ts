@@ -87,7 +87,7 @@ describe("sanitizeHtml", () => {
 
   it("X の引用には固定の埋め込みの印だけを残す", () => {
     const raw =
-      '<blockquote class="twitter-tweet article" onclick="x()"><a href="https://x.com/example/status/123"></a></blockquote><script src="https://platform.twitter.com/widgets.js"></script>';
+      '<blockquote class="twitter&#45;tweet article" onclick="x()"><a href="https://x.com/example/status/123"></a></blockquote><script src="https://platform.twitter.com/widgets.js"></script>';
     const sanitized = clean(raw);
     expect(sanitized).toBe(
       '<blockquote data-embed="x"><a href="https://x.com/example/status/123" rel="noopener noreferrer nofollow"></a></blockquote>',
