@@ -18,78 +18,79 @@ pub(crate) fn http(value: &str, base: &str) -> Option<String> {
     }
     Some(url.into())
 }
-pub(crate) fn srcset(value: &str, base: &str) -> Vec<(String, f64, char)> {
-    let chars: Vec<char> = value.chars().collect();
+pub(crate) fn srcset(value: &str) -> impl Iterator<Item = (&str, f64, char)> {
+    let bytes = value.as_bytes();
     let mut i = 0;
-    let mut out = Vec::new();
-    while i < chars.len() {
-        while i < chars.len() && (chars[i].is_ascii_whitespace() || chars[i] == ',') {
-            i += 1
-        }
-        let start = i;
-        while i < chars.len() && !chars[i].is_ascii_whitespace() {
-            i += 1
-        }
-        if start == i {
-            break;
-        }
-        let token: String = chars[start..i].iter().collect();
-        let had_comma = token.ends_with(',');
-        let token = token.trim_end_matches(',');
-        let mut descriptor = String::new();
-        if !had_comma {
-            let mut depth = 0;
-            while i < chars.len() {
-                let c = chars[i];
+    std::iter::from_fn(move || {
+        while i < bytes.len() {
+            while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b',') {
                 i += 1;
-                if c == ',' && depth == 0 {
-                    break;
-                }
-                if c == '(' {
-                    depth += 1
-                }
-                if c == ')' {
-                    depth -= 1
-                }
-                descriptor.push(c)
             }
+            let start = i;
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if start == i {
+                break;
+            }
+            let raw = &value[start..i];
+            let token = raw.trim_end_matches(',');
+            let start = i;
+            let mut depth = 0;
+            if !raw.ends_with(',') {
+                while i < bytes.len() && (bytes[i] != b',' || depth != 0) {
+                    match bytes[i] {
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            let mut descriptors = value[start..i].split_whitespace();
+            let descriptor = descriptors.next();
+            if descriptors.next().is_some() {
+                continue;
+            }
+            let (score, unit) = match descriptor {
+                None => (1.0, 'x'),
+                Some(d) if d.ends_with('w') => match d[..d.len() - 1].parse::<u32>() {
+                    Ok(n) if n > 0 => (n as f64, 'w'),
+                    _ => continue,
+                },
+                Some(d) if d.ends_with('x') => match d[..d.len() - 1].parse::<f64>() {
+                    Ok(n) if n.is_finite() && n > 0.0 => (n, 'x'),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            return Some((token, score, unit));
         }
-        let Some(url) = http(token, base) else {
-            continue;
-        };
-        let ds: Vec<_> = descriptor.split_whitespace().collect();
-        let (score, unit) = match ds.as_slice() {
-            [] => (1.0, 'x'),
-            [d] if d.ends_with('w') => match d[..d.len() - 1].parse::<u32>() {
-                Ok(n) if n > 0 => (n as f64, 'w'),
-                _ => continue,
-            },
-            [d] if d.ends_with('x') => match d[..d.len() - 1].parse::<f64>() {
-                Ok(n) if n.is_finite() && n > 0.0 => (n, 'x'),
-                _ => continue,
-            },
-            _ => continue,
-        };
-        out.push((url, score, unit));
-    }
-    out
+        None
+    })
 }
+
 fn best_srcset(value: &str, base: &str) -> Option<String> {
-    let mut candidates = srcset(value, base);
-    if candidates.is_empty() {
-        return None;
+    let mut widths: Option<(String, f64)> = None;
+    let mut densities: Option<(String, f64)> = None;
+    for (token, score, unit) in srcset(value) {
+        let (best, limit) = if unit == 'w' {
+            (&mut widths, 2560.0)
+        } else {
+            (&mut densities, 3.0)
+        };
+        let prefer = best.as_ref().is_none_or(|(_, current)| {
+            if *current <= limit {
+                score <= limit && score >= *current
+            } else {
+                score < *current
+            }
+        });
+        if prefer && let Some(url) = http(token, base) {
+            *best = Some((url, score));
+        }
     }
-    if candidates.iter().any(|c| c.2 == 'w') {
-        candidates.retain(|c| c.2 == 'w');
-    }
-    candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
-    let limit = if candidates[0].2 == 'w' { 2560.0 } else { 3.0 };
-    candidates
-        .iter()
-        .rev()
-        .find(|c| c.1 <= limit)
-        .or(candidates.first())
-        .map(|c| c.0.clone())
+    widths.or(densities).map(|(url, _)| url)
 }
 fn placeholder(url: &str) -> bool {
     let u = url.to_ascii_lowercase();

@@ -150,6 +150,17 @@ describe("sanitizeHtml", () => {
     expect(html).toContain('<img src="https://i.imgur.com/photo.jpeg" alt="Imgur">');
   });
 
+  it("内側の Imgur の引用で画像を補ったら外側はリンクだけを残す", () => {
+    const link = '<a href="https://i.imgur.com/photo.jpeg">投稿</a>';
+    const html = sanitizeHtml(
+      `<blockquote class="imgur-embed-pub">${link}<blockquote class="imgur-embed-pub">${link}</blockquote>${link}</blockquote>`,
+      BASE,
+      { expandImgurEmbeds: true },
+    );
+    expect(html.match(/<img /g)).toHaveLength(1);
+    expect(html.match(/<a /g)).toHaveLength(3);
+  });
+
   it("Imgur の直リンクは画像中継が許すポートだけを画像にする", () => {
     for (const port of [":8443", ":444"]) {
       const html = sanitizeHtml(

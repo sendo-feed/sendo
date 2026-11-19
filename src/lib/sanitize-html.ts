@@ -47,10 +47,11 @@ const MAX_DEPTH = 100;
 
 const DIGITS = /^\d{1,5}$/;
 
-type ImgurQuote = { hasImage: boolean; addedImages?: Set<string> };
+type ImgurQuote = { hasImage: boolean; parent: ImgurQuote | undefined; candidates: ImgurImage[] };
+type ImgurImage = { image: string; rest: string; imgurFallback: true };
 
 /** サニタイズした HTML の部品。画像は、URL をあとで差し替えられるように分けて持つ */
-type Part = string | { image: string; rest: string; imgurFallback?: ImgurQuote };
+type Part = string | { image: string; rest: string; imgurFallback?: true };
 
 function toUrl(value: string | undefined, baseUrl: string, protocols: readonly string[]) {
   const trimmed = value === undefined ? "" : decodeHTML(value).trim();
@@ -89,6 +90,7 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
   /** 開いている（閉じタグを出していない）要素 */
   const open: string[] = [];
   const imgurQuotes = new Map<number, ImgurQuote>();
+  const closedImgurQuotes: ImgurQuote[] = [];
   // URL の断片は画像の取得先を変えない。リンクの前後で除外した画像も差し替えに使わない。
   const removedImgurImages = new Set<string>();
   const recordRemovedImage = (src: string | null) => {
@@ -101,16 +103,20 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
   let dropping: { name: string; depth: number; wantsLink: boolean } | null = null;
 
   const closeLast = () => {
+    const quote = imgurQuotes.get(open.length);
+    if (quote !== undefined) closedImgurQuotes.push(quote);
     imgurQuotes.delete(open.length);
     const name = open.pop();
     if (name === "a" && imgurLink !== undefined) {
       if (!imgurLink.quote.hasImage) {
         const alt = escapeHtml(imgurLink.alt ?? "Imgur");
-        parts.splice(imgurLink.index, 0, {
+        const candidate: ImgurImage = {
           image: imgurLink.href,
           rest: ` alt="${alt}"`,
-          imgurFallback: imgurLink.quote,
-        });
+          imgurFallback: true,
+        };
+        imgurLink.quote.candidates.push(candidate);
+        parts.splice(imgurLink.index, 0, candidate);
       }
       imgurLink = undefined;
     }
@@ -222,8 +228,10 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
       let extra = "";
       if (name === "blockquote") {
         const classes = decodeHTML(attributes.get("class") ?? "").split(/[\t\n\f\r ]+/);
-        if (expandImgurEmbeds && classes.includes("imgur-embed-pub"))
-          imgurQuotes.set(open.length + 1, { hasImage: false });
+        if (expandImgurEmbeds && classes.includes("imgur-embed-pub")) {
+          const parent = Array.from(imgurQuotes.values()).at(-1);
+          imgurQuotes.set(open.length + 1, { hasImage: false, parent, candidates: [] });
+        }
         if (attributes.get("data-embed") === "x" || classes.includes("twitter-tweet")) {
           extra = ' data-embed="x"';
         }
@@ -241,16 +249,30 @@ function sanitizeToParts(html: string, baseUrl: string, expandImgurEmbeds = fals
 
   while (open.length > 0) closeLast();
   if (!expandImgurEmbeds) return parts;
-  return parts.filter((part) => {
-    if (typeof part === "string" || part.imgurFallback === undefined) return true;
-    const quote = part.imgurFallback;
-    const resource = part.image.split("#", 1)[0] ?? part.image;
-    if (quote.hasImage || removedImgurImages.has(resource)) return false;
-    quote.addedImages ??= new Set();
-    if (quote.addedImages.has(resource)) return false;
-    quote.addedImages.add(resource);
-    return true;
-  });
+  const selected = new Set<Part>();
+  // 内側で採用した画像があれば、外側の引用には画像を足さない。
+  for (const quote of closedImgurQuotes) {
+    if (quote.hasImage) continue;
+    const seen = new Set<string>();
+    for (const candidate of quote.candidates) {
+      const resource = candidate.image.split("#", 1)[0] ?? candidate.image;
+      if (seen.has(resource) || removedImgurImages.has(resource)) continue;
+      seen.add(resource);
+      selected.add(candidate);
+    }
+    if (seen.size > 0) {
+      for (
+        let parent = quote.parent;
+        parent !== undefined && !parent.hasImage;
+        parent = parent.parent
+      ) {
+        parent.hasImage = true;
+      }
+    }
+  }
+  return parts.filter(
+    (part) => typeof part === "string" || part.imgurFallback === undefined || selected.has(part),
+  );
 }
 
 function link(href: string): string {

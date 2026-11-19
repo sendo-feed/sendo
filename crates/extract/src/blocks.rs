@@ -12,9 +12,9 @@ use crate::{ExtractError, Extracted};
 const BODY_BLOCKS: &str =
     "p, pre, td, th, blockquote, div, section, article, main, body, li, dt, dd";
 
-const POST_LINKS: &str = "blockquote.twitter-tweet a[href], blockquote.imgur-embed-pub a[href]";
 const IMGUR_LINK: &str = "blockquote.imgur-embed-pub a[href]";
-const ARTICLE: &str = "article, [role=article], [itemscope][itemtype$='Article'], [itemscope][itemtype$='BlogPosting']";
+const X_QUOTE: &str = "blockquote.twitter-tweet";
+const ARTICLE: &str = "article, [role~=article], [itemscope][itemtype$='Article'], [itemscope][itemtype$='BlogPosting']";
 const ARTICLE_BODY: &str = "[itemprop=articleBody]";
 
 fn compact(text: &str) -> String {
@@ -31,8 +31,10 @@ fn imgur_resource(value: &str, base: &str) -> Option<Url> {
 }
 
 fn has_post_embed(block: &Selection<'_>, base: &str) -> bool {
-    block.is(POST_LINKS)
-        || block.select(POST_LINKS).exists()
+    block.is(X_QUOTE)
+        || block.select(X_QUOTE).exists()
+        || block.is(IMGUR_LINK)
+        || block.select(IMGUR_LINK).exists()
         || block
             .nodes()
             .iter()
@@ -46,41 +48,67 @@ fn has_post_embed(block: &Selection<'_>, base: &str) -> bool {
             })
 }
 
-fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
-    if !doc.select(IMGUR_LINK).exists() {
-        return Vec::new();
+fn collect_imgur_images(doc: &Document, base: &str) -> Result<Vec<(NodeId, Url)>, ExtractError> {
+    const MAX_CANDIDATES: usize = 50_000;
+    const MAX_URL_BYTES: usize = 3 * 1024 * 1024;
+    let mut url_bytes = 0;
+    let mut links = HashSet::new();
+    for node in doc.select(IMGUR_LINK).nodes() {
+        if let Some(url) = node
+            .attr("href")
+            .and_then(|href| imgur_resource(&href, base))
+            && !links.contains(&url)
+        {
+            url_bytes += url.as_str().len();
+            if url_bytes > MAX_URL_BYTES {
+                return Err(ExtractError::NoContent);
+            }
+            links.insert(url);
+        }
+    }
+    if links.is_empty() {
+        return Ok(Vec::new());
     }
     let mut images = Vec::new();
-    let mut collect = |node: NodeRef<'_>| {
+    let mut remaining = MAX_CANDIDATES;
+    let mut record = |node: NodeId, value: &str| {
+        remaining = remaining.checked_sub(1).ok_or(ExtractError::NoContent)?;
+        if let Some(url) = imgur_resource(value, base)
+            && links.contains(&url)
+        {
+            url_bytes += url.as_str().len();
+            if url_bytes > MAX_URL_BYTES {
+                return Err(ExtractError::NoContent);
+            }
+            images.push((node, url));
+        }
+        Ok(())
+    };
+    let mut collect = |node: NodeRef<'_>| -> Result<(), ExtractError> {
         let sets: &[_] = if node.node_name().as_deref() == Some("img") {
             // 正規化で選ばれない URL も、直リンクから再生成しないように記録する。
             for name in ["src", "data-src", "data-original", "data-lazy-src"] {
-                if let Some(url) = node
-                    .attr(name)
-                    .and_then(|value| imgur_resource(&value, base))
-                {
-                    images.push((node.id, url));
+                if let Some(value) = node.attr(name) {
+                    record(node.id, &value)?;
                 }
             }
             &["srcset", "data-srcset"]
         } else if Selection::from(node).parent().is("picture") {
             &["srcset"]
         } else {
-            return;
+            return Ok(());
         };
         for name in sets {
             if let Some(value) = node.attr(name) {
-                images.extend(
-                    crate::normalize::srcset(&value, base)
-                        .into_iter()
-                        .filter_map(|(url, _, _)| imgur_resource(&url, base))
-                        .map(|url| (node.id, url)),
-                );
+                for (url, _, _) in crate::normalize::srcset(&value) {
+                    record(node.id, url)?;
+                }
             }
         }
+        Ok(())
     };
     for node in doc.select("img, picture > source[srcset]").nodes() {
-        collect(*node);
+        collect(*node)?;
     }
 
     let mut templates = doc.select("template").nodes().to_vec();
@@ -92,14 +120,14 @@ fn collect_imgur_images(doc: &Document, base: &str) -> Vec<(NodeId, Url)> {
         if let Some(fragment) = fragment.and_then(|id| doc.tree.get(&id)) {
             for node in fragment.descendants_it() {
                 match node.node_name().as_deref() {
-                    Some("img" | "source") => collect(node),
+                    Some("img" | "source") => collect(node)?,
                     Some("template") => templates.push(node),
                     _ => {}
                 }
             }
         }
     }
-    images
+    Ok(images)
 }
 
 fn prune(doc: &Document, base: &str) {
@@ -273,7 +301,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         }
         depths.insert(node.id, depth);
     }
-    let imgur_images = collect_imgur_images(&doc, url);
+    let imgur_images = collect_imgur_images(&doc, url)?;
     let used_sources = crate::normalize::normalize_document(&doc, url);
     prune(&doc, url);
     let page_title = doc.select("title").text().to_string();
@@ -765,7 +793,7 @@ mod tests {
             </blockquote></article>"#,
         );
         let base = "https://blog.example/post";
-        let images = collect_imgur_images(&doc, base);
+        let images = collect_imgur_images(&doc, base).unwrap();
         prune(&doc, base);
         mark_removed_imgur_images(&[&doc.select("article")], images, &HashMap::new(), base);
         assert!(!doc.select("img").exists());
@@ -789,7 +817,7 @@ mod tests {
             <div><img src="https://i.imgur.com/photo.jpeg" width="1" height="1"></div></article>"#,
         );
         let base = "https://blog.example/post";
-        let images = collect_imgur_images(&doc, base);
+        let images = collect_imgur_images(&doc, base).unwrap();
         prune(&doc, base);
         assert!(doc.select("img").exists());
         mark_removed_imgur_images(&[&doc.select("#body")], images, &HashMap::new(), base);
@@ -840,7 +868,7 @@ mod tests {
     #[test]
     fn does_not_take_an_embed_from_a_sibling_with_an_article_role() {
         let doc = Document::from(
-            r#"<main><div role="article"><blockquote class="twitter-tweet"><a href="https://x.com/user/status/789">別の記事</a></blockquote></div>
+            r#"<main><div role="article region"><blockquote class="twitter-tweet"><a href="https://x.com/user/status/789">別の記事</a></blockquote></div>
             <div itemprop="articleBody">本文</div></main>"#,
         );
         let lead = leading_embeds(
@@ -848,6 +876,20 @@ mod tests {
             "https://blog.example/post",
         );
         assert!(lead.is_empty());
+    }
+
+    #[test]
+    fn keeps_the_text_of_an_x_quote_without_a_post_link() {
+        let doc = Document::from(
+            r#"<article><blockquote class="twitter-tweet"><p>もとの引用文</p></blockquote>
+            <div itemprop="articleBody">本文</div></article>"#,
+        );
+        let lead = leading_embeds(
+            &doc.select("[itemprop=articleBody]"),
+            "https://blog.example/post",
+        );
+        assert_eq!(lead.len(), 1);
+        assert_eq!(lead[0].text().trim(), "もとの引用文");
     }
 
     #[test]
