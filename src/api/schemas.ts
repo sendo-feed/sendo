@@ -86,6 +86,9 @@ export const FeedSchema = z
     iconUrl: FeedIconUrlSchema,
     folderId: z.string().nullable(),
     lastFetchedAt: dateTime.nullable().openapi({ description: "最後に取得を試した時刻" }),
+    lastSuccessfulFetchAt: dateTime.nullable().openapi({
+      description: "最後に成功した取得（HTTP 304 を含む）を試した時刻。記録がなければ null",
+    }),
     nextFetchAt: dateTime,
     status: FeedStatusSchema,
     errorCount: z.int().nonnegative().openapi({ description: "連続した失敗の回数（429 を除く）" }),
@@ -144,6 +147,7 @@ export async function toFeedResponse(
     iconUrl: await images.toRelayUrl(feed.iconUrl),
     folderId: subscription.folderId,
     lastFetchedAt: feed.lastFetchedAt?.toISOString() ?? null,
+    lastSuccessfulFetchAt: feed.lastSuccessfulFetchAt?.toISOString() ?? null,
     nextFetchAt: feed.nextFetchAt.toISOString(),
     ...toFeedHealthResponse(feed),
     errorCount: feed.errorCount,

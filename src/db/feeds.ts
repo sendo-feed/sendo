@@ -139,12 +139,13 @@ export async function recordFetchSuccess(
     siteUrl?: string | null;
   },
 ): Promise<Pick<Feed, "id" | "siteUrl" | "iconUrl" | "iconCheckedAt"> | undefined> {
-  return db
+  const recorded = await db
     .update(feeds)
     .set({
       ...(input.etag !== undefined && { etag: input.etag }),
       ...(input.lastModified !== undefined && { lastModified: input.lastModified }),
       lastFetchedAt: input.now,
+      lastSuccessfulFetchAt: input.now,
       nextFetchAt: input.nextFetchAt,
       fetchIntervalMs: input.fetchIntervalMs,
       errorCount: 0,
@@ -164,6 +165,19 @@ export async function recordFetchSuccess(
       iconCheckedAt: feeds.iconCheckedAt,
     })
     .get();
+  if (!recorded) {
+    // 後から始めた試行が先に記録されていても、この成功の時刻は残す。
+    await db
+      .update(feeds)
+      .set({ lastSuccessfulFetchAt: input.now })
+      .where(
+        and(
+          eq(feeds.id, id),
+          or(isNull(feeds.lastSuccessfulFetchAt), lt(feeds.lastSuccessfulFetchAt, input.now)),
+        ),
+      );
+  }
+  return recorded;
 }
 
 /**
