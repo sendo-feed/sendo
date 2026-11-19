@@ -1,3 +1,4 @@
+import { findExistingGuids } from "../db/content";
 import {
   type DiscordArticle,
   detachDiscordFeed,
@@ -19,6 +20,7 @@ import { FetchFeedError } from "../fetcher/fetch-feed";
 import type { Platform } from "../platform";
 import type { FetchFeedOutcome } from "./fetch-feed";
 import { nextFetchInterval } from "./fetch-interval";
+import { reportStorageFull } from "./storage";
 
 export async function runFetchDiscord(
   platform: Pick<Platform, "db" | "fetch" | "discord" | "fetchConfig" | "retentionConfig" | "jobs">,
@@ -82,11 +84,18 @@ export async function runFetchDiscord(
     : 0;
   // 記事を入れ終えてから配り、配り終えてから次に取得する位置を記録する。
   await deliverNewArticles(db, { feedId: feed.id });
-  if (!canStore && articles.length > 0) {
-    await platform.jobs.enqueue([{ type: "clean-up" }]);
-    return { status: "storage-full" };
-  }
   const usage = await readStorageUsage(db);
+  if (inserted !== articles.length) {
+    // 容量のトリガーで一部だけ入らなかった場合は、次回も同じ範囲を取り直す。
+    const guids = [...new Set(articles.map((article) => article.guid))];
+    const existing = await findExistingGuids(db, { feedId: feed.id, guids });
+    if (existing.size < guids.length) {
+      if (!(await getDiscordSubscriber(db, feed))) return { status: "missing" };
+      if (canStore) reportStorageFull(platform, usage);
+      await platform.jobs.enqueue([{ type: "clean-up" }]);
+      return { status: "storage-full" };
+    }
+  }
   if (usage.bytes >= platform.retentionConfig.maxBytes * 0.9) {
     await platform.jobs.enqueue([{ type: "clean-up" }]);
   }

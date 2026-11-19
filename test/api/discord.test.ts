@@ -1,9 +1,10 @@
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { connectDiscord, disconnectDiscord } from "../../src/db/discord";
-import { findFeedByUrl } from "../../src/db/feeds";
+import { findFeedByUrl, getFeed } from "../../src/db/feeds";
 import { articles } from "../../src/db/schema";
 import { createSession } from "../../src/db/sessions";
+import { readStorageUsage } from "../../src/db/storage";
 import { subscribeMany } from "../../src/db/subscriptions";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Platform } from "../../src/platform";
@@ -29,6 +30,7 @@ function discordFetch() {
   let beforeMessages: (() => Promise<void>) | undefined;
   let messageStatus = 200;
   let errorCode: number | undefined;
+  let messageIds = [MESSAGE_ID];
   const result = fakeFetch(async (url, init) => {
     expect(url.origin).toBe("https://discord.com");
     expect(init?.redirect).toBe("manual");
@@ -72,21 +74,20 @@ function discordFetch() {
           { status: messageStatus, headers: { "retry-after": "3600.5" } },
         );
       }
+      const after = BigInt(url.searchParams.get("after") ?? "0");
       return Response.json(
-        url.searchParams.get("after") === MESSAGE_ID
-          ? []
-          : [
-              {
-                id: MESSAGE_ID,
-                channel_id: "301",
-                type: 0,
-                content: "Version 1.0\n<script>literal text</script>",
-                author: { username: "alice" },
-                timestamp: FIXED_NOW.toISOString(),
-                attachments: [],
-                embeds: [],
-              },
-            ],
+        messageIds
+          .filter((id) => BigInt(id) > after)
+          .map((id) => ({
+            id,
+            channel_id: "301",
+            type: 0,
+            content: "Version 1.0\n<script>literal text</script>",
+            author: { username: "alice" },
+            timestamp: FIXED_NOW.toISOString(),
+            attachments: [],
+            embeds: [],
+          })),
       );
     }
     return new Response(null, { status: 404 });
@@ -95,6 +96,9 @@ function discordFetch() {
     ...result,
     deny: () => {
       canRead = false;
+    },
+    setMessageIds: (ids: string[]) => {
+      messageIds = ids;
     },
     setMessageStatus: (status: number, code?: number) => {
       messageStatus = status;
@@ -296,6 +300,34 @@ describe("Discord の購読", () => {
       connected: false,
       subscriptions: [],
     });
+  });
+
+  it("容量で一部しか保存できなかった投稿を、空きを作ったあとに取り直す", async () => {
+    const { platform, remote, enqueued } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const feedId = await subscribe(await browser(platform, user.id));
+    const startCursor = (await getFeed(platform.db, feedId))?.discordCursor;
+    const newerId = (BigInt(MESSAGE_ID) + 1n).toString();
+    remote.setMessageIds([newerId, MESSAGE_ID]);
+
+    const baseline = (await readStorageUsage(platform.db)).bytes;
+    platform.retentionConfig = { maxBytes: baseline + 4200 };
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "storage-full" });
+    const stored = () =>
+      platform.db
+        .select({ guid: articles.guid })
+        .from(articles)
+        .where(eq(articles.feedId, feedId))
+        .orderBy(articles.guid);
+    expect(await stored()).toEqual([{ guid: newerId }]);
+    expect((await getFeed(platform.db, feedId))?.discordCursor).toBe(startCursor);
+    expect(enqueued).toContainEqual({ type: "clean-up" });
+
+    platform.retentionConfig = { maxBytes: baseline + 32 * 1024 };
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
+    expect(await stored()).toEqual([{ guid: MESSAGE_ID }, { guid: newerId }]);
+    expect((await getFeed(platform.db, feedId))?.discordCursor).toBe(newerId);
   });
 
   it("レート制限は解除と区別し、Retry-After を守る", async () => {
