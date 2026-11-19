@@ -77,16 +77,86 @@
         "properties": {
           "languageDetection": {
             "type": "boolean",
-            "description": "記事の主言語を背景で判定・保存できるか。コンテナ版だけ"
+            "description": "記事の主言語を背景で判定・保存できるか。常に true"
           },
           "pageContent": {
             "type": "boolean",
-            "description": "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。コンテナ版だけ"
+            "description": "記事のページから本文を抜けるか（GET /articles/{id}/content?source=page）。常に true"
           }
         },
         "required": [
           "languageDetection",
           "pageContent"
+        ]
+      },
+      "DiscordIntegration": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "inviteUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "feedId": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "feedId",
+                "url",
+                "name"
+              ]
+            }
+          }
+        },
+        "required": [
+          "available",
+          "connected",
+          "inviteUrl",
+          "subscriptions"
+        ]
+      },
+      "DiscordSubscribeRequest": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 256,
+            "example": "https://discord.com/channels/111/222"
+          },
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "url"
         ]
       },
       "Feed": {
@@ -139,6 +209,14 @@
             ],
             "format": "date-time",
             "description": "最後に取得を試した時刻"
+          },
+          "lastSuccessfulFetchAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "最後に成功した取得（HTTP 304 を含む）を試した時刻。記録がなければ null"
           },
           "nextFetchAt": {
             "type": "string",
@@ -230,6 +308,7 @@
           "iconUrl",
           "folderId",
           "lastFetchedAt",
+          "lastSuccessfulFetchAt",
           "nextFetchAt",
           "status",
           "errorCount",
@@ -1456,7 +1535,7 @@
     "/features": {
       "get": {
         "summary": "この Sendo で使える機能",
-        "description": "Sendo には 2 つの版があり、版によって使える機能が違う（docs/decisions/container.md の 3）。\nクライアントは、これを見て画面を出し分ける。版の名前は返さない（機能ごとに見る）。",
+        "description": "使える機能を返す。今はどの機能も常に使えるので、すべて true を返す。\nsendo-reader の互換のために残している。sendo-reader が使わなくなったら消す（docs/decisions/container.md の 3）。",
         "responses": {
           "200": {
             "description": "使える機能",
@@ -1464,6 +1543,336 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Features"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/integrations/discord": {
+      "get": {
+        "summary": "Discord の接続状態と購読中のチャンネルを返す",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "接続状態",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscordIntegration"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "ブラウザのセッションが必要",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Discord の接続を解除する",
+        "description": "この接続の購読と取り込んだ投稿を、スター付きも含めて削除する。",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "接続を解除した"
+          },
+          "403": {
+            "description": "ブラウザのセッションが必要",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/integrations/discord/connect": {
+      "post": {
+        "summary": "Discord アカウントの接続を始める",
+        "description": "応答の authorizationUrl に同じブラウザを移す。許可したあとは returnTo に戻る。",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "returnTo": {
+                    "type": "string",
+                    "maxLength": 1024
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Discord の許可画面の URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "authorizationUrl": {
+                      "type": "string",
+                      "format": "uri"
+                    }
+                  },
+                  "required": [
+                    "authorizationUrl"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "ブラウザのセッションが必要",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Discord 連携の設定がない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/integrations/discord/callback": {
+      "get": {
+        "summary": "Discord の許可画面から戻る先",
+        "description": "接続開始時の returnTo に戻る。discord=connected、access_denied、invalid_state、already_connected、provider_error のいずれかを返す。",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "required": false,
+            "name": "code",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "state",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "error",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "接続の結果を付けて画面へ戻る"
+          },
+          "403": {
+            "description": "ブラウザのセッションが必要",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Discord 連携の設定がない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/integrations/discord/subscriptions": {
+      "post": {
+        "summary": "Discord のチャンネルを購読する",
+        "description": "Discord のチャンネル URL を指定する。購読したあとの投稿を受信箱に取り込む。",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscordSubscribeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "購読済み",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "feedId": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "feedId",
+                    "url",
+                    "name"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "購読した",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "feedId": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "feedId",
+                    "url",
+                    "name"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "URL またはフォルダが正しくない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "ブラウザのセッションが必要",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "チャンネルがないか、本人または Bot に閲覧権限がない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Discord アカウントとの接続がない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Discord 連携の設定がない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Discord API が応答しないか、応答が正しくない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -1747,7 +2156,7 @@
     "/articles/{id}/content": {
       "get": {
         "summary": "記事の本文",
-        "description": "記事の本文（HTML）を返す。出どころは 2 つあり、source で選ぶ。\n- feed（既定）：フィードに入っていた本文。記事の hasContent が true のときだけ、取りにいく。\n- page：記事のページから抜いた本文。まだ抜いていなければ、このリクエストの中でページを取りにいって抜く（数秒かかることがある）。使える版だけ（GET /features の pageContent）。抜けなかったら 404（page_content_unavailable）で、1 日たつまで取りにいき直さない。\nHTML は Sendo がサニタイズしてある（決めたタグと属性だけ。スクリプトやスタイルはない）。それでも外部から来たデータなので、クライアントの側でも、信頼できない HTML として扱う。\n本文の中の画像は、中継を通る URL（/api/v1/images?…。オリジンは付けない）に書き換えてある。リンクは絶対の URL。\n本文は、いったん返したらあとから変わらないので、手元に置いてよい。",
+        "description": "記事の本文（HTML）を返す。出どころは 2 つあり、source で選ぶ。\n- feed（既定）：フィードに入っていた本文。記事の hasContent が true のときだけ、取りにいく。\n- page：記事のページから抜いた本文。まだ抜いていなければ、このリクエストの中でページを取りにいって抜く（数秒かかることがある）。抜けなかったら 404（page_content_unavailable）で、1 日たつまで取りにいき直さない。\nHTML は Sendo がサニタイズしてある（決めたタグと属性だけ。スクリプトやスタイルはない）。それでも外部から来たデータなので、クライアントの側でも、信頼できない HTML として扱う。\n本文の中の画像は、中継を通る URL（/api/v1/images?…。オリジンは付けない）に書き換えてある。リンクは絶対の URL。\n本文は、いったん返したらあとから変わらないので、手元に置いてよい。",
         "parameters": [
           {
             "schema": {
@@ -1788,16 +2197,6 @@
           },
           "404": {
             "description": "記事がない（not_found）か、その記事にフィードの本文がない（no_content）か、ページから本文を抜けなかった（page_content_unavailable）",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "この版では、ページから本文を抜けない（feature_unavailable。GET /features を見る）",
             "content": {
               "application/json": {
                 "schema": {

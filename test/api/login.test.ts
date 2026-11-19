@@ -1,10 +1,11 @@
-import { env } from "cloudflare:workers";
+import type { webcrypto } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { safeReturnTo } from "../../src/api/login";
 import { createApp } from "../../src/app";
 import { GOOGLE } from "../../src/auth/providers";
 import { base64UrlEncode, sha256 } from "../../src/lib/crypto";
 import type { Platform } from "../../src/platform";
+import { testDb } from "../db";
 import { createTestPlatform, createUser, fakeFetch } from "../helpers";
 
 const CLIENT = { clientId: "test-client.apps.googleusercontent.com", clientSecret: "test-secret" };
@@ -28,7 +29,7 @@ async function generateKey() {
     },
     true,
     ["sign", "verify"],
-  ) as Promise<CryptoKeyPair>;
+  ) as Promise<webcrypto.CryptoKeyPair>;
 }
 
 /** 偽の Google。ID トークンに署名する鍵と、トークンのエンドポイントと、公開鍵（JWKS）を持つ */
@@ -42,7 +43,7 @@ async function createFakeGoogle() {
 
   const sign = async (
     claims: Claims,
-    options: { key?: CryptoKey; header?: Record<string, unknown> } = {},
+    options: { key?: webcrypto.CryptoKey; header?: Record<string, unknown> } = {},
   ) => {
     const header = encodeJson({ alg: "RS256", kid: "k1", typ: "JWT", ...options.header });
     const payload = encodeJson(claims);
@@ -185,7 +186,8 @@ const loginError = (res: Response) =>
   new URL(res.headers.get("location") ?? "", ORIGIN).searchParams.get("login_error");
 
 async function countUsers(email: string) {
-  const row = await env.DB.prepare("SELECT count(*) AS n FROM users WHERE email = ?")
+  const row = await testDb
+    .prepare("SELECT count(*) AS n FROM users WHERE email = ?")
     .bind(email)
     .first<{ n: number }>();
   return row?.n ?? 0;
@@ -247,15 +249,15 @@ describe("Google でログインする", () => {
     expect(me.status).toBe(200);
     const body = (await me.json()) as { user: { id: string; email: string } };
     expect(body.user.email).toBe(email);
-    const identity = await env.DB.prepare(
-      "SELECT user_id, issuer, email FROM identities WHERE subject = ?",
-    )
+    const identity = await testDb
+      .prepare("SELECT user_id, issuer, email FROM identities WHERE subject = ?")
       .bind("google-sub-1")
       .first();
     expect(identity).toEqual({ user_id: body.user.id, issuer: GOOGLE.issuer, email });
 
     // DB にはクッキーの値を置かない
-    const stored = await env.DB.prepare("SELECT token_hash FROM sessions WHERE user_id = ?")
+    const stored = await testDb
+      .prepare("SELECT token_hash FROM sessions WHERE user_id = ?")
       .bind(body.user.id)
       .first<{ token_hash: string }>();
     expect(stored?.token_hash).toMatch(/^[0-9a-f]{64}$/);
@@ -303,7 +305,8 @@ describe("Google でログインする", () => {
     };
     expect(me.user).toEqual({ id: firstMe.user.id, email: before });
     expect(await countUsers(after)).toBe(0);
-    const identity = await env.DB.prepare("SELECT email FROM identities WHERE subject = ?")
+    const identity = await testDb
+      .prepare("SELECT email FROM identities WHERE subject = ?")
       .bind(sub)
       .first<{ email: string }>();
     expect(identity?.email).toBe(after);
@@ -342,7 +345,8 @@ describe("Google でログインする", () => {
     );
     expect(ids[0]).toBe(ids[1]);
     expect(await countUsers(email)).toBe(1);
-    const links = await env.DB.prepare("SELECT count(*) AS n FROM identities WHERE subject = ?")
+    const links = await testDb
+      .prepare("SELECT count(*) AS n FROM identities WHERE subject = ?")
       .bind(sub)
       .first<{ n: number }>();
     expect(links?.n).toBe(1);

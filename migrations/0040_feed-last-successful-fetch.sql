@@ -1,0 +1,1 @@
+ALTER TABLE `feeds` ADD `last_successful_fetch_at` integer;

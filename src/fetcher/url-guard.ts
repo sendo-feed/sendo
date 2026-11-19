@@ -5,7 +5,6 @@
  * リダイレクトの行き先にも、取得のたびに同じ確認をかける（fetch-feed.ts）。
  *
  * ここではホスト名の文字列しか見ない。名前解決の結果（DNS リバインディング）は、緩衝層の fetch が
- * 確かめる。Cloudflare 版の Workers からは、内部のネットワークにはそもそも届かない。コンテナ版は、
  * 接続する IP アドレスを isPrivateIpAddress で確かめる（src/platform/node/safe-fetch.ts、
  * docs/decisions/container.md の 8）。
  */

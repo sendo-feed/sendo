@@ -1,7 +1,19 @@
-import { and, asc, eq, inArray, isNotNull, isNull, notExists, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  exists,
+  inArray,
+  isNotNull,
+  isNull,
+  notExists,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { Database } from ".";
 import { chunked } from "./chunk";
 import {
+  discordConnections,
   type Feed,
   feeds,
   folders,
@@ -175,6 +187,26 @@ export async function unsubscribe(
   db: Database,
   input: { userId: string; feedId: string; now: Date },
 ): Promise<boolean> {
+  // Discord は解除と同じ文で記事を消し、トリガーで購読の消した印を残す。
+  const ownedDiscordFeed = exists(
+    db
+      .select({ id: discordConnections.id })
+      .from(discordConnections)
+      .where(
+        and(
+          eq(discordConnections.id, feeds.discordConnectionId),
+          eq(discordConnections.userId, input.userId),
+        ),
+      ),
+  );
+  const detached = await db
+    .update(feeds)
+    .set({ discordConnectionId: null })
+    .where(and(eq(feeds.id, input.feedId), ownedDiscordFeed))
+    .returning({ id: feeds.id })
+    .get();
+  if (detached) return true;
+
   const ended = await db
     .update(subscriptions)
     .set({ deletedAt: input.now, seq: nextSeq(subscriptions) })

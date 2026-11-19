@@ -1,15 +1,15 @@
-import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { getFeed, insertFeed, MAX_LEASE } from "../../src/db/feeds";
 import { unsubscribe } from "../../src/db/subscriptions";
 import { enqueueDueFeeds } from "../../src/jobs/schedule";
+import { testDb } from "../db";
 import { createTestPlatform, subscribeFeed, TEST_USER, uniqueUrl } from "../helpers";
 
 const NOW = new Date("2026-11-14T00:00:00Z");
 
 describe("enqueueDueFeeds", () => {
   it("時期の来たフィードだけを積み、続けて呼んでも二重に積まない", async () => {
-    await env.DB.exec("DELETE FROM feeds");
+    await testDb.exec("DELETE FROM feeds");
     const { platform, enqueued } = createTestPlatform({ now: () => NOW });
     const due = await subscribeFeed(platform, { feedId: "due", now: NOW });
     await subscribeFeed(platform, { feedId: "later", now: new Date(NOW.getTime() + 60_000) });
@@ -25,7 +25,7 @@ describe("enqueueDueFeeds", () => {
   });
 
   it("定期実行が重なっても、同じフィードを二重に借りない", async () => {
-    await env.DB.exec("DELETE FROM feeds");
+    await testDb.exec("DELETE FROM feeds");
     const { platform, enqueued } = createTestPlatform({ now: () => NOW });
     const feed = await subscribeFeed(platform, { now: NOW });
 
@@ -35,7 +35,7 @@ describe("enqueueDueFeeds", () => {
   });
 
   it("一度に借りられる数を超えても、すべて積む", async () => {
-    await env.DB.exec("DELETE FROM feeds");
+    await testDb.exec("DELETE FROM feeds");
     const { platform, enqueued } = createTestPlatform({ now: () => NOW });
     const count = MAX_LEASE + 5;
     for (let i = 0; i < count; i++) {
@@ -48,7 +48,7 @@ describe("enqueueDueFeeds", () => {
   });
 
   it("購読している人がいないフィードは積まない", async () => {
-    await env.DB.exec("DELETE FROM feeds");
+    await testDb.exec("DELETE FROM feeds");
     const { platform, enqueued } = createTestPlatform({ now: () => NOW });
     await insertFeed(platform.db, { id: "orphan", url: uniqueUrl(), now: NOW });
     const ended = await subscribeFeed(platform, { feedId: "ended", now: NOW });

@@ -15,7 +15,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
-import type { Database } from ".";
+import { type Database, getRow } from ".";
 import type { InboxArticle } from "./inbox";
 import { readRemovalHorizon } from "./retention";
 import { readSavedPageHorizon, type SavedPage, toSavedPage } from "./saved";
@@ -322,7 +322,7 @@ export async function readChanges(
   /**
    * 差分：位置より後に変わった受信箱の行と、消えた記録を、混ぜて (seq, id) の順に読む。
    *
-   * 2 つの表は必ず 1 つの文で読む（D1 は文ごとに、ある時点の状態を読む）。別々の文で読むと、その
+   * 2 つの表は必ず 1 つの文で読む（SQLite は文ごとに、ある時点の状態を読む）。別々の文で読むと、その
    * 間に入った新着が、あとから入った消えた記録より小さい番号のまま取り残され、カーソルがその先へ
    * 進んで取りこぼす（#25 のレビュー）。
    */
@@ -413,11 +413,14 @@ export async function readChanges(
       // 最初の同期を、下限より前の位置で終えると、続きの差分で最初から同期し直しを求められ続ける
       // （回収した記録が、その人の最大だった場合など）
       maxSeq: async () => {
-        const row = await db.get<{ value: number }>(sql`select max(
+        const row = await getRow<{ value: number }>(
+          db,
+          sql`select max(
           coalesce((select max(${ua.seq}) from ${ua} where ${ua.userId} = ${userId}), 0),
           coalesce((select max(${removals.seq}) from ${removals} where ${removals.userId} = ${userId}), 0),
           coalesce((select ${removalHorizons.seq} from ${removalHorizons} where ${removalHorizons.userId} = ${userId}), 0)
-        ) as value`);
+        ) as value`,
+        );
         return row?.value ?? 0;
       },
     },
@@ -441,10 +444,13 @@ export async function readChanges(
       position: (row) => ({ seq: row.seq, id: row.id }),
       // 消した印の行を回収した下限も含める（記事の maxSeq と同じ理由）
       maxSeq: async () => {
-        const row = await db.get<{ value: number }>(sql`select max(
+        const row = await getRow<{ value: number }>(
+          db,
+          sql`select max(
           coalesce((select max(${clientSettings.seq}) from ${clientSettings} where ${clientSettings.userId} = ${userId}), 0),
           coalesce((select ${settingHorizons.seq} from ${settingHorizons} where ${settingHorizons.userId} = ${userId}), 0)
-        ) as value`);
+        ) as value`,
+        );
         return row?.value ?? 0;
       },
     }),
@@ -469,10 +475,13 @@ export async function readChanges(
             .all(),
         position: (row) => ({ seq: row.seq, id: row.id }),
         maxSeq: async () => {
-          const row = await db.get<{ value: number }>(sql`select max(
+          const row = await getRow<{ value: number }>(
+            db,
+            sql`select max(
           coalesce((select max(${savedPages.seq}) from ${savedPages} where ${savedPages.userId} = ${userId}), 0),
           coalesce((select ${savedPageHorizons.seq} from ${savedPageHorizons} where ${savedPageHorizons.userId} = ${userId}), 0)
-        ) as value`);
+        ) as value`,
+          );
           return row?.value ?? 0;
         },
       }),

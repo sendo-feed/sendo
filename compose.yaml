@@ -1,4 +1,4 @@
-# コンテナ版を動かす（docs/decisions/container.md、README の「コンテナ版で動かす」）。
+# Sendo を動かす（docs/decisions/container.md、README の「動かす」）。
 # このファイルと .env（.env.example を写して書く）を置いたディレクトリで、
 #
 #   docker compose up -d                 動かす

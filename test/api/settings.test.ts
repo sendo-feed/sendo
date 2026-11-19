@@ -1,6 +1,5 @@
 import { eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { QUERY_BUDGET } from "../../src/db/chunk";
 import { clientSettings, seqFloors } from "../../src/db/schema";
 import { SETTING_LIMITS } from "../../src/db/settings";
 import { runCleanUp } from "../../src/jobs/clean-up";
@@ -14,7 +13,7 @@ type SyncResponse = { cursor: string; hasMore: boolean; settings: SyncSetting[] 
 
 const DAY = 24 * 60 * 60 * 1000;
 
-/** テストごとに別のユーザーを使う（D1 はテストファイルの中で共有されるため） */
+/** テストごとに別のユーザーを使う（DB はテストファイルの中で共有されるため） */
 async function setUp(now?: () => Date) {
   const user = await createUser();
   const test = createTestPlatform(now ? { now } : {});
@@ -228,22 +227,6 @@ describe("設定を置く ／ 消す", () => {
     const { platform } = await setUp();
     const res = await requestApp(platform, "/api/v1/settings/mobile", { token: null });
     expect(res.status).toBe(401);
-  });
-
-  it("使うクエリは、いちばん多い場合でも上限に収まる", async () => {
-    const { patch, queryCount, resetQueryCount } = await setUp();
-    const put = Array.from({ length: 50 }, (_, i) => ({ name: `reader.a${i}`, value: i }));
-    await patch("mobile", { put });
-
-    // 消して、置いて、同じ値の項目が混ざっている（置けたかを読み直す）
-    resetQueryCount();
-    const res = await patch("mobile", {
-      put: put.slice(0, 50).map((item, i) => (i < 25 ? item : { ...item, value: "new" })),
-      remove: Array.from({ length: 50 }, (_, i) => `reader.b${i}`),
-    });
-
-    expect(res.status).toBe(204);
-    expect(queryCount()).toBeLessThanOrEqual(QUERY_BUDGET);
   });
 });
 

@@ -11,29 +11,25 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `docs/inception-deck.md`：プロダクトの目的と進め方
 - `docs/tech-deck.md`：技術構成の全体像
 - `docs/features.md`：作る機能の一覧（Phase 1〜3、MCP のツール）
-- `docs/cost.md`：Cloudflare の無料枠と費用の見積もり。D1 の書き込みの行数、Queues の使い方、取得の流れを変えたら、ここの数字も見直す
 
 ## 開発コマンド
 
-- `pnpm install`：依存を入れる。あわせて `worker-configuration.d.ts`（Workers の型）を生成する
+- `pnpm install`：依存を入れる
 - `pnpm check`：型チェック、lint、Rust の検査（`pnpm check:rust`：rustfmt、clippy、cargo test）、ネイティブのモジュールのビルド、テストをまとめて実行する。変更したら、コミットの前に必ず通す
 - `pnpm format`：整形して、直せる lint の指摘を直す
-- `pnpm test`：テスト。2 つの版で動く処理は Workers のランタイム（workerd）の中で、コンテナ版の緩衝層（`test/node/`）は Node で動かす（Vitest の `workers` と `node` の 2 つのプロジェクト）
-- `pnpm build`：デプロイせずにバンドルだけ作る
-- `pnpm build:native`：Rust（`crates/`）を napi-rs のネイティブのモジュール（`native/sendo.node`）にする。コンテナ版と、そのテスト（`test/node/`）が読み込む
-- `pnpm build:node`：コンテナ版のバンドル（`dist/node/sendo.mjs`）を作る。`DATA_DIR=<ディレクトリ> pnpm start:node` で、手元でコンテナ版を動かせる。イメージは `docker build -t sendo .`
-- `wrangler.jsonc` を変えたら `pnpm cf-typegen` で型を作り直す
+- `pnpm test`：テスト（Vitest、Node）。テストファイルごとに一時ディレクトリの SQLite を開き、マイグレーションを当てる（`test/db.ts`）。Rust を使うテストは `native/sendo.node` を読み込むので、先に `pnpm build:native` が要る
+- `pnpm build:native`：Rust（`crates/`）を napi-rs のネイティブのモジュール（`native/sendo.node`）にする。`pnpm dev` とテストが読み込む
+- `pnpm build`：バンドル（`dist/node/sendo.mjs`）を作る。`DATA_DIR=<ディレクトリ> pnpm start` で動かせる。イメージは `docker build -t sendo .`
 - API（`src/api/`）を変えたら `pnpm openapi:generate` で `spec/openapi.json` を書き出し、一緒にコミットする。sendo-reader はこのファイルから型を作る（CI で食い違いを検査している）
 - `src/db/schema.ts` を変えたら `pnpm db:generate` でマイグレーションを作り、一緒にコミットする。作ったマイグレーションは手で直さない（CI で食い違いを検査している）
-- 手元で動かすときは `pnpm db:migrate:local` と `pnpm token:create --email <メール>` のあとに `pnpm dev`。発行したトークンを `Authorization: Bearer` に付ける。ブラウザのログイン（Google）を試すときは、`.dev.vars.example` を `.dev.vars` に写して設定を書く
+- 手元で動かすときは `pnpm build:native` と `pnpm token:create --email <メール>` のあとに `pnpm dev`（`scripts/dev.mjs`。`.env` を読み、データは `.data/`、マイグレーションは起動時に当てる）。発行したトークンを `Authorization: Bearer` に付ける。ブラウザのログイン（Google）などを試すときは、`.env.example` を `.env` に写して設定を書く
 
 ## ディレクトリ
 
-- `src/index.ts`：Worker の入口。env から実装を組み立てて渡すだけにする
-- `src/app.ts`：HTTP のルーティング。実行環境に依存させない
-- `crates/`：コンテナ版の重い処理（Rust。docs/decisions/tech-stack.md の 5）。処理の本体の crate（`extract/` など。`#![forbid(unsafe_code)]`）と、Node から呼ぶための結び（`node/`。napi-rs）を分ける。外への取得と DB には触らず、TypeScript の側からバイト列を受け取って結果を返す。重い処理は `AsyncTask` でスレッドプールに出す
-- `src/platform/`：実行環境の緩衝層のインターフェース。Cloudflare 版の実装は `src/platform/cloudflare/`、コンテナ版の実装と入口は `src/platform/node/` に置く（docs/decisions/container.md）。設定の読み方は、2 つの版で `config.ts` を共有する
-  - 版によって有無が分かれる機能（今は `pageContent`）は、`Platform` の省略できる項目にし、持っている版だけが渡す。アプリはその有無で振る舞いを変え、版の名前では分岐しない。ない版では、REST API は 501（`feature_unavailable`）を返し、`GET /api/v1/features` に載せる（docs/decisions/container.md の 2、3）
+- `src/app.ts`：HTTP のルーティング。実行環境の入出力には直接触らず、`Platform` で受け取る
+- `crates/`：重い処理（Rust。docs/decisions/tech-stack.md の 5）。処理の本体の crate（`extract/` など。`#![forbid(unsafe_code)]`）と、Node から呼ぶための結び（`node/`。napi-rs）を分ける。外への取得と DB には触らず、TypeScript の側からバイト列を受け取って結果を返す。重い処理は `AsyncTask` でスレッドプールに出す
+- `src/platform/`：緩衝層。実行環境の入出力（DB、ファイル、外への取得、Rust のネイティブのモジュール、タイマー）をまとめる。インターフェースは `src/platform/index.ts`、実装と入口（`main.ts`）は `src/platform/node/` に置く（docs/decisions/tech-stack.md の 3、docs/decisions/container.md）。アプリはインターフェース越しに使い、テストでは差し替える。設定の読み方は `config.ts`
+  - Rust の処理（`pageContent`、`languageDetection`）は `Platform` の必須の項目。読み込めなければ起動しない（docs/decisions/container.md の 2）。`GET /api/v1/features` は sendo-reader の互換のために残し、常に true を返す（同じく 3）
   - Rust のネイティブのモジュールを読み込むのは `src/platform/node/native.ts` だけ
 - 機能のディレクトリ（`api/`、`fetcher/`、`jobs/` など）は `docs/tech-deck.md` の「6. ディレクトリ構成」に従う
 - `src/api/`：REST API。入力は zod のスキーマで検証し、OpenAPI の定義も同じスキーマから作る
@@ -41,26 +37,26 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
   - 認証の要らない入口（ログインなど）は、`index.ts` で認証のミドルウェアより先に登録する
   - 画像の URL（記事の `thumbnailUrl`、フィードの `iconUrl`）は、もとの URL のまま返さない。`db/secrets.ts` の `imageSigner` で、中継を通る URL にして返す（docs/decisions/images.md）。中継の入口は `images.ts`
 - `src/auth/`：ログイン（OpenID Connect）の提供元と、ID トークンの確認（docs/decisions/accounts.md）
-- `src/db/`：スキーマとデータの読み書き。D1 に固有の型ではなく `Database`（SQLite の非同期ドライバに共通の型）で受ける
+- `src/db/`：スキーマとデータの読み書き。libsql に固有の型ではなく `Database`（SQLite の非同期ドライバに共通の型）で受ける。生の SQL で 1 行を読むときは、`db.get(sql)` ではなく `getRow`（`db/index.ts`）を使う（libsql の drizzle の `get` は、行が返らないと例外を投げる）
   - 共有のデータ：`feeds.ts`（フィード）、`articles.ts`（記事。取り込んだあとは変えない）
   - 人ごとのデータ：`folders.ts`、`subscriptions.ts`（購読）、`inbox.ts`（受信箱。既読・スター・一覧・未読の数）。人ごとのデータを読み書きするときは、必ずユーザーで絞る
   - クライアントの設定：`settings.ts`（docs/decisions/settings.md）。ユーザー × 端末の種類ごとに、名前と JSON の値の組を預かる。中身は解釈しない。上限は、置く文の中で確かめる。消すときは消した印を付け、30 日たった印の行は 1 日 1 回の片付けが消す
-  - 記事の本文：`content.ts`（docs/decisions/content.md）。本文は置き場（`platform.content`。Cloudflare では R2）に、名前は記事の行（`content_key`）に持つ。置く前に名前を書き留め、行に入ったら消す。記事の行が消えると、トリガーが名前を書き留める。記事を消す処理は置き場に触らず、1 日 1 回の片付けが、行のない本文を消す。置き場の名前は API に出さない
+  - 記事の本文：`content.ts`（docs/decisions/content.md）。本文は置き場（`platform.content`。データのボリュームの上のファイル）に、名前は記事の行（`content_key`）に持つ。置く前に名前を書き留め、行に入ったら消す。記事の行が消えると、トリガーが名前を書き留める。記事を消す処理は置き場に触らず、1 日 1 回の片付けが、行のない本文を消す。置き場の名前は API に出さない
   - 古い記事の片付け：`retention.ts`（docs/decisions/retention.md）。受信箱の行を消してから、どの受信箱にも残っていない記事を消す。保存容量が圧迫したときだけ、古いスターなし記事を片付ける。スター付きとフィード掲載中の記事は保護する。`storage.ts` と DB のトリガーで使用量を集計し、保存前にも上限を確かめる。一度に消す量と 1 日の回数を抑える
   - 人ごとのデータの行を作る ／ 変えるときは、`seq.ts` の `nextSeq` で変更番号を振る。行を物理的に消すと、表に付けたトリガーが削除と同じ文の中で下限を記録する（受信箱では、同期で伝える「消した記録」も残す。docs/decisions/sync.md）。コードで記録しない。フォルダと購読は消さずに消した印（`deleted_at`）を付ける
   - API のハンドラーでは、認証したユーザーを `c.get("user")` で受け取る
 - `src/fetcher/`：外部の URL の取得と解析。外部の URL は必ず `toFetchableUrl` を通す（SSRF 対策）
   - 画像は `fetch-image.ts` で取る。形式は先頭のバイトで確かめ、SVG は通さない。配信元へのリクエストはそこで新しく組み立て、読者のリクエストのヘッダーを渡さない
   - サムネイルは `thumbnail.ts` がフィードの中から採り、アイコンは `find-icon.ts` が探す（取得のジョブが 30 日に 1 回）
-  - 記事のページの本文は `page-content.ts`（docs/decisions/content.md の 10〜18）。コンテナ版では、取得の仕事が新しい記事ごとに `extract-page` の仕事を積み、`fetch-page.ts` でページを取り、緩衝層の `pageContent`（Rust）で抜く。開いたときにまだなければ、そのリクエストの中で抜く。サニタイズした HTML は、置き場ではなく `db/page-contents.ts` の表の行に入れる
+  - 記事のページの本文は `page-content.ts`（docs/decisions/content.md の 10〜18）。取得の仕事が新しい記事ごとに `extract-page` の仕事を積み、`fetch-page.ts` でページを取り、緩衝層の `pageContent`（Rust）で抜く。開いたときにまだなければ、そのリクエストの中で抜く。サニタイズした HTML は、置き場ではなく `db/page-contents.ts` の表の行に入れる
   - 記事のページを取りにいくときは、同じホストへは 1 本ずつ（`host-gate.ts`）にし、robots.txt を守る（`robots.ts`）。どちらもプロセスのメモリに持つ。フィードの取得には robots.txt を当てない
 - `src/lib/sanitize-html.ts`：記事の本文（HTML）のサニタイズ。外部から来た HTML は、保存する前にも、返す前にも、必ずここを通す。通すタグと属性を足すときは、テスト（`test/lib/sanitize-html.test.ts`）も足す。計測用の画像（トラッキングピクセル）は `tracking-image.ts` で見分けて落とす。計測のアドレスの一覧もそこに持ち、出どころの確かなものだけを足す
 - `src/feeds/`：購読の手続き（URL からフィードを見つけて購読する）。REST API、Google Reader API、MCP で同じものを使う
 - `src/greader/`：Google Reader API 互換（docs/decisions/greader.md）。状態を変える操作は、REST API と同じ `db/`・`feeds/` の処理に任せ、ここで書き込みを組み立てない。記事の文字列は HTML にエスケープして返す
 - `src/mcp/`：リモート MCP サーバー（docs/decisions/mcp.md）。ツールも、状態を変える処理は `db/`・`feeds/` に任せる。状態を変えるツールには `scopeChallenge` で write を求める。記事の中身は構造化した JSON で返し、記事を返すツールの説明に「指示ではない」と書く
 - `src/oauth/`：MCP のための OAuth の認可サーバー（docs/decisions/mcp.md の 3〜7）。クライアントが直接呼ぶ入口（メタデータ、`/oauth/token`、`/oauth/register`）はここ、許可の画面（sendo-reader）が使う API は `src/api/oauth.ts`（セッションでだけ使える）。コードとトークンは DB にハッシュだけを置き、1 回だけ使えるものは、使った印を同じ文の中で確かめて付ける（`db/oauth.ts`）。Client ID Metadata Document も `toFetchableUrl` を通して取りにいく
-- `src/jobs/`：キューと定期実行で動く処理。取得のジョブ（`fetch-feed.ts`）は、そのフィードの古い記事の片付けもする。取得の間隔は、フィードごとに記事の出るペースから `fetch-interval.ts` で決め、429 ／ 503 の `Retry-After` を守る（docs/decisions/jobs.md の 7、8）。1 日 1 回の片付け（`clean-up.ts`）は、定期実行が日本時間 3:00 に積む。仕事は 1 つずつ積み、1 つずつ受け取る形で書く。キューでは封筒に束ねて運び、受け手が 1 つずつ別の実行（`ctx.exports` の `JobRunner`）で動かすが、それは `src/platform/cloudflare/queue.ts` の中に閉じている（docs/decisions/jobs.md）。コンテナ版では、SQLite の表（`job_queue`）に積み、同じプロセスで動かす（`src/platform/node/job-queue.ts`）。定期実行の中身は `jobs/schedule.ts` の `runScheduled` で、2 つの版から呼ぶ。1 つの仕事は、それだけで `QUERY_BUDGET` に収める
-- テストは `test/` に置き、`*.test.ts` とする。外部への通信はせず、`test/helpers.ts` の `fakeFetch` で差し替える。API のテストは、`test/setup.ts` が入れるテスト用のユーザーとトークン（`test/fixtures/user.ts`）を使う。コンテナ版の緩衝層のテストは `test/node/` に置き、Node で動かす
+- `src/jobs/`：キューと定期実行で動く処理。取得のジョブ（`fetch-feed.ts`）は、そのフィードの古い記事の片付けもする。取得の間隔は、フィードごとに記事の出るペースから `fetch-interval.ts` で決め、429 ／ 503 の `Retry-After` を守る（docs/decisions/jobs.md の 7、8）。1 日 1 回の片付け（`clean-up.ts`）は、定期実行が日本時間 3:00 に積む。仕事は 1 つずつ積み、1 つずつ受け取る形で書く。仕事は SQLite の表（`job_queue`）に積み、同じプロセスで動かす（`src/platform/node/job-queue.ts`、docs/decisions/jobs.md）。定期実行の中身は `jobs/schedule.ts` の `runScheduled` で、プロセスの中のタイマー（`src/platform/node/scheduler.ts`）から呼ぶ。1 つの仕事が扱う量には上限を置き、残りは次の仕事か定期実行に回す（docs/decisions/jobs.md の 4）
+- テストは `test/` に置き、`*.test.ts` とする。外部への通信はせず、`test/helpers.ts` の `fakeFetch` で差し替える。API のテストは、`test/db.ts` が入れるテスト用のユーザーとトークン（`test/fixtures/user.ts`）を使う。SQL をそのまま書いて DB を確かめるときは `test/db.ts` の `testDb`、文の直前に割り込むときは `test/helpers.ts` の `statementHook` を使う。緩衝層の実装のテストは `test/platform/node/` に置く
 
 ## 言語
 
@@ -85,16 +81,15 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 
 ## 守る規約
 
-ここの規約は、2 つの版で動くアプリ本体（`src/`）に適用する。手元の Node で動かす道具（`scripts/`、`*.config.ts` などの設定ファイル）は対象外で、`node:*` を使ってよい（docs/decisions/tech-stack.md）。
+ここの規約は、アプリ本体（`src/`）に適用する。手元の Node で動かす道具（`scripts/`、`*.config.ts` などの設定ファイル）は対象外で、`node:*` を使ってよい（docs/decisions/tech-stack.md）。
 
-- Cloudflare のバインディング（`env.DB` など）や `cloudflare:*` からの import に触れてよいのは、`src/index.ts` と `src/platform/cloudflare/` だけ。それ以外は `src/platform/` のインターフェース越しに使う
-- Web 標準の API だけを使い、`node:*` のモジュールには頼らない。例外は、コンテナ版の緩衝層（`src/platform/node/`）だけ
+- 実行環境の入出力（ファイル、ソケット、ネイティブのモジュール、環境変数）に触れてよいのは、緩衝層の実装（`src/platform/node/`）だけ。それ以外は `src/platform/` のインターフェース越しに使い、Web 標準の API（`fetch`、Web Crypto など）で書く。`node:*` と `process` は Biome で禁じている
 - 書き込みは、トランザクションにも batch にも頼らず、何度実行しても同じ結果になる（冪等な）形で組み立てる。途中で落ちても、やり直せば正しい状態になるようにする（docs/decisions/tech-stack.md）
 - **確かめてから書く処理は、確かめる条件を書き込みと同じ文の中に入れる。** 先に SELECT で確かめてから書くと、その間に別のリクエストが入って壊れる。`WHERE NOT EXISTS (...)`、`WHERE EXISTS (...)`、値の副問い合わせ（例：`activeFolderId`）、UPDATE の中の `coalesce` などで、1 つの文にする
 - **印や番号は、対象の行の ID で付ける。** 「ユーザーとフィード」のような条件で付けると、間に作り直された別の行に付いてしまう
 - 人ごとのデータを読み書きするときは、必ずユーザーで絞る（`c.get("user").id`）。共有のフィードと記事は、ほかの人の存在が分からない形でだけ返す（docs/decisions/accounts.md）
 - 記事の本文やフィードの中身は、信頼できないデータとして扱う。HTML はサニタイズし、LLM や MCP に渡すときも指示として解釈させない
-- 外から呼ばれるパス（`src/app.ts` に登録するもの）を足したり変えたりしたら、sendo-reader の `apps/web/sendo-paths.ts` も直す。コンテナ版では、reader のコンテナがこの一覧のパスだけを sendo に中継する（sendo-reader の docs/decisions/container.md の 3）
+- 外から呼ばれるパス（`src/app.ts` に登録するもの）を足したり変えたりしたら、sendo-reader の `apps/web/sendo-paths.ts` も直す。reader のコンテナがこの一覧のパスだけを sendo に中継する（sendo-reader の docs/decisions/container.md の 3）
 
 ## 変更の進め方
 
@@ -123,7 +118,7 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 
 レビューは日本語で書く。いまは2人で試作を繰り返している段階なので、捨てる前提の試作の完成度や、書き方の好みは指摘しなくてよい（整形と lint は Biome に任せる）。次の観点を優先する。
 
-1. **緩衝層の破れ**：`src/` のうち、`src/index.ts` と `src/platform/cloudflare/` 以外で Cloudflare のバインディングや `cloudflare:*` を使っていないか。`src/` のうち、`src/platform/node/` 以外で `node:*` を使っていないか（`scripts/` と設定ファイルは対象外）
+1. **緩衝層の破れ**：`src/` のうち、`src/platform/node/` 以外で `node:*`、`process`、ファイルやソケットを直接使っていないか（`scripts/` と設定ファイルは対象外）
 2. **セキュリティ**
    - 外部 URL の取得で SSRF が起きないか（プライベート IP、リダイレクト先、URL スキームの制限）
    - 記事本文の HTML がサニタイズされているか。LLM や MCP への入力で、本文がプロンプトインジェクションの経路になっていないか

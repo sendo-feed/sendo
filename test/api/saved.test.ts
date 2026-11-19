@@ -1,7 +1,7 @@
-import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { SAVED_PAGE_LIMITS } from "../../src/db/saved";
 import { runCleanUp } from "../../src/jobs/clean-up";
+import { testDb } from "../db";
 import { createTestPlatform, createUser, fakeFetch, requestApp } from "../helpers";
 
 type Page = { id: string; url: string; title: string | null; savedAt: string };
@@ -96,7 +96,8 @@ describe("あとで読むページ", () => {
   it("書き込みが並んでも人ごとの保存件数を超えない", async () => {
     const user = await createUser();
     const { platform } = createTestPlatform();
-    await env.DB.prepare(`
+    await testDb
+      .prepare(`
       with recursive n(i) as (select 1 union all select i + 1 from n where i < ?)
       insert into saved_pages (user_id, id, url, saved_at, seq)
       select ?, printf('%064x', i), 'https://example.com/' || i, 0, i from n

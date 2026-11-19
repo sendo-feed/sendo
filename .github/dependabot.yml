@@ -14,9 +14,6 @@ updates:
       prefix: build
       include: scope
     groups:
-      # Cloudflare の開発ツールは揃えて上げないと噛み合わないことがあるのでまとめる
-      cloudflare:
-        patterns: ["wrangler", "@cloudflare/*"]
       minor-and-patch:
         update-types: [minor, patch]
     ignore:
@@ -39,7 +36,7 @@ updates:
       actions:
         patterns: ["*"]
 
-  # コンテナ版の土台のイメージ（Dockerfile の FROM のダイジェスト）
+  # イメージの土台（Dockerfile の FROM のダイジェスト）
   - package-ecosystem: docker
     directory: /
     schedule:

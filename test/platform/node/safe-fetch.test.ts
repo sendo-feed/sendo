@@ -2,13 +2,13 @@ import type { LookupAddress } from "node:dns";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { fetchFeed } from "../../src/fetcher/fetch-feed";
+import { fetchFeed } from "../../../src/fetcher/fetch-feed";
 import {
   createGuardedLookup,
   createSafeFetch,
   PrivateAddressError,
   type Resolver,
-} from "../../src/platform/node/safe-fetch";
+} from "../../../src/platform/node/safe-fetch";
 
 /** 名前ごとに決まったアドレスを返す。外への通信はしない */
 function fakeResolver(table: Record<string, LookupAddress[]>): Resolver {

@@ -1,5 +1,5 @@
 /**
- * コンテナ版の仕事の運び方（docs/decisions/container.md の 6）。仕事を SQLite の表（job_queue）に
+ * 仕事の運び方（docs/decisions/container.md の 6、docs/decisions/jobs.md）。仕事を SQLite の表（job_queue）に
  * 積み、同じプロセスの中で取り出して動かす。
  *
  * - 取り出すとき：1 つの文で、取り出した回数を増やし、run_at を借りの期限まで先へ送る
@@ -8,7 +8,7 @@
  * - プロセスが途中で落ちたら：借りの期限が過ぎれば、また取り出される。どの仕事も何度実行しても
  *   同じ結果になるので、二重に動いても壊れない
  *
- * jobs/ からは、Cloudflare 版と同じく、仕事を 1 つずつ積み、1 つずつ受け取るように見える。
+ * jobs/ からは、仕事を 1 つずつ積み、1 つずつ受け取るように見える。
  */
 import { asc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Database } from "../../db";
@@ -16,7 +16,7 @@ import { jobQueue } from "../../db/schema";
 import { type Job, jobSchema } from "../../jobs/job";
 import type { JobQueue } from "..";
 
-/** 1 つの仕事を試す回数の上限。Cloudflare 版（platform/cloudflare/queue.ts）と同じ */
+/** 1 つの仕事を試す回数の上限（docs/decisions/jobs.md の 5） */
 export const MAX_ATTEMPTS = 3;
 
 /** 失敗した仕事を、やり直すまで置く時間 */
