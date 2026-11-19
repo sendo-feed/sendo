@@ -12,7 +12,6 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { serve } from "@hono/node-server";
 import { createApp } from "../../app";
 import { runJob } from "../../jobs";
 import { enqueueLanguageDetection, runScheduled } from "../../jobs/schedule";
@@ -22,6 +21,8 @@ import { createNodePlatform, dataDirectory, type NodeEnv, withPublicOrigin } fro
 import { createSqliteJobQueue } from "./job-queue";
 import { createLanguageDetector, createPageContentExtractor, loadNativeModule } from "./native";
 import { startScheduler } from "./scheduler";
+import { createNodeServer } from "./server";
+import { createNodeSyncUpdates } from "./sync-updates";
 import { createTokenForEmail } from "./token";
 
 /** 止めるときに、動いている仕事を待つ上限 */
@@ -74,13 +75,13 @@ function readPort(env: NodeEnv): number {
   return port;
 }
 
-/** OAuth の設定と同じく、形が正しくなければ使わない（ログに出す） */
-function readPublicOrigin(env: NodeEnv): string | undefined {
+/** 未設定は undefined、不正な設定は null。通知接続では不正な値を拒否する。 */
+function readPublicOrigin(env: NodeEnv): string | null | undefined {
   try {
     return parseOrigin(env.PUBLIC_URL);
   } catch (error) {
     console.error("PUBLIC_URL is ignored: it must be an https origin", error);
-    return undefined;
+    return null;
   }
 }
 
@@ -89,10 +90,13 @@ async function runServer(env: NodeEnv): Promise<void> {
   const native = loadNativeFeatures(env);
   const database = await prepareDatabase(env);
   const jobs = createSqliteJobQueue(database.db);
+  const publicOrigin = readPublicOrigin(env);
+  const sync = createNodeSyncUpdates(database.db, { invalidPublicOrigin: publicOrigin === null });
   const platform = createNodePlatform({
     env,
     db: database.db,
     jobs,
+    syncUpdates: sync.updates,
     ...native,
   });
   const app = createApp(platform);
@@ -100,14 +104,18 @@ async function runServer(env: NodeEnv): Promise<void> {
   jobs.start((job) => runJob(platform, job));
   await enqueueLanguageDetection(platform);
   const scheduler = startScheduler((scheduledTime) => runScheduled(platform, scheduledTime));
-  const server = serve(
-    {
-      fetch: withPublicOrigin((request) => app.fetch(request), readPublicOrigin(env)),
-      port,
-      hostname: env.HOST?.trim() || "0.0.0.0",
-    },
-    (info) => console.info("sendo is listening", { address: info.address, port: info.port }),
+  const hostname = env.HOST?.trim() || "0.0.0.0";
+  const server = createNodeServer(
+    withPublicOrigin(app.fetch, publicOrigin ?? undefined),
+    sync.webSocketServer,
+    hostname,
   );
+  server.listen(port, hostname, () => {
+    const info = server.address();
+    if (info && typeof info !== "string") {
+      console.info("sendo is listening", { address: info.address, port: info.port });
+    }
+  });
 
   let stopping = false;
   const shutdown = async (signal: string) => {
@@ -121,7 +129,8 @@ async function runServer(env: NodeEnv): Promise<void> {
     // 新しい接続を受けるのをやめ、処理中のリクエストが終わるのを待つ。待っている間の、使われていない
     // 接続（keep-alive）は閉じる。終わらなければ、上の上限で打ち切る
     const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-    if ("closeIdleConnections" in server) server.closeIdleConnections();
+    sync.stop();
+    server.closeIdleConnections();
     await closed;
     await scheduler.stop();
     await jobs.stop();
