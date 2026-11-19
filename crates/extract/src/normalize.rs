@@ -193,7 +193,19 @@ pub(crate) fn normalize(html: &str, base: &str) -> String {
         else {
             continue;
         };
-        if link.select("img").exists() {
+        let images = link.select("img");
+        if images.nodes().iter().any(|node| {
+            Selection::from(*node)
+                .attr("src")
+                .and_then(|src| http(&src, base))
+                .is_some_and(|src| !placeholder(&src))
+        }) {
+            continue;
+        }
+        if images.exists() {
+            let image = images.first();
+            image.set_attr("src", url.as_str());
+            image.remove_attrs(&["width", "height"]);
             continue;
         }
         let image = r#"<img alt="Imgur">"#;
@@ -253,6 +265,21 @@ mod tests {
         );
         assert_eq!(image.attr("alt").as_deref(), Some("元の代替文"));
         assert!(doc.text().contains("元のキャプション"));
+    }
+
+    #[test]
+    fn imgur_conversion_uses_the_direct_link_for_an_unusable_image() {
+        let doc = Document::from(normalize(
+            r#"<blockquote class="imgur-embed-pub"><a href="//i.imgur.com/photo.jpeg"><img src="data:image/gif;base64,AA" width="1" height="1" alt="画像の説明"></a></blockquote>"#,
+            "https://site.example/post",
+        ));
+        let image = doc.select("img");
+        assert_eq!(
+            image.attr("src").as_deref(),
+            Some("https://i.imgur.com/photo.jpeg")
+        );
+        assert_eq!(image.attr("alt").as_deref(), Some("画像の説明"));
+        assert!(image.attr("width").is_none());
     }
 
     #[test]

@@ -9,7 +9,7 @@ use crate::{ExtractError, Extracted};
 const BODY_BLOCKS: &str =
     "p, pre, td, th, blockquote, div, section, article, main, body, li, dt, dd";
 
-const POST_EMBEDS: &str = "blockquote.twitter-tweet a[href], blockquote.imgur-embed-pub img[src]";
+const POST_EMBEDS: &str = "blockquote.twitter-tweet a[href], blockquote.imgur-embed-pub img[src], img[src^='https://i.imgur.com/']";
 
 fn compact(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
@@ -67,7 +67,8 @@ fn prune(doc: &Document) {
             .map(|n| compact(&Selection::from(*n).text()).chars().count())
             .sum();
         let related_list = block.is("ul")
-            && block.children().filter("li").length() >= 3
+            && links.length() >= 3
+            && !block.select("img, video, audio, iframe").exists()
             && block.attr("class").is_some_and(|value| {
                 value
                     .split_whitespace()
@@ -343,7 +344,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
 /// 選ばれた本文と同じ記事の範囲で、手前に分かれた埋め込みを含むブロックを探す。
 fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
     const ARTICLE: &str = "article, [itemprop=articleBody]";
-    if root.is("article") {
+    if root.is("article, main, [role=main], body") {
         return Vec::new();
     }
     let ancestors = root.ancestors(Some(128));
@@ -356,6 +357,12 @@ fn leading_embeds<'a>(root: &Selection<'a>) -> Vec<Selection<'a>> {
                 .nodes()
                 .iter()
                 .find(|node| Selection::from(**node).is(ARTICLE))
+        })
+        .or_else(|| {
+            ancestors
+                .nodes()
+                .iter()
+                .find(|node| Selection::from(**node).is("main, [role=main], body"))
         });
     let Some(boundary) = boundary else {
         return Vec::new();
@@ -454,6 +461,16 @@ mod tests {
         let text = doc.text();
         assert!(text.find("導入文").unwrap() < text.find("本文の段落0").unwrap());
     }
+    #[test]
+    fn keeps_a_direct_imgur_image_in_the_lead_without_article_markup() {
+        let doc = Document::from(
+            r#"<main><div><img src="https://i.imgur.com/example.jpeg"></div><section><div id="body">記事本文</div></section></main>"#,
+        );
+        let leads = leading_embeds(&doc.select("#body"));
+        assert_eq!(leads.len(), 1);
+        assert!(leads[0].select("img").exists());
+    }
+
     #[test]
     fn does_not_confine_body_to_a_header_only_article() {
         let html = format!(
