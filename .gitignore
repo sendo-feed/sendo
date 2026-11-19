@@ -4,6 +4,7 @@ node_modules
 # ビルドと実行の生成物
 dist/
 .wrangler/
+/wrangler.discord.local.jsonc
 # Rust のビルドの生成物と、Node から読み込むネイティブのモジュール（pnpm build:native）
 target
 native/
