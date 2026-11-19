@@ -35,7 +35,7 @@ Sendo は、コンテナ（Node ＋ SQLite）だけで動かす（[テックス�
 
 10. **上流のリポジトリの CI がイメージを作り、GHCR（`ghcr.io/sendo-feed/sendo`）に置く。使う人は fork しない。**
     - 標準構成では、手元に `compose.yaml` と `.env` を置き、配布済みイメージで動かす。上流の更新は `docker compose pull` で取り込み、コンテナを作り直す。新しいコンテナが起動するときにマイグレーションを当てる（5）
-    - X の埋め込みを有効にする場合は、reader とホスト名が異なる HTTPS オリジンで隔離フレーム用の静的ページを配信する。配信元を指定した reader イメージをビルドして Compose で使い、reader の更新時もビルドし直す。[reader のコンテナ構成](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)
+    - X の埋め込みを有効にする場合は、reader とホスト名が異なる HTTPS オリジンで隔離フレーム用の静的ページを配信する。配信元を指定した reader イメージをビルドして Compose で使い、reader の更新時もビルドし直す。Sendo は `docker compose pull sendo` で更新してから、Compose でコンテナを作り直す。[reader のコンテナ構成](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)
     - `main` に変更が入るたびに、`main` のタグを付けて出す。版を切るようになったら、版のタグ（`1.2.3`、`1.2`）と `latest` も付ける
     - amd64 と arm64 の両方で作る。Rust のネイティブのモジュールも、それぞれの CPU 向けにビルドしてイメージに入れる
     - イメージは公開する。使う人は `docker login` せずに取ってこられる
@@ -78,7 +78,7 @@ Sendo がほかの RSS リーダーと違う価値を出すのは、CPU を多�
 - **配布済みイメージを使う：**
   - 標準構成では上流が作ったイメージで動かせる。X の埋め込みを有効にする構成では、配信元をビルド時に reader の設定と CSP に入れるため、reader をビルドして使う（10）
   - 人ごとの設定は `.env` にあって git に載らないので、自分の URL が公開の fork に載る心配もない
-- **起動するときにマイグレーションを当てる：** 1 つのプロセスなので、古い版と新しい版のコードが同じ DB で同時に動くことがない。マイグレーションを前の版のコードと両立させる必要がない。標準構成では更新を `docker compose pull` で取り込み、`docker compose up -d` でコンテナを作り直す。X の埋め込みを有効にした場合も、新しい reader イメージをビルドしてコンテナを作り直す（10）。
+- **起動するときにマイグレーションを当てる：** 1 つのプロセスなので、古い版と新しい版のコードが同じ DB で同時に動くことがない。マイグレーションを前の版のコードと両立させる必要がない。標準構成では更新を `docker compose pull` で取り込み、`docker compose up -d` でコンテナを作り直す。X の埋め込みを有効にした場合は、Sendo のイメージを取り込み、新しい reader イメージをビルドしてからコンテナを作り直す（10）。
 
 ## 検討した代替案
 
