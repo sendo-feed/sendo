@@ -37,4 +37,10 @@ fn keeps_the_article_body_without_the_site_frame() {
     ] {
         assert!(!html.contains(text), "unexpected: {text}");
     }
+    // 表紙は画面幅ごとに同じ URL で 2 回書かれている。最初の 1 枚だけを残す
+    assert_eq!(
+        html.matches("44af4962d01f080e38d36520a25047ff/large.jpg")
+            .count(),
+        1
+    );
 }
