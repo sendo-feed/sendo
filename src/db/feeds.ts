@@ -144,7 +144,7 @@ export async function recordFetchSuccess(
   input: {
     now: Date;
     nextFetchAt: Date;
-    /** 決め直した取得の間隔（docs/decisions/jobs.md の 7） */
+    /** 決め直した取得の間隔（docs/decisions/jobs.md の 7、11）。次の取得までの長さ */
     fetchIntervalMs: number;
     etag?: string | null;
     lastModified?: string | null;

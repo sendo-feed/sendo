@@ -76,22 +76,28 @@ export async function getArticlePageUrl(
 }
 
 /**
- * フィードの記事のうち、公開日時が since より後のものの公開日時を、新しい順に limit 件まで返す。
- * 取得の間隔を決めるのに使う（docs/decisions/jobs.md の 7）。索引（フィード × 公開日時）で引くので、
- * 読む行は limit 件まで
+ * フィードの記事のうち、公開日時が since より後のものの公開日時と、その時刻まで分かるかを、新しい順に
+ * limit 件まで返す。timeKnownOnly なら、時刻まで分かる記事だけ。取得の時刻を決めるのに使う
+ * （docs/decisions/jobs.md の 7、11）。索引（フィード × 公開日時）で引く
  */
-export async function recentPublishedTimes(
+export async function recentPublished(
   db: Database,
-  input: { feedId: string; since: Date; limit: number },
-): Promise<Date[]> {
+  input: { feedId: string; since: Date; limit: number; timeKnownOnly?: boolean },
+): Promise<{ publishedAt: Date; timeKnown: boolean }[]> {
   const rows = await db
-    .select({ publishedAt: articles.publishedAt })
+    .select({ publishedAt: articles.publishedAt, timeKnown: articles.publishedTimeKnown })
     .from(articles)
-    .where(and(eq(articles.feedId, input.feedId), gt(articles.publishedAt, input.since)))
+    .where(
+      and(
+        eq(articles.feedId, input.feedId),
+        gt(articles.publishedAt, input.since),
+        input.timeKnownOnly ? eq(articles.publishedTimeKnown, true) : undefined,
+      ),
+    )
     .orderBy(desc(articles.publishedAt))
     .limit(input.limit)
     .all();
-  return rows.map((row) => row.publishedAt);
+  return rows;
 }
 
 /** フィードの現在の記事。上限で解析を打ち切った場合には、外れたとは判定しない */

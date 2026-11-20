@@ -22,7 +22,7 @@ import {
 import { FetchFeedError } from "../fetcher/fetch-feed";
 import type { Platform } from "../platform";
 import type { FetchFeedOutcome } from "./fetch-feed";
-import { nextFetchInterval } from "./fetch-interval";
+import { nextFetchInterval } from "./fetch-slots";
 import { reportStorageFull } from "./storage";
 
 export async function runFetchDiscord(
@@ -121,7 +121,12 @@ export async function runFetchDiscord(
   const interval =
     mayHaveOlder || (!first && messages.length === DISCORD_PAGE_SIZE)
       ? minMs
-      : await nextFetchInterval(db, { feedId: feed.id, now: startedAt, minMs });
+      : await nextFetchInterval(db, {
+          feedId: feed.id,
+          now: startedAt,
+          minMs,
+          feedCreatedAt: feed.createdAt,
+        });
   await recordFetchSuccess(db, feed.id, {
     now: startedAt,
     nextFetchAt: new Date(startedAt.getTime() + interval),
