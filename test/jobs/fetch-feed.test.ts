@@ -686,6 +686,43 @@ describe("記事の出る時刻の癖（docs/decisions/jobs.md の 11）", () =>
     expect(saved?.fetchIntervalMs).toBe(7 * HOUR);
   });
 
+  it("枠に記事がまとまって出ても、枠の外の記事を拾うペースで取りにいく", async () => {
+    const { platform, feed } = await setupDaily(true);
+    // 1〜28 日前の 07:00 台に、さらに 19 件ずつ（毎日 20 件）。1〜6 日前の午後に枠の外の記事が 8 件
+    const article = (guid: string, publishedAt: Date) => ({
+      id: crypto.randomUUID(),
+      feedId: feed.id,
+      guid,
+      url: null,
+      title: null,
+      summary: null,
+      author: null,
+      publishedAt,
+      publishedTimeKnown: true,
+    });
+    const offSlot = [
+      ...[1, 2, 3, 4, 5, 6].map((days) => NOW.getTime() - days * DAY + 14 * HOUR),
+      ...[1, 2].map((days) => NOW.getTime() - days * DAY + 15 * HOUR),
+    ];
+    await insertArticles(platform.db, [
+      ...Array.from({ length: 28 * 19 }, (_, i) =>
+        article(
+          `burst-${i}`,
+          new Date(
+            NOW.getTime() - (Math.floor(i / 19) + 1) * DAY + 7 * HOUR + ((i % 19) + 1) * 60_000,
+          ),
+        ),
+      ),
+      ...offSlot.map((at, i) => article(`off-${i}`, new Date(at))),
+    ]);
+
+    await runFetchFeed(platform, feed.id);
+    // 枠の外の 8 件だけのペース：いちばん古い 5 日 10 時間前 ÷ 8 件の 3 分の 1（約 5.4 時間。次の枠の
+    // 07:19 より早い）。全記事の新しい 50 件から選ぶと、3 日前までの 5 件だけになり、約 3.9 時間になる
+    const expected = Math.round((5 * DAY + 10 * HOUR) / 8 / 3);
+    expect((await getFeed(platform.db, feed.id))?.fetchIntervalMs).toBe(expected);
+  });
+
   it("公開時刻の分からない記事だけなら、記事の出るペースで決める", async () => {
     const { platform, feed } = await setupDaily(false);
 

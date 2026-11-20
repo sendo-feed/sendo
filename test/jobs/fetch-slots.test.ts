@@ -45,7 +45,7 @@ function decide(samples: PublishedSample[], options: { now?: Date; created?: Dat
     .slice(0, SLOT_SAMPLE);
   const paceSamples = sorted
     .filter((s) => s.publishedAt.getTime() > now.getTime() - 7 * DAY)
-    .slice(0, 50);
+    .slice(0, SLOT_SAMPLE);
   const interval = decideNextFetch({
     slotSamples,
     paceSamples,
@@ -56,10 +56,10 @@ function decide(samples: PublishedSample[], options: { now?: Date; created?: Dat
   return { interval, next: new Date(now.getTime() + interval), paceSamples };
 }
 
-/** 7 の決め方（ペース）での間隔 */
+/** 7 の決め方（ペース。新しい 50 件）での間隔 */
 function paceInterval(paceSamples: PublishedSample[], now = NOW) {
   return decideFetchInterval(
-    paceSamples.map((s) => s.publishedAt),
+    paceSamples.slice(0, 50).map((s) => s.publishedAt),
     { now, minMs: MIN },
   );
 }
@@ -152,6 +152,28 @@ describe("decideNextFetch（docs/decisions/jobs.md の 11）", () => {
     const expected = paceInterval(newestFirst(offSlot));
     expect(expected).toBeLessThan(23 * HOUR);
     expect(interval).toBe(expected);
+  });
+
+  it("枠に記事がまとまって出ても、枠の外の記事をペースの材料から押し出さない", () => {
+    // 毎日 07:00 台に 20 件と、3〜6 日前の午後に枠の外の記事が 4 件
+    const burst = Array.from({ length: 29 }, (_, daysAgo) =>
+      Array.from({ length: 20 }, (_, i) => at(daysAgo, 7, i)),
+    ).flat();
+    const offSlot = [at(3, 13, 10), at(4, 15, 40), at(5, 14, 50), at(6, 16, 20)];
+    const { interval } = decide([...burst, ...offSlot]);
+    expect(interval).toBe(paceInterval(newestFirst(offSlot)));
+    expect(interval).toBeLessThan(12 * HOUR);
+  });
+
+  it("28 日より前の記事は、700 件に数えない", () => {
+    // 直近 28 日は毎日 07:00 に 1 件だけ。28 日と 12 時間前に 672 件
+    const old = Array.from({ length: 672 }, (_, i) => ({
+      publishedAt: new Date(NOW.getTime() - 28 * DAY - 12 * HOUR + i * 1000),
+      timeKnown: true,
+    }));
+    const samples = newestFirst([...daily(27, [7]), ...old]).slice(0, SLOT_SAMPLE);
+    expect(samples).toHaveLength(SLOT_SAMPLE);
+    expect(findSlots(samples, { now: NOW, feedCreatedAt: CREATED })).toHaveLength(1);
   });
 
   it("公開時刻の分からない記事（日付だけ、取り込んだ時刻）は、材料に入らない", () => {

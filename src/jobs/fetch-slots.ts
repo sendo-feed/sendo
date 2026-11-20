@@ -65,7 +65,8 @@ function slotDayOf(at: number, start: number): number {
  * - 材料は、公開時刻の分かる記事だけ
  * - 見る日数は 28 日と、フィードを登録してからの日数の短いほう。今日（UTC）は、まだ終わっていない
  *   ので数えない
- * - 材料が 700 件に達したとき、見る日数が 7 日に満たないときは、枠を探さない（null）
+ * - 直近 28 日の材料が 700 件に達したとき、見る日数が 7 日に満たないときは、枠を探さない（null）。
+ *   日をまたぐ枠のために余分に渡された、28 日より前の記事は、700 件に数えない
  * - 30 分の幅に入る記事のまとまりのうち、6 割以上の日に記事のある曜日があり、記事のある日が
  *   3 日以上あるものを枠にする。記事のある日の多いまとまりから順に採り、採ったまとまりの記事は
  *   次のまとまりに使わない
@@ -74,10 +75,13 @@ export function findSlots(
   samples: readonly PublishedSample[],
   input: { now: Date; feedCreatedAt: Date },
 ): FetchSlot[] | null {
-  const known = samples.filter((sample) => sample.timeKnown);
-  if (known.length >= SLOT_SAMPLE) return null;
-
   const now = input.now.getTime();
+  const known = samples.filter((sample) => sample.timeKnown);
+  const inWindow = known.filter(
+    (sample) => sample.publishedAt.getTime() > now - SLOT_WINDOW_DAYS * DAY,
+  );
+  if (inWindow.length >= SLOT_SAMPLE) return null;
+
   const today = Math.floor(now / DAY);
   const observedDays = Math.min(
     SLOT_WINDOW_DAYS,
@@ -179,7 +183,9 @@ function inSlot(slots: readonly FetchSlot[], at: number): boolean {
  * - 直前の枠のいちばん遅い時刻から 1 時間の間で、その回の記事がまだなければ、設定の間隔のあと
  *
  * @param slotSamples 直近 28 日の、公開時刻の分かる記事（新しい順に 700 件まで）
- * @param paceSamples 7 の決め方の材料（直近 7 日の記事、新しい順に 50 件まで）
+ * @param paceSamples 直近 7 日の記事（新しい順に 700 件まで）。7 の決め方には、新しい 50 件を使う。
+ *   枠の外のペースには、枠の外の記事だけを選んでから、新しい 50 件を使う（枠に記事がまとまって
+ *   出るフィードで、枠の外の記事が 50 件から押し出されないように）
  */
 export function decideNextFetch(input: {
   slotSamples: readonly PublishedSample[];
@@ -192,7 +198,7 @@ export function decideNextFetch(input: {
   const slots = findSlots(input.slotSamples, { now: nowDate, feedCreatedAt: input.feedCreatedAt });
   if (slots === null || slots.length === 0) {
     return decideFetchInterval(
-      input.paceSamples.map((sample) => sample.publishedAt),
+      input.paceSamples.slice(0, PACE_SAMPLE).map((sample) => sample.publishedAt),
       { now: nowDate, minMs },
     );
   }
@@ -207,9 +213,9 @@ export function decideNextFetch(input: {
   const candidates: number[] = [];
 
   // 枠の外の記事のペース。枠の外に記事がなければ、上限になる
-  const offSlot = input.paceSamples.filter(
-    (sample) => !sample.timeKnown || !inSlot(slots, sample.publishedAt.getTime()),
-  );
+  const offSlot = input.paceSamples
+    .filter((sample) => !sample.timeKnown || !inSlot(slots, sample.publishedAt.getTime()))
+    .slice(0, PACE_SAMPLE);
   candidates.push(
     now +
       decideFetchInterval(
@@ -261,7 +267,8 @@ export async function nextFetchInterval(
     recentPublished(db, {
       feedId: input.feedId,
       since: new Date(now - PACE_WINDOW_MS),
-      limit: PACE_SAMPLE,
+      // 枠の外の記事を選んでから 50 件にするので、多めに読む（decideNextFetch）
+      limit: SLOT_SAMPLE,
     }),
   ]);
   return decideNextFetch({
