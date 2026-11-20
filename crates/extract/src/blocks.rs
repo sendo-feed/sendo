@@ -190,9 +190,17 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         choose_root(&doc, &seed, semantic).ok_or(ExtractError::NoContent)?;
     // 同じ記事の見出しと導入画像が隣のブロックに分かれている場合は、一緒に残す。
     // 広げた親のうち、本文より後ろの兄弟（メールマガジンの案内、おすすめ記事、広告など）は残さない。
-    // 本文の続きがそこにあれば、手掛かりの多い親が最初から選ばれている。
+    // 本文の続きの文章がそこにあれば、手掛かりの多い親が最初から選ばれている。
+    // 画像のブロックは手掛かりを持たないので、後ろにあっても残す。
     let title_key = compact(&page_title);
     let has_heading = root.select("h1").length() > 0;
+    let image_block = |block: &Selection| {
+        matches!(
+            block.nodes()[0].node_name().as_deref(),
+            Some("header" | "figure" | "picture")
+        ) && block.select("img").length() > 0
+            && compact(&block.text()).chars().count() <= 200
+    };
     let mut branch = root.nodes()[0].id;
     for node in root.ancestors(Some(3)).nodes() {
         let parent = Selection::from(*node);
@@ -202,6 +210,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
             .iter()
             .skip_while(|child| child.id != branch)
             .skip(1)
+            .filter(|child| !image_block(&Selection::from(**child)))
             .copied()
             .collect();
         let trailing_size: usize = trailing
@@ -216,14 +225,11 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         let content_parent = matches!(node.node_name().as_deref(), Some("article" | "main"))
             || parent.attr("role").as_deref() == Some("main");
         let lead_image = content_parent
-            && parent.children().nodes().iter().any(|sibling| {
-                let sibling = Selection::from(*sibling);
-                matches!(
-                    sibling.nodes()[0].node_name().as_deref(),
-                    Some("header" | "figure" | "picture")
-                ) && sibling.select("img").length() > 0
-                    && compact(&sibling.text()).chars().count() <= 200
-            });
+            && parent
+                .children()
+                .nodes()
+                .iter()
+                .any(|sibling| image_block(&Selection::from(*sibling)));
         if size <= best_size * 3 / 2
             && ((!has_heading && heading.chars().count() >= 5 && title_key.contains(&heading))
                 || lead_image)
@@ -417,6 +423,17 @@ mod tests {
         assert!(!result.html.contains("あなたにおすすめ"));
         assert!(!result.html.contains("企画広告"));
         assert!(!result.html.contains("Copyright"));
+    }
+    #[test]
+    fn keeps_an_image_block_after_the_semantic_body() {
+        let html = format!(
+            "<title>本文の後ろに写真がある記事</title><main><article><h1>本文の後ろに写真がある記事</h1>{}</article><figure><img src='/after.jpg'><figcaption>本文の後ろの写真の説明</figcaption></figure></main>",
+            paragraphs()
+        );
+        let result = extract(&html, "https://figure.example/post").unwrap();
+        assert!(result.html.contains("本文の段落5"));
+        assert!(result.html.contains("https://figure.example/after.jpg"));
+        assert!(result.html.contains("本文の後ろの写真の説明"));
     }
     #[test]
     fn keeps_lead_gallery_links_and_captions_in_order() {
