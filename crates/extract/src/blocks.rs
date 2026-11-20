@@ -277,6 +277,9 @@ fn choose_root<'a>(
     semantic: Option<NodeRef<'a>>,
 ) -> Option<(Selection<'a>, usize)> {
     let mut anchors = Vec::new();
+    // 手掛かりと同じ形（文章で、リンクが半分以下）なのに、抽出器の文章と一致しなかった段落。
+    // 抽出器が拾い損ねた本文のことがあるので、範囲を選ぶときに減点しない。
+    let mut prose = Vec::new();
     for node in doc.select(BODY_BLOCKS).nodes() {
         if let Some(scope) = semantic
             && node.id != scope.id
@@ -310,6 +313,8 @@ fn choose_root<'a>(
         let sample: String = text.chars().take(80).collect();
         if seed.contains(&sample) {
             anchors.push((*node, len.min(200), len));
+        } else if prose.len() < 2048 {
+            prose.push((*node, len));
         }
         if anchors.len() == 512 {
             break;
@@ -320,20 +325,31 @@ fn choose_root<'a>(
         return None;
     }
 
-    // 要素ごとに、含む手掛かりの重みと文字数を数える。
+    // 要素ごとに、含む手掛かりの重みと文字数、拾い損ねたかもしれない段落の文字数を数える。
     let mut candidates = std::collections::HashMap::new();
     for (anchor, weight, len) in &anchors {
         let ancestors = Selection::from(*anchor).ancestors(Some(128));
         for node in std::iter::once(anchor).chain(ancestors.nodes()) {
-            let candidate = candidates.entry(node.id).or_insert((0usize, 0usize));
+            let candidate = candidates
+                .entry(node.id)
+                .or_insert((0usize, 0usize, 0usize));
             candidate.0 += weight;
             candidate.1 += len;
         }
     }
+    for (block, len) in &prose {
+        for node in Selection::from(*block).ancestors(Some(128)).nodes() {
+            if let Some(candidate) = candidates.get_mut(&node.id) {
+                candidate.2 += len;
+            }
+        }
+    }
     // 抽出器の文章には、記事の外（フッターの著作権表示やメールマガジンの案内など）が混じることがある。
     // 手掛かりをすべて含む要素を選ぶと、外の手掛かり 1 つでページ全体に広がるので、手掛かりの重みの
-    // 半分以上を含む要素の中から、手掛かりの文字が手掛かりでない文字より最も多く勝る要素を選ぶ。
-    // 半分に満たない要素を選ばないのは、抽出器が本文の一部しか拾えなかったときに、本文を削らないため。
+    // 半分以上を含む要素の中から、手掛かりの文字が、それ以外の文字（メニューや広告の見出し、共有の
+    // ボタンなど、リンクや短い断片）より最も多く勝る要素を選ぶ。手掛かりと同じ形の段落は、抽出器が
+    // 拾い損ねた本文のことがあるので減点しない。半分に満たない要素を選ばないのも、抽出器が本文の
+    // 一部しか拾えなかったときに、本文を削らないため。
     // 意味的な領域があれば、それを本文にする（手掛かりはその中だけで集めている）。
     let mut best = semantic.map(Selection::from);
     let mut best_size = best
@@ -350,7 +366,7 @@ fn choose_root<'a>(
             .to_vec()
     };
     for node in &nodes {
-        let Some((weight, anchored)) = candidates.get(&node.id) else {
+        let Some((weight, anchored, prose)) = candidates.get(&node.id) else {
             continue;
         };
         if weight * 2 < total {
@@ -358,8 +374,8 @@ fn choose_root<'a>(
         }
         let block = Selection::from(*node);
         let size = compact(&block.text()).chars().count();
-        let score = 2 * i64::try_from(*anchored).unwrap_or(i64::MAX / 4)
-            - i64::try_from(size).unwrap_or(i64::MAX / 4);
+        let count = |n: usize| i64::try_from(n).unwrap_or(i64::MAX / 4);
+        let score = 2 * count(*anchored) + count(*prose) - count(size);
         if score > best_score {
             best = Some(block);
             best_size = size;
@@ -377,11 +393,15 @@ mod tests {
     }
     #[test]
     fn ignores_matched_text_outside_the_article() {
+        // おすすめ記事やメニューは、実際のページと同じくリンクの見出しの並びにする。
         let recommended: String = (0..6)
-            .map(|i| format!("<p>おすすめの記事{i}の紹介です。ほかの話題について、読みたくなるような説明を書いています。</p>"))
+            .map(|i| format!("<li><a href='/recommend/{i}'>おすすめの記事{i}の見出しです。ほかの話題について読めます</a></li>"))
+            .collect();
+        let menu: String = (0..6)
+            .map(|i| format!("<li><a href='/category/{i}'>記事の分類{i}の一覧を開きます</a></li>"))
             .collect();
         let html = format!(
-            "<title>記事</title><body><div id='menu'><p>サイトのメニューの説明です。いろいろな記事の分類を案内しています。</p></div><div id='page'><div class='body'>{}</div><div class='nl'><p>この記事を毎朝メールでまとめて読めます（無料）</p><p>メールマガジンを申し込む</p></div><div class='recommend'>{recommended}</div></div><div id='foot'><p>このサイトは、ライセンスに基づいて運営会社が運営しています。</p><p>当サイトは最新のブラウザーでの閲覧をおすすめします。</p></div></body>",
+            "<title>記事</title><body><div id='menu'><ul>{menu}</ul></div><div id='page'><div class='body'>{}</div><div class='nl'><p>この記事を毎朝メールでまとめて読めます（無料）</p><p>メールマガジンを申し込む</p></div><div class='recommend'><ul>{recommended}</ul></div></div><div id='foot'><p>このサイトは、ライセンスに基づいて運営会社が運営しています。</p><p>当サイトは最新のブラウザーでの閲覧をおすすめします。</p></div></body>",
             paragraphs()
         );
         let doc = Document::from(html);
@@ -401,8 +421,9 @@ mod tests {
             "<title>記事</title><body><div class='article'><div class='lead'><p>最初の段落です。記事の導入として、このあとの本文で扱う内容をまとめて伝えます。</p><p>二つめの段落です。導入の続きとして、背景と問題の大きさを説明しています。</p></div><div class='rest'><p>本文の後半の段落です。調べた結果と、そこから分かったことを順に書いています。</p><p>本文の後半の二つめの段落です。結果の意味と、残った課題について書いています。</p><p>本文の最後の段落です。まとめとして、これから確かめることを書いています。</p>{missed}</div></div></body>"
         );
         let doc = Document::from(html);
+        // 後半から照合できるのが 1 段落だけで、手掛かりの過半数が前半にあっても、後半を残す。
         let seed = compact(&doc.select(".lead").text())
-            + &compact(&doc.select(".rest > p:nth-child(-n+3)").text());
+            + &compact(&doc.select(".rest > p:nth-child(1)").text());
         assert!(!seed.contains("抽出器が拾わなかった"));
         let (root, _) = choose_root(&doc, &seed, None).unwrap();
         let text = root.text();
