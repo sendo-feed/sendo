@@ -2,7 +2,7 @@
 //!
 //! 抽出器が作り直した HTML を配らない。元の DOM を使うので、段落間の画像・リンク・導入文を
 //! 保てる。ホスト名やサイト別のセレクタは使わない。
-use dom_query::{Document, Selection};
+use dom_query::{Document, NodeRef, Selection};
 
 use crate::{ExtractError, Extracted};
 
@@ -186,6 +186,90 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         .or_else(|| fallback.map(|r| r.title.to_string()))
         .unwrap_or_else(|| page_title.clone());
 
+    let (mut root, best_size) =
+        choose_root(&doc, &seed, semantic).ok_or(ExtractError::NoContent)?;
+    // 同じ記事の見出しと導入画像が隣のブロックに分かれている場合は、一緒に残す。
+    // 広げた親のうち、本文より後ろの兄弟（メールマガジンの案内、おすすめ記事、広告など）は残さない。
+    // 本文の続きがそこにあれば、手掛かりの多い親が最初から選ばれている。
+    let title_key = compact(&page_title);
+    let has_heading = root.select("h1").length() > 0;
+    let mut branch = root.nodes()[0].id;
+    for node in root.ancestors(Some(3)).nodes() {
+        let parent = Selection::from(*node);
+        let trailing: Vec<_> = parent
+            .children()
+            .nodes()
+            .iter()
+            .skip_while(|child| child.id != branch)
+            .skip(1)
+            .copied()
+            .collect();
+        let trailing_size: usize = trailing
+            .iter()
+            .map(|child| compact(&Selection::from(*child).text()).chars().count())
+            .sum();
+        let size = compact(&parent.text())
+            .chars()
+            .count()
+            .saturating_sub(trailing_size);
+        let heading = compact(&parent.select("h1").first().text());
+        let content_parent = matches!(node.node_name().as_deref(), Some("article" | "main"))
+            || parent.attr("role").as_deref() == Some("main");
+        let lead_image = content_parent
+            && parent.children().nodes().iter().any(|sibling| {
+                let sibling = Selection::from(*sibling);
+                matches!(
+                    sibling.nodes()[0].node_name().as_deref(),
+                    Some("header" | "figure" | "picture")
+                ) && sibling.select("img").length() > 0
+                    && compact(&sibling.text()).chars().count() <= 200
+            });
+        if size <= best_size * 3 / 2
+            && ((!has_heading && heading.chars().count() >= 5 && title_key.contains(&heading))
+                || lead_image)
+        {
+            for child in trailing {
+                Selection::from(child).remove();
+            }
+            root = parent;
+            break;
+        }
+        branch = node.id;
+    }
+    // 相対 URL はリダイレクト後の記事 URL を基準にする。HTML の base タグは信用しない。
+    for node in root.select("a[href], img[src]").nodes() {
+        let el = Selection::from(*node);
+        let attr = if el.attr("src").is_some() {
+            "src"
+        } else {
+            "href"
+        };
+        if let Some(value) = el.attr(attr)
+            && let Some(value) = crate::normalize::http(&value, url)
+        {
+            el.set_attr(attr, &value);
+        }
+    }
+    let html = root.html().to_string();
+    let text_length = root.text().trim().chars().count();
+    if text_length == 0 {
+        return Err(ExtractError::NoContent);
+    }
+    Ok(Extracted {
+        title: title.trim().to_owned(),
+        html,
+        text_length,
+    })
+}
+
+/// 元の DOM の段落を、抽出器が抜いた文章（seed）と照合して手掛かりを集め、本文の範囲を選ぶ。
+/// 意味的な領域（semantic）があれば、その中だけで集め、その領域を本文にする。
+/// 選んだ要素と、その文字数を返す。手掛かりがなければ None
+fn choose_root<'a>(
+    doc: &'a Document,
+    seed: &str,
+    semantic: Option<NodeRef<'a>>,
+) -> Option<(Selection<'a>, usize)> {
     let mut anchors = Vec::new();
     for node in doc.select(BODY_BLOCKS).nodes() {
         if let Some(scope) = semantic
@@ -219,109 +303,64 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         }
         let sample: String = text.chars().take(80).collect();
         if seed.contains(&sample) {
-            anchors.push((*node, len.min(200)));
+            anchors.push((*node, len.min(200), len));
         }
         if anchors.len() == 512 {
             break;
         }
     }
-    let total: usize = anchors.iter().map(|(_, weight)| weight).sum();
+    let total: usize = anchors.iter().map(|(_, weight, _)| weight).sum();
     if total == 0 && semantic.is_none() {
-        return Err(ExtractError::NoContent);
+        return None;
     }
 
+    // 要素ごとに、含む手掛かりの重みと文字数を数える。
     let mut candidates = std::collections::HashMap::new();
-    for (anchor, weight) in &anchors {
-        candidates.entry(anchor.id).or_insert((*anchor, 0usize)).1 += weight;
-        for node in Selection::from(*anchor).ancestors(Some(128)).nodes() {
-            let candidate = candidates.entry(node.id).or_insert((*node, 0usize));
-            candidate.1 += weight;
+    for (anchor, weight, len) in &anchors {
+        let ancestors = Selection::from(*anchor).ancestors(Some(128));
+        for node in std::iter::once(anchor).chain(ancestors.nodes()) {
+            let candidate = candidates.entry(node.id).or_insert((0usize, 0usize));
+            candidate.0 += weight;
+            candidate.1 += len;
         }
     }
+    // 抽出器の文章には、記事の外（フッターの著作権表示やメールマガジンの案内など）が混じることがある。
+    // 手掛かりをすべて含む要素を選ぶと、外の手掛かり 1 つでページ全体に広がるので、手掛かりの重みの
+    // 半分以上を含む要素の中から、手掛かりの文字が手掛かりでない文字より最も多く勝る要素を選ぶ。
+    // 半分に満たない要素を選ばないのは、抽出器が本文の一部しか拾えなかったときに、本文を削らないため。
+    // 意味的な領域があれば、それを本文にする（手掛かりはその中だけで集めている）。
     let mut best = semantic.map(Selection::from);
     let mut best_size = best
         .as_ref()
         .map(|s| compact(&s.text()).chars().count())
-        .unwrap_or(usize::MAX);
-    // 文書の順に評価し、同じ大きさなら外側を残す。画像しかない隣接ブロックも保持する。
-    for node in doc
-        .select("body, main, article, section, div, [role=main]")
-        .nodes()
-    {
-        let Some((_, weight)) = candidates.get(&node.id) else {
+        .unwrap_or(0);
+    let mut best_score = i64::MIN;
+    // 文書の順に評価し、同じ値なら外側を残す。画像しかない隣接ブロックも保持する。
+    let nodes = if semantic.is_some() {
+        Vec::new()
+    } else {
+        doc.select("body, main, article, section, div, [role=main]")
+            .nodes()
+            .to_vec()
+    };
+    for node in &nodes {
+        let Some((weight, anchored)) = candidates.get(&node.id) else {
             continue;
         };
-        if *weight < total {
-            continue;
-        }
-        if let Some(scope) = semantic
-            && node.id != scope.id
-            && !Selection::from(scope)
-                .ancestors(Some(128))
-                .nodes()
-                .iter()
-                .any(|parent| parent.id == node.id)
-        {
+        if weight * 2 < total {
             continue;
         }
         let block = Selection::from(*node);
         let size = compact(&block.text()).chars().count();
-        if size < best_size {
+        let score = 2 * i64::try_from(*anchored).unwrap_or(i64::MAX / 4)
+            - i64::try_from(size).unwrap_or(i64::MAX / 4);
+        if score > best_score {
             best = Some(block);
             best_size = size;
+            best_score = score;
         }
     }
-    let mut root = best.ok_or(ExtractError::NoContent)?;
-    // 同じ記事の見出しと導入画像が隣のブロックに分かれている場合は、一緒に残す。
-    let title_key = compact(&page_title);
-    let has_heading = root.select("h1").length() > 0;
-    for node in root.ancestors(Some(3)).nodes() {
-        let parent = Selection::from(*node);
-        let size = compact(&parent.text()).chars().count();
-        let heading = compact(&parent.select("h1").first().text());
-        let content_parent = matches!(node.node_name().as_deref(), Some("article" | "main"))
-            || parent.attr("role").as_deref() == Some("main");
-        let lead_image = content_parent
-            && parent.children().nodes().iter().any(|sibling| {
-                let sibling = Selection::from(*sibling);
-                matches!(
-                    sibling.nodes()[0].node_name().as_deref(),
-                    Some("header" | "figure" | "picture")
-                ) && sibling.select("img").length() > 0
-                    && compact(&sibling.text()).chars().count() <= 200
-            });
-        if size <= best_size * 3 / 2
-            && ((!has_heading && heading.chars().count() >= 5 && title_key.contains(&heading))
-                || lead_image)
-        {
-            root = parent;
-            break;
-        }
-    }
-    // 相対 URL はリダイレクト後の記事 URL を基準にする。HTML の base タグは信用しない。
-    for node in root.select("a[href], img[src]").nodes() {
-        let el = Selection::from(*node);
-        let attr = if el.attr("src").is_some() {
-            "src"
-        } else {
-            "href"
-        };
-        if let Some(value) = el.attr(attr)
-            && let Some(value) = crate::normalize::http(&value, url)
-        {
-            el.set_attr(attr, &value);
-        }
-    }
-    let html = root.html().to_string();
-    let text_length = root.text().trim().chars().count();
-    if text_length == 0 {
-        return Err(ExtractError::NoContent);
-    }
-    Ok(Extracted {
-        title: title.trim().to_owned(),
-        html,
-        text_length,
-    })
+    best.map(|block| (block, best_size))
 }
 
 #[cfg(test)]
@@ -329,6 +368,55 @@ mod tests {
     use super::*;
     fn paragraphs() -> String {
         (0..6).map(|i|format!("<p>本文の段落{i}には調査の経緯と結果を書きます。読み手に必要な詳しい説明を順に並べ、途中に置かれた写真と最後の結論まで伝える記事です。</p>")).collect()
+    }
+    #[test]
+    fn ignores_matched_text_outside_the_article() {
+        let recommended: String = (0..6)
+            .map(|i| format!("<p>おすすめの記事{i}の紹介です。ほかの話題について、読みたくなるような説明を書いています。</p>"))
+            .collect();
+        let html = format!(
+            "<title>記事</title><body><div id='menu'><p>サイトのメニューの説明です。いろいろな記事の分類を案内しています。</p></div><div id='page'><div class='body'>{}</div><div class='nl'><p>この記事を毎朝メールでまとめて読めます（無料）</p><p>メールマガジンを申し込む</p></div><div class='recommend'>{recommended}</div></div><div id='foot'><p>このサイトは、ライセンスに基づいて運営会社が運営しています。</p><p>当サイトは最新のブラウザーでの閲覧をおすすめします。</p></div></body>",
+            paragraphs()
+        );
+        let doc = Document::from(html);
+        let seed = compact(&format!(
+            "{}この記事を毎朝メールでまとめて読めます（無料）このサイトは、ライセンスに基づいて運営会社が運営しています。当サイトは最新のブラウザーでの閲覧をおすすめします。",
+            doc.select(".body").text()
+        ));
+        let (root, _) = choose_root(&doc, &seed, None).unwrap();
+        assert_eq!(root.attr("class").as_deref(), Some("body"));
+    }
+    #[test]
+    fn keeps_a_body_whose_paragraphs_the_extractor_partly_missed() {
+        let missed: String = (0..6)
+            .map(|i| format!("<p>抽出器が拾わなかった段落{i}です。リンクの多い説明や短い補足が続き、手掛かりにはなりませんが本文の一部です。</p>"))
+            .collect();
+        let html = format!(
+            "<title>記事</title><body><div class='article'><div class='lead'><p>最初の段落です。記事の導入として、このあとの本文で扱う内容をまとめて伝えます。</p><p>二つめの段落です。導入の続きとして、背景と問題の大きさを説明しています。</p></div><div class='rest'><p>本文の後半の段落です。調べた結果と、そこから分かったことを順に書いています。</p><p>本文の後半の二つめの段落です。結果の意味と、残った課題について書いています。</p><p>本文の最後の段落です。まとめとして、これから確かめることを書いています。</p>{missed}</div></div></body>"
+        );
+        let doc = Document::from(html);
+        let seed = compact(&doc.select(".lead").text())
+            + &compact(&doc.select(".rest > p:nth-child(-n+3)").text());
+        assert!(!seed.contains("抽出器が拾わなかった"));
+        let (root, _) = choose_root(&doc, &seed, None).unwrap();
+        let text = root.text();
+        assert!(text.contains("最初の段落です"));
+        assert!(text.contains("本文の最後の段落です"));
+        assert!(text.contains("抽出器が拾わなかった段落5"));
+    }
+    #[test]
+    fn expands_to_the_heading_without_the_blocks_after_the_body() {
+        let html = format!(
+            "<title>見出しが別のブロックにある記事 | サイト</title><body><div id='column'><div class='head'><h1>見出しが別のブロックにある記事</h1></div><div class='inner'><div class='body'>{}</div></div><div class='recommend'><p>あなたにおすすめの記事として、ほかの話題の長い紹介文を並べています。</p></div><div class='promo'><p>企画広告の紹介です。製品を使うと仕事がもっと楽になると説明しています。</p></div></div><div id='foot'><p>Copyright のような、サイトの運営についての文がここに入ります。</p></div></body>",
+            paragraphs()
+        );
+        let result = extract(&html, "https://column.example/post").unwrap();
+        assert!(result.html.contains("見出しが別のブロックにある記事"));
+        assert!(result.html.contains("本文の段落0"));
+        assert!(result.html.contains("本文の段落5"));
+        assert!(!result.html.contains("あなたにおすすめ"));
+        assert!(!result.html.contains("企画広告"));
+        assert!(!result.html.contains("Copyright"));
     }
     #[test]
     fn keeps_lead_gallery_links_and_captions_in_order() {
