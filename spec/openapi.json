@@ -1745,7 +1745,7 @@
     "/integrations/discord/subscriptions": {
       "post": {
         "summary": "Discord のチャンネルを購読する",
-        "description": "Discord のチャンネル URL を指定する。購読したあとの投稿を受信箱に取り込む。",
+        "description": "Discord のチャンネル URL を指定する。直近の投稿を最大 20 件と、購読したあとの投稿を受信箱に取り込む。",
         "security": [
           {
             "sessionCookie": []

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { connectDiscord, disconnectDiscord } from "../../src/db/discord";
 import { findFeedByUrl, getFeed } from "../../src/db/feeds";
-import { articles } from "../../src/db/schema";
+import { articles, feeds } from "../../src/db/schema";
 import { createSession } from "../../src/db/sessions";
 import { readStorageUsage } from "../../src/db/storage";
 import { subscribeMany } from "../../src/db/subscriptions";
@@ -23,7 +23,10 @@ const CONFIG = {
 const CHANNEL = "https://discord.com/channels/201/301";
 const READ = String((1 << 10) | (1 << 16));
 const FIXED_NOW = new Date("2026-11-19T00:00:00Z");
-const MESSAGE_ID = ((BigInt(FIXED_NOW.getTime() - 1420070400000) << 22n) + 1n).toString();
+const DISCORD_EPOCH_MS = 1420070400000;
+const messageIdAt = (ms: number, n = 1n) => ((BigInt(ms - DISCORD_EPOCH_MS) << 22n) + n).toString();
+const MESSAGE_ID = messageIdAt(FIXED_NOW.getTime());
+const HOUR = 60 * 60 * 1000;
 
 function discordFetch() {
   let canRead = true;
@@ -31,6 +34,7 @@ function discordFetch() {
   let messageStatus = 200;
   let errorCode: number | undefined;
   let messageIds = [MESSAGE_ID];
+  let systemIds: string[] = [];
   const result = fakeFetch(async (url, init) => {
     expect(url.origin).toBe("https://discord.com");
     expect(init?.redirect).toBe("manual");
@@ -74,20 +78,25 @@ function discordFetch() {
           { status: messageStatus, headers: { "retry-after": "3600.5" } },
         );
       }
-      const after = BigInt(url.searchParams.get("after") ?? "0");
+      // Discord と同じく、after があればその直後から、なければ新しいほうから limit 件を返す。
+      const after = url.searchParams.get("after");
+      const limit = Number(url.searchParams.get("limit"));
+      const ascending = [...messageIds].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+      const page =
+        after === null
+          ? ascending.slice(-limit)
+          : ascending.filter((id) => BigInt(id) > BigInt(after)).slice(0, limit);
       return Response.json(
-        messageIds
-          .filter((id) => BigInt(id) > after)
-          .map((id) => ({
-            id,
-            channel_id: "301",
-            type: 0,
-            content: "Version 1.0\n<script>literal text</script>",
-            author: { username: "alice" },
-            timestamp: FIXED_NOW.toISOString(),
-            attachments: [],
-            embeds: [],
-          })),
+        page.reverse().map((id) => ({
+          id,
+          channel_id: "301",
+          type: systemIds.includes(id) ? 7 : 0,
+          content: "Version 1.0\n<script>literal text</script>",
+          author: { username: "alice" },
+          timestamp: new Date(Number(BigInt(id) >> 22n) + DISCORD_EPOCH_MS).toISOString(),
+          attachments: [],
+          embeds: [],
+        })),
       );
     }
     return new Response(null, { status: 404 });
@@ -99,6 +108,9 @@ function discordFetch() {
     },
     setMessageIds: (ids: string[]) => {
       messageIds = ids;
+    },
+    setSystemIds: (ids: string[]) => {
+      systemIds = ids;
     },
     setMessageStatus: (status: number, code?: number) => {
       messageStatus = status;
@@ -247,6 +259,97 @@ describe("Discord の購読", () => {
     expect(
       await (await requestApp(platform, "/api/v1/articles", { token: other.token })).json(),
     ).toMatchObject({ items: [] });
+  });
+
+  it("購読した直後の取得で、直近の投稿を 20 件まで取り込み、投稿のペースで次の取得を決める", async () => {
+    const { platform, remote } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const feedId = await subscribe(await browser(platform, user.id));
+    // 1 時間おきに 25 件。新しいほうから 20 件だけを取り込む。1 件はシステムメッセージ。
+    const now = FIXED_NOW.getTime();
+    const ids = Array.from({ length: 25 }, (_, i) => messageIdAt(now - (25 - i) * HOUR));
+    const system = ids[24] as string;
+    remote.setMessageIds(ids);
+    remote.setSystemIds([system]);
+    const guids = async () =>
+      (
+        await platform.db
+          .select({ guid: articles.guid })
+          .from(articles)
+          .where(eq(articles.feedId, feedId))
+          .orderBy(articles.publishedAt)
+      ).map(({ guid }) => guid);
+    const inbox = async () =>
+      (
+        (await (
+          await requestApp(platform, "/api/v1/articles?limit=50", { token: user.token })
+        ).json()) as { items: unknown[] }
+      ).items.length;
+
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 19 });
+    expect(await guids()).toEqual(ids.slice(5, 24));
+    expect(await inbox()).toBe(19);
+    const fetched = await getFeed(platform.db, feedId);
+    expect(fetched?.discordCursor).toBe(system);
+    // 20 時間に 19 件なので、間隔は下限（30 分）になる。記事がないときの 1 日にはならない。
+    expect(fetched?.nextFetchAt.getTime()).toBe(now + platform.fetchConfig.intervalMs);
+
+    // 記録の前に落ちてやり直しても、同じ投稿を重ねて入れない。
+    await platform.db
+      .update(feeds)
+      .set({ discordCursor: "0", lastFetchedAt: null })
+      .where(eq(feeds.id, feedId));
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 0 });
+    expect(await guids()).toEqual(ids.slice(5, 24));
+    expect(await inbox()).toBe(19);
+
+    // 2 回目からは、取得位置より後の投稿だけを取る。
+    await platform.db.update(feeds).set({ lastFetchedAt: null }).where(eq(feeds.id, feedId));
+    remote.setMessageIds([...ids, MESSAGE_ID]);
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
+    expect(await guids()).toEqual([...ids.slice(5, 24), MESSAGE_ID]);
+    expect(remote.calls.filter((call) => call.url.includes("/messages")).at(-1)?.url).toContain(
+      `after=${system}`,
+    );
+  });
+
+  it("1 回目の取得が遅れて、購読より後の投稿が 20 件を超えても、取りこぼさない", async () => {
+    const { platform, remote } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const feedId = await subscribe(await browser(platform, user.id));
+    const now = FIXED_NOW.getTime();
+    const ids = Array.from({ length: 25 }, (_, i) => messageIdAt(now + i));
+    remote.setMessageIds(ids);
+    const count = async () =>
+      (await platform.db.select().from(articles).where(eq(articles.feedId, feedId))).length;
+
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 20 });
+    const fetched = await getFeed(platform.db, feedId);
+    // 取った 20 件より前にも購読より後の投稿があるので、取得位置は購読の時刻に置き、すぐ続きを取る。
+    expect(BigInt(fetched?.discordCursor ?? "0")).toBeLessThan(BigInt(ids[0] as string));
+    expect(fetched?.discordCursor).not.toBe("0");
+    expect(fetched?.nextFetchAt.getTime()).toBe(now + platform.fetchConfig.intervalMs);
+
+    await platform.db.update(feeds).set({ lastFetchedAt: null }).where(eq(feeds.id, feedId));
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 5 });
+    expect(await count()).toBe(25);
+    expect((await getFeed(platform.db, feedId))?.discordCursor).toBe(ids[24]);
+  });
+
+  it("購読した直後の取得で投稿がなければ、そのあとの投稿から取り込む", async () => {
+    const { platform, remote } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const feedId = await subscribe(await browser(platform, user.id));
+    remote.setMessageIds([]);
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "not-modified" });
+    expect((await getFeed(platform.db, feedId))?.discordCursor).not.toBe("0");
+
+    await platform.db.update(feeds).set({ lastFetchedAt: null }).where(eq(feeds.id, feedId));
+    remote.setMessageIds([MESSAGE_ID]);
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
   });
 
   it("閲覧権限の喪失で、投稿と購読の削除を同期に届ける", async () => {

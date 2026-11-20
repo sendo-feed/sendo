@@ -9,10 +9,10 @@ import {
 } from "../db/discord";
 import { getFolder } from "../db/folders";
 import {
+  DISCORD_CURSOR_START,
   DISCORD_INTEGRATION_PATH,
   discordAuthorizeUrl,
   discordChannelUrl,
-  discordCursorBefore,
   discordInviteUrl,
   getReadableChannel,
   identifyDiscordUser,
@@ -130,7 +130,8 @@ const subscribeRoute = createRoute({
   method: "post",
   path: `${PATH}/subscriptions`,
   summary: "Discord のチャンネルを購読する",
-  description: "Discord のチャンネル URL を指定する。購読したあとの投稿を受信箱に取り込む。",
+  description:
+    "Discord のチャンネル URL を指定する。直近の投稿を最大 20 件と、購読したあとの投稿を受信箱に取り込む。",
   security,
   request: {
     body: {
@@ -300,7 +301,7 @@ export function discordApi(platform: Platform) {
         name: channel.name,
         folderId,
         now,
-        cursor: discordCursorBefore(now),
+        cursor: DISCORD_CURSOR_START,
       });
       if (!added)
         return c.json(errorBody("discord_not_connected", "Discord connection changed"), 409);
