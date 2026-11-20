@@ -35,7 +35,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/api/`：REST API。入力は zod のスキーマで検証し、OpenAPI の定義も同じスキーマから作る
   - 認証は `auth.ts` のミドルウェア（アクセストークンか、ブラウザのセッションのクッキー）。クッキーで認証した、状態を変えるリクエストは、同じオリジンのページからだけ受ける（CSRF 対策）
   - 認証の要らない入口（ログインなど）は、`index.ts` で認証のミドルウェアより先に登録する
-  - 状態を変えるリクエストが成功したら、`notify-changes.ts` のミドルウェアが、その利用者の通知の接続に知らせる（docs/decisions/sync.md の 9。Google Reader API も同じ）。ハンドラーで知らせなくてよい。ジョブと MCP のツールで人ごとのデータを変えるときは、`platform.syncUpdates.notify` を自分で呼ぶ
+  - 状態を変えるリクエストが成功したら、`notify-changes.ts` のミドルウェアが、その利用者の通知の接続に知らせる（docs/decisions/sync.md の 9。Google Reader API も同じ）。ハンドラーで知らせなくてよい。ミドルウェアを通らない MCP のツールとジョブで人ごとのデータを変えるときは、`lib/sync-notify.ts` の `notifySync` で知らせる。`db/` の書き込みの中では知らせない（取得のジョブが受信箱に配る `deliverNewArticles` だけは、配った先を知るので、受け取った `notify` で知らせる）
   - 画像の URL（記事の `thumbnailUrl`、フィードの `iconUrl`）は、もとの URL のまま返さない。`db/secrets.ts` の `imageSigner` で、中継を通る URL にして返す（docs/decisions/images.md）。中継の入口は `images.ts`
 - `src/auth/`：ログイン（OpenID Connect）の提供元と、ID トークンの確認（docs/decisions/accounts.md）
 - `src/db/`：スキーマとデータの読み書き。libsql に固有の型ではなく `Database`（SQLite の非同期ドライバに共通の型）で受ける。生の SQL で 1 行を読むときは、`db.get(sql)` ではなく `getRow`（`db/index.ts`）を使う（libsql の drizzle の `get` は、行が返らないと例外を投げる）

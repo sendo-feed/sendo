@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import type { User } from "../db/schema";
+import { notifySync } from "../lib/sync-notify";
 import type { Platform } from "../platform";
 
 /** 状態を変えないメソッド。これ以外のリクエストが成功したら知らせる */
@@ -20,6 +21,6 @@ export function notifyChanges(
     await next();
     if (SAFE_METHODS.has(c.req.method) || c.res.status < 200 || c.res.status >= 300) return;
     const user = c.get("user");
-    if (user !== undefined) await platform.syncUpdates.notify([user.id]);
+    if (user !== undefined) await notifySync(platform.syncUpdates.notify, [user.id]);
   };
 }

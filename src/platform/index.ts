@@ -7,9 +7,10 @@
  */
 import type { Context } from "hono";
 import type { Database } from "../db";
-import type { ArticleCursor, ArticleListInput, InboxArticle, InboxNotifier } from "../db/inbox";
+import type { ArticleCursor, ArticleListInput, InboxArticle } from "../db/inbox";
 import type { SessionIdentity } from "../db/sessions";
 import type { Job } from "../jobs/job";
+import type { SyncNotifier } from "../lib/sync-notify";
 
 /** 重い処理を、API の応答と切り離して後で実行する */
 export interface JobQueue {
@@ -164,10 +165,10 @@ export interface ArticleSearch {
   }>;
 }
 
-/** 受信箱の次の差分同期を促す接続（docs/decisions/sync.md）。 */
+/** 人ごとの同期の対象が変わったことを、利用者の接続に知らせる（docs/decisions/sync.md の 9）。 */
 export interface SyncUpdates {
   connect(context: Context, session: SessionIdentity): Promise<Response>;
-  notify: InboxNotifier;
+  notify: SyncNotifier;
 }
 
 /** アプリが実行環境から受け取るもの */

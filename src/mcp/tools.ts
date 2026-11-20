@@ -22,6 +22,7 @@ import { DiscoverError } from "../fetcher/discover";
 import { htmlToText } from "../fetcher/parse-feed";
 import { UrlNotAllowedError } from "../fetcher/url-guard";
 import { base64UrlDecode, base64UrlEncode, sha256Hex } from "../lib/crypto";
+import { notifySync } from "../lib/sync-notify";
 import type { Platform } from "../platform";
 import { MCP_ICON_PATH, MCP_ICON_SIZE, MCP_ICON_TYPE } from "./icon";
 
@@ -198,10 +199,18 @@ export function createMcpServer(
   const { db } = platform;
   const userId = userIdOf(authInfo);
   /**
-   * 購読やフォルダを変えたあとに、開いている画面に知らせる（docs/decisions/sync.md の 9）。
-   * 既読とスターは、受信箱の書き込みの中で知らせる
+   * 書き込みのツールが利用者のデータを変えたあとに、開いている画面に知らせる
+   * （docs/decisions/sync.md の 9）。MCP は REST API のミドルウェアを通らないので、ツールで知らせる
    */
-  const changed = () => platform.syncUpdates.notify([userId]);
+  const changed = () => notifySync(platform.syncUpdates.notify, [userId]);
+  /** 既読・スターを変え、受信箱の記事を指していれば知らせる（受信箱にない記事だけなら、何も変えない） */
+  const setState = async (
+    input: Omit<Parameters<typeof setArticlesState>[1], "userId" | "now">,
+  ) => {
+    const updated = await setArticlesState(db, { ...input, userId, now: platform.now() });
+    if (updated > 0) await changed();
+    return updated;
+  };
   const server = new McpServer({
     name: "sendo",
     version: "0.0.0",
@@ -686,18 +695,7 @@ export function createMcpServer(
       scopeChallenge: writeScope,
     },
     async ({ ids, read }) =>
-      result({
-        updated: await setArticlesState(
-          db,
-          {
-            userId,
-            target: { articleIds: ids },
-            read: read ?? true,
-            now: platform.now(),
-          },
-          platform.syncUpdates.notify,
-        ),
-      }),
+      result({ updated: await setState({ target: { articleIds: ids }, read: read ?? true }) }),
   );
 
   server.registerTool(
@@ -715,16 +713,7 @@ export function createMcpServer(
     },
     async ({ ids, starred }) =>
       result({
-        updated: await setArticlesState(
-          db,
-          {
-            userId,
-            target: { articleIds: ids },
-            starred: starred ?? true,
-            now: platform.now(),
-          },
-          platform.syncUpdates.notify,
-        ),
+        updated: await setState({ target: { articleIds: ids }, starred: starred ?? true }),
       }),
   );
 
