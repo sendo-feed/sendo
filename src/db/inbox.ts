@@ -26,8 +26,14 @@ import { nextSeq } from "./seq";
  * 既読・スター・変更番号を持つ（docs/decisions/accounts.md、sync.md）。
  */
 
-/** 受信箱の記事。共有の記事の本体と、その人の既読・スター */
-export type InboxArticle = Omit<Article, "inCurrentFeed" | "reservedInboxBytes"> & {
+/**
+ * 受信箱の記事。共有の記事の本体と、その人の既読・スター。取得の時刻を決めるためだけの印
+ * （publishedTimeKnown）は、API に出さないので持たない
+ */
+export type InboxArticle = Omit<
+  Article,
+  "inCurrentFeed" | "reservedInboxBytes" | "publishedTimeKnown"
+> & {
   readAt: Date | null;
   starredAt: Date | null;
   /** 受信箱に入った時刻（DB の時計） */

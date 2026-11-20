@@ -290,6 +290,15 @@ describe("Discord の購読", () => {
     expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 19 });
     expect(await guids()).toEqual(ids.slice(5, 24));
     expect(await inbox()).toBe(19);
+    // Discord の投稿の時刻は正確なので、公開時刻が分かるものとして入れる（docs/decisions/jobs.md の 11）
+    expect(
+      (
+        await platform.db
+          .select({ known: articles.publishedTimeKnown })
+          .from(articles)
+          .where(eq(articles.feedId, feedId))
+      ).every(({ known }) => known),
+    ).toBe(true);
     const fetched = await getFeed(platform.db, feedId);
     expect(fetched?.discordCursor).toBe(system);
     // 20 時間に 19 件なので、間隔は下限（30 分）になる。記事がないときの 1 日にはならない。

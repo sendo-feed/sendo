@@ -354,6 +354,15 @@ export const articles = sqliteTable(
     thumbnailUrl: text("thumbnail_url"),
     /** フィードに日付がなければ、取り込んだ時刻を入れる */
     publishedAt: integer("published_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * 公開日時の時刻（時と分）まで分かるか（docs/decisions/jobs.md の 11）。フィードに時刻まで
+     * 書いてあった記事と、Discord の投稿だけが true。日付だけの記事と、日付がなく取り込んだ時刻を
+     * 入れた記事は false。この列を足す前に取り込んだ記事も false（あとから推し量って埋めない）。
+     * 取得の時刻を決めるときに、記事の出る時刻の材料にするかを分ける
+     */
+    publishedTimeKnown: integer("published_time_known", { mode: "boolean" })
+      .notNull()
+      .default(false),
     /** 取り込んだ時刻（DB の時計）。受信箱に配る範囲を決めるのに使う */
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     /**
