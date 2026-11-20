@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getFeed, insertFeed, MAX_LEASE } from "../../src/db/feeds";
 import { unsubscribe } from "../../src/db/subscriptions";
-import { enqueueDueFeeds } from "../../src/jobs/schedule";
+import { enqueueDueFeeds, runScheduled } from "../../src/jobs/schedule";
 import { testDb } from "../db";
 import { createTestPlatform, subscribeFeed, TEST_USER, uniqueUrl } from "../helpers";
 
@@ -56,5 +56,31 @@ describe("enqueueDueFeeds", () => {
 
     expect(await enqueueDueFeeds(platform)).toBe(0);
     expect(enqueued).toEqual([]);
+  });
+});
+
+describe("runScheduled（docs/decisions/jobs.md の 12）", () => {
+  const at = (time: string) => new Date(`2026-11-14T${time}:00Z`);
+
+  it("5 分の区切りでは、時期の来たフィードだけを積む", async () => {
+    await testDb.exec("DELETE FROM feeds");
+    const { platform, enqueued } = createTestPlatform({ now: () => NOW });
+    const feed = await subscribeFeed(platform, { now: NOW });
+
+    await runScheduled(platform, at("12:05"));
+    expect(enqueued).toEqual([{ type: "fetch-feed", feedId: feed.id }]);
+  });
+
+  it("10 分の区切りでは、言語の判定と検索の索引も積む", async () => {
+    await testDb.exec("DELETE FROM feeds");
+    const { platform, enqueued } = createTestPlatform({ now: () => NOW });
+    const feed = await subscribeFeed(platform, { now: NOW });
+
+    await runScheduled(platform, at("12:10"));
+    expect(enqueued).toEqual([
+      { type: "fetch-feed", feedId: feed.id },
+      { type: "detect-article-languages" },
+      { type: "index-article-search" },
+    ]);
   });
 });

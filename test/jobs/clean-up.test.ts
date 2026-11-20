@@ -88,6 +88,7 @@ describe("enqueueDailyCleanUp", () => {
     const at = (hour: number, minute: number) => new Date(Date.UTC(2026, 10, 14, hour, minute));
 
     expect(await enqueueDailyCleanUp(platform, at(CLEAN_UP_HOUR_UTC, 0))).toBe(true);
+    expect(await enqueueDailyCleanUp(platform, at(CLEAN_UP_HOUR_UTC, 5))).toBe(false);
     expect(await enqueueDailyCleanUp(platform, at(CLEAN_UP_HOUR_UTC, 10))).toBe(false);
     expect(await enqueueDailyCleanUp(platform, at(CLEAN_UP_HOUR_UTC - 1, 0))).toBe(false);
     expect(enqueued).toEqual([{ type: "clean-up" }]);

@@ -196,10 +196,16 @@ export interface Platform {
 export const DEFAULT_FETCH_INTERVAL_MINUTES = 30;
 
 /**
- * 取得の間隔の下限（分）。取得の時期が来たフィードは定期実行（platform/node/scheduler.ts、10 分おき）が
- * 積むので、これより短くしても、その間隔でしか取得されない
+ * 取得の間隔の下限（分）。相手への取得の頻度を決めるもので、定期実行の間隔（SCHEDULE_INTERVAL_MINUTES）
+ * とは別に決める（docs/decisions/jobs.md の 6）
  */
 export const MIN_FETCH_INTERVAL_MINUTES = 10;
+
+/**
+ * 定期実行の間隔（分。docs/decisions/jobs.md の 12）。時計のこの分の区切りごとに、取得の時期が来た
+ * フィードを積む（platform/node/scheduler.ts）
+ */
+export const SCHEDULE_INTERVAL_MINUTES = 5;
 
 /** 保存容量の既定（MiB）。10 GiB */
 export const DEFAULT_STORAGE_LIMIT_MIB = 10 * 1024;
