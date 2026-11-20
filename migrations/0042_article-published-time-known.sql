@@ -1,0 +1,1 @@
+ALTER TABLE `articles` ADD `published_time_known` integer DEFAULT false NOT NULL;

@@ -25,6 +25,12 @@ export type ParsedItem = {
   summary: string | null;
   author: string | null;
   publishedAt: Date | null;
+  /**
+   * 公開日時の文字列に、時刻（時と分）まで書いてあったか。日付だけのものと、日付がない ／ 読めない
+   * ものは false。取得の時刻を決めるときに、記事の出る時刻の材料にするかを分ける
+   * （docs/decisions/jobs.md の 11）
+   */
+  publishedTimeKnown: boolean;
   /** サムネイルのもとの URL（http ／ https だけ）。フィードの中になければ null */
   thumbnailUrl: string | null;
   /**
@@ -85,7 +91,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
           title: plain(item.title, MAX_TITLE_LENGTH),
           summary: html(item.description ?? item.content?.encoded, MAX_SUMMARY_LENGTH),
           author: plain(item.authors?.[0]?.name ?? item.dc?.creators?.[0], MAX_TITLE_LENGTH),
-          publishedAt: toDate(item.pubDate ?? item.dc?.dates?.[0]),
+          ...toPublished(item.pubDate ?? item.dc?.dates?.[0]),
           thumbnailUrl: thumbnail({
             media: item.media,
             attachments: item.enclosures,
@@ -108,7 +114,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
           title: atomText(entry.title, MAX_TITLE_LENGTH),
           summary: atomText(entry.summary ?? entry.content, MAX_SUMMARY_LENGTH),
           author: plain(entry.authors?.[0]?.name, MAX_TITLE_LENGTH),
-          publishedAt: toDate(entry.published ?? entry.updated ?? entry.dc?.dates?.[0]),
+          ...toPublished(entry.published ?? entry.updated ?? entry.dc?.dates?.[0]),
           thumbnailUrl: thumbnail({
             media: entry.media,
             attachments: (entry.links ?? [])
@@ -135,7 +141,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
           title: plain(item.title, MAX_TITLE_LENGTH),
           summary: html(item.description ?? item.content?.encoded, MAX_SUMMARY_LENGTH),
           author: plain(item.dc?.creators?.[0], MAX_TITLE_LENGTH),
-          publishedAt: toDate(item.dc?.dates?.[0]),
+          ...toPublished(item.dc?.dates?.[0]),
           thumbnailUrl: thumbnail({
             media: item.media,
             html: [item.content?.encoded, item.description],
@@ -159,7 +165,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
             plain(item.summary ?? item.content_text, MAX_SUMMARY_LENGTH) ??
             html(item.content_html, MAX_SUMMARY_LENGTH),
           author: plain(item.authors?.[0]?.name, MAX_TITLE_LENGTH),
-          publishedAt: toDate(item.date_published ?? item.date_modified),
+          ...toPublished(item.date_published ?? item.date_modified),
           thumbnailUrl: thumbnail({
             attachments: (item.attachments ?? []).map((attachment) => ({
               url: attachment.url,
@@ -239,8 +245,14 @@ export function normalizeText(value: string | undefined, maxLength: number): str
   return chars.length > maxLength ? `${chars.slice(0, maxLength - 1).join("")}…` : text;
 }
 
-function toDate(value: string | undefined): Date | null {
-  if (!value) return null;
+/** 時刻（時と分）の書き方。RFC 822 の `07:00:00` も、ISO 8601 の `T07:00Z` も当てはまる */
+const TIME_OF_DAY = /\d{1,2}:\d{2}/;
+
+function toPublished(
+  value: string | undefined,
+): Pick<ParsedItem, "publishedAt" | "publishedTimeKnown"> {
+  if (!value) return { publishedAt: null, publishedTimeKnown: false };
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+  if (Number.isNaN(date.getTime())) return { publishedAt: null, publishedTimeKnown: false };
+  return { publishedAt: date, publishedTimeKnown: TIME_OF_DAY.test(value) };
 }

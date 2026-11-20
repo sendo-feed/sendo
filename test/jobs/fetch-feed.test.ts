@@ -170,6 +170,11 @@ describe("runFetchFeed", () => {
     ]);
     // 日付のない記事は、取り込んだ時刻になる
     expect(rows.find((row) => row.guid === "https://blog.example/2")?.publishedAt).toEqual(NOW);
+    // 公開時刻が分かるのは、フィードに時刻まで書いてあった記事だけ（docs/decisions/jobs.md の 11）
+    expect(Object.fromEntries(rows.map((row) => [row.guid, row.publishedTimeKnown]))).toMatchObject(
+      { "1": true, "https://blog.example/2": false },
+    );
+    expect(rows.filter((row) => row.publishedTimeKnown)).toHaveLength(1);
   });
 
   it("記事の取り込み時刻は、取得を始めた時刻ではなく、DB に入れた時刻になる", async () => {

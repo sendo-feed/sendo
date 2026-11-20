@@ -417,6 +417,8 @@ async function toArticle(feedId: string, item: ParsedItem, fetchedAt: Date): Pro
     author: item.author,
     thumbnailUrl: item.thumbnailUrl,
     publishedAt: item.publishedAt ?? fetchedAt,
+    // 日付がなく取り込んだ時刻を入れたものは、時刻が分からないものとして扱う
+    publishedTimeKnown: item.publishedAt !== null && item.publishedTimeKnown,
   };
 }
 

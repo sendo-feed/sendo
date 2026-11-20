@@ -136,12 +136,13 @@ export async function insertDiscordArticles(
   const rows = articles.map((row) => ({ ...row, id: crypto.randomUUID(), itemId: randomItemId() }));
   const inserted = await db.all<{ id: string }>(sql`
     insert into articles (
-      id, feed_id, guid, url, title, summary, author, published_at, created_at, item_id, in_current_feed
+      id, feed_id, guid, url, title, summary, author, published_at, published_time_known, created_at,
+      item_id, in_current_feed
     )
     select
       value ->> '$.id', ${feedId}, value ->> '$.guid', value ->> '$.url',
       value ->> '$.title', value ->> '$.summary', value ->> '$.author',
-      value ->> '$.publishedAt', ${DB_NOW_MS}, value ->> '$.itemId', 0
+      value ->> '$.publishedAt', 1, ${DB_NOW_MS}, value ->> '$.itemId', 0
     from json_each(${JSON.stringify(rows)})
     where exists (
       select 1 from feeds inner join subscriptions on subscriptions.feed_id = feeds.id

@@ -43,6 +43,7 @@ describe("parseFeed", () => {
           summary: "Hello world",
           author: "Alice",
           publishedAt: new Date("2026-11-10T01:02:03Z"),
+          publishedTimeKnown: true,
           thumbnailUrl: null,
           contentHtml: "<p>Hello <b>world</b></p>",
         },
@@ -80,6 +81,7 @@ describe("parseFeed", () => {
       summary: "Short",
       author: "Bob",
       publishedAt: new Date("2026-10-31T12:00:00Z"),
+      publishedTimeKnown: true,
       thumbnailUrl: null,
       contentHtml: "Short",
     });
@@ -128,6 +130,7 @@ describe("parseFeed", () => {
       id: null,
       url: "https://r.example/1",
       publishedAt: new Date("2026-11-01T18:04:05Z"),
+      publishedTimeKnown: true,
     });
   });
 
@@ -152,7 +155,58 @@ describe("parseFeed", () => {
       BASE,
     );
 
-    expect(feed.items[0]?.publishedAt).toBeNull();
+    expect(feed.items[0]).toMatchObject({ publishedAt: null, publishedTimeKnown: false });
+  });
+
+  it("公開日時に時刻（時と分）まで書いてあるかを記録する（docs/decisions/jobs.md の 11）", () => {
+    const rss = parseFeed(
+      `<rss version="2.0"><channel><title>t</title>
+        <item><guid>with-time</guid><pubDate>Fri, 20 Nov 2026 07:00:00 +0900</pubDate></item>
+        <item><guid>no-date</guid></item>
+      </channel></rss>`,
+      BASE,
+    );
+    expect(
+      rss.items.map(({ id, publishedAt, publishedTimeKnown }) => ({
+        id,
+        publishedAt,
+        publishedTimeKnown,
+      })),
+    ).toEqual([
+      {
+        id: "with-time",
+        publishedAt: new Date("2026-11-19T22:00:00Z"),
+        publishedTimeKnown: true,
+      },
+      { id: "no-date", publishedAt: null, publishedTimeKnown: false },
+    ]);
+
+    const atom = parseFeed(
+      `<feed xmlns="http://www.w3.org/2005/Atom"><title>a</title><id>urn:a</id>
+        <updated>2026-11-20T07:00:00Z</updated>
+        <entry><id>urn:1</id><title>1</title><published>2026-11-20T07:00:00Z</published>
+          <updated>2026-11-20T07:00:00Z</updated></entry>
+      </feed>`,
+      BASE,
+    );
+    expect(atom.items[0]).toMatchObject({
+      publishedAt: new Date("2026-11-20T07:00:00Z"),
+      publishedTimeKnown: true,
+    });
+
+    // 日付だけなら、日付は使うが、時刻は分からないものとして扱う
+    const json = parseFeed(
+      JSON.stringify({
+        version: "https://jsonfeed.org/version/1.1",
+        title: "j",
+        items: [{ id: "date-only", date_published: "2026-11-20" }],
+      }),
+      BASE,
+    );
+    expect(json.items[0]).toMatchObject({
+      publishedAt: new Date("2026-11-20T00:00:00Z"),
+      publishedTimeKnown: false,
+    });
   });
 
   it("フィードでなければ ParseFeedError を投げる", () => {
