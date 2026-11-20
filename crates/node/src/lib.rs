@@ -133,6 +133,8 @@ pub struct MediaResult {
     pub eligible: bool,
     pub matches: bool,
     pub html: String,
+    pub lead: Vec<String>,
+    pub later: Vec<String>,
 }
 
 enum MediaInput {
@@ -154,6 +156,19 @@ enum MediaInput {
         thumbnail: String,
         target: String,
         replacement: String,
+    },
+    Lead {
+        html: String,
+        url: String,
+    },
+    Same {
+        image: Vec<u8>,
+        other: Vec<u8>,
+    },
+    Remove {
+        html: String,
+        src: String,
+        url: String,
     },
 }
 
@@ -199,6 +214,17 @@ impl Task for MediaTask {
                     target,
                     replacement,
                 } => result.html = media::replace_image(html, thumbnail, target, replacement),
+                MediaInput::Lead { html, url } => {
+                    let images = media::lead_images(html, url);
+                    result.lead = images.lead;
+                    result.later = images.later;
+                }
+                MediaInput::Same { image, other } => {
+                    result.matches = media::is_same_picture(image, other);
+                }
+                MediaInput::Remove { html, src, url } => {
+                    result.html = media::remove_image(html, src, url);
+                }
             }
             result
         }))
@@ -255,5 +281,29 @@ pub fn replace_page_image(
             target,
             replacement,
         },
+    })
+}
+/// 導入の画像と、そのあとの画像の URL（docs/decisions/content.md の 21）
+#[napi]
+pub fn page_lead_images(html: String, url: String) -> AsyncTask<MediaTask> {
+    AsyncTask::new(MediaTask {
+        input: MediaInput::Lead { html, url },
+    })
+}
+/// 縁の帯を除いてから、同じ写真かを見る（結果は matches）
+#[napi]
+pub fn same_page_images(image: Uint8Array, other: Uint8Array) -> AsyncTask<MediaTask> {
+    AsyncTask::new(MediaTask {
+        input: MediaInput::Same {
+            image: image.to_vec(),
+            other: other.to_vec(),
+        },
+    })
+}
+/// 導入の画像を 1 枚落とす
+#[napi]
+pub fn remove_page_image(html: String, src: String, url: String) -> AsyncTask<MediaTask> {
+    AsyncTask::new(MediaTask {
+        input: MediaInput::Remove { html, src, url },
     })
 }
