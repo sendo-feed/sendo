@@ -339,15 +339,19 @@ pub fn remove_image(html: &str, src: &str, base: &str) -> String {
         if url.as_deref() != Some(src) {
             continue;
         }
-        let parent = node.parent();
-        image.remove();
-        if let Some(parent) = parent
-            && parent.node_name().as_deref() == Some("a")
+        // span などを挟んでも、画像を包むリンクを調べる。
+        let mut link = node.parent();
+        while let Some(parent) = link
+            && parent.node_name().as_deref() != Some("a")
         {
-            let link = Selection::from(parent);
-            if link.select("img").length() == 0 && link.text().trim().is_empty() {
-                link.remove();
-            }
+            link = parent.parent();
+        }
+        image.remove();
+        if let Some(link) = link.map(Selection::from)
+            && link.select("img").length() == 0
+            && link.text().trim().is_empty()
+        {
+            link.remove();
         }
         break;
     }
@@ -437,7 +441,7 @@ mod tests {
     }
     #[test]
     fn removes_only_the_first_matching_image_and_its_empty_link() {
-        let html = "<a href='/view'><img src='/cover.jpg'></a><p>本文</p><a href='/full'><img src='https://news.example/cover.jpg'></a>";
+        let html = "<a href='/view'><span><img src='/cover.jpg'></span></a><p>本文</p><a href='/full'><img src='https://news.example/cover.jpg'></a>";
         let result = remove_image(
             html,
             "https://news.example/cover.jpg",
