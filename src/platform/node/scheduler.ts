@@ -1,10 +1,10 @@
 /**
- * 定期実行（docs/decisions/container.md の 6）。時計の 10 分の区切りごとに動かし、
- * 予定した区切りの時刻を渡す（片付けは、その時刻で日本時間 3:00 かを見る。jobs/schedule.ts）。
+ * 定期実行（docs/decisions/container.md の 6、jobs.md の 12）。時計の 5 分の区切りごとに動かし、
+ * 予定した区切りの時刻を渡す（片付けや、10 分の区切りでだけ積む仕事は、その時刻で決める。jobs/schedule.ts）。
  */
-import { MIN_FETCH_INTERVAL_MINUTES } from "..";
+import { SCHEDULE_INTERVAL_MINUTES } from "..";
 
-export const SCHEDULE_INTERVAL_MS = MIN_FETCH_INTERVAL_MINUTES * 60 * 1000;
+export const SCHEDULE_INTERVAL_MS = SCHEDULE_INTERVAL_MINUTES * 60 * 1000;
 
 /** at より後の、最初の区切りの時刻 */
 export function nextScheduledTime(at: Date, intervalMs = SCHEDULE_INTERVAL_MS): Date {

@@ -6,12 +6,15 @@ describe("定期実行", () => {
     vi.useRealTimers();
   });
 
-  it("時計の 10 分の区切りに合わせる", () => {
+  it("時計の 5 分の区切りに合わせる（docs/decisions/jobs.md の 12）", () => {
     expect(nextScheduledTime(new Date("2026-11-16T17:59:59.999Z")).toISOString()).toBe(
       "2026-11-16T18:00:00.000Z",
     );
-    expect(nextScheduledTime(new Date("2026-11-16T18:00:00.000Z")).toISOString()).toBe(
-      "2026-11-16T18:10:00.000Z",
+    expect(nextScheduledTime(new Date("2026-11-16T12:03:00.000Z")).toISOString()).toBe(
+      "2026-11-16T12:05:00.000Z",
+    );
+    expect(nextScheduledTime(new Date("2026-11-16T12:05:00.000Z")).toISOString()).toBe(
+      "2026-11-16T12:10:00.000Z",
     );
   });
 
@@ -26,6 +29,7 @@ describe("定期実行", () => {
 
     expect(tick.mock.calls.map(([time]) => time.toISOString())).toEqual([
       "2026-11-16T18:00:00.000Z",
+      "2026-11-16T18:05:00.000Z",
       "2026-11-16T18:10:00.000Z",
     ]);
   });
@@ -42,11 +46,11 @@ describe("定期実行", () => {
       .mockResolvedValue(undefined);
     const scheduler = startScheduler(tick);
 
-    await vi.advanceTimersByTimeAsync(10 * 60 * 1000); // 1 回目が始まる
-    await vi.advanceTimersByTimeAsync(10 * 60 * 1000); // 1 回目が終わっていないので飛ばす
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // 1 回目が始まる
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // 1 回目が終わっていないので飛ばす
     release();
-    await vi.advanceTimersByTimeAsync(10 * 60 * 1000); // 2 回目は例外
-    await vi.advanceTimersByTimeAsync(10 * 60 * 1000); // 3 回目も呼ばれる
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // 2 回目は例外
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // 3 回目も呼ばれる
     await scheduler.stop();
 
     expect(tick).toHaveBeenCalledTimes(3);
