@@ -195,8 +195,9 @@ pub fn replace_image(html: &str, thumbnail: &str, target: &str, replacement: &st
 }
 
 /// 導入の画像（本文の最初の段落より前。3 枚まで）と、そのあとの画像（12 枚まで）の URL
-/// （docs/decisions/content.md の 21）。小さいと書かれた画像（アイコン）は挙げない。導入の画像と
-/// 同じ URL は、あとの画像に挙げない（同じ URL の重なりは 19 で落とす）。
+/// （docs/decisions/content.md の 21）。小さいと書かれた画像（アイコン）は挙げない。拡大版への
+/// 差し替え（20）で導入の画像と同じ URL になった本文の画像も、あとの画像に挙げる（19 の同じ URL
+/// の重なりは、差し替えより前に落としているので、差し替えでできた重なりには効かない）。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LeadImages {
     pub lead: Vec<String>,
@@ -242,12 +243,11 @@ pub fn lead_images(html: &str, base: &str) -> LeadImages {
         else {
             continue;
         };
-        if out.lead.contains(&url) || out.later.contains(&url) {
-            continue;
-        }
         if !in_body && out.lead.len() < 3 {
-            out.lead.push(url);
-        } else if !out.lead.is_empty() && out.later.len() < 12 {
+            if !out.lead.contains(&url) {
+                out.lead.push(url);
+            }
+        } else if !out.lead.is_empty() && out.later.len() < 12 && !out.later.contains(&url) {
             out.later.push(url);
         }
         if out.later.len() == 12 {
@@ -417,7 +417,7 @@ mod tests {
     }
     #[test]
     fn lists_lead_images_before_the_first_paragraph() {
-        let html = "<div><img src='/cover.jpg'></div><h1>見出し</h1><div><img src='/cover.jpg'><img src='/cover-sp.jpg'><img src='/icon.svg' width='20'></div><p>短い</p><p>本文の最初の段落です。ここから記事の内容が始まります。</p><a href='/view'><img src='/body.jpg'></a><p>本文の段落です。<img src='/inline.png'></p>";
+        let html = "<div><img src='/cover.jpg'></div><h1>見出し</h1><div><img src='/cover.jpg'><img src='/cover-sp.jpg'><img src='/icon.svg' width='20'></div><p>短い</p><p>本文の最初の段落です。ここから記事の内容が始まります。</p><a href='/view'><img src='/body.jpg'></a><p>本文の段落です。<img src='/inline.png'></p><a href='/full'><img src='https://news.example/cover.jpg'></a>";
         let images = lead_images(html, "https://news.example/post");
         assert_eq!(
             images.lead,
@@ -430,7 +430,9 @@ mod tests {
             images.later,
             [
                 "https://news.example/body.jpg",
-                "https://news.example/inline.png"
+                "https://news.example/inline.png",
+                // 拡大版への差し替えで導入と同じ URL になった本文の画像も、照合の相手にする
+                "https://news.example/cover.jpg"
             ]
         );
         let none = lead_images(

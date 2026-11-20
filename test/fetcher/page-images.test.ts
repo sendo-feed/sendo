@@ -257,6 +257,19 @@ describe("導入の画像と同じ写真", () => {
     expect(f.calls.map((c) => c.url).sort()).toEqual([photo, cover, coverSp].sort());
   });
 
+  it("拡大版への差し替えで本文の画像が導入と同じ URL になったら、導入の画像を落とす", async () => {
+    const thumb = "https://news.example/body-thumb.jpg";
+    const page = `<div><img src="${cover}"></div><p>本文</p><a href="${cover}"><img src="${thumb}"></a>`;
+    const f = fakeFetch((u) => (u.href === thumb ? image() : pictures.fetch(u.href)));
+    // 拡大のあと、本文の画像の URL は導入の画像と同じになる
+    const p = leadProcessor([cover], [cover]);
+    p.links = vi.fn(async () => [{ thumbnail: thumb, target: cover }]);
+    p.compare = vi.fn(async () => ({ eligible: true, matches: true }));
+    const result = await resolvePageImages(page, "https://news.example/post", p, options(f.fetch));
+    expect(result).toBe(`<div></div><p>本文</p><a href="${cover}"><img src="${cover}"></a>`);
+    expect(f.calls.filter((c) => c.url === cover)).toHaveLength(1);
+  });
+
   it("違う写真なら、導入の画像を残す", async () => {
     const f = fakeFetch((u) => pictures.fetch(u.href));
     const other = "https://news.example/other.jpg";
