@@ -11,6 +11,7 @@ import type { Feed } from "../db/schema";
 import { readStorageUsage } from "../db/storage";
 import {
   DISCORD_CURSOR_START,
+  DISCORD_INITIAL_MESSAGES,
   DISCORD_PAGE_SIZE,
   discordCursorBefore,
   getDiscordMessages,
@@ -66,9 +67,7 @@ export async function runFetchDiscord(
     return { status: "missing" };
   }
 
-  // 1 回目の取得で投稿が 1 件もなければ、次からは新着だけを取るように、始めた時刻まで進める。
-  const first = discordCursor === DISCORD_CURSOR_START;
-  let cursor = first && messages.length === 0 ? discordCursorBefore(startedAt) : discordCursor;
+  let cursor = discordCursor;
   const articles: DiscordArticle[] = [];
   for (const message of messages) {
     if (BigInt(message.id) > BigInt(cursor)) cursor = message.id;
@@ -85,6 +84,17 @@ export async function runFetchDiscord(
       publishedAt: Date.parse(message.timestamp),
     });
   }
+
+  // 1 回目の取得は直近の投稿だけを取るので、購読より後の投稿が残っているかもしれない場合
+  // （取った全部が購読より後）と、投稿が 1 件もない場合は、取得位置を購読の時刻に置く。
+  // 1 回目が遅れたり、やり直したりしても、購読より後の投稿は次の取得からたどれる。
+  const first = discordCursor === DISCORD_CURSOR_START;
+  const subscribedAt = discordCursorBefore(feed.createdAt);
+  const mayHaveOlder =
+    first &&
+    messages.length === DISCORD_INITIAL_MESSAGES &&
+    messages.every((message) => BigInt(message.id) > BigInt(subscribedAt));
+  if (mayHaveOlder || (first && messages.length === 0)) cursor = subscribedAt;
 
   const inserted = canStore
     ? await insertDiscordArticles(db, feed.id, discordConnectionId, articles)
@@ -109,7 +119,7 @@ export async function runFetchDiscord(
 
   const minMs = platform.fetchConfig.intervalMs;
   const interval =
-    !first && messages.length === DISCORD_PAGE_SIZE
+    mayHaveOlder || (!first && messages.length === DISCORD_PAGE_SIZE)
       ? minMs
       : await nextFetchInterval(db, { feedId: feed.id, now: startedAt, minMs });
   await recordFetchSuccess(db, feed.id, {

@@ -314,6 +314,30 @@ describe("Discord の購読", () => {
     );
   });
 
+  it("1 回目の取得が遅れて、購読より後の投稿が 20 件を超えても、取りこぼさない", async () => {
+    const { platform, remote } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const feedId = await subscribe(await browser(platform, user.id));
+    const now = FIXED_NOW.getTime();
+    const ids = Array.from({ length: 25 }, (_, i) => messageIdAt(now + i));
+    remote.setMessageIds(ids);
+    const count = async () =>
+      (await platform.db.select().from(articles).where(eq(articles.feedId, feedId))).length;
+
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 20 });
+    const fetched = await getFeed(platform.db, feedId);
+    // 取った 20 件より前にも購読より後の投稿があるので、取得位置は購読の時刻に置き、すぐ続きを取る。
+    expect(BigInt(fetched?.discordCursor ?? "0")).toBeLessThan(BigInt(ids[0] as string));
+    expect(fetched?.discordCursor).not.toBe("0");
+    expect(fetched?.nextFetchAt.getTime()).toBe(now + platform.fetchConfig.intervalMs);
+
+    await platform.db.update(feeds).set({ lastFetchedAt: null }).where(eq(feeds.id, feedId));
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 5 });
+    expect(await count()).toBe(25);
+    expect((await getFeed(platform.db, feedId))?.discordCursor).toBe(ids[24]);
+  });
+
   it("購読した直後の取得で投稿がなければ、そのあとの投稿から取り込む", async () => {
     const { platform, remote } = await setup();
     const user = await createUser();
