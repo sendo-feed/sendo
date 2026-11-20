@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { insertArticles } from "../../src/db/articles";
 import { getFeed, insertFeed } from "../../src/db/feeds";
 import { articles, feeds } from "../../src/db/schema";
 import { ICON_CHECK_INTERVAL_MS, runFetchFeed } from "../../src/jobs/fetch-feed";
@@ -641,5 +642,56 @@ describe("runFetchFeed の Retry-After（docs/decisions/jobs.md の 8）", () =>
         () => new Response("", { status: 503, headers: { "retry-after": "999999999" } }),
       ),
     ).toEqual(new Date(NOW.getTime() + MAX_FETCH_INTERVAL_MS));
+  });
+});
+
+describe("記事の出る時刻の癖（docs/decisions/jobs.md の 11）", () => {
+  const DAY = 24 * HOUR;
+
+  async function setupDaily(timeKnown: boolean) {
+    const { platform } = createTestPlatform({
+      fetch: fakeFetch(() => new Response(null, { status: 304 })).fetch,
+      now: () => NOW,
+      fetchConfig: { intervalMs: INTERVAL_MS },
+    });
+    // 40 日前に登録し、1〜28 日前の 07:00 UTC に毎日 1 件
+    const { feed } = await insertFeed(platform.db, {
+      id: crypto.randomUUID(),
+      url: uniqueUrl(),
+      now: new Date(NOW.getTime() - 40 * DAY),
+    });
+    await insertArticles(
+      platform.db,
+      Array.from({ length: 28 }, (_, i) => ({
+        id: crypto.randomUUID(),
+        feedId: feed.id,
+        guid: `daily-${i}`,
+        url: null,
+        title: null,
+        summary: null,
+        author: null,
+        publishedAt: new Date(NOW.getTime() - (i + 1) * DAY + 7 * HOUR),
+        publishedTimeKnown: timeKnown,
+      })),
+    );
+    return { platform, feed };
+  }
+
+  it("毎日 07:00 に出るフィードは、次の 07:00 に取りにいく（304 のときも）", async () => {
+    const { platform, feed } = await setupDaily(true);
+
+    expect(await runFetchFeed(platform, feed.id)).toEqual({ status: "not-modified" });
+    const saved = await getFeed(platform.db, feed.id);
+    expect(saved?.nextFetchAt.toISOString()).toBe("2026-11-14T07:00:00.000Z");
+    expect(saved?.fetchIntervalMs).toBe(7 * HOUR);
+  });
+
+  it("公開時刻の分からない記事だけなら、記事の出るペースで決める", async () => {
+    const { platform, feed } = await setupDaily(false);
+
+    await runFetchFeed(platform, feed.id);
+    // 直近 7 日に 7 件：いちばん古い 6 日 17 時間前 ÷ 7 件の 3 分の 1
+    const expected = Math.round((6 * DAY + 17 * HOUR) / 7 / 3);
+    expect((await getFeed(platform.db, feed.id))?.fetchIntervalMs).toBe(expected);
   });
 });

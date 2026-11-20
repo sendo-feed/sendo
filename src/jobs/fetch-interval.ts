@@ -1,11 +1,10 @@
-import type { Database } from "../db";
-import { recentPublishedTimes } from "../db/articles";
 import type { Feed } from "../db/schema";
 
 /*
  * フィードごとの取得の間隔（docs/decisions/jobs.md の 7、8）。
  *
  * 設定の間隔（platform.fetchConfig.intervalMs）を下限、1 日を上限にして、記事の出るペースから決める。
+ * 記事の出る時刻に癖（枠）があれば、fetch-slots.ts が枠の時刻に合わせる（11）。
  * 失敗したときに延ばす間隔と、429 ／ 503 の Retry-After の扱いもここに置く。
  */
 
@@ -57,19 +56,6 @@ export function decideFetchInterval(
   const oldest = Math.min(now, ...times);
   const averageGap = (now - oldest) / times.length;
   return clamp(Math.round(averageGap / 3), input.minMs, maxMs);
-}
-
-/** フィードの記事を DB から読んで、取得の間隔を決め直す */
-export async function nextFetchInterval(
-  db: Database,
-  input: { feedId: string; now: Date; minMs: number },
-): Promise<number> {
-  const publishedAt = await recentPublishedTimes(db, {
-    feedId: input.feedId,
-    since: new Date(input.now.getTime() - PACE_WINDOW_MS),
-    limit: PACE_SAMPLE,
-  });
-  return decideFetchInterval(publishedAt, input);
 }
 
 /**

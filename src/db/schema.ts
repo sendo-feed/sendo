@@ -257,8 +257,8 @@ export const feeds = sqliteTable(
     /** この時刻を過ぎたら、定期実行で取得のキューに積む（購読している人がいるときだけ） */
     nextFetchAt: integer("next_fetch_at", { mode: "timestamp_ms" }).notNull(),
     /**
-     * 取得の間隔（ミリ秒。docs/decisions/jobs.md の 7）。取得に成功するたびに、記事の出るペースから
-     * 決め直す。null なら、まだ決めていない（設定の間隔を使う）。書くのは取得の記録の UPDATE の中だけ
+     * 取得の間隔（ミリ秒。docs/decisions/jobs.md の 7、11）。取得に成功するたびに、記事の出るペースか
+     * 時刻の癖（枠）から決め直した、次の取得までの長さ。null なら、まだ決めていない（設定の間隔を使う）。書くのは取得の記録の UPDATE の中だけ
      * にし、索引は付けない（取得のたびに索引を書き換えないため）
      */
     fetchIntervalMs: integer("fetch_interval_ms"),

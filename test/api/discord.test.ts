@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { connectDiscord, disconnectDiscord } from "../../src/db/discord";
+import { connectDiscord, disconnectDiscord, insertDiscordArticles } from "../../src/db/discord";
 import { findFeedByUrl, getFeed } from "../../src/db/feeds";
 import { articles, feeds } from "../../src/db/schema";
 import { createSession } from "../../src/db/sessions";
@@ -345,6 +345,45 @@ describe("Discord の購読", () => {
     expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 5 });
     expect(await count()).toBe(25);
     expect((await getFeed(platform.db, feedId))?.discordCursor).toBe(ids[24]);
+  });
+
+  it("毎日決まった時刻に投稿されるチャンネルは、その時刻に取りにいく（docs/decisions/jobs.md の 11）", async () => {
+    const { platform, remote } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const feedId = await subscribe(await browser(platform, user.id));
+    // 40 日前に購読し、1〜28 日前の 07:00 UTC に毎日 1 件ずつ投稿があった
+    const day = 24 * HOUR;
+    await platform.db
+      .update(feeds)
+      .set({ createdAt: new Date(FIXED_NOW.getTime() - 40 * day) })
+      .where(eq(feeds.id, feedId));
+    const connectionId = (await getFeed(platform.db, feedId))?.discordConnectionId ?? "";
+    const posts = Array.from(
+      { length: 28 },
+      (_, i) => FIXED_NOW.getTime() - (i + 1) * day + 7 * HOUR,
+    );
+    expect(
+      await insertDiscordArticles(
+        platform.db,
+        feedId,
+        connectionId,
+        posts.map((publishedAt) => ({
+          guid: messageIdAt(publishedAt),
+          url: `${CHANNEL}/${messageIdAt(publishedAt)}`,
+          title: "daily",
+          summary: "daily",
+          author: "bot",
+          publishedAt,
+        })),
+      ),
+    ).toBe(28);
+    remote.setMessageIds([]);
+
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "not-modified" });
+    expect((await getFeed(platform.db, feedId))?.nextFetchAt.toISOString()).toBe(
+      "2026-11-19T07:00:00.000Z",
+    );
   });
 
   it("購読した直後の取得で投稿がなければ、そのあとの投稿から取り込む", async () => {

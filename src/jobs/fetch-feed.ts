@@ -26,10 +26,10 @@ import {
   backoffInterval,
   currentFetchInterval,
   FETCH_FAILURE_WINDOW_MS,
-  nextFetchInterval,
   retryAfterWait,
   STALLED_FETCH_INTERVAL_MS,
 } from "./fetch-interval";
+import { nextFetchInterval } from "./fetch-slots";
 import { canStoreArticles, measureExistingContents, reportStorageFull } from "./storage";
 
 /*
@@ -107,6 +107,7 @@ export async function runFetchFeed(
         feedId: feed.id,
         now: startedAt,
         minMs: minIntervalMs,
+        feedCreatedAt: feed.createdAt,
       });
       const recorded = await recordFetchSuccess(db, feed.id, {
         now: startedAt,
@@ -182,6 +183,7 @@ export async function runFetchFeed(
       feedId: feed.id,
       now: startedAt,
       minMs: minIntervalMs,
+      feedCreatedAt: feed.createdAt,
     });
     // 記事を入れ終えてから、取得済みとして記録する。途中で落ちても、次の取得でやり直せる
     const recorded = await recordFetchSuccess(db, feed.id, {
