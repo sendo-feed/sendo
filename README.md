@@ -175,12 +175,12 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 
 ### Discord のチャンネルを購読する
 
-管理者が追加した Discord Bot で、指定したテキストチャンネルとアナウンスチャンネルの新着を受信箱に取り込みます。投稿のテキストと元投稿へのリンクが記事に並びます。添付ファイルや会話は Discord で開きます。
+管理者が追加した Discord Bot で、指定したテキストチャンネルとアナウンスチャンネルの投稿を受信箱に取り込みます。投稿のテキストと元投稿へのリンクが記事に並びます。添付ファイルや会話は Discord で開きます。
 
 1. [Discord Developer Portal](https://discord.com/developers/applications) でアプリを作り、サーバーへのインストールと、Bot の **Message Content Intent** を有効にします。OAuth2 のリダイレクト先に `<READER_URL>/api/v1/integrations/discord/callback` を登録します。
 2. `.env` に `DISCORD_CLIENT_ID`（Application ID）、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN`、`READER_URL` を設定します。
 3. `GET /api/v1/integrations/discord` が返す `inviteUrl` をサーバーの管理者が開いて Bot を追加します。Bot に購読するチャンネルの「チャンネルを見る」と「メッセージ履歴を読む」を許可します。
-4. ブラウザで Sendo にログインし、`POST /api/v1/integrations/discord/connect` の `authorizationUrl` を開いて Discord アカウントを接続します。`POST /api/v1/integrations/discord/subscriptions` にチャンネル URL を渡すと、その時点からの新着を取得します。接続と購読の API は [OpenAPI](spec/openapi.json) にあります。
+4. ブラウザで Sendo にログインし、`POST /api/v1/integrations/discord/connect` の `authorizationUrl` を開いて Discord アカウントを接続します。`POST /api/v1/integrations/discord/subscriptions` にチャンネル URL を渡すと、直近の投稿を最大 20 件取り込み、そのあとは新着を取得します。接続と購読の API は [OpenAPI](spec/openapi.json) にあります。
 
 購読の解除、Discord 連携の解除、取得時に Discord 側の閲覧権限がなくなったことを検出した場合は、取り込んだ記事をスター付きも含めて削除します。
 

@@ -10,7 +10,9 @@ import { deliverNewArticles } from "../db/inbox";
 import type { Feed } from "../db/schema";
 import { readStorageUsage } from "../db/storage";
 import {
+  DISCORD_CURSOR_START,
   DISCORD_PAGE_SIZE,
+  discordCursorBefore,
   getDiscordMessages,
   getReadableChannel,
   isDiscordAccessDenied,
@@ -64,7 +66,9 @@ export async function runFetchDiscord(
     return { status: "missing" };
   }
 
-  let cursor = discordCursor;
+  // 1 回目の取得で投稿が 1 件もなければ、次からは新着だけを取るように、始めた時刻まで進める。
+  const first = discordCursor === DISCORD_CURSOR_START;
+  let cursor = first && messages.length === 0 ? discordCursorBefore(startedAt) : discordCursor;
   const articles: DiscordArticle[] = [];
   for (const message of messages) {
     if (BigInt(message.id) > BigInt(cursor)) cursor = message.id;
@@ -105,7 +109,7 @@ export async function runFetchDiscord(
 
   const minMs = platform.fetchConfig.intervalMs;
   const interval =
-    messages.length === DISCORD_PAGE_SIZE
+    !first && messages.length === DISCORD_PAGE_SIZE
       ? minMs
       : await nextFetchInterval(db, { feedId: feed.id, now: startedAt, minMs });
   await recordFetchSuccess(db, feed.id, {

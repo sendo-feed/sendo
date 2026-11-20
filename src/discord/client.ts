@@ -56,6 +56,10 @@ const Message = z.object({
 });
 
 export const DISCORD_PAGE_SIZE = 30;
+/** 購読したときに取り込む、直近の投稿の数（docs/decisions/discord.md の 3） */
+export const DISCORD_INITIAL_MESSAGES = 20;
+/** まだ 1 回も取得していないフィードの取得位置。どのメッセージ ID よりも小さい */
+export const DISCORD_CURSOR_START = "0";
 
 /** 同じミリ秒に投稿されたメッセージも取得できるように、時刻の直前の ID を返す */
 export function discordCursorBefore(date: Date): string {
@@ -224,15 +228,23 @@ export function isDiscordAccessDenied(error: unknown): boolean {
   );
 }
 
+/**
+ * 取得位置より後の投稿を、古いほうから 1 ページ分返す。まだ 1 回も取得していなければ
+ * （DISCORD_CURSOR_START）、直近の投稿を返す
+ */
 export async function getDiscordMessages(
   fetch: typeof globalThis.fetch,
   config: DiscordConfig,
   channelId: string,
   after: string,
 ) {
+  const range =
+    after === DISCORD_CURSOR_START
+      ? `limit=${DISCORD_INITIAL_MESSAGES}`
+      : `after=${after}&limit=${DISCORD_PAGE_SIZE}`;
   const messages = await request(
     fetch,
-    `/channels/${channelId}/messages?after=${after}&limit=${DISCORD_PAGE_SIZE}`,
+    `/channels/${channelId}/messages?${range}`,
     z.array(Message).max(DISCORD_PAGE_SIZE),
     { headers: { authorization: `Bot ${config.botToken}` } },
   );
