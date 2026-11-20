@@ -55,7 +55,11 @@ pub fn detect(html: &str) -> Result<Detection, &'static str> {
         return Err("language input exceeds 256 KiB");
     }
     let text = prepared_text(html);
-    let input_hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+    // sha2 0.11 のダイジェストは `{:x}` で書けないので、1 バイトずつ 16 進にする
+    let input_hash: String = Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     let mut result = Detection {
         language: "und".into(),
         status: "insufficient".into(),
@@ -100,6 +104,15 @@ mod tests {
         assert_eq!(result.status, "detected");
         assert_eq!(result.input_hash, detect(JA).unwrap().input_hash);
         assert_eq!(detect(EN).unwrap().language, "en");
+    }
+
+    #[test]
+    fn input_hash_is_lowercase_hex_sha256() {
+        // 空の入力の SHA-256。保存済みのハッシュと比べるので、書き方を変えない
+        assert_eq!(
+            detect("").unwrap().input_hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[test]
