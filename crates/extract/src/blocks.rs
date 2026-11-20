@@ -256,6 +256,7 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
             el.set_attr(attr, &value);
         }
     }
+    drop_repeated_images(&root);
     let html = root.html().to_string();
     let text_length = root.text().trim().chars().count();
     if text_length == 0 {
@@ -266,6 +267,40 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         html,
         text_length,
     })
+}
+
+/// 同じ URL の画像が 2 回以上出るときは、最初の 1 枚だけを残す（docs/decisions/content.md の 19）。
+/// 画面幅ごとに同じ表紙を出し分けるページでは、CSS を読まないので同じ画像が続けて残る。
+/// 画像だけを入れていたリンクが空になったら、リンクも落とす。文の中の画像（親の要素に文字が
+/// 直接ある。絵文字など）は、書き手がくり返しているので残し、数えもしない。URL は絶対にしたあとで比べる。
+fn drop_repeated_images(root: &Selection) {
+    let mut seen = std::collections::HashSet::new();
+    for node in root.select("img[src]").nodes() {
+        let Some(parent) = node.parent() else {
+            continue;
+        };
+        let in_text = parent
+            .children_it(false)
+            .any(|child| child.is_text() && !child.text().trim().is_empty());
+        if in_text {
+            continue;
+        }
+        let image = Selection::from(*node);
+        let Some(src) = image.attr("src") else {
+            continue;
+        };
+        if seen.insert(src.to_string()) {
+            continue;
+        }
+        image.remove();
+        let link = Selection::from(parent);
+        if parent.node_name().as_deref() == Some("a")
+            && link.select("img").length() == 0
+            && compact(&link.text()).is_empty()
+        {
+            link.remove();
+        }
+    }
 }
 
 /// 元の DOM の段落を、抽出器が抜いた文章（seed）と照合して手掛かりを集め、本文の範囲を選ぶ。
@@ -455,6 +490,74 @@ mod tests {
         assert!(result.html.contains("本文の段落5"));
         assert!(result.html.contains("https://figure.example/after.jpg"));
         assert!(result.html.contains("本文の後ろの写真の説明"));
+    }
+    #[test]
+    fn keeps_only_the_first_of_images_with_the_same_url() {
+        let html = format!(
+            "<title>表紙が二回ある記事</title><div><div><img src='/cover.jpg'></div><h1>表紙が二回ある記事</h1><div><img src='https://cover.example/cover.jpg'></div><div>{}<p><img src='/other.jpg'></p></div></div>",
+            paragraphs()
+        );
+        let result = extract(&html, "https://cover.example/post").unwrap();
+        let doc = Document::from(result.html);
+        assert_eq!(
+            doc.select("img[src='https://cover.example/cover.jpg']")
+                .length(),
+            1
+        );
+        assert_eq!(
+            doc.select("img[src='https://cover.example/other.jpg']")
+                .length(),
+            1
+        );
+        assert!(doc.text().contains("表紙が二回ある記事"));
+        assert!(doc.text().contains("本文の段落5"));
+        // 残るのは最初の 1 枚（見出しの前）
+        let html = doc.html().to_string();
+        assert!(html.find("cover.jpg").unwrap() < html.find("表紙が二回ある記事").unwrap());
+    }
+    #[test]
+    fn compares_image_urls_after_normalizing_them() {
+        let html = format!(
+            "<title>遅延読み込みの記事</title><div><h1>遅延読み込みの記事</h1>{}<figure><img src='/cover.jpg'></figure><figure><img src='/loading.gif' data-src='https://lazy.example/cover.jpg'></figure><figure><img srcset='/cover.jpg 800w'></figure></div>",
+            paragraphs()
+        );
+        // 遅延読み込みと srcset の正規化は、入口（crate::extract）で行う。
+        let result = crate::extract(html.as_bytes(), None, "https://lazy.example/post").unwrap();
+        let doc = Document::from(result.html);
+        assert_eq!(doc.select("img").length(), 1);
+    }
+    #[test]
+    fn drops_a_link_left_empty_by_a_repeated_image() {
+        let html = format!(
+            "<title>リンクの写真が重なる記事</title><div><h1>リンクの写真が重なる記事</h1><figure><img src='/photo.jpg'></figure>{}<p><a href='/view' id='only-photo'><img src='/photo.jpg'></a></p><p><a href='/more'><span>写真の詳しい説明はこちら</span><img src='/photo.jpg'></a></p></div>",
+            paragraphs()
+        );
+        let result = extract(&html, "https://link.example/post").unwrap();
+        let doc = Document::from(result.html);
+        assert_eq!(doc.select("img").length(), 1);
+        assert_eq!(
+            doc.select("a[href='https://link.example/view']").length(),
+            0
+        );
+        assert_eq!(
+            doc.select("a[href='https://link.example/more']").length(),
+            1
+        );
+        assert!(doc.text().contains("写真の詳しい説明はこちら"));
+    }
+    #[test]
+    fn keeps_repeated_images_inside_text() {
+        let html = format!(
+            "<title>絵文字のある記事</title><div><h1>絵文字のある記事</h1>{}<p>とてもよい<img src='/emoji.png'>記事でした<img src='/emoji.png'>またね</p></div>",
+            paragraphs()
+        );
+        let result = extract(&html, "https://emoji.example/post").unwrap();
+        let doc = Document::from(result.html);
+        assert_eq!(
+            doc.select("img[src='https://emoji.example/emoji.png']")
+                .length(),
+            2
+        );
     }
     #[test]
     fn keeps_lead_gallery_links_and_captions_in_order() {
