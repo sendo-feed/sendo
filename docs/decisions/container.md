@@ -21,7 +21,7 @@ Sendo は、コンテナ（Node ＋ SQLite）だけで動かす（[テックス�
 5. **DB は SQLite のファイルにし、ドライバは libsql を使う。**
    - マイグレーションは、コンテナを起動したあと、リクエストを受ける前に当てる
    - Postgres は、今は支えない
-6. **仕事は SQLite のジョブの表に積み、同じプロセスの中で取り出して動かす。** 定期実行も、同じプロセスのタイマーで動かす（10 分おきと、日本時間 3:00 の片付け）。詳しくは[仕事の流し方](jobs.md)に書く。
+6. **仕事は SQLite のジョブの表に積み、同じプロセスの中で取り出して動かす。** 定期実行も、同じプロセスのタイマーで動かす（5 分おきと、日本時間 3:00 の片付け）。詳しくは[仕事の流し方](jobs.md)に書く。
 7. **sendo は、1 つのコンテナ・1 つのプロセスで動かす。** データ（SQLite のファイルと記事の本文）は、1 つのボリューム（`/data`）にまとめる。記事の本文は、そのボリュームにファイルとして置く。
    - 既存のサーバー（関連検索の RustXNG など）を使う機能は、そのサーバーを別のコンテナとして `compose.yaml` に並べる（[テックスタック](tech-stack.md)の 6）。その機能を使わない人は、入れなくてよい
    - 画面（sendo-reader）も、別のコンテナ（`ghcr.io/sendo-feed/sendo-reader`）として `compose.yaml` に並べる。外に出すのは sendo-reader のコンテナだけにし、sendo のポートは出さない。sendo-reader が画面を返し、sendo のパスを中継するので、外からは sendo-reader のオリジン 1 つに見える。`PUBLIC_URL` と `READER_URL` には、どちらもそのオリジンを入れる（sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)の 1〜4）
