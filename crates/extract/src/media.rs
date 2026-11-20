@@ -133,10 +133,15 @@ pub fn is_larger_image(thumbnail: &[u8], candidate: &[u8]) -> bool {
     {
         return false;
     }
+    similar(&a, &b)
+}
+
+/// 縮小した画素の差と差分ハッシュで、同じ写真かを見る。一様な背景では別の画像でも一致しやすい
+/// ので、十分な濃淡がないものは一致としない。縦横比は呼ぶ側で確かめる。
+fn similar(a: &DynamicImage, b: &DynamicImage) -> bool {
     let small = |im: &DynamicImage| im.resize_exact(32, 32, FilterType::Triangle).to_rgb8();
-    let pa = small(&a);
-    let pb = small(&b);
-    // 一様な背景では別の画像でも一致しやすい。十分な濃淡がないものは拡大しない。
+    let pa = small(a);
+    let pb = small(b);
     let gray = a.resize_exact(32, 32, FilterType::Triangle).to_luma8();
     let mean = gray.as_raw().iter().map(|v| f64::from(*v)).sum::<f64>() / 1024.0;
     let variance = gray
@@ -166,7 +171,7 @@ pub fn is_larger_image(thumbnail: &[u8], candidate: &[u8]) -> bool {
         }
         hash
     };
-    mae <= 0.08 && (hash(&a) ^ hash(&b)).count_ones() <= 8
+    mae <= 0.08 && (hash(a) ^ hash(b)).count_ones() <= 8
 }
 
 /// 照合を通った画像だけを置き換える。リンク先・写真の位置・その他の属性は保つ。
@@ -189,6 +194,166 @@ pub fn replace_image(html: &str, thumbnail: &str, target: &str, replacement: &st
     doc.select("body").html().to_string()
 }
 
+/// 導入の画像（本文の最初の段落より前。3 枚まで）と、そのあとの画像（12 枚まで）の URL
+/// （docs/decisions/content.md の 21）。小さいと書かれた画像（アイコン）は挙げない。導入の画像と
+/// 同じ URL は、あとの画像に挙げない（同じ URL の重なりは 19 で落とす）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LeadImages {
+    pub lead: Vec<String>,
+    pub later: Vec<String>,
+}
+
+/// 段落とみなす要素。20 文字以上の文章を持つものが、本文の最初の段落
+const PARAGRAPHS: &[&str] = &["p", "pre", "blockquote", "li", "dd", "td"];
+
+pub fn lead_images(html: &str, base: &str) -> LeadImages {
+    let doc = Document::from(html);
+    let mut out = LeadImages::default();
+    let mut in_body = false;
+    for node in doc.select("*").nodes() {
+        let name = node.node_name().map(|n| n.to_string()).unwrap_or_default();
+        let element = Selection::from(*node);
+        if !in_body
+            && PARAGRAPHS.contains(&name.as_str())
+            && element
+                .text()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .count()
+                >= 20
+        {
+            in_body = true;
+        }
+        if name != "img" {
+            continue;
+        }
+        let small = [("width", 80), ("height", 60)].iter().any(|(attr, min)| {
+            element
+                .attr(attr)
+                .and_then(|v| v.parse::<u32>().ok())
+                .is_some_and(|v| v < *min)
+        });
+        if small {
+            continue;
+        }
+        let Some(url) = element
+            .attr("src")
+            .and_then(|v| crate::normalize::http(&v, base))
+        else {
+            continue;
+        };
+        if out.lead.contains(&url) || out.later.contains(&url) {
+            continue;
+        }
+        if !in_body && out.lead.len() < 3 {
+            out.lead.push(url);
+        } else if !out.lead.is_empty() && out.later.len() < 12 {
+            out.later.push(url);
+        }
+        if out.later.len() == 12 {
+            break;
+        }
+    }
+    out
+}
+
+/// 縁の一様な帯（レターボックス）を除いた範囲。色は各辺の角の画素と比べる。
+fn trim_bars(image: &DynamicImage) -> DynamicImage {
+    let rgb = image.to_rgb8();
+    let (width, height) = rgb.dimensions();
+    let close = |a: &image::Rgb<u8>, b: &image::Rgb<u8>| {
+        a.0.iter().zip(b.0).all(|(x, y)| x.abs_diff(y) <= 16)
+    };
+    let row_is_bar =
+        |y: u32, corner: &image::Rgb<u8>| (0..width).all(|x| close(rgb.get_pixel(x, y), corner));
+    let column_is_bar = |x: u32, top: u32, bottom: u32, corner: &image::Rgb<u8>| {
+        (top..bottom).all(|y| close(rgb.get_pixel(x, y), corner))
+    };
+    let top_corner = *rgb.get_pixel(0, 0);
+    let bottom_corner = *rgb.get_pixel(0, height - 1);
+    let mut top = 0;
+    while top < height && row_is_bar(top, &top_corner) {
+        top += 1;
+    }
+    let mut bottom = height;
+    while bottom > top && row_is_bar(bottom - 1, &bottom_corner) {
+        bottom -= 1;
+    }
+    if bottom == top {
+        return image.clone();
+    }
+    let left_corner = *rgb.get_pixel(0, top);
+    let right_corner = *rgb.get_pixel(width - 1, top);
+    let mut left = 0;
+    while left < width && column_is_bar(left, top, bottom, &left_corner) {
+        left += 1;
+    }
+    let mut right = width;
+    while right > left && column_is_bar(right - 1, top, bottom, &right_corner) {
+        right -= 1;
+    }
+    if right == left {
+        return image.clone();
+    }
+    image.crop_imm(left, top, right - left, bottom - top)
+}
+
+/// 縁の帯を除いてから、同じ写真かを見る。大きさは問わない（docs/decisions/content.md の 21）。
+/// 縦横比・縮小した画素の差・差分ハッシュの基準は is_larger_image と同じ。帯を除くと縦か横が
+/// 元の半分未満になる画像、濃淡の少ない画像、形式不明・壊れた画像は false。
+pub fn is_same_picture(a: &[u8], b: &[u8]) -> bool {
+    let (Some(a), Some(b)) = (decode(a), decode(b)) else {
+        return false;
+    };
+    let trimmed = |image: &DynamicImage| {
+        let inner = trim_bars(image);
+        (inner.width() * 2 >= image.width()
+            && inner.height() * 2 >= image.height()
+            && inner.width() >= 80
+            && inner.height() >= 60)
+            .then_some(inner)
+    };
+    let (Some(a), Some(b)) = (trimmed(&a), trimmed(&b)) else {
+        return false;
+    };
+    if ((f64::from(a.width()) / f64::from(a.height()))
+        / (f64::from(b.width()) / f64::from(b.height()))
+        - 1.0)
+        .abs()
+        > 0.05
+    {
+        return false;
+    }
+    similar(&a, &b)
+}
+
+/// 導入の画像を 1 枚落とす。URL（lead_images が返したもの）が同じ最初の画像だけを落とし、
+/// 画像だけを入れていたリンクが空になったら、リンクも落とす。
+pub fn remove_image(html: &str, src: &str, base: &str) -> String {
+    let doc = Document::from(html);
+    for node in doc.select("img[src]").nodes() {
+        let image = Selection::from(*node);
+        let url = image
+            .attr("src")
+            .and_then(|v| crate::normalize::http(&v, base));
+        if url.as_deref() != Some(src) {
+            continue;
+        }
+        let parent = node.parent();
+        image.remove();
+        if let Some(parent) = parent
+            && parent.node_name().as_deref() == Some("a")
+        {
+            let link = Selection::from(parent);
+            if link.select("img").length() == 0 && link.text().trim().is_empty() {
+                link.remove();
+            }
+        }
+        break;
+    }
+    doc.select("body").html().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +367,93 @@ mod tests {
             .write_to(&mut bytes, image::ImageFormat::Png)
             .unwrap();
         bytes.into_inner()
+    }
+    fn letterboxed(picture: &[u8], top: u32, left: u32) -> Vec<u8> {
+        let inner = image::load_from_memory(picture).unwrap().to_rgb8();
+        let (w, h) = inner.dimensions();
+        let mut out =
+            image::RgbImage::from_pixel(w + left * 2, h + top * 2, image::Rgb([3, 14, 10]));
+        image::imageops::overlay(&mut out, &inner, i64::from(left), i64::from(top));
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(out)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+    #[test]
+    fn finds_the_same_picture_behind_letterbox_bars_at_any_size() {
+        let wide = picture(320, 180, false);
+        let smaller = picture(160, 90, false);
+        assert!(is_same_picture(&letterboxed(&wide, 60, 0), &smaller));
+        assert!(is_same_picture(&smaller, &letterboxed(&wide, 60, 0)));
+        assert!(is_same_picture(&letterboxed(&wide, 0, 40), &wide));
+        assert!(is_same_picture(&wide, &wide));
+    }
+    #[test]
+    fn does_not_match_different_flat_cropped_or_broken_pictures() {
+        let wide = picture(320, 180, false);
+        assert!(!is_same_picture(&wide, &picture(320, 180, true)));
+        assert!(!is_same_picture(
+            &letterboxed(&wide, 60, 0),
+            &picture(160, 90, true)
+        ));
+        let flat = |value| {
+            let image = image::RgbImage::from_pixel(200, 150, image::Rgb([value, value, value]));
+            let mut bytes = Cursor::new(Vec::new());
+            DynamicImage::ImageRgb8(image)
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            bytes.into_inner()
+        };
+        assert!(!is_same_picture(&flat(200), &flat(205)));
+        // 帯を除くと縦が元の半分未満になる
+        assert!(!is_same_picture(&letterboxed(&wide, 200, 0), &wide));
+        assert!(!is_same_picture(b"not an image", &wide));
+        assert!(!is_same_picture(&wide, b"not an image"));
+    }
+    #[test]
+    fn lists_lead_images_before_the_first_paragraph() {
+        let html = "<div><img src='/cover.jpg'></div><h1>見出し</h1><div><img src='/cover.jpg'><img src='/cover-sp.jpg'><img src='/icon.svg' width='20'></div><p>短い</p><p>本文の最初の段落です。ここから記事の内容が始まります。</p><a href='/view'><img src='/body.jpg'></a><p>本文の段落です。<img src='/inline.png'></p>";
+        let images = lead_images(html, "https://news.example/post");
+        assert_eq!(
+            images.lead,
+            [
+                "https://news.example/cover.jpg",
+                "https://news.example/cover-sp.jpg"
+            ]
+        );
+        assert_eq!(
+            images.later,
+            [
+                "https://news.example/body.jpg",
+                "https://news.example/inline.png"
+            ]
+        );
+        let none = lead_images(
+            "<p>本文の最初の段落です。ここから記事の内容が始まります。</p><img src='/a.jpg'>",
+            "https://news.example/post",
+        );
+        assert_eq!(none, LeadImages::default());
+    }
+    #[test]
+    fn removes_only_the_first_matching_image_and_its_empty_link() {
+        let html = "<a href='/view'><img src='/cover.jpg'></a><p>本文</p><a href='/full'><img src='https://news.example/cover.jpg'></a>";
+        let result = remove_image(
+            html,
+            "https://news.example/cover.jpg",
+            "https://news.example/post",
+        );
+        let doc = Document::from(result);
+        assert_eq!(doc.select("img").length(), 1);
+        assert_eq!(doc.select("a[href='/view']").length(), 0);
+        assert_eq!(doc.select("a[href='/full'] img").length(), 1);
+        let kept = remove_image(
+            "<a href='/view'>表紙<img src='/cover.jpg'></a>",
+            "https://news.example/cover.jpg",
+            "https://news.example/post",
+        );
+        assert!(kept.contains("表紙"));
+        assert!(!kept.contains("<img"));
     }
     #[test]
     fn matches_larger_same_picture_but_not_different_equal_size_or_avatar() {

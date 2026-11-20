@@ -76,4 +76,23 @@ describe("Rust のモジュール（記事のページから本文を抜く）",
     expect(replaced.indexOf("前")).toBeLessThan(replaced.indexOf("full.jpg"));
     expect(replaced.indexOf("full.jpg")).toBeLessThan(replaced.indexOf("後"));
   });
+  it("導入の画像の一覧、照合、導入の画像を落とす処理を Rust の仕事として呼べる", async () => {
+    const images = extractor.images;
+    if (!images) throw new Error("missing image processor");
+    const html =
+      "<div><img src='/cover.jpg'></div><h1>見出し</h1><p>本文の最初の段落です。ここから記事の内容が始まります。</p><a href='/view'><img src='/body.jpg'></a>";
+    expect(await images.leadImages(html, "https://news.example/post")).toEqual({
+      lead: ["https://news.example/cover.jpg"],
+      later: ["https://news.example/body.jpg"],
+    });
+    expect(await images.samePicture(new Uint8Array([0]), new Uint8Array([0]))).toBe(false);
+    const removed = await images.removeImage(
+      html,
+      "https://news.example/cover.jpg",
+      "https://news.example/post",
+    );
+    expect(removed).not.toContain("cover.jpg");
+    expect(removed).toContain("body.jpg");
+    expect(removed).toContain("見出し");
+  });
 });

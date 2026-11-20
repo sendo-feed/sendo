@@ -22,6 +22,9 @@ function processor(): PageImageProcessor {
     candidates: vi.fn(async () => ["https://photos.example/full.png"]),
     compare: vi.fn(async (_thumb, candidate) => ({ eligible: true, matches: candidate !== null })),
     replace: vi.fn(async (html, link, full) => html.replace(link.thumbnail, full)),
+    leadImages: vi.fn(async () => ({ lead: [], later: [] })),
+    samePicture: vi.fn(async () => false),
+    removeImage: vi.fn(async (html, src) => html.replace(`<img src="${src}">`, "")),
   };
 }
 function options(fetch: typeof globalThis.fetch) {
@@ -201,5 +204,125 @@ describe("本文の画像ページ", () => {
       }),
     ).toBe(true);
     expect(healthy.calls).toHaveLength(1);
+  });
+});
+
+describe("導入の画像と同じ写真", () => {
+  const cover = "https://news.example/cover.jpg";
+  const coverSp = "https://news.example/cover-sp.jpg";
+  const photo = "https://news.example/body.jpg";
+  const article = `<div><img src="${cover}"></div><h1>見出し</h1><div><img src="${coverSp}"></div><p>本文</p><a href="${photo}"><img src="${photo}"></a><p>説明</p>`;
+  // 画像の中身で同じ写真かを決める（表紙と本文の画像は、別の URL の同じ写真）
+  const bytesOf = (name: string) => new TextEncoder().encode(name);
+  const pictures = fakeFetch((u) => {
+    const name = u.pathname.includes("cover") || u.pathname === "/body.jpg" ? "cover" : u.pathname;
+    return new Response(new Uint8Array([...PNG, ...bytesOf(name)]), {
+      headers: { "content-type": "image/png" },
+    });
+  });
+  function leadProcessor(lead: string[], later: string[]): PageImageProcessor {
+    const p = processor();
+    p.links = vi.fn(async () => []);
+    p.leadImages = vi.fn(async () => ({ lead, later }));
+    p.samePicture = vi.fn(
+      async (a, b) => new TextDecoder().decode(a) === new TextDecoder().decode(b),
+    );
+    return p;
+  }
+
+  it("導入の画像があとの画像と同じ写真なら、導入の画像を落とし、本文の画像とリンクは残す", async () => {
+    const f = fakeFetch((u) => pictures.fetch(u.href));
+    const p = leadProcessor([cover, coverSp], [photo]);
+    const result = await resolvePageImages(
+      article,
+      "https://news.example/post",
+      p,
+      options(f.fetch),
+    );
+    expect(result).not.toContain(`src="${cover}"`);
+    expect(result).not.toContain(`src="${coverSp}"`);
+    expect(result).toContain(`<a href="${photo}"><img src="${photo}"></a>`);
+    expect(result).toContain("<h1>見出し</h1>");
+    expect(p.removeImage).toHaveBeenCalledWith(
+      expect.any(String),
+      cover,
+      "https://news.example/post",
+    );
+    expect(p.removeImage).toHaveBeenCalledWith(
+      expect.any(String),
+      coverSp,
+      "https://news.example/post",
+    );
+    // 同じ画像は 1 回だけ取りにいく
+    expect(f.calls.map((c) => c.url).sort()).toEqual([photo, cover, coverSp].sort());
+  });
+
+  it("違う写真なら、導入の画像を残す", async () => {
+    const f = fakeFetch((u) => pictures.fetch(u.href));
+    const other = "https://news.example/other.jpg";
+    const p = leadProcessor([cover], [other]);
+    const page = article.replaceAll(photo, other);
+    expect(await resolvePageImages(page, "https://news.example/post", p, options(f.fetch))).toBe(
+      page,
+    );
+    expect(p.removeImage).not.toHaveBeenCalled();
+  });
+
+  it("導入の画像を取れなければ（404、robots.txt で不許可）、導入の画像を残す", async () => {
+    for (const mode of ["404", "robots"]) {
+      const f = fakeFetch((u) =>
+        mode === "404" && u.href === cover
+          ? new Response(null, { status: 404 })
+          : pictures.fetch(u.href),
+      );
+      const p = leadProcessor([cover], [photo]);
+      const result = await resolvePageImages(article, "https://news.example/post", p, {
+        ...options(f.fetch),
+        isAllowed: async (u: URL) => mode !== "robots" || u.href !== cover,
+      });
+      expect(result).toBe(article);
+      expect(p.removeImage).not.toHaveBeenCalled();
+    }
+  });
+
+  it("拡大のときに取った画像は取り直さない", async () => {
+    const thumb = "https://news.example/body-thumb.jpg";
+    const page = `<div><img src="${cover}"></div><p>本文</p><a href="${photo}"><img src="${thumb}"></a>`;
+    const f = fakeFetch((u) => (u.href === thumb ? image() : pictures.fetch(u.href)));
+    const p = leadProcessor([cover], [photo]);
+    p.links = vi.fn(async () => [{ thumbnail: thumb, target: photo }]);
+    p.compare = vi.fn(async () => ({ eligible: true, matches: true }));
+    const result = await resolvePageImages(page, "https://news.example/post", p, options(f.fetch));
+    expect(result).not.toContain(`src="${cover}"`);
+    expect(result).toContain(`<a href="${photo}"><img src="${photo}"></a>`);
+    expect(f.calls.filter((c) => c.url === photo)).toHaveLength(1);
+  });
+
+  it("外へのリクエストの上限を、拡大と合わせて超えない", async () => {
+    const p = leadProcessor(
+      [cover],
+      Array.from({ length: 12 }, (_, i) => `https://news.example/later-${i}.jpg`),
+    );
+    p.links = async () =>
+      Array.from({ length: 12 }, (_, i) => ({
+        thumbnail: `https://photos.example/thumb-${i}.png`,
+        target: `https://photos.example/view-${i}`,
+      }));
+    p.candidates = async (input) => [`${input.url}-full.png`];
+    p.compare = async () => ({ eligible: true, matches: false });
+    const f = fakeFetch((u) =>
+      u.hostname === "photos.example" && !u.pathname.endsWith(".png")
+        ? html("<img src='/candidate.png'>")
+        : pictures.fetch(u.href),
+    );
+    const result = await resolvePageImages(
+      article,
+      "https://news.example/post",
+      p,
+      options(f.fetch),
+    );
+    expect(result).toBe(article);
+    expect(f.calls.length).toBeLessThanOrEqual(PAGE_IMAGE_LIMITS.requests);
+    expect(p.leadImages).toHaveBeenCalled();
   });
 });

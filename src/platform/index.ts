@@ -109,6 +109,12 @@ export interface PageImageProcessor {
     candidate: Uint8Array | null,
   ): Promise<{ eligible: boolean; matches: boolean }>;
   replace(html: string, link: PageImageLink, replacement: string): Promise<string>;
+  /** 導入の画像（3 枚まで）と、そのあとの画像（12 枚まで）の URL（docs/decisions/content.md の 21） */
+  leadImages(html: string, url: string): Promise<{ lead: string[]; later: string[] }>;
+  /** 縁の帯を除いてから、同じ写真かを見る。大きさは問わない */
+  samePicture(image: Uint8Array, other: Uint8Array): Promise<boolean>;
+  /** URL（leadImages が返したもの）が同じ最初の画像を落とす。空になったリンクも落とす */
+  removeImage(html: string, src: string, url: string): Promise<string>;
 }
 
 /**

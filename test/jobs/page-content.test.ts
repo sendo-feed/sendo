@@ -212,6 +212,9 @@ describe("画像を拡大したあとの本文", () => {
       compare: async () => ({ eligible: true, matches: true }),
       replace: async () =>
         `<p>${ARTICLE_TEXT}</p><img src="https://photos.example/${"a".repeat(256 * 1024)}.png">`,
+      leadImages: async () => ({ lead: [], later: [] }),
+      samePicture: async () => false,
+      removeImage: async (html) => html,
     };
     const png = new Uint8Array([
       0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0,

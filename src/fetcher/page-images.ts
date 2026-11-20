@@ -1,4 +1,7 @@
-/** 本文として残した画像のリンク先だけを、上限付きで 1 段調べる。 */
+/**
+ * 本文として残した画像のリンク先だけを、上限付きで 1 段調べる（docs/decisions/content.md の 20）。
+ * そのあとで、同じ上限の残りの中で、導入の画像があとの画像と同じ写真かを調べる（同じく 21）。
+ */
 import { readLimited } from "../lib/read-limited";
 import type { PageImageProcessor } from "../platform";
 import type { FetchImageOptions } from "./fetch-image";
@@ -127,6 +130,37 @@ export async function resolvePageImages(
         }
       } catch {
         // robots 不許可、404、予算切れ、デコード失敗などでも、元の画像とリンクを保つ。
+      }
+    }
+  } catch {
+    // 画像解析の失敗で、取得できた本文まで失わない。
+  }
+  // 導入の画像が、あとの画像と同じ写真なら、導入の画像を落とす（docs/decisions/content.md の 21）。
+  // 上の拡大と同じ上限の残りの中で取り、上で取った画像は取り直さない。
+  try {
+    const { lead, later } = await images.leadImages(html, url);
+    const exhausted = () =>
+      signal.aborted || requests >= PAGE_IMAGE_LIMITS.requests || remainingBytes <= 0;
+    const picture = async (target: string) => {
+      try {
+        const result = await resource(target);
+        return result?.kind === "image" ? result.bytes : null;
+      } catch {
+        // robots 不許可、404、予算切れなどは、照合しないだけにする。
+        return null;
+      }
+    };
+    for (const [index, src] of lead.entries()) {
+      if (exhausted() && !fetched.has(src)) break;
+      const bytes = await picture(src);
+      if (!bytes) continue;
+      for (const other of [...lead.slice(index + 1), ...later].slice(0, PAGE_IMAGE_LIMITS.links)) {
+        if (exhausted() && !fetched.has(other)) break;
+        const otherBytes = await picture(other);
+        if (otherBytes && (await images.samePicture(bytes, otherBytes))) {
+          html = await images.removeImage(html, src, url);
+          break;
+        }
       }
     }
   } catch {

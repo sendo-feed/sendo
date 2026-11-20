@@ -19,6 +19,8 @@ interface MediaResult {
   eligible: boolean;
   matches: boolean;
   html: string;
+  lead: string[];
+  later: string[];
 }
 
 /** crates/node が出す関数（napi-rs が名前を camelCase にする） */
@@ -38,6 +40,9 @@ export interface NativeModule {
     target: string,
     replacement: string,
   ): Promise<MediaResult>;
+  pageLeadImages(html: string, url: string): Promise<MediaResult>;
+  samePageImages(image: Uint8Array, other: Uint8Array): Promise<MediaResult>;
+  removePageImage(html: string, src: string, url: string): Promise<MediaResult>;
   extractPageContent(
     bytes: Uint8Array,
     contentType: string | null,
@@ -67,6 +72,12 @@ export function createPageContentExtractor(native: NativeModule): PageContentExt
       compare: (thumbnail, candidate) => native.comparePageImages(thumbnail, candidate),
       replace: async (html, link, replacement) =>
         (await native.replacePageImage(html, link.thumbnail, link.target, replacement)).html,
+      leadImages: async (html, url) => {
+        const { lead, later } = await native.pageLeadImages(html, url);
+        return { lead, later };
+      },
+      samePicture: async (image, other) => (await native.samePageImages(image, other)).matches,
+      removeImage: async (html, src, url) => (await native.removePageImage(html, src, url)).html,
     },
     extract: ({ bytes, contentType, url }) => native.extractPageContent(bytes, contentType, url),
   };
