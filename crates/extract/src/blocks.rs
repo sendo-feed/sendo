@@ -292,9 +292,15 @@ fn drop_repeated_images(root: &Selection) {
         if seen.insert(src.to_string()) {
             continue;
         }
+        // span などを挟んでも、画像を包むリンクを調べる。
+        let mut link = Some(parent);
+        while let Some(node) = link
+            && node.node_name().as_deref() != Some("a")
+        {
+            link = node.parent();
+        }
         image.remove();
-        let link = Selection::from(parent);
-        if parent.node_name().as_deref() == Some("a")
+        if let Some(link) = link.map(Selection::from)
             && link.select("img").length() == 0
             && compact(&link.text()).is_empty()
         {
@@ -529,7 +535,7 @@ mod tests {
     #[test]
     fn drops_a_link_left_empty_by_a_repeated_image() {
         let html = format!(
-            "<title>リンクの写真が重なる記事</title><div><h1>リンクの写真が重なる記事</h1><figure><img src='/photo.jpg'></figure>{}<p><a href='/view' id='only-photo'><img src='/photo.jpg'></a></p><p><a href='/more'><span>写真の詳しい説明はこちら</span><img src='/photo.jpg'></a></p></div>",
+            "<title>リンクの写真が重なる記事</title><div><h1>リンクの写真が重なる記事</h1><figure><img src='/photo.jpg'></figure>{}<p><a href='/view' id='only-photo'><img src='/photo.jpg'></a></p><p><a href='/wrapped'><span><img src='/photo.jpg'></span></a></p><p><a href='/more'><span>写真の詳しい説明はこちら</span><img src='/photo.jpg'></a></p></div>",
             paragraphs()
         );
         let result = extract(&html, "https://link.example/post").unwrap();
@@ -537,6 +543,11 @@ mod tests {
         assert_eq!(doc.select("img").length(), 1);
         assert_eq!(
             doc.select("a[href='https://link.example/view']").length(),
+            0
+        );
+        assert_eq!(
+            doc.select("a[href='https://link.example/wrapped']")
+                .length(),
             0
         );
         assert_eq!(
