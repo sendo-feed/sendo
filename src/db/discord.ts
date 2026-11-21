@@ -117,12 +117,15 @@ export async function detachDiscordFeed(db: Database, feedId: string, connection
 }
 
 export type DiscordArticle = {
+  id: string;
   guid: string;
   url: string;
   title: string;
   summary: string | null;
   author: string;
   publishedAt: number;
+  /** 本文の置き場の名前（docs/decisions/discord.md の 6）。置いていなければ null */
+  contentKey: string | null;
 };
 
 /** 取得中に連携や購読が解除されたら、保存しない。メッセージ ID で重複を防ぐ */
@@ -133,16 +136,16 @@ export async function insertDiscordArticles(
   articles: readonly DiscordArticle[],
 ) {
   if (articles.length === 0) return 0;
-  const rows = articles.map((row) => ({ ...row, id: crypto.randomUUID(), itemId: randomItemId() }));
+  const rows = articles.map((row) => ({ ...row, itemId: randomItemId() }));
   const inserted = await db.all<{ id: string }>(sql`
     insert into articles (
       id, feed_id, guid, url, title, summary, author, published_at, published_time_known, created_at,
-      item_id, in_current_feed
+      item_id, in_current_feed, content_key
     )
     select
       value ->> '$.id', ${feedId}, value ->> '$.guid', value ->> '$.url',
       value ->> '$.title', value ->> '$.summary', value ->> '$.author',
-      value ->> '$.publishedAt', 1, ${DB_NOW_MS}, value ->> '$.itemId', 0
+      value ->> '$.publishedAt', 1, ${DB_NOW_MS}, value ->> '$.itemId', 0, value ->> '$.contentKey'
     from json_each(${JSON.stringify(rows)})
     where exists (
       select 1 from feeds inner join subscriptions on subscriptions.feed_id = feeds.id

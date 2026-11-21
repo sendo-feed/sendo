@@ -2,13 +2,13 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { connectDiscord, disconnectDiscord, insertDiscordArticles } from "../../src/db/discord";
 import { findFeedByUrl, getFeed } from "../../src/db/feeds";
-import { articles, feeds } from "../../src/db/schema";
+import { articles, contentNotes, feeds } from "../../src/db/schema";
 import { createSession } from "../../src/db/sessions";
 import { readStorageUsage } from "../../src/db/storage";
 import { subscribeMany } from "../../src/db/subscriptions";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Platform } from "../../src/platform";
-import { createTestPlatform, createUser, fakeFetch, requestApp } from "../helpers";
+import { createTestPlatform, createUser, fakeFetch, requestApp, statementHook } from "../helpers";
 
 const BASE = "/api/v1/integrations/discord";
 const ORIGIN = "https://reader.example.com";
@@ -35,6 +35,7 @@ function discordFetch() {
   let errorCode: number | undefined;
   let messageIds = [MESSAGE_ID];
   let systemIds: string[] = [];
+  let bodies = new Map<string, Record<string, unknown>>();
   const result = fakeFetch(async (url, init) => {
     expect(url.origin).toBe("https://discord.com");
     expect(init?.redirect).toBe("manual");
@@ -96,6 +97,7 @@ function discordFetch() {
           timestamp: new Date(Number(BigInt(id) >> 22n) + DISCORD_EPOCH_MS).toISOString(),
           attachments: [],
           embeds: [],
+          ...bodies.get(id),
         })),
       );
     }
@@ -111,6 +113,11 @@ function discordFetch() {
     },
     setSystemIds: (ids: string[]) => {
       systemIds = ids;
+    },
+    /** 投稿ごとに、テキストや埋め込みを差し替える */
+    setMessages: (messages: Record<string, Record<string, unknown>>) => {
+      bodies = new Map(Object.entries(messages));
+      messageIds = Object.keys(messages);
     },
     setMessageStatus: (status: number, code?: number) => {
       messageStatus = status;
@@ -369,12 +376,14 @@ describe("Discord の購読", () => {
         feedId,
         connectionId,
         posts.map((publishedAt) => ({
+          id: crypto.randomUUID(),
           guid: messageIdAt(publishedAt),
           url: `${CHANNEL}/${messageIdAt(publishedAt)}`,
           title: "daily",
           summary: "daily",
           author: "bot",
           publishedAt,
+          contentKey: null,
         })),
       ),
     ).toBe(28);
@@ -516,5 +525,254 @@ describe("Discord の購読", () => {
     remote.setMessageStatus(403, 50001);
     expect(await runFetchFeed(platform, feedId)).toMatchObject({ status: "missing" });
     expect(await (await request(BASE)).json()).toMatchObject({ subscriptions: [] });
+  });
+});
+
+describe("Discord の投稿の本文（docs/decisions/discord.md の 6）", () => {
+  const id = (n: number) => messageIdAt(FIXED_NOW.getTime() - 60_000 * (10 - n));
+  const LINK = 'rel="noopener noreferrer nofollow"';
+
+  async function subscribed(overrides: Partial<Platform> = {}) {
+    const remote = discordFetch();
+    const { platform } = createTestPlatform({
+      discord: CONFIG,
+      fetch: remote.fetch,
+      now: () => FIXED_NOW,
+      ...overrides,
+    });
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const feedId = await subscribe(await browser(platform, user.id));
+    const article = async (guid: string) => {
+      const list = (await (
+        await requestApp(platform, "/api/v1/articles?limit=50", { token: user.token })
+      ).json()) as {
+        items: {
+          id: string;
+          url: string;
+          title: string;
+          summary: string | null;
+          hasContent: boolean;
+        }[];
+      };
+      const found = list.items.find((item) => item.url === `${CHANNEL}/${guid}`);
+      if (!found) throw new Error(`no article: ${guid}`);
+      const res = await requestApp(platform, `/api/v1/articles/${found.id}/content`, {
+        token: user.token,
+      });
+      const html = res.ok ? ((await res.json()) as { html: string }).html : null;
+      return { ...found, html };
+    };
+    return { platform, remote, user, feedId, article };
+  }
+
+  it("テキストだけの投稿も本文を置き、改行を保ち、URL をリンクにする。書式と HTML は文字のまま", async () => {
+    const t = await subscribed();
+    const text = [
+      "sendo の自動更新: reader を 25c1fb8 → 6654792 に上げた (https://github.com/sendo-feed/sendo-reader/compare/25c1fb8...6654792)",
+      "<@123> <script>alert(1)</script> **太字**",
+      "",
+      "続き <https://example.com/a_(b)>",
+    ].join("\n");
+    t.remote.setMessages({ [id(1)]: { content: text } });
+    expect(await runFetchFeed(t.platform, t.feedId)).toEqual({ status: "fetched", inserted: 1 });
+
+    const article = await t.article(id(1));
+    expect(article).toMatchObject({
+      title:
+        "sendo の自動更新: reader を 25c1fb8 → 6654792 に上げた (https://github.com/sendo-feed/sendo-reader/compare/25c1fb8...6654792)",
+      summary: text,
+      hasContent: true,
+    });
+    const compare = "https://github.com/sendo-feed/sendo-reader/compare/25c1fb8...6654792";
+    expect(article.html).toBe(
+      `<p>sendo の自動更新: reader を 25c1fb8 → 6654792 に上げた (<a href="${compare}" ${LINK}>${compare}</a>)<br>` +
+        "&lt;@123&gt; &lt;script&gt;alert(1)&lt;/script&gt; **太字**</p>" +
+        `<p>続き &lt;<a href="https://example.com/a_(b)" ${LINK}>https://example.com/a_(b)</a>&gt;</p>`,
+    );
+  });
+
+  it("埋め込みだけの投稿は、埋め込みの文字を本文にし、タイトルと説明をタイトルと要約にする", async () => {
+    const t = await subscribed();
+    t.remote.setMessages({
+      [id(1)]: {
+        content: "",
+        embeds: [
+          {
+            type: "rich",
+            author: { name: "GCP Billing", icon_url: "https://cdn.example/author.png" },
+            title: "今月の費用",
+            url: "https://console.cloud.google.com/billing",
+            description: "予算の 80% に達しました\n詳細は https://example.com/report",
+            fields: [
+              { name: "今月", value: "¥8,000", inline: true },
+              { name: "予算", value: "¥10,000" },
+            ],
+            footer: { text: "Cloud Billing", icon_url: "https://cdn.example/footer.png" },
+            image: { url: "https://cdn.example/image.png" },
+            thumbnail: { url: "https://cdn.example/thumb.png" },
+            video: { url: "https://cdn.example/video.mp4" },
+          },
+        ],
+      },
+    });
+    await runFetchFeed(t.platform, t.feedId);
+
+    const article = await t.article(id(1));
+    expect(article).toMatchObject({
+      title: "今月の費用",
+      summary: "予算の 80% に達しました\n詳細は https://example.com/report",
+      hasContent: true,
+    });
+    expect(article.html).toBe(
+      "<blockquote><p><small>GCP Billing</small></p>" +
+        `<p><strong><a href="https://console.cloud.google.com/billing" ${LINK}>今月の費用</a></strong></p>` +
+        `<p>予算の 80% に達しました<br>詳細は <a href="https://example.com/report" ${LINK}>https://example.com/report</a></p>` +
+        "<dl><dt>今月</dt><dd>¥8,000</dd><dt>予算</dt><dd>¥10,000</dd></dl>" +
+        "<p><small>Cloud Billing</small></p></blockquote>",
+    );
+    expect(article.html).not.toContain("cdn.example");
+  });
+
+  it("タイトルと要約を、タイトルか説明のある最初の埋め込みから採る", async () => {
+    const t = await subscribed();
+    t.remote.setMessages({
+      // 説明だけ：説明の 1 行目がタイトル
+      [id(1)]: { content: "", embeds: [{ description: "1 行目\n2 行目" }] },
+      // 最初の埋め込みはフィールドだけ：2 つ目から採る
+      [id(2)]: {
+        content: "",
+        embeds: [{ fields: [{ name: "a", value: "b" }] }, { title: "2 つ目", description: "説明" }],
+      },
+      // どの埋め込みにもタイトルと説明がない：既定のタイトル、要約なし、本文は置く
+      [id(3)]: { content: "", embeds: [{ fields: [{ name: "状態", value: "OK" }] }] },
+      // 空白だけのテキストは、テキストのない投稿と同じ
+      [id(4)]: { content: "  \n ", embeds: [{ title: "埋め込み" }] },
+      // テキストと埋め込みの両方：タイトルと要約はテキストから、本文には両方
+      [id(5)]: { content: "本文\n2 行目", embeds: [{ title: "埋め込み", description: "説明" }] },
+    });
+    await runFetchFeed(t.platform, t.feedId);
+
+    expect(await t.article(id(1))).toMatchObject({
+      title: "1 行目",
+      summary: "1 行目\n2 行目",
+      html: "<blockquote><p>1 行目<br>2 行目</p></blockquote>",
+    });
+    expect(await t.article(id(2))).toMatchObject({ title: "2 つ目", summary: "説明" });
+    expect(await t.article(id(3))).toMatchObject({
+      title: "Discord の投稿",
+      summary: null,
+      hasContent: true,
+      html: "<blockquote><dl><dt>状態</dt><dd>OK</dd></dl></blockquote>",
+    });
+    expect(await t.article(id(4))).toMatchObject({
+      title: "埋め込み",
+      summary: null,
+      html: "<blockquote><p><strong>埋め込み</strong></p></blockquote>",
+    });
+    expect(await t.article(id(5))).toMatchObject({
+      title: "本文",
+      summary: "本文\n2 行目",
+      html: "<p>本文<br>2 行目</p><blockquote><p><strong>埋め込み</strong></p><p>説明</p></blockquote>",
+    });
+  });
+
+  it("http ／ https でない URL はリンクにしない。添付だけの投稿には本文を置かない", async () => {
+    const t = await subscribed();
+    t.remote.setMessages({
+      [id(1)]: { content: "", embeds: [{ title: "危ない", url: "javascript:alert(1)" }] },
+      [id(2)]: { content: "", attachments: [{ id: "9", url: "https://cdn.discordapp.com/a.png" }] },
+    });
+    await runFetchFeed(t.platform, t.feedId);
+
+    expect((await t.article(id(1))).html).toBe(
+      "<blockquote><p><strong>危ない</strong></p></blockquote>",
+    );
+    expect(await t.article(id(2))).toMatchObject({
+      title: "Discord の投稿",
+      summary: null,
+      hasContent: false,
+      html: null,
+    });
+  });
+
+  it("形の崩れた埋め込みは、その値だけを使わず、ほかの値とほかの投稿を取り込む", async () => {
+    const t = await subscribed();
+    t.remote.setMessages({
+      [id(1)]: {
+        content: "",
+        embeds: [
+          "not an object",
+          null,
+          {
+            title: 123,
+            author: "名前ではない",
+            fields: "not a list",
+            footer: { text: ["x"] },
+            description: "読める説明",
+          },
+          { fields: [null, { name: 1, value: "値だけ" }] },
+        ],
+      },
+      [id(2)]: { content: "ほかの投稿" },
+    });
+    expect(await runFetchFeed(t.platform, t.feedId)).toEqual({ status: "fetched", inserted: 2 });
+
+    expect(await t.article(id(1))).toMatchObject({
+      title: "読める説明",
+      html: "<blockquote><p>読める説明</p></blockquote><blockquote><dl><dt></dt><dd>値だけ</dd></dl></blockquote>",
+    });
+    expect(await t.article(id(2))).toMatchObject({ title: "ほかの投稿", hasContent: true });
+  });
+
+  it("本文を置いたあと記事の行を入れる前に落ちても、やり直すと本文付きで入る", async () => {
+    const failing = statementHook(/insert into articles/i, async () => {
+      throw new Error("落ちた");
+    });
+    const t = await subscribed({ db: failing.db });
+    t.remote.setMessages({ [id(1)]: { content: "テキスト" } });
+
+    await expect(runFetchFeed(t.platform, t.feedId)).rejects.toThrow();
+    expect(failing.fired()).toBe(true);
+    // 置いた本文の名前の書き留めが残り、1 日 1 回の片付けが消せる
+    const left = await t.platform.db.select().from(contentNotes).all();
+    expect(left.length).toBeGreaterThan(0);
+    expect(
+      await t.platform.db.select().from(articles).where(eq(articles.feedId, t.feedId)),
+    ).toEqual([]);
+
+    expect(await runFetchFeed(t.platform, t.feedId)).toEqual({ status: "fetched", inserted: 1 });
+    const [row] = await t.platform.db.select().from(articles).where(eq(articles.feedId, t.feedId));
+    expect(row?.contentKey).toMatch(/^feed\/[0-9a-f]{32}$/);
+    expect(await t.platform.content.get(row?.contentKey ?? "")).toBe("<p>テキスト</p>");
+    // 前の実行の名前は行に入らないので、書き留めは残る。今回の名前は消える
+    const notes = (await t.platform.db.select().from(contentNotes).all()).map(({ key }) => key);
+    expect(notes).not.toContain(row?.contentKey);
+    expect(notes).toEqual(expect.arrayContaining(left.map(({ key }) => key)));
+  });
+
+  it("取得中に購読を解除したら、記事の行を入れず、置いた本文は書き留めから片付けられる", async () => {
+    const t = await subscribed();
+    t.remote.setMessages({ [id(1)]: { content: "テキスト" } });
+    t.remote.beforeMessages(() => disconnectDiscord(t.platform.db, t.user.id));
+    const before = new Set(
+      (await t.platform.db.select().from(contentNotes).all()).map(({ key }) => key),
+    );
+
+    await runFetchFeed(t.platform, t.feedId);
+
+    expect(
+      await t.platform.db.select().from(articles).where(eq(articles.feedId, t.feedId)),
+    ).toEqual([]);
+    const notes = (await t.platform.db.select().from(contentNotes).all()).filter(
+      ({ key }) => !before.has(key),
+    );
+    expect(notes).toHaveLength(1);
+    expect(await t.platform.content.get(notes[0]?.key ?? "")).toBe("<p>テキスト</p>");
+    for (const { key } of notes) {
+      expect(
+        await t.platform.db.select().from(articles).where(eq(articles.contentKey, key)),
+      ).toEqual([]);
+    }
   });
 });
