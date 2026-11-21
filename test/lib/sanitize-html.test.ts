@@ -345,6 +345,7 @@ describe("sanitizeHtml の Imgur の公式埋め込み", () => {
       "https://i.imgur.com/abc123",
       "http://i.imgur.com/abc123.jpg",
       "https://i.imgur.com:8443/abc123.jpg",
+      "https://user:pass@i.imgur.com/abc123.jpg",
       "https://i.imgur.com.example.com/abc123.jpg",
       "https://example.com/i.imgur.com/abc123.jpg",
     ]) {

@@ -9,6 +9,8 @@ import { articles } from "../../src/db/schema";
 import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { PageContentExtractor, Platform } from "../../src/platform";
+import { createPageContentExtractor, loadNativeModule } from "../../src/platform/node/native";
+import { NATIVE_MODULE } from "../db";
 import { createTestPlatform, createUser, fakeFetch, requestApp, subscribeFeed } from "../helpers";
 
 /*
@@ -36,7 +38,9 @@ function fakeExtractor(html: string | null) {
   return { extractor, calls };
 }
 
-async function setUp(options: { extracted?: string | null; feedContent?: string } = {}) {
+async function setUp(
+  options: { extracted?: string | null; feedContent?: string; pageHtml?: string } = {},
+) {
   const user = await createUser();
   let now = new Date();
   const link = `https://${crypto.randomUUID()}.example.com/posts/1`;
@@ -47,7 +51,9 @@ async function setUp(options: { extracted?: string | null; feedContent?: string 
   );
   const fetched = fakeFetch((url) =>
     url.href === link
-      ? new Response(PAGE_HTML, { headers: { "content-type": "text/html; charset=utf-8" } })
+      ? new Response(options.pageHtml ?? PAGE_HTML, {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        })
       : new Response(rss([link], options.feedContent)),
   );
   const overrides: Partial<Platform> = {
@@ -180,6 +186,39 @@ describe("取り込んだときに抜く", () => {
     // 画像は中継の URL に書き換える
     expect(body.html).toContain("/api/v1/images?");
     expect(t.pageFetches()).toBe(1);
+  });
+
+  it("Imgur の公式埋め込みの直リンクは、本物の抜く処理を通しても、画像を 1 枚だけ足して置く", async () => {
+    // 抜く処理（Rust）が引用の class を残すので、保存する前の最初のサニタイズで見分けられる
+    const embed =
+      '<blockquote class="imgur-embed-pub" lang="ja" data-id="abc123">' +
+      '<a href="https://i.imgur.com/abc123.jpeg">View post on imgur.com</a></blockquote>';
+    const paragraphs = Array.from({ length: 6 }, () => `<p>${ARTICLE_TEXT}</p>`).join("");
+    const t = await setUp({
+      pageHtml: `<html><head><title>記事</title></head><body><article>${paragraphs}${embed}<p>${ARTICLE_TEXT}</p></article></body></html>`,
+    });
+    const platform = {
+      ...t.platform,
+      pageContent: createPageContentExtractor(loadNativeModule(NATIVE_MODULE)),
+    };
+    await runJob(platform, { type: "extract-page", articleId: t.article.id });
+
+    const row = await getPageContent(platform.db, t.article.id);
+    expect(row?.status).toBe("extracted");
+    expect(row?.html).toContain(
+      'View post on imgur.com</a><img src="https://i.imgur.com/abc123.jpeg"></blockquote>',
+    );
+    expect(row?.html?.match(/<img /g)).toHaveLength(1);
+
+    const res = await requestApp(platform, `/api/v1/articles/${t.article.id}/content?source=page`, {
+      token: t.user.token,
+    });
+    const body = (await res.json()) as { html: string };
+    expect(
+      body.html.match(
+        /<img src="\/api\/v1\/images\?url=https%3A%2F%2Fi\.imgur\.com%2Fabc123\.jpeg&amp;sig=/g,
+      ),
+    ).toHaveLength(1);
   });
 
   it("抜けなければ記録し、仕事ではやり直さない", async () => {

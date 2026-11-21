@@ -72,7 +72,11 @@ const IMGUR_IMAGE_PATH = /\.(?:jpe?g|png|gif|webp|avif)$/i;
 function isImgurImageUrl(href: string): boolean {
   const url = new URL(href);
   return (
-    url.protocol === "https:" && url.host === "i.imgur.com" && IMGUR_IMAGE_PATH.test(url.pathname)
+    url.protocol === "https:" &&
+    url.host === "i.imgur.com" &&
+    url.username === "" &&
+    url.password === "" &&
+    IMGUR_IMAGE_PATH.test(url.pathname)
   );
 }
 
