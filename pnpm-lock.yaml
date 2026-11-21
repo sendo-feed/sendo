@@ -60,6 +60,9 @@ importers:
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
+      parse5:
+        specifier: 8.0.0
+        version: 8.0.0
       tsx:
         specifier: 4.23.15
         version: 4.23.15
@@ -1081,6 +1084,10 @@ packages:
       sqlite3:
         optional: true
 
+  entities@6.0.1:
+    resolution: {integrity: sha512-aN97NXWF6AWBTahfVOIrB/NShkzi5H7F9r1s9mD3cDj4Ko5f2qhhVoYMibXF7GlLveb/D2ioWay8lxI97Ven3g==}
+    engines: {node: '>=0.12'}
+
   entities@7.0.1:
     resolution: {integrity: sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==}
     engines: {node: '>=0.12'}
@@ -1259,6 +1266,9 @@ packages:
 
   openapi3-ts@4.6.2:
     resolution: {integrity: sha512-gyyil3DweqhXiEhTqtAs9wwRLfWHmetwhI4kmM5Rn0d6gtmK863Ki7qqbQnp9+Wwlqoe3B1LFWj7kMp5ctE4rQ==}
+
+  parse5@8.0.0:
+    resolution: {integrity: sha512-9m4m5GSgXjL4AjumKzq1Fgfp3Z8rsvjRNbnkVwfu2ImRqE5D0LnY2QfDen18FSY9C573YU5XxSapdHZTZ2WolA==}
 
   path-expression-matcher@1.6.2:
     resolution: {integrity: sha512-enSlaiat05iasnzmgNxRj8reFdj3puY2QpNgP1aPIaVfT6nn9ICuPoFlKHk8EN22HcwewshO+mN2DGbkCEOtqQ==}
@@ -2023,6 +2033,8 @@ snapshots:
     optionalDependencies:
       '@libsql/client': 0.18.0
 
+  entities@6.0.1: {}
+
   entities@7.0.1: {}
 
   entities@9.0.0: {}
@@ -2239,6 +2251,10 @@ snapshots:
   openapi3-ts@4.6.2:
     dependencies:
       yaml: 2.9.1
+
+  parse5@8.0.0:
+    dependencies:
+      entities: 6.0.1
 
   path-expression-matcher@1.6.2: {}
 
