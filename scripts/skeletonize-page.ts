@@ -92,6 +92,9 @@ const STRUCTURE_ATTRS = new Set([
 ]);
 const FILE_EXTENSION =
   /\.(?:avif|css|gif|html?|ico|jpe?g|js|json|mp4|pdf|php|png|rss|svg|webm|webp|xml)$/i;
+const ABSOLUTE_WEB_URL = /^(?:https?:)?\/\//i;
+// 画像の正規化が手掛かりにする、遅延読み込み用の画像を示す一般的な文字列。
+const PLACEHOLDER_NAME = /loading[.-]|spacer\.|transparent\.|blank\.gif|placeholder\./gi;
 const ASCII_SPACES = /[\t\n\f\r ]/;
 
 function digest(seed: Buffer, value: string): Buffer {
@@ -155,7 +158,14 @@ function dummyPathSegment(seed: Buffer, source: string, segment: string): string
       stem += String.fromCharCode(97 + (byte % 26));
     }
   }
-  return stem + extension;
+  const dummy = stem + extension;
+  let offset = 0;
+  let output = "";
+  for (const match of segment.matchAll(PLACEHOLDER_NAME)) {
+    output += dummy.slice(offset, match.index) + match[0];
+    offset = match.index + match[0].length;
+  }
+  return output + dummy.slice(offset);
 }
 
 function embedPathSegment(
@@ -185,10 +195,12 @@ function maskUrlWith(seed: Buffer, page: URL, maskText: (text: string) => string
     const trimmed = value.trim();
     if (trimmed === "") return value;
     if (trimmed.startsWith("#")) return `#${maskText(trimmed.slice(1))}`;
-    if (!URL.canParse(trimmed, page.href)) return "about:blank";
+    const inertId = () => digest(seed, trimmed).toString("hex");
+    if (!URL.canParse(trimmed, page.href)) return `about:blank#${inertId()}`;
     const url = new URL(trimmed, page);
     if (url.protocol !== "https:" && url.protocol !== "http:") {
-      return url.protocol === "data:" ? "data:," : "about:blank";
+      // 別の画像を同じ URL にすると、抽出時に重複として落ちる。
+      return url.protocol === "data:" ? `data:,${inertId()}` : `about:blank#${inertId()}`;
     }
     const embed = EMBED_HOSTS.has(url.hostname);
     const host = embed ? url.hostname : "example.com";
@@ -284,7 +296,7 @@ export function skeletonizePage(
       if (!("tagName" in node)) return false;
       const tag = node.tagName;
       if (DROP_TAGS.has(tag)) return false;
-      if (tag === "meta") {
+      if (tag === "meta" && "tagName" in parent && parent.tagName === "head") {
         if (!node.attrs.some((attr) => attr.name === "charset")) return false;
         node.attrs = [{ name: "charset", value: "utf-8" }];
         return true;
@@ -311,7 +323,8 @@ export function skeletonizePage(
         else if (
           URL_ATTRS.has(name) ||
           (name.startsWith("data-") &&
-            (name.endsWith("-url") || /^(?:https?:)?\/\//i.test(value.trim())))
+            (name.endsWith("-url") || ABSOLUTE_WEB_URL.test(value.trim()))) ||
+          (tag === "meta" && name === "content" && ABSOLUTE_WEB_URL.test(value.trim()))
         ) {
           attr.value = maskUrl(value);
         } else if (name === "itemtype") {
