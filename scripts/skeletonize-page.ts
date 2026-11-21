@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, serialize, type DefaultTreeAdapterTypes as Tree } from "parse5";
-import { isTrackingImage } from "../src/lib/tracking-image";
+import { isTrackingImage } from "../src/lib/tracking-image.ts";
 
 const EMBED_HOSTS = new Set([
   "twitter.com",
@@ -34,6 +34,7 @@ const URL_ATTRS = new Set([
   "data-lazy-src",
   "data-href",
   "data-url",
+  "data-rss",
 ]);
 const ID_ATTRS = new Set([
   "class",
@@ -290,6 +291,8 @@ export function skeletonizePage(
       }
       if (tag === "link" && "tagName" in parent && parent.tagName === "head") return false;
       const attributes = new Map(node.attrs.map(({ name, value }) => [name, value]));
+      const tweet =
+        tag === "blockquote" && attributes.get("class")?.split(/\s+/).includes("twitter-tweet");
       const src = attributes.get("src") ?? "";
       if (
         tag === "img" &&
@@ -305,13 +308,24 @@ export function skeletonizePage(
         if (ID_ATTRS.has(name)) attr.value = maskIdentifiers(value, terms, maskText);
         else if (name === "srcset" || name === "data-srcset")
           attr.value = maskSrcset(value, maskUrl, maskText);
-        else if (URL_ATTRS.has(name)) attr.value = maskUrl(value);
-        else if (name === "itemtype") {
+        else if (
+          URL_ATTRS.has(name) ||
+          (name.startsWith("data-") &&
+            (name.endsWith("-url") || /^(?:https?:)?\/\//i.test(value.trim())))
+        ) {
+          attr.value = maskUrl(value);
+        } else if (name === "itemtype") {
           attr.value = value.replace(/\S+/g, (type) =>
             /^https?:\/\/schema\.org\/[A-Za-z0-9]+$/.test(type) ? type : maskUrl(type),
           );
-        } else if (STRUCTURE_ATTRS.has(name)) attr.value = maskIdentifiers(value, terms, maskText);
-        else attr.value = maskText(value);
+        } else if (
+          STRUCTURE_ATTRS.has(name) ||
+          (tweet &&
+            ((name === "data-conversation" && value === "none") ||
+              (name === "data-lang" && /^[a-z]{2}(?:-[A-Z]{2})?$/.test(value))))
+        ) {
+          attr.value = maskIdentifiers(value, terms, maskText);
+        } else attr.value = maskText(value);
         attr.name = maskIdentifiers(attr.name, terms, maskText);
       }
       transform(tag === "template" && "content" in node ? (node as Tree.Template).content : node);
