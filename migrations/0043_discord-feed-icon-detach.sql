@@ -21,7 +21,3 @@ BEGIN
 
   DELETE FROM `articles` WHERE `feed_id` = NEW.`id`;
 END;
---> statement-breakpoint
--- すでに外した Discord のフィードに残ったアイコンも空にする。
-UPDATE `feeds` SET `icon_url` = NULL, `icon_checked_at` = NULL
-WHERE `discord_cursor` IS NOT NULL AND `discord_connection_id` IS NULL AND `icon_url` IS NOT NULL;
