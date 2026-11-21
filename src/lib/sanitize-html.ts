@@ -61,17 +61,47 @@ function toUrl(value: string | undefined, baseUrl: string, protocols: readonly s
 
 const HTTP = ["http:", "https:"] as const;
 
+/** Imgur の公式埋め込みの引用に付く class */
+const IMGUR_EMBED = "imgur-embed-pub";
+const IMGUR_IMAGE_PATH = /\.(?:jpe?g|png|gif|webp|avif)$/i;
+
+/**
+ * Imgur の公式埋め込みの中のリンクが、画像の直リンクか（docs/decisions/content.md の 2）。
+ * 絶対の URL にしたあとで見る。投稿やアルバムのページ（imgur.com/…）、動画、http は当たらない
+ */
+function isImgurImageUrl(href: string): boolean {
+  const url = new URL(href);
+  return (
+    url.protocol === "https:" && url.host === "i.imgur.com" && IMGUR_IMAGE_PATH.test(url.pathname)
+  );
+}
+
 function sanitizeToParts(html: string, baseUrl: string): Part[] {
   const parts: Part[] = [];
   /** 開いている（閉じタグを出していない）要素 */
   const open: string[] = [];
   /** 中身ごと落としている要素と、その入れ子の数 */
   let dropping: { name: string; depth: number; wantsLink: boolean } | null = null;
+  /**
+   * 開いている Imgur の公式埋め込みの引用。depth は、その引用を開いたあとの open の長さ。
+   * 画像の直リンクが見つかれば image に持ち、引用の中に画像が残れば hasImage を立てる
+   */
+  let imgur: { depth: number; image: string | null; hasImage: boolean } | null = null;
+
+  /** いちばん内側の要素を閉じる。Imgur の公式埋め込みの引用なら、閉じる前に画像を足す */
+  const closeTop = () => {
+    if (imgur && open.length === imgur.depth) {
+      // 中のリンクは、ここまでに閉じている（画像は、リンクの外に置く）
+      if (imgur.image !== null && !imgur.hasImage) parts.push({ image: imgur.image, rest: "" });
+      imgur = null;
+    }
+    parts.push(`</${open.pop()}>`);
+  };
 
   const closeUntil = (name: string) => {
     const index = open.lastIndexOf(name);
     if (index === -1) return;
-    while (open.length > index) parts.push(`</${open.pop()}>`);
+    while (open.length > index) closeTop();
   };
 
   for (const token of tokenizeHtml(html)) {
@@ -134,6 +164,7 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
         if (value !== undefined && DIGITS.test(value)) rest += ` ${key}="${value}"`;
       }
       parts.push({ image: src, rest });
+      if (imgur) imgur.hasImage = true;
       continue;
     }
 
@@ -150,6 +181,8 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       // 行き先のないリンクは、タグを落として中身だけ残す
       if (!href) continue;
       parts.push(link(href));
+      // 当てはまるリンクがいくつもあれば、最初の 1 つを使う
+      if (imgur && imgur.image === null && isImgurImageUrl(href)) imgur.image = href;
     } else {
       let extra = "";
       const numeric =
@@ -161,9 +194,17 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       parts.push(`<${name}${extra}>`);
     }
     open.push(name);
+    // class は出力に残らないので、保存した本文をもう一度通しても、ここには当たらない
+    if (
+      name === "blockquote" &&
+      imgur === null &&
+      (attributes.get("class") ?? "").split(/\s+/).includes(IMGUR_EMBED)
+    ) {
+      imgur = { depth: open.length, image: null, hasImage: false };
+    }
   }
 
-  while (open.length > 0) parts.push(`</${open.pop()}>`);
+  while (open.length > 0) closeTop();
   return parts;
 }
 

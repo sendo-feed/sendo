@@ -298,6 +298,125 @@ describe("sanitizeHtml の計測用の画像（トラッキングピクセル）
   });
 });
 
+describe("sanitizeHtml の Imgur の公式埋め込み", () => {
+  const A = 'rel="noopener noreferrer nofollow"';
+  const embed = (inner: string) =>
+    `<blockquote class="imgur-embed-pub" lang="ja">${inner}</blockquote>`;
+
+  it("画像の直リンクなら、リンクを残して、引用の終わり（リンクの外）に画像を足す", () => {
+    expect(
+      clean(embed('<a href="https://i.imgur.com/abc123.jpeg">View post on imgur.com</a>')),
+    ).toBe(
+      `<blockquote><a href="https://i.imgur.com/abc123.jpeg" ${A}>View post on imgur.com</a>` +
+        '<img src="https://i.imgur.com/abc123.jpeg"></blockquote>',
+    );
+    // リンクを閉じていなくても、画像はリンクの外に置く
+    expect(clean(embed('<p><a href="https://i.imgur.com/abc123.png">写真'))).toBe(
+      `<blockquote><p><a href="https://i.imgur.com/abc123.png" ${A}>写真</a></p>` +
+        '<img src="https://i.imgur.com/abc123.png"></blockquote>',
+    );
+  });
+
+  it("絶対の URL にしたあとで見る。拡張子の大文字と小文字は区別せず、クエリは見ない", () => {
+    // スキームのない書き方は、記事の URL（https）を基準にする
+    expect(clean(embed('<a href="//i.imgur.com/abc123.JPG?1">写真</a>'))).toContain(
+      '<img src="https://i.imgur.com/abc123.JPG?1">',
+    );
+    for (const ext of ["jpg", "jpeg", "png", "gif", "webp", "avif"]) {
+      expect(clean(embed(`<a href="https://i.imgur.com/abc123.${ext}">写真</a>`))).toContain(
+        "<img ",
+      );
+    }
+    // 記事が http なら、スキームのない書き方は http になり、当たらない
+    expect(
+      sanitizeHtml(
+        embed('<a href="//i.imgur.com/abc123.jpg">写真</a>'),
+        "http://blog.example.com/1",
+      ),
+    ).not.toContain("<img");
+  });
+
+  it("投稿やアルバムのページ、動画、http、ほかのホストは、リンクのまま残す", () => {
+    for (const href of [
+      "//imgur.com/abc123",
+      "https://imgur.com/a/abc123",
+      "https://i.imgur.com/abc123.mp4",
+      "https://i.imgur.com/abc123.gifv",
+      "https://i.imgur.com/abc123",
+      "http://i.imgur.com/abc123.jpg",
+      "https://i.imgur.com:8443/abc123.jpg",
+      "https://i.imgur.com.example.com/abc123.jpg",
+      "https://example.com/i.imgur.com/abc123.jpg",
+    ]) {
+      const html = clean(embed(`<a href="${href}">写真</a>`));
+      expect(html, href).not.toContain("<img");
+      expect(html, href).toContain("<a href=");
+    }
+    // 公式埋め込みでない引用の中の直リンクは、画像にしない
+    expect(
+      clean('<blockquote><a href="https://i.imgur.com/abc123.jpg">写真</a></blockquote>'),
+    ).not.toContain("<img");
+    expect(
+      clean(
+        '<blockquote class="imgur-embed-public"><a href="https://i.imgur.com/a.jpg">写真</a></blockquote>',
+      ),
+    ).not.toContain("<img");
+  });
+
+  it("引用の中に画像が残るなら足さない。計測用の画像だけなら足す", () => {
+    const link = '<a href="https://i.imgur.com/abc123.jpg">写真</a>';
+    expect(clean(embed(`${link}<img src="https://i.imgur.com/other.jpg">`))).toBe(
+      `<blockquote><a href="https://i.imgur.com/abc123.jpg" ${A}>写真</a>` +
+        '<img src="https://i.imgur.com/other.jpg"></blockquote>',
+    );
+    // 落とす画像（計測用、src のないもの）は数えない
+    const dropped =
+      '<img src="https://pixel.example.com/t.gif" width="1" height="1"><img src="data:x">';
+    expect(clean(embed(`${dropped}${link}`))).toBe(
+      `<blockquote><a href="https://i.imgur.com/abc123.jpg" ${A}>写真</a>` +
+        '<img src="https://i.imgur.com/abc123.jpg"></blockquote>',
+    );
+    // 引用の外の画像は数えない
+    expect(
+      clean(`<img src="/a.png">${embed(link)}<img src="/b.png">`).match(/<img /g),
+    ).toHaveLength(3);
+  });
+
+  it("当てはまるリンクがいくつもあれば、最初の 1 つを使う。引用ごとに 1 枚", () => {
+    const html = clean(
+      embed(
+        '<a href="//imgur.com/abc123">投稿</a><a href="https://i.imgur.com/one.jpg">1</a>' +
+          '<a href="https://i.imgur.com/two.jpg">2</a>',
+      ) + embed('<a href="https://i.imgur.com/three.jpg">3</a>'),
+    );
+    expect(html.match(/<img src="[^"]+">/g)).toEqual([
+      '<img src="https://i.imgur.com/one.jpg">',
+      '<img src="https://i.imgur.com/three.jpg">',
+    ]);
+    expect(html.match(/<a /g)).toHaveLength(4);
+  });
+
+  it("閉じていない引用でも、外の要素が閉じるところで画像を足す", () => {
+    expect(
+      clean(
+        `<div>${embed('<a href="https://i.imgur.com/abc123.jpg">写真').replace("</blockquote>", "")}</div><p>続き</p>`,
+      ),
+    ).toBe(
+      `<div><blockquote><a href="https://i.imgur.com/abc123.jpg" ${A}>写真</a>` +
+        '<img src="https://i.imgur.com/abc123.jpg"></blockquote></div><p>続き</p>',
+    );
+  });
+
+  it("もう一度通しても、画像は増えも減りもしない", () => {
+    const once = clean(
+      embed('<a href="https://i.imgur.com/abc123.jpg">写真</a>') +
+        embed('<a href="//imgur.com/abc123">投稿</a>'),
+    );
+    expect(once.match(/<img /g)).toHaveLength(1);
+    expect(clean(once)).toBe(once);
+  });
+});
+
 describe("sanitizeHtmlWithImages", () => {
   it("画像の URL を差し替え、差し替え先のない画像は落とす", async () => {
     const out = await sanitizeHtmlWithImages(
