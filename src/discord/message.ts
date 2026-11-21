@@ -111,10 +111,11 @@ function httpUrl(value: string): string | null {
   return URL.canParse(value) ? value : null;
 }
 
-/** 空行で段落に分け、段落の中の改行は <br> にする */
+/** 空行で段落に分け、段落の中の改行は <br> にする。CRLF は 1 つの改行として扱う */
 function paragraphs(text: string): string {
   return text
-    .split(/(?:\r\n?|\n)[ \t]*(?:\r\n?|\n)/)
+    .replace(/\r\n?/g, "\n")
+    .split(/\n[ \t]*\n/)
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph !== "")
     .map((paragraph) => `<p>${inline(paragraph)}</p>`)

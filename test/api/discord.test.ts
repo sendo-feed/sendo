@@ -663,6 +663,8 @@ describe("Discord の投稿の本文（docs/decisions/discord.md の 6）", () =
       [id(5)]: { content: "本文\n2 行目", embeds: [{ title: "埋め込み", description: "説明" }] },
       // CR だけの改行も改行として扱う。タイトルは絵文字の途中で切らない
       [id(6)]: { content: `${"あ".repeat(119)}😀\r2 行目` },
+      // CRLF は 1 つの改行。CRLF の空行は段落の区切り
+      [id(7)]: { content: "1 行目\r\n2 行目\r\n\r\n次の段落" },
     });
     await runFetchFeed(t.platform, t.feedId);
 
@@ -687,6 +689,7 @@ describe("Discord の投稿の本文（docs/decisions/discord.md の 6）", () =
       title: "あ".repeat(119),
       html: `<p>${"あ".repeat(119)}😀<br>2 行目</p>`,
     });
+    expect((await t.article(id(7))).html).toBe("<p>1 行目<br>2 行目</p><p>次の段落</p>");
     expect(await t.article(id(5))).toMatchObject({
       title: "本文",
       summary: "本文\n2 行目",
