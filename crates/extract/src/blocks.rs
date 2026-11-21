@@ -193,7 +193,9 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
     // 本文の続きの文章がそこにあれば、手掛かりの多い親が最初から選ばれている。
     // 画像のブロックは手掛かりを持たないので、後ろにあっても残す。
     let title_key = compact(&page_title);
-    let has_heading = root.select("h1").length() > 0;
+    let mut has_heading = root.select("h1").length() > 0;
+    let mut best_size = best_size;
+    let mut has_lead = false;
     let image_block = |block: &Selection| {
         matches!(
             block.nodes()[0].node_name().as_deref(),
@@ -233,23 +235,30 @@ pub(crate) fn extract(html: &str, url: &str) -> Result<Extracted, ExtractError> 
         // 本文が前半と続きの 2 つのブロックに分かれているページがある（「続きを読む」の形）。
         // 本文より前の兄弟に、引用か文章の段落があれば、前半として一緒に残す。
         // 前半を足して 2 倍を超えるなら、別の記事や共通の部分のことがあるので広げない。
-        let lead_text = in_article(&parent)
+        let lead_text = !has_lead
+            && size <= best_size * 2
+            && in_article(&parent)
             && parent
                 .children()
                 .nodes()
                 .iter()
                 .take_while(|child| child.id != branch)
                 .any(|child| has_lead_text(&Selection::from(*child)));
-        if (size <= best_size * 3 / 2
+        let heading_or_image = size <= best_size * 3 / 2
             && ((!has_heading && heading.chars().count() >= 5 && title_key.contains(&heading))
-                || lead_image))
-            || (size <= best_size * 2 && lead_text)
-        {
+                || lead_image);
+        if heading_or_image || lead_text {
             for child in trailing {
                 Selection::from(child).remove();
             }
             root = parent;
-            break;
+            if heading_or_image {
+                break;
+            }
+            // 前半を足したあとも、その上にある見出しと表紙を、足した本文を基準にして調べる。
+            has_lead = true;
+            has_heading = root.select("h1").length() > 0;
+            best_size = size;
         }
         branch = node.id;
     }
@@ -286,24 +295,21 @@ fn in_article(block: &Selection) -> bool {
     block.is(ARTICLE) || block.ancestors(Some(128)).is(ARTICLE)
 }
 
-/// 引用か、文章の段落（20 文字以上で、リンクが半分以下。本文の手掛かりと同じ形）を持つ。
+/// 中身のある引用か、文章の段落（20 文字以上で、リンクが半分以下。本文の手掛かりと同じ形）を持つ。
 fn has_lead_text(block: &Selection) -> bool {
-    if block.is("blockquote") || block.select("blockquote").length() > 0 {
-        return true;
-    }
     block
-        .select("p")
+        .select("blockquote, p")
         .nodes()
         .iter()
         .chain(block.nodes())
         .any(|node| {
-            let p = Selection::from(*node);
-            if !p.is("p") {
-                return false;
+            let text = Selection::from(*node);
+            let len = compact(&text.text()).chars().count();
+            if text.is("blockquote") {
+                return len > 0;
             }
-            let len = compact(&p.text()).chars().count();
-            let linked = compact(&p.select("a").text()).chars().count();
-            len >= 20 && linked * 2 <= len
+            let linked = compact(&text.select("a").text()).chars().count();
+            text.is("p") && len >= 20 && linked * 2 <= len
         })
 }
 
@@ -472,7 +478,7 @@ mod tests {
     }
     /// 本文が前半（first）と続き（more）に分かれたページ。前半には、関連記事のリンクの一覧も入っている。
     fn split_body(first: &str, wrapper: &str) -> String {
-        let related: String = (0..8)
+        let related: String = (0..10)
             .map(|i| format!("<li><a href='/related/{i}'>関連する記事{i}の見出しです。ほかの話題について読めます</a></li>"))
             .collect();
         format!(
@@ -496,6 +502,37 @@ mod tests {
             assert!(quote < rest);
             assert!(!out.contains("このサイトの案内です"));
         }
+    }
+    #[test]
+    fn keeps_a_first_half_that_holds_only_paragraphs() {
+        let lead = "<p>前半の段落です。記事の導入として、続きで扱う内容を短く伝えます。</p>";
+        let out = extract(&split_body(lead, "article"), "https://example.com/a")
+            .unwrap()
+            .html;
+        assert!(out.find("前半の段落です").unwrap() < out.find("本文の段落0").unwrap());
+    }
+    #[test]
+    fn does_not_take_a_first_half_larger_than_the_body() {
+        // 前半を足すと本文が 2 倍を超える。別の記事や共通の部分のことがあるので、広げない。
+        let other: String = (0..9)
+            .map(|i| format!("<p><a href='/other/{i}'>別の記事{i}の紹介です。本文とは関係のない話題を、長い見出しと説明で並べています。</a></p>"))
+            .collect();
+        let html = split_body(&format!("{QUOTE}{other}"), "article");
+        let out = extract(&html, "https://example.com/a").unwrap().html;
+        assert!(out.contains("本文の段落0"));
+        assert!(!out.contains("引用した投稿の文章です"));
+    }
+    #[test]
+    fn keeps_the_cover_above_a_split_body() {
+        // 前半を足したあとも、その上の段にある表紙を残す。
+        let html = split_body(QUOTE, "article").replace(
+            "<article>",
+            "<article><header><img src='/cover.jpg' alt=''></header><div class='wrap'>",
+        );
+        let html = html.replace("</article>", "</div></article>");
+        let out = extract(&html, "https://example.com/a").unwrap().html;
+        assert!(out.contains("cover.jpg"));
+        assert!(out.find("引用した投稿の文章です").unwrap() < out.find("本文の段落0").unwrap());
     }
     #[test]
     fn does_not_take_a_preceding_block_outside_an_article() {
