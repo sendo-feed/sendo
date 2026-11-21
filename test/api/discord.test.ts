@@ -35,6 +35,7 @@ function discordFetch() {
   let errorCode: number | undefined;
   let messageIds = [MESSAGE_ID];
   let systemIds: string[] = [];
+  let guildIcon: unknown = null;
   const result = fakeFetch(async (url, init) => {
     expect(url.origin).toBe("https://discord.com");
     expect(init?.redirect).toBe("manual");
@@ -54,7 +55,11 @@ function discordFetch() {
     }
     expect(auth).toBe(`Bot ${CONFIG.botToken}`);
     if (path === "/api/v10/guilds/201") {
-      return Response.json({ owner_id: "104", roles: [{ id: "201", permissions: READ }] });
+      return Response.json({
+        owner_id: "104",
+        icon: guildIcon,
+        roles: [{ id: "201", permissions: READ }],
+      });
     }
     if (path === "/api/v10/channels/301") {
       return Response.json({
@@ -111,6 +116,9 @@ function discordFetch() {
     },
     setSystemIds: (ids: string[]) => {
       systemIds = ids;
+    },
+    setGuildIcon: (icon: unknown) => {
+      guildIcon = icon;
     },
     setMessageStatus: (status: number, code?: number) => {
       messageStatus = status;
@@ -398,6 +406,65 @@ describe("Discord の購読", () => {
     await platform.db.update(feeds).set({ lastFetchedAt: null }).where(eq(feeds.id, feedId));
     remote.setMessageIds([MESSAGE_ID]);
     expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
+  });
+
+  it("サーバーのアイコンをフィードのアイコンにし、変わったときだけ同期に届ける（docs/decisions/discord.md の 7）", async () => {
+    const { platform, remote } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const feedId = await subscribe(await browser(platform, user.id));
+    const get = async <T>(path: string) => {
+      const res = await requestApp(platform, path, { token: user.token });
+      expect(res.status).toBe(200);
+      return (await res.json()) as T;
+    };
+    type Sync = { cursor: string; feeds: { id: string; iconUrl: string | null }[] };
+    const relayed = (url: string | null | undefined) =>
+      url ? new URL(url, ORIGIN).searchParams.get("url") : url;
+    const fetchAgain = async () => {
+      // 同じ時刻のまま取り直すので、前回の取得の記録を外す
+      await platform.db.update(feeds).set({ lastFetchedAt: null }).where(eq(feeds.id, feedId));
+      await runFetchFeed(platform, feedId);
+    };
+    const icon = (n: string) => n.repeat(32);
+    const cdn = (hash: string) => `https://cdn.discordapp.com/icons/201/${hash}.png`;
+
+    remote.setGuildIcon(icon("a"));
+    await runFetchFeed(platform, feedId);
+    expect((await getFeed(platform.db, feedId))?.iconUrl).toBe(cdn(icon("a")));
+    const first = await get<Sync>("/api/v1/sync");
+    expect(relayed(first.feeds.find((feed) => feed.id === feedId)?.iconUrl)).toBe(cdn(icon("a")));
+    const list = await get<{ items: { id: string; iconUrl: string | null }[] }>("/api/v1/feeds");
+    expect(relayed(list.items.find((feed) => feed.id === feedId)?.iconUrl)).toBe(cdn(icon("a")));
+
+    // 同じアイコンなら、同期には何も届かない
+    await fetchAgain();
+    const unchanged = await get<Sync>(`/api/v1/sync?cursor=${first.cursor}`);
+    expect(unchanged.feeds).toEqual([]);
+
+    // 動くアイコン（a_）も、静止画の png で取る
+    remote.setGuildIcon(`a_${icon("b")}`);
+    await fetchAgain();
+    const changed = await get<Sync>(`/api/v1/sync?cursor=${unchanged.cursor}`);
+    expect(changed.feeds.map((feed) => relayed(feed.iconUrl))).toEqual([cdn(`a_${icon("b")}`)]);
+
+    // 形の違う値では、今のアイコンを変えない
+    for (const malformed of ["../../evil", icon("G"), 123, `${icon("c")}.png`]) {
+      remote.setGuildIcon(malformed);
+      await fetchAgain();
+      expect((await getFeed(platform.db, feedId))?.iconUrl).toBe(cdn(`a_${icon("b")}`));
+    }
+    const kept = await get<Sync>(`/api/v1/sync?cursor=${changed.cursor}`);
+    expect(kept.feeds).toEqual([]);
+
+    // アイコンを外すと null になり、同期に届く
+    remote.setGuildIcon(null);
+    await fetchAgain();
+    const removed = await get<Sync>(`/api/v1/sync?cursor=${kept.cursor}`);
+    expect(removed.feeds).toMatchObject([{ id: feedId, iconUrl: null }]);
+    expect(remote.calls.some((call) => call.url.startsWith("https://cdn.discordapp.com/"))).toBe(
+      false,
+    );
   });
 
   it("閲覧権限の喪失で、投稿と購読の削除を同期に届ける", async () => {

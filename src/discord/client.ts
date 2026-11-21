@@ -21,6 +21,8 @@ const ADMINISTRATOR = 1n << 3n;
 
 const Guild = z.object({
   owner_id: Snowflake,
+  // 形の違う値でも取得は止めず、アイコンだけを決めない（discordGuildIconUrl）
+  icon: z.unknown().optional(),
   roles: z.array(z.object({ id: Snowflake, permissions: Bitfield })),
 });
 const Member = z.object({
@@ -134,7 +136,7 @@ export async function getReadableChannel(
   config: DiscordConfig,
   address: ChannelAddress,
   userId: string,
-): Promise<{ name: string } | null> {
+): Promise<{ name: string; iconUrl: string | null | undefined } | null> {
   const { guildId, channelId } = address;
   const bot = { headers: { authorization: `Bot ${config.botToken}` } };
   const [channel, guild, user, botMember] = await Promise.all([
@@ -159,7 +161,17 @@ export async function getReadableChannel(
     !canRead(guild, channel, botMember, guildId, config.clientId)
   )
     return null;
-  return { name: channel.name };
+  return { name: channel.name, iconUrl: discordGuildIconUrl(guildId, guild.icon) };
+}
+
+/**
+ * サーバーのアイコンの URL（docs/decisions/discord.md の 7）。アイコンがなければ null。
+ * 値の形が違えば undefined（今のアイコンを変えない）。動くアイコン（a_）も png で静止画を取る
+ */
+export function discordGuildIconUrl(guildId: string, icon: unknown): string | null | undefined {
+  if (icon === null || icon === undefined) return null;
+  if (typeof icon !== "string" || !/^(a_)?[0-9a-f]{32}$/.test(icon)) return undefined;
+  return `https://cdn.discordapp.com/icons/${guildId}/${icon}.png`;
 }
 
 function canRead(

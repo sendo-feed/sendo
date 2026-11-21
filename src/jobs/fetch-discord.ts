@@ -134,6 +134,8 @@ export async function runFetchDiscord(
     etag: null,
     lastModified: null,
     title: channel.name,
+    // アイコンが変わると、購読の変更番号はトリガーが進める（docs/decisions/images.md の 8）
+    iconUrl: channel.iconUrl,
     discord: { cursor, connectionId: discordConnectionId },
   });
   return messages.length === 0 ? { status: "not-modified" } : { status: "fetched", inserted };
