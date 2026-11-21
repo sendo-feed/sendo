@@ -1,4 +1,5 @@
 import { escapeHtml } from "../lib/html";
+import { truncateUtf16 } from "../lib/text";
 
 /*
  * Discord の投稿を、記事のタイトル、要約、本文の HTML にする（docs/decisions/discord.md の 6）。
@@ -15,6 +16,8 @@ import { escapeHtml } from "../lib/html";
 /** テキストのない投稿のタイトル */
 export const DISCORD_FALLBACK_TITLE = "Discord の投稿";
 const MAX_TITLE_LENGTH = 120;
+/** 改行（CRLF、LF、CR だけ） */
+const NEWLINE = /\r\n?|\n/;
 
 export type DiscordPost = {
   title: string;
@@ -55,7 +58,8 @@ export function toDiscordPost(message: {
 }
 
 function firstLine(text: string): string {
-  return text.split(/\r?\n/, 1)[0]?.trim().slice(0, MAX_TITLE_LENGTH) || DISCORD_FALLBACK_TITLE;
+  const line = text.split(NEWLINE, 1)[0]?.trim() ?? "";
+  return truncateUtf16(line, MAX_TITLE_LENGTH) || DISCORD_FALLBACK_TITLE;
 }
 
 function readEmbed(embed: unknown): EmbedText {
@@ -110,7 +114,7 @@ function httpUrl(value: string): string | null {
 /** 空行で段落に分け、段落の中の改行は <br> にする */
 function paragraphs(text: string): string {
   return text
-    .split(/\r?\n[ \t]*\r?\n/)
+    .split(/(?:\r\n?|\n)[ \t]*(?:\r\n?|\n)/)
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph !== "")
     .map((paragraph) => `<p>${inline(paragraph)}</p>`)
@@ -119,7 +123,7 @@ function paragraphs(text: string): string {
 
 /** 文字をエスケープし、改行を <br> に、http ／ https の URL をリンクにする */
 function inline(text: string): string {
-  return text.split(/\r?\n/).map(linkify).join("<br>");
+  return text.split(NEWLINE).map(linkify).join("<br>");
 }
 
 const URL_PATTERN = /https?:\/\/[^\s<>"]+/gi;

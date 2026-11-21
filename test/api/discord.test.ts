@@ -489,13 +489,24 @@ describe("Discord の購読", () => {
         .from(articles)
         .where(eq(articles.feedId, feedId))
         .orderBy(articles.guid);
+    const contentOf = async (guid: string) => {
+      const [row] = await platform.db
+        .select({ contentKey: articles.contentKey })
+        .from(articles)
+        .where(eq(articles.guid, guid));
+      return row?.contentKey ? await platform.content.get(row.contentKey) : null;
+    };
+    const body = "<p>Version 1.0<br>&lt;script&gt;literal text&lt;/script&gt;</p>";
     expect(await stored()).toEqual([{ guid: newerId }]);
+    expect(await contentOf(newerId)).toBe(body);
     expect((await getFeed(platform.db, feedId))?.discordCursor).toBe(startCursor);
     expect(enqueued).toContainEqual({ type: "clean-up" });
 
     platform.retentionConfig = { maxBytes: baseline + 32 * 1024 };
     expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
     expect(await stored()).toEqual([{ guid: MESSAGE_ID }, { guid: newerId }]);
+    // 容量が足りずに見送った投稿も、取り直すと本文付きで入る
+    expect(await contentOf(MESSAGE_ID)).toBe(body);
     expect((await getFeed(platform.db, feedId))?.discordCursor).toBe(newerId);
   });
 
@@ -650,6 +661,8 @@ describe("Discord の投稿の本文（docs/decisions/discord.md の 6）", () =
       [id(4)]: { content: "  \n ", embeds: [{ title: "埋め込み" }] },
       // テキストと埋め込みの両方：タイトルと要約はテキストから、本文には両方
       [id(5)]: { content: "本文\n2 行目", embeds: [{ title: "埋め込み", description: "説明" }] },
+      // CR だけの改行も改行として扱う。タイトルは絵文字の途中で切らない
+      [id(6)]: { content: `${"あ".repeat(119)}😀\r2 行目` },
     });
     await runFetchFeed(t.platform, t.feedId);
 
@@ -669,6 +682,10 @@ describe("Discord の投稿の本文（docs/decisions/discord.md の 6）", () =
       title: "埋め込み",
       summary: null,
       html: "<blockquote><p><strong>埋め込み</strong></p></blockquote>",
+    });
+    expect(await t.article(id(6))).toMatchObject({
+      title: "あ".repeat(119),
+      html: `<p>${"あ".repeat(119)}😀<br>2 行目</p>`,
     });
     expect(await t.article(id(5))).toMatchObject({
       title: "本文",
@@ -751,7 +768,7 @@ describe("Discord の投稿の本文（docs/decisions/discord.md の 6）", () =
     expect(notes).toEqual(expect.arrayContaining(left.map(({ key }) => key)));
   });
 
-  it("取得中に購読を解除したら、記事の行を入れず、置いた本文は書き留めから片付けられる", async () => {
+  it("取得中に接続を解除したら、記事の行を入れず、置いた本文は書き留めから片付けられる", async () => {
     const t = await subscribed();
     t.remote.setMessages({ [id(1)]: { content: "テキスト" } });
     t.remote.beforeMessages(() => disconnectDiscord(t.platform.db, t.user.id));
@@ -759,7 +776,7 @@ describe("Discord の投稿の本文（docs/decisions/discord.md の 6）", () =
       (await t.platform.db.select().from(contentNotes).all()).map(({ key }) => key),
     );
 
-    await runFetchFeed(t.platform, t.feedId);
+    expect(await runFetchFeed(t.platform, t.feedId)).toEqual({ status: "missing" });
 
     expect(
       await t.platform.db.select().from(articles).where(eq(articles.feedId, t.feedId)),
