@@ -351,6 +351,27 @@ describe("本文を配る", () => {
     expect(image.status).not.toBe(403);
   });
 
+  it("Imgur の公式埋め込みの直リンクは、画像にして置き、中継の URL で返す", async () => {
+    const embed =
+      '<blockquote class="imgur-embed-pub" lang="ja" data-id="abc123">' +
+      '<a href="https://i.imgur.com/abc123.jpeg">View post on imgur.com</a></blockquote>' +
+      '<script async src="//s.imgur.com/min/embed.js" charset="utf-8"></script>';
+    const t = await setUp(() => rss(item("imgur", encoded(`<p>${LONG}</p>${embed}`))));
+    await runFetchFeed(t.platform, t.feed.id);
+    const { token } = t.user;
+    const article = await t.byGuid("imgur");
+
+    const res = await requestApp(t.platform, `/api/v1/articles/${article.id}/content`, { token });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { html: string };
+    // もとのリンクは残り、足した画像は中継の URL になる
+    expect(body.html).toMatch(
+      /<blockquote><a href="https:\/\/i\.imgur\.com\/abc123\.jpeg" rel="noopener noreferrer nofollow">View post on imgur\.com<\/a><img src="\/api\/v1\/images\?url=https%3A%2F%2Fi\.imgur\.com%2Fabc123\.jpeg&amp;sig=[\w-]{22}"><\/blockquote>/,
+    );
+    expect(body.html.match(/<img /g)).toHaveLength(1);
+    expect(body.html).not.toContain("script");
+  });
+
   it("本文のない記事、ほかの人の記事、ない記事は 404。認証がなければ 401", async () => {
     const t = await setUp(() => rss(item("full", FULL), item("none", "")));
     await runFetchFeed(t.platform, t.feed.id);
