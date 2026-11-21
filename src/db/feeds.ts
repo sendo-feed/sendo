@@ -149,7 +149,11 @@ export async function recordFetchSuccess(
     etag?: string | null;
     lastModified?: string | null;
     discord?: { cursor: string; connectionId: string };
-    /** Discord のサーバーのアイコン（docs/decisions/discord.md の 7）。undefined なら変えない */
+    /**
+     * Discord のサーバーのアイコン（docs/decisions/discord.md の 7）。undefined なら変えない。
+     * Discord のフィードは 30 日の間隔で探し直さない（refreshIcon を通らない）ので、iconCheckedAt は
+     * 記録した時刻として残すだけ
+     */
     iconUrl?: string | null | undefined;
     title?: string | null;
     siteUrl?: string | null;

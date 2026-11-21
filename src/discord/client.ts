@@ -165,11 +165,12 @@ export async function getReadableChannel(
 }
 
 /**
- * サーバーのアイコンの URL（docs/decisions/discord.md の 7）。アイコンがなければ null。
- * 値の形が違えば undefined（今のアイコンを変えない）。動くアイコン（a_）も png で静止画を取る
+ * サーバーのアイコンの URL（docs/decisions/discord.md の 7）。アイコンがなければ（null）null。
+ * 項目がないか、値の形が違えば undefined（今のアイコンを変えない）。動くアイコン（a_）も png で
+ * 静止画を取る
  */
 export function discordGuildIconUrl(guildId: string, icon: unknown): string | null | undefined {
-  if (icon === null || icon === undefined) return null;
+  if (icon === null) return null;
   if (typeof icon !== "string" || !/^(a_)?[0-9a-f]{32}$/.test(icon)) return undefined;
   return `https://cdn.discordapp.com/icons/${guildId}/${icon}.png`;
 }

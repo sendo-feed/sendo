@@ -449,7 +449,8 @@ describe("Discord の購読", () => {
     expect(changed.feeds.map((feed) => relayed(feed.iconUrl))).toEqual([cdn(`a_${icon("b")}`)]);
 
     // 形の違う値では、今のアイコンを変えない
-    for (const malformed of ["../../evil", icon("G"), 123, `${icon("c")}.png`]) {
+    // 項目がないときも同じ
+    for (const malformed of ["../../evil", icon("G"), 123, `${icon("c")}.png`, undefined]) {
       remote.setGuildIcon(malformed);
       await fetchAgain();
       expect((await getFeed(platform.db, feedId))?.iconUrl).toBe(cdn(`a_${icon("b")}`));
@@ -473,14 +474,16 @@ describe("Discord の購読", () => {
     await connectDiscord(platform.db, user.id, DISCORD_USER);
     const request = await browser(platform, user.id);
     const feedId = await subscribe(request);
+    remote.setGuildIcon("f".repeat(32));
     await runFetchFeed(platform, feedId);
+    expect((await getFeed(platform.db, feedId))?.iconUrl).not.toBeNull();
     const sync = async (cursor?: string) => {
       const url = `/api/v1/sync${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
       const response = await requestApp(platform, url, { token: user.token });
       expect(response.status).toBe(200);
       return (await response.json()) as {
         cursor: string;
-        feeds: { id: string; deleted: boolean }[];
+        feeds: { id: string; deleted: boolean; iconUrl: string | null }[];
         articles: { id: string; deleted: boolean }[];
       };
     };
@@ -498,7 +501,12 @@ describe("Discord の購読", () => {
     remote.deny();
     expect(await runFetchFeed(platform, feedId)).toMatchObject({ status: "missing" });
     const changed = await sync(initial.cursor);
-    expect(changed.feeds).toMatchObject([{ id: feedId, deleted: true }]);
+    // 外したフィードには、サーバーのアイコンも残さない
+    expect(changed.feeds).toMatchObject([{ id: feedId, deleted: true, iconUrl: null }]);
+    expect(await getFeed(platform.db, feedId)).toMatchObject({
+      iconUrl: null,
+      iconCheckedAt: null,
+    });
     expect(changed.articles).toMatchObject([{ id: firstArticle?.id, deleted: true }]);
     expect(
       (await request(`${BASE}/subscriptions`, { method: "POST", json: { url: CHANNEL } })).status,
@@ -514,6 +522,7 @@ describe("Discord の購読", () => {
     await connectDiscord(platform.db, user.id, DISCORD_USER);
     const feedId = await subscribe(await browser(platform, user.id));
     remote.setMessageIds(ids);
+    remote.setGuildIcon("f".repeat(32));
     remote.beforeMessages(() => disconnectDiscord(platform.db, user.id));
     await runFetchFeed(platform, feedId);
     expect(await platform.db.select().from(articles).where(eq(articles.feedId, feedId))).toEqual(
@@ -522,6 +531,7 @@ describe("Discord の購読", () => {
     expect(await getFeed(platform.db, feedId)).toMatchObject({
       discordConnectionId: null,
       lastSuccessfulFetchAt: null,
+      iconUrl: null,
     });
     expect(await (await (await browser(platform, user.id))(BASE)).json()).toMatchObject({
       connected: false,
