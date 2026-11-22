@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordExtractedPageContent } from "../../src/db/page-contents";
 import { articles, articleTranslations, feeds, userArticles } from "../../src/db/schema";
-import { readStorageUsage } from "../../src/db/storage";
+import { configureStorage, readStorageUsage } from "../../src/db/storage";
 import { BATCH_MARK_TTL_MS, decideTranslations, markForBatch } from "../../src/db/translations";
 import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
@@ -3523,5 +3523,148 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
     );
     await maintain(s.platform);
     expect(batchOf(s, first).length + batchOf(s, second).length).toBe(1);
+  });
+
+  /** その場の翻訳で送った断片の ID（Messages API の要求の中の JSON） */
+  const claudeSegments = (s: Setup) =>
+    s.claude.map((sent) => {
+      const body = JSON.parse(sent.body) as { messages: { content: string }[] };
+      return (
+        JSON.parse(body.messages[0]?.content ?? "{}") as { segments: { id: string }[] }
+      ).segments.map((segment) => segment.id);
+    });
+
+  /** 決めて（行を作り）、その場の翻訳を求める。仕事はまだ動かさない */
+  async function requestOnDemand(s: Setup, path: string) {
+    const id = await deliver(s, path);
+    await decideTranslations(s.platform.db);
+    s.enqueued.length = 0;
+    expect((await request(s, id)).response.status).toBe(202);
+    return id;
+  }
+
+  it("その場の翻訳では、写せるタイトルと本文を呼ばずに写し、要約だけを Messages API に送る", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const firstRow = await translationOf(s.platform, first);
+    const second = await requestOnDemand(s, "/lobsters.xml");
+    s.replies.push({ transform: mark });
+    await runQueuedTranslation(s);
+    expect(claudeSegments(s)).toEqual([["summary"]]);
+    expect(await translationOf(s.platform, second)).toMatchObject({
+      status: "translated",
+      title: firstRow?.title,
+      summary: "訳:Comments",
+      content: firstRow?.content,
+      contentSource: "page",
+    });
+  });
+
+  it("その場の翻訳で、すべて写せる記事は Messages API を呼ばずに translated になり、知らせる", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const firstRow = await translationOf(s.platform, first);
+    const third = await requestOnDemand(s, "/mirror.xml");
+    s.notified.length = 0;
+    await runQueuedTranslation(s);
+    expect(s.claude).toHaveLength(0);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "translated",
+      title: firstRow?.title,
+      content: firstRow?.content,
+      model: firstRow?.model,
+      startedAt: null,
+    });
+    expect(s.notified).toContain(TEST_USER.id);
+  });
+
+  it("その場の翻訳で、すべて写せると分けたあと写す元が消えていたら、分け直して送る", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const third = await requestOnDemand(s, "/mirror.xml");
+    const job = s.enqueued.find((j) => j.type === "translate-article");
+    if (!job) throw new Error("no job");
+    const hook = statementHook(
+      /update article_translations set status = 'translated'/,
+      async () => {
+        await testDb.exec(`DELETE FROM articles WHERE id = '${first}'`);
+      },
+    );
+    s.replies.push({ transform: mark });
+    await runJob({ ...s.platform, db: hook.db }, job);
+    expect(hook.fired()).toBe(true);
+    expect(claudeSegments(s)).toEqual([expect.arrayContaining(["title", "b1"])]);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "translated",
+      title: "訳:GnuPG Security Advisory for GPGME",
+    });
+  });
+
+  it("同じ元記事の行がバッチの中にあっても、その場の翻訳は待たずに送る", async () => {
+    const s = await setup({ feeds });
+    const first = await deliver(s, "/hn.xml");
+    await maintain(s.platform);
+    expect(batchOf(s, first)).toHaveLength(1);
+    const second = await requestOnDemand(s, "/lobsters.xml");
+    s.replies.push({ transform: mark });
+    await runQueuedTranslation(s);
+    expect(claudeSegments(s)).toEqual([expect.arrayContaining(["title", "summary", "b1"])]);
+    expect(await translationOf(s.platform, second)).toMatchObject({ status: "translated" });
+  });
+
+  it("その場の翻訳で、すべて写せる記事が容量の上限に当たったら、呼ばずに失敗にする", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    await translatedFirst(s);
+    const third = await requestOnDemand(s, "/mirror.xml");
+    const job = s.enqueued.find((j) => j.type === "translate-article");
+    if (!job) throw new Error("no job");
+    const usage = await readStorageUsage(s.platform.db);
+    await configureStorage(s.platform.db, usage.bytes + 100);
+    await runJob({ ...s.platform, retentionConfig: { maxBytes: usage.bytes + 100 } }, job);
+    expect(s.claude).toHaveLength(0);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "untranslated",
+      title: null,
+    });
+  });
+
+  it("その場の翻訳で本文を写すときも、写す本文の分を容量に見積もり、足りなければ呼ばずに失敗にする", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    await translatedFirst(s);
+    const second = await requestOnDemand(s, "/lobsters.xml");
+    const job = s.enqueued.find((j) => j.type === "translate-article");
+    if (!job) throw new Error("no job");
+    // 送る要約の分は収まるが、写す本文の分は収まらない上限
+    const usage = await readStorageUsage(s.platform.db);
+    await runJob({ ...s.platform, retentionConfig: { maxBytes: usage.bytes + 600 } }, job);
+    expect(s.claude).toHaveLength(0);
+    expect(await translationOf(s.platform, second)).toMatchObject({ status: "untranslated" });
+  });
+
+  it("訳し直しは、同じ元記事の訳があっても写さず、すべてを Opus に送る", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    await translatedFirst(s);
+    const second = await deliver(s, "/lobsters.xml");
+    await maintain(s.platform);
+    const batch = batchOf(s, second)[0];
+    if (batch) batch.ended = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, second)).toMatchObject({ status: "translated" });
+
+    s.enqueued.length = 0;
+    expect((await retranslate(s, second)).response.status).toBe(202);
+    s.replies.push({ transform: (segment) => `Opus:${segment.text}` });
+    await runQueuedTranslation(s);
+    expect(claudeSegments(s).at(-1)).toEqual(expect.arrayContaining(["title", "summary", "b1"]));
+    expect(await translationOf(s.platform, second)).toMatchObject({
+      title: "Opus:GnuPG Security Advisory for GPGME (T8557,CVE-2026-129975)",
+      retranslated: true,
+    });
   });
 });
