@@ -191,15 +191,21 @@ export type TranslationResult =
   /** 上限で切れた、または形の読めない応答 */
   | { status: "invalid" };
 
-/** 呼び出しの失敗。やり直しても通らないもの（要求の形の誤り）は retryable が false */
+/**
+ * 呼び出しの失敗。やり直しても通らないもの（要求の形の誤り）は retryable が false。responded は、
+ * Claude API が受け付けずに断ったと分かる応答（400、401、403、404、413、429、529）のとき true。
+ * 届かない・時間切れ・ほかの 5xx などでは false（受け付けられたかどうか分からない）
+ */
 export class TranslatorError extends Error {
+  readonly responded: boolean;
   constructor(
     message: string,
     readonly retryable: boolean,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; responded?: boolean },
   ) {
     super(message, options);
     this.name = "TranslatorError";
+    this.responded = options?.responded ?? false;
   }
 }
 
@@ -215,8 +221,11 @@ export interface BatchTranslationRequest {
  */
 export type BatchTranslationResult = { id: string } & (
   | TranslationResult
-  /** 要求が通らなかった。errorType は Claude API の誤りの種類（invalid_request_error など） */
-  | { status: "errored"; errorType: string | null }
+  /**
+   * 要求が通らなかった。errorType は Claude API の誤りの種類（invalid_request_error など）。
+   * countedForModel は、要求の形の誤りをモデルを外す判断に数えた（回数には数えない。決定の 8、9）
+   */
+  | { status: "errored"; errorType: string | null; countedForModel: boolean }
   | { status: "expired" }
   | { status: "canceled" }
 );

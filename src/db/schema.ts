@@ -491,6 +491,11 @@ export const articleTranslations = sqliteTable(
      * 本文を置かない（送ってから返るまでに、分け方が変わったとき）
      */
     batchBodyHash: text("batch_body_hash"),
+    /**
+     * バッチで訳せなかった回数（docs/decisions/translation.md の 4、8）。待てば通る失敗は数えない。
+     * 上限で untranslated にする
+     */
+    batchAttempts: integer("batch_attempts").notNull().default(0),
   },
   (t) => [
     index("article_translations_translating_idx")

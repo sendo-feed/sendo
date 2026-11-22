@@ -28,6 +28,9 @@ export const BATCH_SIZE = 100;
 /** 1 回の定期実行で見にいくバッチの数（同じく 4） */
 export const BATCH_CHECK_LIMIT = 10;
 
+/** バッチで訳せなかった回数の上限。この回数目も訳せなければ untranslated にする（同じく 4、8） */
+export const MAX_BATCH_ATTEMPTS = 3;
+
 /** 印を付けてからバッチの ID がないまま、印を外すまでの長さ（同じく 4） */
 export const BATCH_MARK_TTL_MS = 60 * 60 * 1000;
 
@@ -407,4 +410,35 @@ export async function skipEmptyBatchArticles(
     returning article_id as articleId
   `);
   return rows.map((row) => row.articleId);
+}
+
+/**
+ * バッチで訳せなかった記事の印を外し、count なら回数を 1 つ数える（docs/decisions/translation.md の
+ * 4、8）。行が queued なら、giveUp（拒否）か、回数が上限に達したら untranslated にし、そうでなければ
+ * 待ちに戻す。queued でない行（その場の翻訳の最中など）は、状態を変えない。印がそのバッチの行だけ
+ * （同じ文で確かめる）。articleId がなければ、そのバッチの印を持つ行すべて
+ *
+ * @returns untranslated にした記事
+ */
+export async function failBatchArticles(
+  db: Database,
+  batchId: string,
+  input: { articleId?: string; count: boolean; giveUp: boolean },
+): Promise<string[]> {
+  const increment = input.count ? 1 : 0;
+  const rows = await db.all<{ articleId: string; status: string }>(sql`
+    update article_translations set ${CLEAR_BATCH},
+      batch_attempts = batch_attempts + ${increment},
+      status = case
+        when status = 'queued'
+          and (${input.giveUp ? 1 : 0} = 1 or batch_attempts + ${increment} >= ${MAX_BATCH_ATTEMPTS})
+          then 'untranslated'
+        else status end
+    where batch_id = ${batchId}
+      ${input.articleId === undefined ? sql`` : sql`and article_id = ${input.articleId}`}
+    returning article_id as articleId, status
+  `);
+  // 返る status は書いたあとの値。もとから untranslated だった行（その場で訳せなかった）も入るが、
+  // 知らせが 1 回多くなるだけ
+  return rows.filter((row) => row.status === "untranslated").map((row) => row.articleId);
 }

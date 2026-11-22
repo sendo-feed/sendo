@@ -15,6 +15,9 @@ export const DEFAULT_TRANSLATION_MODEL = "claude-sonnet-5-5";
 /** その場の翻訳に選ぶモデルの ID の頭（同じく 9） */
 export const TRANSLATION_MODEL_PREFIX = "claude-sonnet-";
 
+/** 受け付けずに断ったと分かる応答の番号（バッチを作れなかったと分かり、すぐ待ちに戻せる） */
+const REJECTED_STATUSES = new Set([400, 401, 403, 404, 413, 429, 529]);
+
 /** Models API の一覧を待つ上限（取れなければ、前に選んだものか既定で訳す） */
 export const MODEL_LIST_TIMEOUT_MS = 30 * 1000;
 
@@ -111,6 +114,12 @@ export function createClaudeTranslator(input: {
   });
   // 起動時に一覧を取っておく（失敗しても、最初の翻訳のときに前のものか既定で送る）
   void models.current();
+  /**
+   * 送ったバッチのモデル（結果の要求の形の誤りを、モデルを外す判断に数える。決定の 9）。プロセスの
+   * メモリーにだけ持ち、結果を一度読んだら消す（読み直しで数え直さない）。再起動のあとに返った
+   * バッチの誤りは数えない
+   */
+  const batchModels = new Map<string, string>();
   /** 訳す要求の中身（その場の翻訳とバッチで同じ。docs/decisions/translation.md の 9、11） */
   const requestBody = (model: string, segments: readonly TranslationSegment[]) => ({
     model,
@@ -162,8 +171,15 @@ export function createClaudeTranslator(input: {
           },
           { signal: AbortSignal.timeout(callTimeoutMs) },
         );
+        batchModels.set(batch.id, model);
         return batch.id;
       } catch (error) {
+        // 要求の形の誤りは、新しいモデルが受け付けない指定のことがある（同じく 9）
+        if (error instanceof Anthropic.BadRequestError && error.type === "invalid_request_error") {
+          models.invalidRequest(model);
+        } else {
+          models.otherOutcome(model);
+        }
         throw toTranslatorError(error);
       }
     },
@@ -178,22 +194,48 @@ export function createClaudeTranslator(input: {
         const stream = await client.beta.messages.batches.results(batchId, undefined, {
           signal: AbortSignal.timeout(callTimeoutMs),
         });
-        for await (const item of stream) {
+        // 結果をすべて読んでから、モデルを選ぶ仕組みに知らせる（途中で切れて読み直したときに、
+        // 二重に数えない）
+        const items = [];
+        for await (const item of stream) items.push(item);
+        const model = batchModels.get(batchId);
+        batchModels.delete(batchId);
+        // 訳せた結果を先に知らせる（同じバッチで訳せていれば、そのモデルを外さず、要求の形の誤りは
+        // 記事の中身によるものとして数える。結果の並びによらない）
+        items.sort(
+          (a, b) => Number(b.result.type === "succeeded") - Number(a.result.type === "succeeded"),
+        );
+        for (const item of items) {
           const id = item.custom_id;
           const result = item.result;
           if (result.type === "succeeded") {
             const read = readResult(result.message);
             if (read.status === "translated") models.succeeded(read.model);
+            else if (model !== undefined) models.otherOutcome(model);
             results.push({ id, ...read });
           } else if (result.type === "errored") {
-            results.push({ id, status: "errored", errorType: result.error?.error?.type ?? null });
+            const errorType = result.error?.error?.type ?? null;
+            let countedForModel = false;
+            if (model !== undefined) {
+              if (errorType === "invalid_request_error") {
+                countedForModel = models.invalidRequest(model);
+              } else {
+                models.otherOutcome(model);
+              }
+            }
+            results.push({ id, status: "errored", errorType, countedForModel });
           } else {
+            // expired ／ canceled も「ほかの結果」として、続けての数え方を戻す（決定の 9 の「続けて」）
+            if (model !== undefined) models.otherOutcome(model);
             results.push({ id, status: result.type });
           }
         }
         return { status: "ended", results };
       } catch (error) {
-        if (error instanceof Anthropic.NotFoundError) return { status: "gone" };
+        if (error instanceof Anthropic.NotFoundError) {
+          batchModels.delete(batchId);
+          return { status: "gone" };
+        }
         throw toTranslatorError(error);
       }
     },
@@ -250,6 +292,7 @@ function toTranslatorError(error: unknown): TranslatorError {
     return new TranslatorError(
       `the translation request was rejected (${error.status}): ${error.message}`,
       false,
+      { responded: true },
     );
   }
   if (
@@ -260,7 +303,12 @@ function toTranslatorError(error: unknown): TranslatorError {
   }
   if (error instanceof Anthropic.APIError) {
     // 本文は返さない（キーや記事の中身をログに出さない）
-    return new TranslatorError(`the translation call failed (${error.status ?? "network"})`, true);
+    // 受け付けずに断ったと分かる応答だけを responded にする。ほか（408、409、5xx など）は、受け付けた
+    // あとに返ることもある
+    const status = error.status;
+    return new TranslatorError(`the translation call failed (${status ?? "network"})`, true, {
+      responded: typeof status === "number" && REJECTED_STATUSES.has(status),
+    });
   }
 
   return new TranslatorError("the translation call failed", true);
