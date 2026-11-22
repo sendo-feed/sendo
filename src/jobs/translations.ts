@@ -4,17 +4,23 @@ import { articles } from "../db/schema";
 import { configureStorage, readStorageUsage } from "../db/storage";
 import {
   ARTICLE_TRANSLATION_BYTES,
+  COPY_BODY,
+  COPY_SUMMARY,
+  COPY_TITLE,
   countTranslateFailure,
   decideTranslations,
   failBatchArticles,
   failTranslating,
+  findCopies,
   finishBatchTranslation,
+  finishCopiedBatchArticle,
   finishTranslating,
   getTranslation,
   listArticleHolders,
   listBatchesToCheck,
   listBatchRows,
   markForBatch,
+  NO_BODY_HASH,
   releaseStaleBatchMarks,
   revertStaleTranslating,
   setBatchBody,
@@ -117,29 +123,52 @@ async function sendBatch(platform: MaintainPlatform, translator: Translator): Pr
   if (ids.length === 0) return 0;
   const requests: { id: string; segments: TranslationSegment[] }[] = [];
   const empty: string[] = [];
+  const copied: string[] = [];
   let bodyBytes = 0;
   for (const id of ids) {
     const article = await readArticle(platform, id);
     const body =
       article === undefined ? null : await bodyToTranslate(platform, id, article.contentKey);
+    const bodyHash = await bodyFingerprint(body);
+    // 同じ元記事から写せる部分は送らず、結果を書く文の中で写す（決定の 16）
+    const copies =
+      article === undefined ? 0 : copiesFor(article, await findCopies(db, id, bodyHash));
     const segments = [
-      ...(article === undefined ? [] : segmentsOf(article)),
-      ...(body?.segments.segments ?? []),
+      ...(article === undefined ? [] : segmentsOf(article, copies)),
+      ...((copies & COPY_BODY) === 0 ? (body?.segments.segments ?? []) : []),
     ];
     if (segments.length === 0) {
-      empty.push(id);
+      if (copies === 0 || article === undefined) {
+        empty.push(id);
+        continue;
+      }
+      // すべて写せる。送らずに、この文の中で写す元を選び直して写す。写す元がなくなっていた、容量が
+      // 足りないときは、書かずに待ちに戻す
+      const written = await finishCopiedBatchArticle(db, {
+        articleId: id,
+        key,
+        copies,
+        originalTitle: article.title,
+        originalSummary: article.summary,
+        bodySource: body?.source ?? null,
+        bodyHash,
+      });
+      if (written) copied.push(id);
+      else await unmarkBatch(db, key, [id]);
       continue;
     }
-    if (body !== null) {
-      // 結果を組み立てるときに、同じ本文で分け直し、送った断片と同じかを照らす
-      await setBatchBody(db, id, key, {
-        source: body.source,
-        hash: await segmentsHash(body.segments.segments),
-      });
+    // 結果を組み立てるときに、同じ本文で分け直し、送った断片と同じかを照らす。写す部分も覚えておく
+    await setBatchBody(db, id, key, {
+      source: body?.source ?? null,
+      hash: body === null ? null : await segmentsHash(body.segments.segments),
+      copies,
+    });
+    if (body !== null && (copies & COPY_BODY) === 0) {
       bodyBytes += new TextEncoder().encode(body.html).length;
     }
     requests.push({ id, segments });
   }
+  await notifyTranslationChanged(platform, copied);
   // 訳すものがない記事は、訳せないものとして待ちから外す
   const skipped = await skipEmptyBatchArticles(db, key, empty);
   await notifyTranslationChanged(platform, skipped);
@@ -292,7 +321,7 @@ const UNCOUNTED_BATCH_ERRORS = new Set([
 async function writeBatchResult(
   platform: MaintainPlatform,
   batchId: string,
-  row: { contentSource: "feed" | "page" | null; bodyHash: string | null },
+  row: { contentSource: "feed" | "page" | null; bodyHash: string | null; copies: number },
   result: { id: string; segments: TranslationSegment[]; model: string },
 ): Promise<"written" | "keep" | "requeue"> {
   const { db } = platform;
@@ -302,6 +331,7 @@ async function writeBatchResult(
     row.contentSource === null
       ? null
       : await bodyToTranslate(platform, result.id, article.contentKey, row.contentSource);
+  const copies = copiesFor(article, row.copies);
   // 分け方が送ったときと違えば（その間のデプロイ）、訳がずれるので書かずに待ちに戻し、今の分け方で
   // 送り直す
   if (body !== null && (await segmentsHash(body.segments.segments)) !== row.bodyHash) {
@@ -312,8 +342,8 @@ async function writeBatchResult(
   }
   // 送った断片の訳だけを使う。返ってこなかった断片は、原文のまま残す（決定の 10）
   const sent = new Set([
-    ...segmentsOf(article).map((segment) => segment.id),
-    ...(body?.segments.segments.map((segment) => segment.id) ?? []),
+    ...segmentsOf(article, copies).map((segment) => segment.id),
+    ...((copies & COPY_BODY) === 0 ? (body?.segments.segments.map((s) => s.id) ?? []) : []),
   ]);
   const translated = new Map(
     result.segments.filter((s) => sent.has(s.id)).map((s) => [s.id, s.text]),
@@ -323,13 +353,41 @@ async function writeBatchResult(
     batchId,
     title: article.title == null ? null : (translated.get("title") ?? article.title),
     summary: article.summary == null ? null : (translated.get("summary") ?? article.summary),
-    content: body === null ? null : assembleBody(body, translated),
+    content: body === null || (copies & COPY_BODY) !== 0 ? null : assembleBody(body, translated),
     model: result.model,
+    copies,
+    originalTitle: article.title,
+    originalSummary: article.summary,
+    bodySource: body?.source ?? null,
+    bodyHash: await bodyFingerprint(body),
   });
   if (ok) return "written";
   // 行がまだそのバッチの印を持ち訳文がないなら、容量のトリガーが書かなかった。次に書き直す
   const current = await getTranslation(db, result.id);
   return current?.batchId === batchId && current.translatedAt === null ? "keep" : "requeue";
+}
+
+/**
+ * 送る本文の指紋（サニタイズした HTML の SHA-256 の 16 進。本文を送らないなら "none"。決定の 16）。
+ * 同じ元記事の本文を写すかを、これで決める
+ */
+async function bodyFingerprint(body: { html: string } | null): Promise<string> {
+  return body === null ? NO_BODY_HASH : sha256Hex(body.html);
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)),
+  );
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** 写す部分のうち、その記事に原文のあるものだけ（原文のないタイトル・要約は写さない） */
+function copiesFor(article: { title: string | null; summary: string | null }, copies: number) {
+  let result = copies;
+  if (!article.title?.trim()) result &= ~COPY_TITLE;
+  if (!article.summary?.trim()) result &= ~COPY_SUMMARY;
+  return result;
 }
 
 /** 送る断片の指紋（SHA-256 の 16 進） */
@@ -419,14 +477,18 @@ function assembleBody(
   return { html, source: body.source };
 }
 
-/** 訳す断片（タイトルと要約）。空のものは送らない */
-export function segmentsOf(article: {
-  title: string | null;
-  summary: string | null;
-}): TranslationSegment[] {
+/** 訳す断片（タイトルと要約）。空のものと、同じ元記事から写すもの（決定の 16）は送らない */
+export function segmentsOf(
+  article: { title: string | null; summary: string | null },
+  copies = 0,
+): TranslationSegment[] {
   const segments: TranslationSegment[] = [];
-  if (article.title?.trim()) segments.push({ id: "title", text: article.title });
-  if (article.summary?.trim()) segments.push({ id: "summary", text: article.summary });
+  if (article.title?.trim() && (copies & COPY_TITLE) === 0) {
+    segments.push({ id: "title", text: article.title });
+  }
+  if (article.summary?.trim() && (copies & COPY_SUMMARY) === 0) {
+    segments.push({ id: "summary", text: article.summary });
+  }
   return segments;
 }
 
@@ -528,6 +590,7 @@ async function translateArticle(
     content,
     model: result.model,
     retranslation,
+    bodyHash: await bodyFingerprint(body),
   });
   if (written) return true;
   // 行がまだ同じなら、容量のトリガーが書かなかった。呼び直さずに戻す（決定の 12）

@@ -1,4 +1,5 @@
 import { eq, inArray, sql } from "drizzle-orm";
+import { normalizeSourceUrl } from "../translation/source-url";
 import { type Database, getRow } from ".";
 import { chunked } from "./chunk";
 import { DB_NOW_MS } from "./clock";
@@ -36,7 +37,109 @@ export const BATCH_MARK_TTL_MS = 60 * 60 * 1000;
 
 /** バッチの印を外す（待ちに戻す、訳文を書いた） */
 const CLEAR_BATCH = sql`batch_key = null, batch_marked_at = null, batch_id = null,
-  batch_content_source = null, batch_body_hash = null`;
+  batch_content_source = null, batch_body_hash = null, batch_copies = 0`;
+
+// --- 同じ元記事で写す（docs/decisions/translation.md の 16） ---
+
+/** 写す部分（batch_copies の和） */
+export const COPY_TITLE = 1;
+export const COPY_SUMMARY = 2;
+export const COPY_BODY = 4;
+
+/** 本文を送らなかった行の指紋 */
+export const NO_BODY_HASH = "none";
+
+/** 写す元を選ぶ順：訳し直した行を先に、次に訳した時刻の新しい順 */
+const SOURCE_ORDER = sql`order by s.retranslated desc, s.translated_at desc, s.article_id limit 1`;
+
+/** 写す先の行（UPDATE の対象の行）と同じ元記事の、ほかの translated の行 */
+const sameSource = sql`s.url_key = article_translations.url_key
+  and s.article_id <> article_translations.article_id and s.status = 'translated'`;
+
+/**
+ * 写す元の行の id。タイトル：訳したタイトルがある。原文と同じ文字の訳（写す元がなくて原文を書いた
+ * 行など）は、訳していないので写す元にしない
+ */
+const titleSourceId = sql`(select s.article_id from article_translations s
+  join articles sa on sa.id = s.article_id
+  where ${sameSource} and s.title is not null and s.title is not sa.title ${SOURCE_ORDER})`;
+
+/** 写す元の行の id。要約：原文の要約の文字が同じ */
+const summarySourceId = sql`(select s.article_id from article_translations s
+  join articles sa on sa.id = s.article_id
+  where ${sameSource} and s.summary is not null and s.summary is not sa.summary
+    and sa.summary = (select ta.summary from articles ta where ta.id = article_translations.article_id)
+  ${SOURCE_ORDER})`;
+
+/** 写す元の行の id。本文：送る本文の指紋が同じ */
+const bodySourceId = (
+  bodyHash: string | null,
+) => sql`(select s.article_id from article_translations s
+  where ${sameSource} and s.body_hash = ${bodyHash} and s.content is not null ${SOURCE_ORDER})`;
+
+const columnOf = (column: string, sourceId: ReturnType<typeof sql>) =>
+  sql`(select c.${sql.raw(column)} from article_translations c where c.article_id = ${sourceId})`;
+
+/**
+ * 同じ元記事から写せる部分（COPY_* の和）。送る前に、送るものと分けるために読む。写すのは結果を書く
+ * 文の中で、写す元を選び直す（決定の 16）。正規化した URL のない行は 0
+ */
+export async function findCopies(
+  db: Database,
+  articleId: string,
+  bodyHash: string | null,
+): Promise<number> {
+  const body = bodyHash === null || bodyHash === NO_BODY_HASH ? null : bodyHash;
+  const row = await getRow<{ copies: number }>(
+    db,
+    sql`select
+        (case when ${titleSourceId} is not null then ${COPY_TITLE} else 0 end)
+        + (case when ${summarySourceId} is not null then ${COPY_SUMMARY} else 0 end)
+        + (case when ${body} is not null and ${bodySourceId(body)} is not null
+            then ${COPY_BODY} else 0 end) as copies
+      from article_translations
+      where article_id = ${articleId} and url_key is not null`,
+  );
+  return row?.copies ?? 0;
+}
+
+/**
+ * 写す部分と送った訳から、書く列を組み立てる（UPDATE の SET に入れる）。写す元がなくなっていたら、
+ * タイトル・要約は原文の文字、本文は置かない（決定の 16）
+ */
+function translatedColumns(input: {
+  copies: number;
+  title: string | null;
+  summary: string | null;
+  originalTitle: string | null;
+  originalSummary: string | null;
+  content: { html: string; source: "feed" | "page" } | null;
+  /** 本文の出どころ（写すときも、その記事が 3 で選んだもの） */
+  bodySource: "feed" | "page" | null;
+  bodyHash: string;
+}) {
+  const copyBody = (input.copies & COPY_BODY) !== 0;
+  const bodySrc = bodySourceId(input.bodyHash);
+  const title =
+    (input.copies & COPY_TITLE) !== 0
+      ? sql`coalesce(${columnOf("title", titleSourceId)}, ${input.originalTitle})`
+      : sql`${input.title}`;
+  const summary =
+    (input.copies & COPY_SUMMARY) !== 0
+      ? sql`coalesce(${columnOf("summary", summarySourceId)}, ${input.originalSummary})`
+      : sql`${input.summary}`;
+  const content = copyBody ? columnOf("content", bodySrc) : sql`${input.content?.html ?? null}`;
+  const contentSource = copyBody
+    ? sql`case when ${columnOf("content", bodySrc)} is null then null else ${input.bodySource} end`
+    : sql`${input.content?.source ?? null}`;
+  // 本文（本文がなければタイトル）を訳し直した行から写したら、訳し直しの印も付ける
+  const retranslated = copyBody
+    ? sql`coalesce(${columnOf("retranslated", bodySrc)}, 0)`
+    : input.bodyHash === NO_BODY_HASH && (input.copies & COPY_TITLE) !== 0
+      ? sql`coalesce(${columnOf("retranslated", titleSourceId)}, 0)`
+      : sql`0`;
+  return { title, summary, content, contentSource, retranslated, bodySrc };
+}
 
 const languageFrom = (source: string) => sql`(select l.language from article_languages l
   where l.article_id = a.id and l.source = ${source} and l.status in ('detected', 'provisional'))`;
@@ -89,7 +192,47 @@ export async function decideTranslations(
     on conflict (article_id) do nothing
     returning article_id as articleId, status
   `);
+  // 同じ元記事を見分ける、正規化した URL を書く（決定の 16）。行を作るのは、ここだけにする（ほかの
+  // 呼び出し元も URL を書き漏らさないように）。行を作る文のあとなので、その間に落ちた行は書かれず、
+  // 使い回さない（訳すのは今までどおり）
+  const delivered = rows.filter((row) => row.status !== "skipped").map((row) => row.articleId);
+  await setUrlKeys(
+    db,
+    (await listArticleUrls(db, delivered)).flatMap((row) => {
+      const urlKey = normalizeSourceUrl(row.url);
+      return urlKey === null ? [] : [{ articleId: row.id, urlKey }];
+    }),
+  );
   return rows.map((row) => ({ articleId: row.articleId, delivered: row.status !== "skipped" }));
+}
+
+/**
+ * 作った行に、同じ元記事を見分ける正規化した URL を書く（docs/decisions/translation.md の 16）。
+ * まだ書いていない行だけに書く（何度動いても同じ結果）。正規化は呼んだ側が行う
+ */
+export async function setUrlKeys(
+  db: Database,
+  keys: readonly { articleId: string; urlKey: string }[],
+): Promise<void> {
+  for (const { articleId, urlKey } of keys) {
+    await db.run(sql`update article_translations set url_key = ${urlKey}
+      where article_id = ${articleId} and url_key is null`);
+  }
+}
+
+/** 記事の URL（正規化した URL を書くために読む） */
+export async function listArticleUrls(
+  db: Database,
+  articleIds: readonly string[],
+): Promise<{ id: string; url: string | null }[]> {
+  const rows: { id: string; url: string | null }[] = [];
+  for (const ids of chunked(articleIds, null)) {
+    rows.push(
+      ...(await db.all<{ id: string; url: string | null }>(sql`
+      select id, url from articles where id in (select value from json_each(${JSON.stringify(ids)}))`)),
+    );
+  }
+  return rows;
 }
 
 /**
@@ -186,6 +329,8 @@ export async function finishTranslating(
     model: string;
     /** 訳し直しなら、訳し直しの印を付ける（docs/decisions/translation.md の 6） */
     retranslation?: boolean;
+    /** 送った本文の指紋（決定の 16） */
+    bodyHash: string;
   },
 ): Promise<boolean> {
   const row = await getRow<{ articleId: string }>(
@@ -195,7 +340,8 @@ export async function finishTranslating(
         summary = ${input.summary}, content = ${input.content?.html ?? null},
         content_source = ${input.content?.source ?? null}, model = ${input.model},
         translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0,
-        retranslated = ${input.retranslation === true ? sql`1` : sql`retranslated`}, ${CLEAR_BATCH}
+        retranslated = ${input.retranslation === true ? sql`1` : sql`retranslated`},
+        body_hash = ${input.bodyHash}, ${CLEAR_BATCH}
       where ${stillTranslating(input.articleId, input.startedAt)}
       returning article_id as articleId`,
   );
@@ -316,11 +462,51 @@ export async function setBatchBody(
   db: Database,
   articleId: string,
   key: string,
-  body: { source: "feed" | "page"; hash: string },
+  body: { source: "feed" | "page" | null; hash: string | null; copies: number },
 ): Promise<void> {
   await db.run(sql`update article_translations
-    set batch_content_source = ${body.source}, batch_body_hash = ${body.hash}
+    set batch_content_source = ${body.source}, batch_body_hash = ${body.hash},
+      batch_copies = ${body.copies}
     where article_id = ${articleId} and batch_key = ${key}`);
+}
+
+/**
+ * 送る印を付けた行のうち、すべて写せる行を、送らずに写して translated にする（決定の 16）。写す元を
+ * この文の中で選び直し、写すと決めた部分の写す元がなくなっていたら書かない（呼んだ側が待ちに戻す）。
+ * 容量が足りなければ、トリガーが書かない
+ *
+ * @returns 書いたら true
+ */
+export async function finishCopiedBatchArticle(
+  db: Database,
+  input: {
+    articleId: string;
+    key: string;
+    copies: number;
+    originalTitle: string | null;
+    originalSummary: string | null;
+    bodySource: "feed" | "page" | null;
+    bodyHash: string;
+  },
+): Promise<boolean> {
+  const c = translatedColumns({ ...input, title: null, summary: null, content: null });
+  const need = (flag: number, sourceId: ReturnType<typeof sql>) =>
+    (input.copies & flag) !== 0 ? sql`and ${sourceId} is not null` : sql``;
+  const row = await getRow<{ articleId: string }>(
+    db,
+    sql`update article_translations set status = 'translated', title = ${c.title},
+        summary = ${c.summary}, content = ${c.content}, content_source = ${c.contentSource},
+        model = coalesce(${columnOf("model", c.bodySrc)}, ${columnOf("model", titleSourceId)},
+          ${columnOf("model", summarySourceId)}),
+        retranslated = ${c.retranslated}, body_hash = ${input.bodyHash},
+        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH}
+      where article_id = ${input.articleId} and batch_key = ${input.key} and batch_id is null
+        and status = 'queued' and translated_at is null
+        ${need(COPY_TITLE, titleSourceId)} ${need(COPY_SUMMARY, summarySourceId)}
+        ${need(COPY_BODY, c.bodySrc)}
+      returning article_id as articleId`,
+  );
+  return row !== undefined;
 }
 
 /** 送れたバッチの ID を、印が同じ行に書き留める */
@@ -365,13 +551,19 @@ export function listBatchRows(
   db: Database,
   batchId: string,
 ): Promise<
-  { articleId: string; contentSource: "feed" | "page" | null; bodyHash: string | null }[]
+  {
+    articleId: string;
+    contentSource: "feed" | "page" | null;
+    bodyHash: string | null;
+    copies: number;
+  }[]
 > {
   return db
     .select({
       articleId: articleTranslations.articleId,
       contentSource: articleTranslations.batchContentSource,
       bodyHash: articleTranslations.batchBodyHash,
+      copies: articleTranslations.batchCopies,
     })
     .from(articleTranslations)
     .where(eq(articleTranslations.batchId, batchId))
@@ -394,13 +586,21 @@ export async function finishBatchTranslation(
     summary: string | null;
     content: { html: string; source: "feed" | "page" } | null;
     model: string;
+    /** 送らずに同じ元記事から写す部分（決定の 16）。写す元はこの文の中で選び直す */
+    copies: number;
+    originalTitle: string | null;
+    originalSummary: string | null;
+    bodySource: "feed" | "page" | null;
+    /** 送った（写した）本文の指紋 */
+    bodyHash: string;
   },
 ): Promise<boolean> {
+  const c = translatedColumns(input);
   const row = await getRow<{ articleId: string }>(
     db,
-    sql`update article_translations set status = 'translated', title = ${input.title},
-        summary = ${input.summary}, content = ${input.content?.html ?? null},
-        content_source = ${input.content?.source ?? null}, model = ${input.model},
+    sql`update article_translations set status = 'translated', title = ${c.title},
+        summary = ${c.summary}, content = ${c.content}, content_source = ${c.contentSource},
+        model = ${input.model}, retranslated = ${c.retranslated}, body_hash = ${input.bodyHash},
         translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH}
       where article_id = ${input.articleId} and batch_id = ${input.batchId}
         and translated_at is null and status in ('queued', 'untranslated', 'translating')

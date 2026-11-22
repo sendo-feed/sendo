@@ -379,6 +379,13 @@
       "when": 1795362020207,
       "tag": "0053_article-translation-retranslated-sync",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "6",
+      "when": 1795369368601,
+      "tag": "0054_article-translation-source",
+      "breakpoints": true
     }
   ]
 }
