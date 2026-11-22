@@ -85,6 +85,16 @@ jobs:
             exit 1
           fi
 
+      # Rust の依存とビルドの成果物（~/.cargo と target/）をキャッシュし、毎回一からコンパイルしない。
+      # 下の Rust の検査（debug）とネイティブのモジュール（release）の両方の分を、1 つのキャッシュに持つ。
+      # 置くのは main への push のときだけにし、PR は main のものを読むだけにする（PR ごとに置くと、
+      # Container のイメージのキャッシュと同じ枠を食い合うため）。キーは rust-toolchain.toml の版と
+      # Cargo.lock から作られるので、どちらかを上げると作り直す
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: steps.changes.outputs.docs_only != 'true'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       # Rust（crates/）の整形、lint、テスト。版は rust-toolchain.toml のものを rustup が入れる
       - name: Rust
         if: steps.changes.outputs.docs_only != 'true'
