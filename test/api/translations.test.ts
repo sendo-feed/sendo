@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordExtractedPageContent } from "../../src/db/page-contents";
 import { articles, articleTranslations, feeds, userArticles } from "../../src/db/schema";
 import { configureStorage, readStorageUsage } from "../../src/db/storage";
-import { BATCH_MARK_TTL_MS, decideTranslations, markForBatch } from "../../src/db/translations";
+import {
+  BATCH_MARK_TTL_MS,
+  decideTranslations,
+  markForBatch,
+  NO_BODY_HASH,
+} from "../../src/db/translations";
 import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Job } from "../../src/jobs/job";
@@ -3063,6 +3068,16 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       ),
     );
 
+  /** 要約のない、URL の表記の違う、もう 1 つの同じ元記事 */
+  const mirror2 = () =>
+    channel(
+      "Mirror 2",
+      item(
+        "mirror2-1",
+        "GnuPG Security Advisory for GPGME",
+        "https://lists.gnupg.org/pipermail/gnupg-announce/2026q4/000517.html?utm_medium=rss",
+      ),
+    );
   /** タイトルのない、同じ元記事 */
   const untitled = () =>
     channel("Untitled", `<item><link>${GPGME_URL}</link><guid>untitled-1</guid></item>`);
@@ -3074,6 +3089,7 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
     "/top.xml": topPage,
     "/hn-copy.xml": hnCopy,
     "/untitled.xml": untitled,
+    "/mirror2.xml": mirror2,
   };
   /** 訳したことの分かる訳し方 */
   const mark: Transform = (segment) => `訳:${segment.text}`;
@@ -3689,12 +3705,17 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
   }
 
   /** 訳し直しを求め、その仕事を動かす（Opus の訳） */
-  async function retranslateNow(s: Setup, id: string, platform: Platform = s.platform) {
+  async function retranslateNow(
+    s: Setup,
+    id: string,
+    platform: Platform = s.platform,
+    transform: Transform = opusMark,
+  ) {
     s.enqueued.length = 0;
     expect((await retranslate(s, id)).response.status).toBe(202);
     const job = s.enqueued.find((j) => j.type === "translate-article" && j.articleId === id);
     if (!job) throw new Error("no retranslation job");
-    s.replies.push({ transform: opusMark });
+    s.replies.push({ transform });
     await runJob(platform, job);
     const row = await translationOf(s.platform, id);
     expect(row).toMatchObject({ retranslated: true, model: "claude-opus-5-5" });
@@ -3824,8 +3845,8 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
     const first = await translatedFirst(s);
     const second = await translatedLater(s, "/lobsters.xml");
     const secondBefore = await translationOf(s.platform, second);
-    // 訳し直した本文が上限を超えて置けなかった（作りにくいので、写す直前に本文を外す）
-    const hook = statementHook(/update article_translations as t/, async () => {
+    // 訳し直した本文が上限を超えて置けなかった（作りにくいので、写す先を読む直前に本文を外す）
+    const hook = statementHook(/select distinct t\.article_id/, async () => {
       await testDb.exec(
         `UPDATE article_translations SET content = NULL, content_source = NULL WHERE article_id = '${first}'`,
       );
@@ -3833,7 +3854,11 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
 
     await retranslateNow(s, first, { ...s.platform, db: hook.db });
     expect(hook.fired()).toBe(true);
-    await maintain(s.platform);
+    expect(await translationOf(s.platform, second)).toEqual(secondBefore);
+    // 写す先に選ばないので、定期実行も写そうとしない（100 行の枠を埋めない）
+    const copying = statementHook(/update article_translations as t/, async () => {});
+    await maintain({ ...s.platform, db: copying.db });
+    expect(copying.fired()).toBe(false);
     expect(await translationOf(s.platform, second)).toEqual(secondBefore);
     // 印がないので、後の記事は自分で訳し直せる
     expect((await retranslate(s, second)).response.status).toBe(202);
@@ -3912,6 +3937,66 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       title: opusRow?.title,
       summary: "訳:Comments",
       content: opusRow?.content,
+      retranslated: true,
+    });
+  });
+
+  it("両方に本文がない記事には、訳し直したタイトルを写して印を付ける。タイトルも写せなければ写さず、印も付けない", async () => {
+    for (const [transform, copied] of [
+      [opusMark, true],
+      // Opus がタイトルを返さず、原文のまま
+      [() => undefined, false],
+    ] as [Transform, boolean][]) {
+      await testDb.exec("DELETE FROM feeds");
+      const s = await setup({ feeds });
+      s.batches.transform = mark;
+      const source = await translatedLater(s, "/mirror.xml", null);
+      const target = await translatedLater(s, "/mirror2.xml", null);
+      const before = await translationOf(s.platform, target);
+      expect(before).toMatchObject({ bodyHash: NO_BODY_HASH, content: null, retranslated: false });
+
+      const opusRow = await retranslateNow(s, source, s.platform, transform);
+      await maintain(s.platform);
+      if (copied) {
+        expect(await translationOf(s.platform, target)).toMatchObject({
+          title: opusRow?.title,
+          content: null,
+          model: "claude-opus-5-5",
+          retranslated: true,
+        });
+      } else {
+        expect(opusRow?.title).toBe("GnuPG Security Advisory for GPGME");
+        expect(await translationOf(s.platform, target)).toEqual(before);
+      }
+    }
+  });
+
+  it("定期実行で写すところが落ちても、ほかの手入れは続け、次の定期実行で写す", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const second = await translatedLater(s, "/lobsters.xml");
+    const failing = () =>
+      statementHook(/update article_translations as t/, async () => {
+        throw new Error("the disk is busy");
+      });
+    const opusRow = await retranslateNow(s, first, { ...s.platform, db: failing().db });
+    const third = await deliver(s, "/mirror.xml");
+
+    const hook = failing();
+    await maintain({ ...s.platform, db: hook.db });
+    expect(hook.fired()).toBe(true);
+    expect(await translationOf(s.platform, second)).toMatchObject({ retranslated: false });
+    // 決める・送る（すべて写せる記事を写す）は続く
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "translated",
+      title: opusRow?.title,
+    });
+
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, second)).toMatchObject({
+      title: opusRow?.title,
       retranslated: true,
     });
   });
