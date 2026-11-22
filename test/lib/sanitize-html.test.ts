@@ -518,6 +518,45 @@ describe("sanitizeHtml の X の公式の埋め込みコード", () => {
     expect(clean(clean(two))).toBe(clean(two));
   });
 
+  it("動画・音声と embed を替えたリンクも数え、2 回通しても変わらない", () => {
+    for (const html of [
+      tweet(`<video><source src="${POST}"></video>`),
+      tweet(`<embed src="${POST}" />`),
+      tweet(`<audio src="${POST}"></audio>`),
+    ]) {
+      const once = clean(html);
+      expect(once, html).toBe(`${marked(ID)}<a href="${POST}" ${A}>${POST}</a></blockquote>`);
+      expect(clean(once)).toBe(once);
+    }
+  });
+
+  it("既定のポート（:443）は、絶対の URL にしたあとでは残らないので、印を付ける", () => {
+    expect(clean(tweet(`<a href="https://x.com:443/a/status/${ID}">投稿</a>`))).toBe(
+      `${marked(ID)}<a href="${POST.replace("example_user", "a")}" ${A}>投稿</a></blockquote>`,
+    );
+  });
+
+  it("深さの上限のところで替えたリンクは数えない（2 回目に落ちるので、印が変わらない）", () => {
+    const deep = (inner: string) => tweet(`${"<div>".repeat(99)}${inner}`);
+    const once = clean(deep(`<iframe src="${POST}"></iframe>`));
+    expect(once).toMatch(/^<blockquote>/);
+    expect(clean(clean(once))).toBe(clean(once));
+    // 上限より浅いところのリンクは数える
+    const shallow = clean(tweet(`${"<div>".repeat(98)}<a href="${POST}">投稿</a>`));
+    expect(shallow).toMatch(new RegExp(`^${marked(ID)}`));
+    expect(clean(shallow)).toBe(shallow);
+  });
+
+  it("閉じタグの順が乱れていても、引用の中のリンクで付け、2 回通しても変わらない", () => {
+    const once = clean(
+      `<blockquote class="twitter-tweet"><p><a href="${POST}">投稿</blockquote></p><p>続き</p>`,
+    );
+    expect(once).toBe(
+      `${marked(ID)}<p><a href="${POST}" ${A}>投稿</a></p></blockquote><p>続き</p>`,
+    );
+    expect(clean(once)).toBe(once);
+  });
+
   it("入力に書かれた印は、引用の中のリンクの ID で付け直す。条件に合わなければ落とす", () => {
     for (const value of ["999", "abc", "", `${ID}" onclick="alert(1)`]) {
       expect(
@@ -603,6 +642,15 @@ describe("sanitizeHtml の X の公式の埋め込みコード", () => {
         `<blockquote><a href="https://i.imgur.com/abc123.jpg" ${A}>写真</a>` +
         '<img src="https://i.imgur.com/abc123.jpg"></blockquote>',
     );
+    // 同じ引用に両方の class があれば、両方を当てる
+    const both = clean(
+      `<blockquote class="imgur-embed-pub twitter-tweet"><a href="https://i.imgur.com/abc123.jpg">写真</a><a href="${POST}">投稿</a></blockquote>`,
+    );
+    expect(both).toBe(
+      `${marked(ID)}<a href="https://i.imgur.com/abc123.jpg" ${A}>写真</a>` +
+        `<a href="${POST}" ${A}>投稿</a><img src="https://i.imgur.com/abc123.jpg"></blockquote>`,
+    );
+    expect(clean(both)).toBe(both);
     // Imgur の引用の中の投稿のリンクには、印を付けない（twitter-tweet でないので）
     expect(
       clean(`<blockquote class="imgur-embed-pub"><a href="${POST}">投稿</a></blockquote>`),

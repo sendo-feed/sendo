@@ -124,11 +124,17 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
    */
   const xPosts: { depth: number; tag: number; ids: Set<string> }[] = [];
 
-  /** リンクを開く。開いている X の引用には、投稿のリンクとして数える */
+  /**
+   * リンクを開く。開いている X の引用には、投稿のリンクとして数える。深さの上限のところで
+   * 埋め込みを替えたリンクは、もう一度通すと落ちるので、数えない（印を冪等に保つ）。
+   * 知りたいのは ID がちょうど 1 つかどうかなので、引用ごとに 2 つまで集める
+   */
   const pushLink = (href: string) => {
     parts.push(link(href));
-    const id = xPosts.length > 0 ? xPostId(href) : null;
-    if (id !== null) for (const quote of xPosts) quote.ids.add(id);
+    if (xPosts.length === 0 || open.length >= MAX_DEPTH) return;
+    const id = xPostId(href);
+    if (id === null) return;
+    for (const quote of xPosts) if (quote.ids.size < 2) quote.ids.add(id);
   };
 
   /** いちばん内側の要素を閉じる。Imgur の公式埋め込みの引用なら、閉じる前に画像を足す */
