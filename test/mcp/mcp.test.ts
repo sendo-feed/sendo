@@ -826,6 +826,27 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     ).toMatchObject({ folderId: techId, folderName: "技術" });
   });
 
+  it("create_folder は、切り詰めた位置の直前が空白の名前でも、2 回目に同じフォルダを返す", async () => {
+    const { platform, token } = await setup(["read", "write"]);
+    const { client } = await connect(platform, token, era);
+    const long = `${"a".repeat(199)} b`;
+
+    const first = (await client.callTool({
+      name: "create_folder",
+      arguments: { name: long },
+    })) as Structured<{ folder: { id: string; name: string }; created: boolean }>;
+    expect(first.structuredContent).toMatchObject({
+      folder: { name: "a".repeat(199) },
+      created: true,
+    });
+    // 一覧に出た名前で作り直しても、同じフォルダ
+    for (const name of [long, "a".repeat(199)]) {
+      expect(
+        (await client.callTool({ name: "create_folder", arguments: { name } })).structuredContent,
+      ).toEqual({ folder: first.structuredContent?.folder, created: false });
+    }
+  });
+
   it("同じ名前の create_folder が同時に来ても、フォルダは 1 つで、どちらも同じ ID を返す", async () => {
     const { platform, token, user } = await setup(["read", "write"]);
     const { client } = await connect(platform, token, era);
