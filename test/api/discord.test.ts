@@ -830,11 +830,16 @@ describe("サーバーにアイコンがないときの Discord のアイコン�
     t.remote.setGuildIcon(null);
     failing.arm();
     t.state.now = new Date(FIXED_NOW.getTime() + HOUR);
-    await runFetchFeed(t.platform, t.feedId).catch(() => undefined);
+    // DB の失敗は仕事の失敗にし、キューのやり直しに回す。フィードの取得は成功として残る
+    await expect(runFetchFeed(t.platform, t.feedId)).rejects.toThrow("落ちた");
     expect(failing.fired()).toBe(true);
     expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
       iconUrl: cdn(icon("a")),
       iconCheckedAt: null,
+      lastFetchedAt: new Date(FIXED_NOW.getTime() + HOUR),
+      lastSuccessfulFetchAt: new Date(FIXED_NOW.getTime() + HOUR),
+      lastError: null,
+      errorCount: 0,
     });
 
     // 次の取得で、30 日を待たずに探し直す
