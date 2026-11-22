@@ -9,7 +9,11 @@ import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Job } from "../../src/jobs/job";
 import { runScheduled } from "../../src/jobs/schedule";
 import type { LanguageDetectionResult, Platform } from "../../src/platform";
-import { createClaudeTranslator, DEFAULT_TRANSLATION_MODEL } from "../../src/translation/claude";
+import {
+  createClaudeTranslator,
+  DEFAULT_RETRANSLATION_MODEL,
+  DEFAULT_TRANSLATION_MODEL,
+} from "../../src/translation/claude";
 import { testDb } from "../db";
 import { ARTICLE_BODY } from "../fixtures/translation-article";
 import {
@@ -1553,13 +1557,6 @@ describe("翻訳に使うモデルを選ぶ（docs/decisions/translation.md の 
     expect(s.models.requests).toBe(0);
   });
 
-  it("その場の翻訳と訳し直しは、同じ一覧を使い、1 回の取り直しで一覧を 1 度だけ取る", async () => {
-    const s = await setup();
-    await maintain(s.platform);
-    await translateOnce(s, await articleId(s.platform, "en"));
-    expect(s.models.requests).toBe(1);
-  });
-
   const failingModels = () =>
     Response.json({ type: "error", error: { type: "api_error", message: "x" } }, { status: 500 });
 
@@ -2735,9 +2732,9 @@ describe("Opus で訳し直す（docs/decisions/translation.md の 6、9、13）
     expect(s.claude).toHaveLength(0);
   });
 
-  it("訳し直しの最中にバッチの結果が返っても、訳文を上書きしない", async () => {
+  it("バッチに送ったあとでその場で訳した記事を訳し直す最中に、そのバッチの結果が返っても、訳文を上書きしない", async () => {
     const s = await setup();
-    // 決めた定期実行がバッチで送ったあとで、その場で訳した記事
+    // 決めた定期実行がバッチで送ったあとで、その場で訳した記事（その場の翻訳がバッチの印を外している）
     const id = await translatedArticle(s);
     expect(s.batches.list).toHaveLength(1);
     expect(s.batches.list[0]?.requests.map((r) => r.custom_id)).toContain(id);
@@ -2759,5 +2756,148 @@ describe("Opus で訳し直す（docs/decisions/translation.md の 6、9、13）
       title: OPUS_TITLE,
       retranslated: true,
     });
+  });
+
+  it("バッチで訳した記事を訳し直す", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      retranslated: false,
+    });
+
+    expect((await retranslate(s, id)).response.status).toBe(202);
+    s.replies.push(opusReply);
+    await runQueuedTranslation(s);
+    expect(sentModels(s)).toEqual(["claude-opus-5-5"]);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: OPUS_TITLE,
+      model: "claude-opus-5-5",
+      retranslated: true,
+    });
+  });
+
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it("その場の翻訳と訳し直しは同じ一覧を使い、1 日ごとの取り直しも 1 度だけで、両方に効く", async () => {
+    let list = [
+      modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+      modelInfo("claude-opus-6", "2026-10-01T00:00:00Z"),
+    ];
+    const s = await setup({ models: () => modelsResponse(list) });
+    const en = await translatedArticle(s);
+    await retranslate(s, en);
+    await runQueuedTranslation(s);
+    expect(s.models.requests).toBe(1);
+
+    list = [
+      ...list,
+      modelInfo("claude-sonnet-7", "2026-11-01T00:00:00Z"),
+      modelInfo("claude-opus-7", "2026-11-02T00:00:00Z"),
+    ];
+    s.clock.ms += DAY;
+    const und = await articleId(s.platform, "und");
+    s.enqueued.length = 0;
+    await request(s, und);
+    await runQueuedTranslation(s);
+    s.enqueued.length = 0;
+    await retranslate(s, und);
+    await runQueuedTranslation(s);
+    expect(s.models.requests).toBe(2);
+    expect(sentModels(s)).toEqual(["claude-opus-6", "claude-sonnet-7", "claude-opus-7"]);
+  });
+
+  it("一覧を取れなければ、訳し直しはコードの既定の Opus（前に取れていれば、前に選んだもの）で送る", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({
+      models: () =>
+        Response.json(
+          { type: "error", error: { type: "api_error", message: "x" } },
+          { status: 500 },
+        ),
+    });
+    const id = await translatedArticle(s);
+    await retranslate(s, id);
+    await runQueuedTranslation(s);
+    expect(sentModels(s)).toEqual([DEFAULT_RETRANSLATION_MODEL]);
+
+    await testDb.exec("DELETE FROM feeds");
+    const t = await setup({
+      models: () => modelsResponse([modelInfo("claude-opus-6", "2026-10-01T00:00:00Z")]),
+    });
+    const other = await translatedArticle(t);
+    t.models.reply = () =>
+      Response.json({ type: "error", error: { type: "api_error", message: "x" } }, { status: 500 });
+    t.clock.ms += DAY;
+    await retranslate(t, other);
+    await runQueuedTranslation(t);
+    expect(t.models.requests).toBe(2);
+    expect(sentModels(t)).toEqual(["claude-opus-6"]);
+  });
+
+  it("新しい Opus で要求の形の誤りが続けて 3 件起きたら Opus だけを外し、その場の翻訳のモデルは変わらない", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-opus-6", "2026-10-01T00:00:00Z"),
+          modelInfo("claude-opus-5-5", "2026-07-01T00:00:00Z"),
+          modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+        ]),
+    });
+    const id = await translatedArticle(s);
+    const invalid: Reply = { status: 400, errorType: "invalid_request_error" };
+    for (let i = 0; i < 3; i++) {
+      s.enqueued.length = 0;
+      expect((await retranslate(s, id)).response.status).toBe(202);
+      s.replies.push(invalid);
+      await runQueuedTranslation(s);
+    }
+    s.enqueued.length = 0;
+    await retranslate(s, id);
+    await runQueuedTranslation(s);
+    const und = await articleId(s.platform, "und");
+    s.enqueued.length = 0;
+    await request(s, und);
+    await runQueuedTranslation(s);
+    expect(sentModels(s)).toEqual([
+      "claude-opus-6",
+      "claude-opus-6",
+      "claude-opus-6",
+      "claude-opus-5-5",
+      "claude-sonnet-6",
+    ]);
+  });
+
+  it("本文の指定は省いても、retranslate が false でも、その場の翻訳になる。読めない本文は 400、受け付けない Content-Type は 415 で、状態を変えない", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const en = await articleId(s.platform, "en");
+    const und = await articleId(s.platform, "und");
+    const post = (id: string, init: RequestInit & { json?: unknown }) =>
+      requestApp(s.platform, `/api/v1/articles/${id}/translation`, { method: "POST", ...init });
+
+    const malformed = await post(en, { headers: { "content-type": "application/json" } });
+    expect(malformed.status).toBe(400);
+    expect(((await malformed.json()) as Body).error?.code).toBe("invalid_request");
+    const unsupported = await post(en, { headers: { "content-type": "text/plain" }, body: "x" });
+    expect(unsupported.status).toBe(415);
+    expect(((await unsupported.json()) as Body).error?.code).toBe("unsupported_media_type");
+    expect(await translationOf(s.platform, en)).toMatchObject({ status: "queued" });
+
+    expect((await post(en, { json: {} })).status).toBe(202);
+    expect((await post(und, { json: { retranslate: false } })).status).toBe(202);
+    expect(s.enqueued.filter((j) => j.type === "translate-article")).toEqual([
+      expect.not.objectContaining({ retranslation: true }),
+      expect.not.objectContaining({ retranslation: true }),
+    ]);
   });
 });

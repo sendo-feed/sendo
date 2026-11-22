@@ -84,7 +84,8 @@ const requestRoute = createRoute({
           schema: z
             .object({
               retranslate: z.boolean().optional().openapi({
-                description: "true なら訳し直す（Opus）。なければ、その場で訳す",
+                description:
+                  "true なら訳し直す（Opus）。false か、なければ（本文がなくてもよい）、その場で訳す",
               }),
             })
             .openapi("TranslationRequest"),
@@ -103,6 +104,7 @@ const requestRoute = createRoute({
         },
       },
     },
+    400: error("本文が正しくない（invalid_request）"),
     404: error("記事がない（not_found）"),
     409: error(
       "訳せない記事（translation_not_supported：日本語の記事、Discord の投稿、訳すかどうかをまだ決めていない記事）、その場の翻訳を求めたが、もう訳しているか訳し終えた（translation_exists）、訳し直しを求めたが、訳文がないか、訳している最中か、もう訳し直した（retranslation_not_allowed）",
