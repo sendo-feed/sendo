@@ -25,6 +25,9 @@ on:
 permissions:
   contents: read
 
+# main でもブランチごとに 1 本ずつ動かす（CI と違い、コミットごとに分けない）。main のタグを付けて
+# イメージを置くので、並べて動かすと、古いコミットのイメージがあとから置かれて main のタグを上書き
+# しうる。続けてマージしたときは、待っていたコミットの分が新しいほうに置き換えられ、新しいほうが残る
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
