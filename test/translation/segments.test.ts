@@ -112,6 +112,39 @@ describe("splitBody", () => {
     expect(out).toContain("<p>訳Inner</p>");
   });
 
+  it.each([
+    ['<a href="https://github.com/foo/bar">github.com/foo/bar</a>', "github.com"],
+    ['<a href="https://example.com/a">&lt;https://example.com/a&gt;</a>', "example.com"],
+    ['<a href="https://example.com/a">\u2060https://example.com/a</a>', "example.com"],
+    ['<a href="https://example.com/a">https://example.com/a b</a>', "example.com"],
+    ['<a href="https://example.com/a">https://example.com <code>z</code></a>', "example.com"],
+    ['<a href="mailto:someone@example.com">someone@example.com</a>', "someone@"],
+    ['<a href="https://example.com/a">see<br>https://example.com/a</a>', "example.com"],
+  ])("URL を見せるリンク %s は、URL を送らない", (link, hidden) => {
+    const body = splitBody(html(`<p>Read ${link} now</p>`));
+    expect(JSON.stringify(body.segments)).not.toContain(hidden);
+    expect(body.segments[0]?.text).toBe("Read ⟦1/⟧ now");
+  });
+
+  it("中身を送らない要素は、中にブロックがあっても単独の印にする", () => {
+    const body = splitBody(html("<p>A <code>c<pre>SECRET</pre></code> B</p>"));
+    expect(JSON.stringify(body.segments)).not.toContain("SECRET");
+    expect(body.segments[0]?.text).toBe("A ⟦1/⟧ B");
+  });
+
+  it("ブロックとして扱った文の中の要素は、開きタグと属性を保ち、2 段下のブロックも別の断片にする", () => {
+    const source = html(
+      '<p><a href="https://example.com/a">Title<p>Inner</p></a></p><div><strong><em><p>Deep</p></em></strong></div>',
+    );
+    const body = splitBody(source);
+    expect(body.segments.map((segment) => segment.text)).toEqual(["Title", "Inner", "Deep"]);
+    const out = body.assemble(new Map(body.segments.map((s) => [s.id, `訳${s.text}`])));
+    const link = /<a [^>]*>/.exec(source)?.[0];
+    expect(link).toContain('href="https://example.com/a"');
+    expect(out).toContain(`${link}訳Title<p>訳Inner</p></a>`);
+    expect(out).toContain("<strong><em><p>訳Deep</p></em></strong>");
+  });
+
   it("中身のない要素は単独の印にする（落とされても断片を原文に戻さない）", () => {
     const body = splitBody(html("<p>Hello <em></em>world</p>"));
     expect(body.segments[0]?.text).toBe("Hello ⟦1/⟧world");

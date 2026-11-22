@@ -1,5 +1,5 @@
 import { decodeHTML } from "entities";
-import { escapeHtml, tokenizeHtml } from "../lib/html";
+import { escapeHtml, parseAttributes, tokenizeHtml } from "../lib/html";
 
 /*
  * 記事の本文を、LLM に送る断片に分け、受け取った訳から本文を組み立て直す
@@ -33,8 +33,11 @@ const UNTRANSLATED_BLOCKS = new Set(["pre"]);
 
 const MARKER = /⟦(\/)?(\d+)(\/)?⟧/g;
 
-/** URL に見える文字（リンクの文字が URL なら、その URL を送らない。決定の 10、11） */
-const URL_LIKE = /^(?:[a-z][a-z0-9+.-]*:\/\/|www\.)\S*$/i;
+/** スキームか「//」か「www.」で始まる、空白のない文字（URL の表示） */
+const URL_LIKE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|www\.)\S*$/i;
+
+/** 見えない文字（ゼロ幅の空白など） */
+const INVISIBLE = /[\u200B-\u200D\u2060\uFEFF]/g;
 
 type Node =
   | { type: "text"; raw: string }
@@ -261,13 +264,38 @@ function hasBlock(node: Extract<Node, { type: "element" }>): boolean {
  */
 function isOpaque(node: Extract<Node, { type: "element" }>): boolean {
   if (ATOMIC.has(node.name)) return true;
-  const text = decodeHTML(node.children.map(textOf).join("")).trim();
+  const text = decodeHTML(node.children.map(textOf).join("")).replace(INVISIBLE, "").trim();
   if (text === "") return true;
-  return node.name === "a" && URL_LIKE.test(text);
+  return node.name === "a" && showsUrl(text, parseAttributes(node.attributes).get("href"));
 }
 
+/**
+ * リンクの文字が URL を見せているか（その URL を送らない。決定の 10、11）。スキーム ／ 「//」 ／
+ * 「www.」で始まる表示か、リンク先のホスト（mailto はあて先）を含む表示なら、URL とみなす
+ * （スキームを省いた表示、括弧で囲んだ表示、URL のあとに文字が続く表示も）
+ */
+function showsUrl(text: string, rawHref: string | undefined): boolean {
+  const shown = text.replace(/^[<([]+|[>)\]]+$/g, "");
+  if (URL_LIKE.test(shown)) return true;
+  if (rawHref === undefined) return false;
+  let href: URL;
+  try {
+    href = new URL(decodeHTML(rawHref));
+  } catch {
+    return false;
+  }
+  const lower = text.toLowerCase();
+  if (href.protocol === "mailto:")
+    return lower.includes(decodeURIComponent(href.pathname).toLowerCase());
+  const host = href.hostname.toLowerCase().replace(/^www\./, "");
+  return host !== "" && lower.includes(host);
+}
+
+/** 要素の文字（改行は空白として数える） */
 function textOf(node: Node): string {
-  return node.type === "text" ? node.raw : node.children.map(textOf).join("");
+  if (node.type === "text") return node.raw;
+  if (node.name === "br") return " ";
+  return node.children.map(textOf).join("");
 }
 
 const openTag = (node: Extract<Node, { type: "element" }>) => `<${node.name}${node.attributes}>`;
