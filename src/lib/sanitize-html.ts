@@ -80,6 +80,31 @@ function isImgurImageUrl(href: string): boolean {
   );
 }
 
+/** X の公式の埋め込みコードの引用に付く class */
+const X_EMBED = "twitter-tweet";
+/** 投稿の ID の印（docs/decisions/content.md の 2）。sendo が付け、出力に残る */
+const X_POST_ATTRIBUTE = "data-x-post";
+const X_POST_HOSTS = new Set(["x.com", "twitter.com"]);
+const X_POST_PATH = /^\/[A-Za-z0-9_]{1,15}\/status\/(\d{1,20})\/?$/;
+
+/**
+ * リンクが X の投稿を指していれば、その ID を返す（docs/decisions/content.md の 2）。
+ * 絶対の URL にしたあとで見る。クエリとハッシュは見ない
+ */
+function xPostId(href: string): string | null {
+  const url = new URL(href);
+  if (
+    url.protocol !== "https:" ||
+    !X_POST_HOSTS.has(url.hostname) ||
+    url.port !== "" ||
+    url.username !== "" ||
+    url.password !== ""
+  ) {
+    return null;
+  }
+  return X_POST_PATH.exec(url.pathname)?.[1] ?? null;
+}
+
 function sanitizeToParts(html: string, baseUrl: string): Part[] {
   const parts: Part[] = [];
   /** 開いている（閉じタグを出していない）要素 */
@@ -91,6 +116,26 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
    * 画像の直リンクが見つかれば image に持ち、引用の中に画像が残れば hasImage を立てる
    */
   let imgur: { depth: number; image: string | null; hasImage: boolean } | null = null;
+  /**
+   * 開いている X の引用（外側から順）。depth は、その引用を開いたあとの open の長さ、tag は
+   * 開きタグの parts の位置。ids には、引用の中に出した投稿のリンクの ID を集める（入れ子の
+   * 引用の中のリンクも、外側の引用で数える）。閉じるときに ID がちょうど 1 つなら、開きタグに
+   * 印を付ける
+   */
+  const xPosts: { depth: number; tag: number; ids: Set<string> }[] = [];
+
+  /**
+   * リンクを開く。開いている X の引用には、投稿のリンクとして数える。深さの上限のところで
+   * 埋め込みを替えたリンクは、もう一度通すと落ちるので、数えない（印を冪等に保つ）。
+   * 知りたいのは ID がちょうど 1 つかどうかなので、引用ごとに 2 つまで集める
+   */
+  const pushLink = (href: string) => {
+    parts.push(link(href));
+    if (xPosts.length === 0 || open.length >= MAX_DEPTH) return;
+    const id = xPostId(href);
+    if (id === null) return;
+    for (const quote of xPosts) if (quote.ids.size < 2) quote.ids.add(id);
+  };
 
   /** いちばん内側の要素を閉じる。Imgur の公式埋め込みの引用なら、閉じる前に画像を足す */
   const closeTop = () => {
@@ -98,6 +143,12 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       // 中のリンクは、ここまでに閉じている（画像は、リンクの外に置く）
       if (imgur.image !== null && !imgur.hasImage) parts.push({ image: imgur.image, rest: "" });
       imgur = null;
+    }
+    const quote = xPosts.at(-1);
+    if (quote && open.length === quote.depth) {
+      xPosts.pop();
+      const [id] = quote.ids;
+      if (quote.ids.size === 1) parts[quote.tag] = `<blockquote ${X_POST_ATTRIBUTE}="${id}">`;
     }
     parts.push(`</${open.pop()}>`);
   };
@@ -119,7 +170,8 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
         // 動画・音声の行き先が、子の <source> に書いてある場合。最初に見つかった 1 つをリンクにする
         const src = toUrl(parseAttributes(token.attributes).get("src"), baseUrl, HTTP);
         if (src) {
-          parts.push(link(src), escapeHtml(src), "</a>");
+          pushLink(src);
+          parts.push(escapeHtml(src), "</a>");
           dropping.wantsLink = false;
         }
       }
@@ -142,7 +194,10 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       let linked = false;
       if (REPLACED_WITH_LINK.has(name)) {
         const src = toUrl(parseAttributes(token.attributes).get("src"), baseUrl, HTTP);
-        if (src) parts.push(link(src), escapeHtml(src), "</a>");
+        if (src) {
+          pushLink(src);
+          parts.push(escapeHtml(src), "</a>");
+        }
         linked = src !== null;
       }
       // 自分で閉じる書き方（<embed ... />）や、閉じタグのない要素でも、あとの中身を巻き込まない
@@ -184,7 +239,7 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       const href = toUrl(attributes.get("href"), baseUrl, [...HTTP, "mailto:"]);
       // 行き先のないリンクは、タグを落として中身だけ残す
       if (!href) continue;
-      parts.push(link(href));
+      pushLink(href);
       // 当てはまるリンクがいくつもあれば、最初の 1 つを使う
       if (imgur && imgur.image === null && isImgurImageUrl(href)) imgur.image = href;
     } else {
@@ -205,6 +260,15 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       (attributes.get("class") ?? "").split(/\s+/).includes(IMGUR_EMBED)
     ) {
       imgur = { depth: open.length, image: null, hasImage: false };
+    }
+    // 印は出力に残るので、保存した本文をもう一度通したときは、印のある引用として調べ直す。
+    // 印の値は使わず、引用の中のリンクから作り直す
+    if (
+      name === "blockquote" &&
+      ((attributes.get("class") ?? "").split(/\s+/).includes(X_EMBED) ||
+        attributes.has(X_POST_ATTRIBUTE))
+    ) {
+      xPosts.push({ depth: open.length, tag: parts.length - 1, ids: new Set() });
     }
   }
 

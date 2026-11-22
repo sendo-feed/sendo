@@ -372,6 +372,29 @@ describe("本文を配る", () => {
     expect(body.html).not.toContain("script");
   });
 
+  it("X の公式の埋め込みコードの引用は、投稿の ID の印を付けて置き、返すときにも残す", async () => {
+    const embed =
+      '<blockquote class="twitter-tweet" data-lang="ja"><p lang="ja" dir="ltr">投稿の文</p>' +
+      "&mdash; 名前 (@example_user) " +
+      '<a href="https://twitter.com/example_user/status/1234567890123456789?ref_src=twsrc%5Etfw">November 21, 2026</a></blockquote>' +
+      '<script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>';
+    const t = await setUp(() => rss(item("x", encoded(`<p>${LONG}</p>${embed}`))));
+    await runFetchFeed(t.platform, t.feed.id);
+    const article = await t.byGuid("x");
+
+    const res = await requestApp(t.platform, `/api/v1/articles/${article.id}/content`, {
+      token: t.user.token,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { html: string };
+    // 引用の中身は変えず、開きタグに印だけを付ける
+    expect(body.html).toContain(
+      '<blockquote data-x-post="1234567890123456789"><p>投稿の文</p>— 名前 (@example_user) ' +
+        '<a href="https://twitter.com/example_user/status/1234567890123456789?ref_src=twsrc%5Etfw" rel="noopener noreferrer nofollow">November 21, 2026</a></blockquote>',
+    );
+    expect(body.html).not.toContain("script");
+  });
+
   it("本文のない記事、ほかの人の記事、ない記事は 404。認証がなければ 401", async () => {
     const t = await setUp(() => rss(item("full", FULL), item("none", "")));
     await runFetchFeed(t.platform, t.feed.id);
