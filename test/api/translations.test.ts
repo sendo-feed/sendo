@@ -8,7 +8,7 @@ import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Job } from "../../src/jobs/job";
 import { runScheduled } from "../../src/jobs/schedule";
 import type { LanguageDetectionResult, Platform } from "../../src/platform";
-import { createClaudeTranslator } from "../../src/translation/claude";
+import { createClaudeTranslator, DEFAULT_TRANSLATION_MODEL } from "../../src/translation/claude";
 import { testDb } from "../db";
 import { ARTICLE_BODY } from "../fixtures/translation-article";
 import {
@@ -87,7 +87,11 @@ const textBlock = (index: number, text: string): [string, unknown][] => [
 ];
 
 /** Messages API のストリーミング（SSE）の応答を組み立てる */
-function claudeResponse(reply: Reply, signal?: AbortSignal | null): Response {
+function claudeResponse(
+  reply: Reply,
+  signal?: AbortSignal | null,
+  model = "claude-sonnet-5-5",
+): Response {
   if (reply.status !== undefined) {
     return Response.json(
       { type: "error", error: { type: reply.errorType ?? "api_error", message: "failed" } },
@@ -102,7 +106,7 @@ function claudeResponse(reply: Reply, signal?: AbortSignal | null): Response {
         id: "msg_test",
         type: "message",
         role: "assistant",
-        model: "claude-sonnet-5-5",
+        model,
         content: [],
         stop_reason: null,
         stop_sequence: null,
@@ -133,7 +137,7 @@ function claudeResponse(reply: Reply, signal?: AbortSignal | null): Response {
               index: 1,
               content_block: {
                 type: "fallback",
-                from: { model: "claude-sonnet-5-5" },
+                from: { model },
                 to: { model: "claude-opus-5" },
                 trigger: { type: "refusal", category: null },
               },
@@ -163,8 +167,37 @@ const translated = (segments: { id: string; text: string }[]) => JSON.stringify(
 const JA_TITLE = "コードモッドでリファクタリングし、API の変更を自動化する";
 const JA_SUMMARY = "コードモッドは、大きなコードベース全体に API の変更を当てるスクリプト。";
 
+/** Models API の一覧の 1 件（実際の応答の形） */
+const modelInfo = (id: string, createdAt: string) => ({
+  type: "model",
+  id,
+  display_name: id,
+  created_at: createdAt,
+});
+
+/** Models API の応答（実際の形。1 ページで返す） */
+function modelsResponse(models: ReturnType<typeof modelInfo>[]): Response {
+  return Response.json({
+    data: models,
+    has_more: false,
+    first_id: models[0]?.id ?? null,
+    last_id: models.at(-1)?.id ?? null,
+  });
+}
+
+/** 既定の一覧。その場の翻訳には claude-sonnet-5-5 を選ぶ */
+const DEFAULT_MODELS = [
+  modelInfo("claude-opus-5-5", "2026-07-01T00:00:00Z"),
+  modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+  modelInfo("claude-sonnet-5", "2026-01-01T00:00:00Z"),
+];
+
 interface Setup {
   platform: Platform;
+  /** Models API の答え。替えると、次に一覧を取るときから効く */
+  models: { reply: () => Response; requests: number };
+  /** 翻訳の側の時計（一覧を取り直す時期を進める） */
+  clock: { ms: number };
   enqueued: Job[];
   /** Claude API に送った要求の本文とヘッダー */
   claude: { body: string; headers: Headers }[];
@@ -181,15 +214,30 @@ async function setup(
     subscribers?: string[];
     /** 英語の項目の本文（content:encoded） */
     body?: string;
+    /** 固定のモデル（TRANSLATION_MODEL） */
+    model?: string;
+    /** Models API の最初の答え */
+    models?: () => Response;
   } = {},
 ): Promise<Setup> {
   const n = ++setups;
   const replies: Reply[] = [];
   const claude: Setup["claude"] = [];
+  const models: Setup["models"] = {
+    reply: options.models ?? (() => modelsResponse(DEFAULT_MODELS)),
+    requests: 0,
+  };
+  const clock = { ms: Date.now() };
   const fake = fakeFetch(async (url, init) => {
+    if (url.hostname === "api.anthropic.com" && url.pathname === "/v1/models") {
+      models.requests += 1;
+      return models.reply();
+    }
     if (url.hostname === "api.anthropic.com") {
       const sent = String(init?.body ?? "");
       claude.push({ body: sent, headers: new Headers(init?.headers) });
+      // 応答のモデルは、送ったモデル
+      const model = (JSON.parse(sent) as { model?: string }).model;
       const reply = replies.shift() ?? {
         transform: (segment) =>
           segment.id === "title" ? JA_TITLE : segment.id === "summary" ? JA_SUMMARY : undefined,
@@ -204,9 +252,9 @@ async function setup(
           const text = transform(segment);
           return text === undefined ? [] : [{ id: segment.id, text }];
         });
-        return claudeResponse({ text: translated(out) }, init?.signal);
+        return claudeResponse({ text: translated(out) }, init?.signal, model);
       }
-      return claudeResponse(reply, init?.signal);
+      return claudeResponse(reply, init?.signal, model);
     }
     if (url.pathname === "/feed.xml") return new Response(rss(n, options.body));
     return new Response("not found", { status: 404 });
@@ -222,8 +270,9 @@ async function setup(
     ...(options.translator !== false && {
       translator: createClaudeTranslator({
         apiKey: "sk-test-secret",
-        model: "claude-sonnet-5-5",
+        ...(options.model !== undefined && { model: options.model }),
         fetch: fake.fetch,
+        now: () => new Date(clock.ms),
         ...(options.callTimeoutMs !== undefined && { callTimeoutMs: options.callTimeoutMs }),
       }),
     }),
@@ -242,6 +291,8 @@ async function setup(
   recording.notified.length = 0;
   return {
     platform,
+    models,
+    clock,
     enqueued: created.enqueued,
     claude,
     replies,
@@ -1213,5 +1264,166 @@ describe("本文を訳す（docs/decisions/translation.md の 3、10、13）", (
       .where(eq(articleTranslations.articleId, id))
       .run();
     expect(after - (await readStorageUsage(s.platform.db)).bytes).toBe(512 + translatedBytes);
+  });
+});
+
+describe("翻訳に使うモデルを選ぶ（docs/decisions/translation.md の 9）", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const sentModels = (s: Setup) =>
+    s.claude.map((sent) => (JSON.parse(sent.body) as { model: string }).model);
+
+  /** その場で訳してもらい、仕事を動かす（訳せなければ untranslated に戻り、また求められる） */
+  async function translateOnce(s: Setup, id: string) {
+    await request(s, id);
+    await runQueuedTranslation(s);
+    s.enqueued.length = 0;
+  }
+
+  const invalidRequest: Reply = { status: 400, errorType: "invalid_request_error" };
+
+  it("一覧の claude-sonnet- のうち、作られた日がいちばん新しいもので送る", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    await translateOnce(s, await articleId(s.platform, "en"));
+    expect(sentModels(s)).toEqual(["claude-sonnet-5-5"]);
+  });
+
+  it("既定と違うモデルが新しく出ていれば、それを選ぶ。ほかの種類はもっと新しくても選ばない", async () => {
+    const s = await setup({
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+          modelInfo("claude-opus-6", "2026-10-01T00:00:00Z"),
+          modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-haiku-6", "2026-11-01T00:00:00Z"),
+        ]),
+    });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    await translateOnce(s, id);
+    expect(sentModels(s)).toEqual(["claude-sonnet-6"]);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      model: "claude-sonnet-6",
+    });
+  });
+
+  it("TRANSLATION_MODEL を書くと、一覧を見ずにそのモデルで送る", async () => {
+    const s = await setup({ model: "claude-sonnet-4-5" });
+    await maintain(s.platform);
+    await translateOnce(s, await articleId(s.platform, "en"));
+    expect(sentModels(s)).toEqual(["claude-sonnet-4-5"]);
+    expect(s.models.requests).toBe(0);
+  });
+
+  const failingModels = () =>
+    Response.json({ type: "error", error: { type: "api_error", message: "x" } }, { status: 500 });
+
+  it("一覧を一度も取れていなければ、コードの既定を使い、ログに出す", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({ models: failingModels });
+    await maintain(s.platform);
+    await translateOnce(s, await articleId(s.platform, "en"));
+    expect(sentModels(s)).toEqual([DEFAULT_TRANSLATION_MODEL]);
+    expect(warn).toHaveBeenCalledWith("could not list the translation models", expect.anything());
+  });
+
+  it("一覧を取れたあとに取り直しが失敗したら、前に選んだものを使う", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({
+      models: () => modelsResponse([modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z")]),
+    });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    // 1 回目は断られて untranslated に戻る（もう一度求められる）
+    s.replies.push(invalidRequest);
+    await translateOnce(s, id);
+    s.models.reply = failingModels;
+    s.clock.ms += DAY;
+    await translateOnce(s, id);
+    expect(s.models.requests).toBe(2);
+    expect(sentModels(s)).toEqual(["claude-sonnet-6", "claude-sonnet-6"]);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      model: "claude-sonnet-6",
+    });
+  });
+
+  it("新しいモデルで、まだ訳せていないうちに 400 が続けて 3 件起きたら、次の要求から 1 つ前のモデルで送り、ログに出す", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+        ]),
+    });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    s.replies.push(invalidRequest, invalidRequest, invalidRequest);
+    for (let i = 0; i < 3; i++) await translateOnce(s, id);
+    expect(warn).toHaveBeenCalledWith(
+      "excluded a translation model after repeated invalid requests",
+      { model: "claude-sonnet-6", next: "claude-sonnet-5-5" },
+    );
+    await translateOnce(s, id);
+    expect(sentModels(s)).toEqual([
+      "claude-sonnet-6",
+      "claude-sonnet-6",
+      "claude-sonnet-6",
+      "claude-sonnet-5-5",
+    ]);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      model: "claude-sonnet-5-5",
+    });
+    // 1 日たって一覧を取り直しても、外したモデルは選ばない
+    s.clock.ms += DAY;
+    await translateOnce(s, await articleId(s.platform, "und"));
+    expect(s.models.requests).toBe(2);
+    expect(sentModels(s).at(-1)).toBe("claude-sonnet-5-5");
+  });
+
+  it("2 件で止まったり、間に 1 件でも訳せていたりすると、外さない", async () => {
+    const s = await setup({
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+        ]),
+    });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    // 2 件で止まる
+    s.replies.push(invalidRequest, invalidRequest);
+    for (let i = 0; i < 2; i++) await translateOnce(s, id);
+    // 訳せた
+    await translateOnce(s, id);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      model: "claude-sonnet-6",
+    });
+    expect(sentModels(s)).toEqual(["claude-sonnet-6", "claude-sonnet-6", "claude-sonnet-6"]);
+  });
+
+  it("1 日たつと一覧を取り直し、新しいモデルが加わっていればそれを使う。1 日たつまでは取り直さない", async () => {
+    let list = [modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z")];
+    const s = await setup({ models: () => modelsResponse(list) });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    s.replies.push(invalidRequest);
+    await translateOnce(s, id);
+    expect(s.models.requests).toBe(1);
+
+    list = [...list, modelInfo("claude-sonnet-7", "2026-11-01T00:00:00Z")];
+    s.clock.ms += DAY - 1;
+    s.replies.push(invalidRequest);
+    await translateOnce(s, id);
+    expect(s.models.requests).toBe(1);
+
+    s.clock.ms += 1;
+    await translateOnce(s, id);
+    expect(s.models.requests).toBe(2);
+    expect(sentModels(s)).toEqual(["claude-sonnet-6", "claude-sonnet-6", "claude-sonnet-7"]);
   });
 });

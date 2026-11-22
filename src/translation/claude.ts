@@ -6,9 +6,13 @@ import {
   type Translator,
   TranslatorError,
 } from "../platform";
+import { createModelSelector } from "./models";
 
 /** その場の翻訳の既定のモデル（docs/decisions/translation.md の 9。Models API で選ぶまでの既定） */
 export const DEFAULT_TRANSLATION_MODEL = "claude-sonnet-5-5";
+
+/** その場の翻訳に選ぶモデルの ID の頭（同じく 9） */
+export const TRANSLATION_MODEL_PREFIX = "claude-sonnet-";
 
 /** 出力の上限（同じく 9） */
 export const MAX_OUTPUT_TOKENS = 64_000;
@@ -56,12 +60,15 @@ const OutputSchema = z.object({
 });
 
 /**
- * Claude API で訳す。キーと外への取得は、実行環境（緩衝層）から受け取る
+ * Claude API で訳す。キーと外への取得は、実行環境（緩衝層）から受け取る。モデルは、model（env の
+ * TRANSLATION_MODEL）があればそれに固定し、なければ Models API の一覧から選ぶ（同じく 9）
  */
 export function createClaudeTranslator(input: {
   apiKey: string;
-  model: string;
+  /** 固定のモデル */
+  model?: string;
   fetch: typeof fetch;
+  now: () => Date;
   /** 1 回の呼び出しの上限（テストで縮める） */
   callTimeoutMs?: number;
 }): Translator {
@@ -79,14 +86,31 @@ export function createClaudeTranslator(input: {
     openTelemetry: false,
     webhookKey: null,
   });
+  const models = createModelSelector({
+    prefix: TRANSLATION_MODEL_PREFIX,
+    defaultModel: DEFAULT_TRANSLATION_MODEL,
+    ...(input.model !== undefined && { pinned: input.model }),
+    now: () => input.now().getTime(),
+    async listModels() {
+      const list = [];
+      for await (const model of client.models.list({ limit: 1000 })) {
+        const createdAt = Date.parse(model.created_at);
+        if (!Number.isNaN(createdAt)) list.push({ id: model.id, createdAt });
+      }
+      return list;
+    },
+  });
+  // 起動時に一覧を取っておく（失敗しても、最初の翻訳のときに前のものか既定で送る）
+  void models.current();
   return {
     async translate(segments) {
+      const model = await models.current();
       let message: Anthropic.Beta.BetaMessage;
       try {
         message = await client.beta.messages
           .stream(
             {
-              model: input.model,
+              model,
               max_tokens: MAX_OUTPUT_TOKENS,
               betas: [FALLBACK_BETA],
               fallbacks: "default",
@@ -102,9 +126,15 @@ export function createClaudeTranslator(input: {
           )
           .finalMessage();
       } catch (error) {
+        // 要求の形の誤りは、新しいモデルが受け付けない指定のことがある（同じく 9）
+        if (error instanceof Anthropic.BadRequestError && error.type === "invalid_request_error") {
+          models.invalidRequest(model);
+        }
         throw toTranslatorError(error);
       }
-      return readResult(message, segments);
+      const result = readResult(message, segments);
+      if (result.status === "translated") models.succeeded(model);
+      return result;
     },
   };
 }
