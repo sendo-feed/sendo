@@ -1935,6 +1935,8 @@ describe("バッチで訳す（docs/decisions/translation.md の 4）", () => {
       });
     }
     expect(s.batches.list).toHaveLength(1);
+    // 落ちたほうの記事は、印を残して次の手入れで書いた（送り直していない）。書いた記事を持つ人に知らせる
+    expect(s.notified).toEqual([TEST_USER.id]);
   });
 
   it("手入れが重なっても、同じ記事を 2 つのバッチで送らない", async () => {
@@ -1975,7 +1977,7 @@ describe("バッチで訳す（docs/decisions/translation.md の 4）", () => {
     });
   });
 
-  it("送ったときと本文の分け方が違えば（指紋が合わない）、本文を置かずにタイトルと要約だけを書く", async () => {
+  it("送ったときと本文の分け方が違えば（指紋が合わない）、書かずに待ちに戻し、次のバッチで送り直す", async () => {
     const s = await setup({ body: "<p>Codemods change every call site.</p>" });
     s.batches.transform = (segment) =>
       segment.id === "b1" ? "コードモッドはすべての呼び出しを変える。" : defaultTransform(segment);
@@ -1989,11 +1991,38 @@ describe("バッチで訳す（docs/decisions/translation.md の 4）", () => {
     if (batch) batch.ended = true;
     vi.spyOn(console, "warn").mockImplementation(() => {});
     await maintain(s.platform);
+    // 書かずに待ちに戻し、同じ手入れの中で、今の分け方で送り直す
+    expect(await translationOf(s.platform, en)).toMatchObject({ status: "queued", title: null });
+    expect(sentIds(s.batches.list[1])).toEqual([en]);
+    const second = s.batches.list[1];
+    if (second) second.ended = true;
+    await maintain(s.platform);
     expect(await translationOf(s.platform, en)).toMatchObject({
       status: "translated",
-      title: JA_TITLE,
-      content: null,
-      contentSource: null,
+      content: "<p>コードモッドはすべての呼び出しを変える。</p>",
+    });
+  });
+
+  it("ページの本文が抜けていれば、ページの本文を送り、それで組み立てる", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await recordExtractedPageContent(s.platform.db, {
+      articleId: en,
+      html: "<p>Codemods in the page body.</p>",
+      now: new Date(),
+    });
+    // ページの本文の言語を判定する（訳すかどうかは、ページの判定が済んでから決める）
+    await runJob(s.platform, { type: "detect-article-languages" });
+    s.batches.transform = (segment) =>
+      segment.id === "b1" ? "ページの本文のコードモッド。" : defaultTransform(segment);
+    await maintain(s.platform);
+    const batch = s.batches.list[0];
+    if (batch) batch.ended = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "translated",
+      content: "<p>ページの本文のコードモッド。</p>",
+      contentSource: "page",
     });
   });
 

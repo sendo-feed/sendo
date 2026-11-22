@@ -217,46 +217,70 @@ async function checkBatch(
     // 知らない記事と、重なった結果は使わない
     if (row === undefined || result.status !== "translated") continue;
     rows.delete(result.id);
-    const article = await readArticle(platform, result.id);
-    if (article === undefined) continue;
-    let body =
-      row.contentSource === null
-        ? null
-        : await bodyToTranslate(platform, result.id, article.contentKey, row.contentSource);
-    // 分け方が送ったときと違えば（その間のデプロイなど）、訳がずれるので本文を置かない
-    if (body !== null && (await segmentsHash(body.segments.segments)) !== row.bodyHash) {
-      console.warn("the article body was split differently from the sent batch", {
+    try {
+      const outcome = await writeBatchResult(platform, batchId, row, result);
+      if (outcome === "written") written.push(result.id);
+      else if (outcome === "keep") keep.push(result.id);
+    } catch (error) {
+      // この記事は印を残して次の定期実行で書き直し、ほかの記事は書き続ける
+      keep.push(result.id);
+      console.warn("could not write a translation batch result", {
+        batchId,
         articleId: result.id,
+        error: error instanceof Error ? error.message : String(error),
       });
-      body = null;
     }
-    // 送った断片の訳だけを使う。返ってこなかった断片は、原文のまま残す（決定の 10）
-    const sent = new Set([
-      ...segmentsOf(article).map((segment) => segment.id),
-      ...(body?.segments.segments.map((segment) => segment.id) ?? []),
-    ]);
-    const translated = new Map(
-      result.segments.filter((s) => sent.has(s.id)).map((s) => [s.id, s.text]),
-    );
-    const ok = await finishBatchTranslation(db, {
-      articleId: result.id,
-      batchId,
-      title: article.title == null ? null : (translated.get("title") ?? article.title),
-      summary: article.summary == null ? null : (translated.get("summary") ?? article.summary),
-      content: body === null ? null : assembleBody(body, translated),
-      model: result.model,
-    });
-    if (ok) {
-      written.push(result.id);
-      continue;
-    }
-    // 行がまだそのバッチの印を持ち訳文がないなら、容量のトリガーが書かなかった。次に書き直す
-    const current = await getTranslation(db, result.id);
-    if (current?.batchId === batchId && current.translatedAt === null) keep.push(result.id);
   }
   await unmarkCheckedBatch(db, batchId, keep);
   await notifyTranslationChanged(platform, written);
   return written.length;
+}
+
+/**
+ * バッチの 1 件の訳を書く。written は書いた、keep は容量が足りずに書けなかった（印を残して次に書き直す）、
+ * requeue は書かずに待ちに戻す（記事が消えた、送ったときと分け方が違う。ほかの書き込みで訳文が入った）
+ */
+async function writeBatchResult(
+  platform: MaintainPlatform,
+  batchId: string,
+  row: { contentSource: "feed" | "page" | null; bodyHash: string | null },
+  result: { id: string; segments: TranslationSegment[]; model: string },
+): Promise<"written" | "keep" | "requeue"> {
+  const { db } = platform;
+  const article = await readArticle(platform, result.id);
+  if (article === undefined) return "requeue";
+  const body =
+    row.contentSource === null
+      ? null
+      : await bodyToTranslate(platform, result.id, article.contentKey, row.contentSource);
+  // 分け方が送ったときと違えば（その間のデプロイ）、訳がずれるので書かずに待ちに戻し、今の分け方で
+  // 送り直す
+  if (body !== null && (await segmentsHash(body.segments.segments)) !== row.bodyHash) {
+    console.warn("the article body was split differently from the sent batch", {
+      articleId: result.id,
+    });
+    return "requeue";
+  }
+  // 送った断片の訳だけを使う。返ってこなかった断片は、原文のまま残す（決定の 10）
+  const sent = new Set([
+    ...segmentsOf(article).map((segment) => segment.id),
+    ...(body?.segments.segments.map((segment) => segment.id) ?? []),
+  ]);
+  const translated = new Map(
+    result.segments.filter((s) => sent.has(s.id)).map((s) => [s.id, s.text]),
+  );
+  const ok = await finishBatchTranslation(db, {
+    articleId: result.id,
+    batchId,
+    title: article.title == null ? null : (translated.get("title") ?? article.title),
+    summary: article.summary == null ? null : (translated.get("summary") ?? article.summary),
+    content: body === null ? null : assembleBody(body, translated),
+    model: result.model,
+  });
+  if (ok) return "written";
+  // 行がまだそのバッチの印を持ち訳文がないなら、容量のトリガーが書かなかった。次に書き直す
+  const current = await getTranslation(db, result.id);
+  return current?.batchId === batchId && current.translatedAt === null ? "keep" : "requeue";
 }
 
 /** 送る断片の指紋（SHA-256 の 16 進） */
