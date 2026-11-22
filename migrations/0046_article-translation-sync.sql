@@ -6,6 +6,15 @@
 -- どれかが変わったときだけ。skipped の行は配らないので振らない。回数や始めた時刻だけが変わったとき
 -- （やり直しを数えた）も振らない。既読・スター・既読の番号（read_seq）は変えない。
 -- 番号の振り方は src/db/seq.ts の nextSeq と同じ（表の最大と下限の大きいほう＋1）。
+--
+-- トリガーより前に作った訳文の行は、同期済みのクライアントにまだ届いていない。配る行（skipped でない）の
+-- 記事の受信箱の行に、ここで一度だけ新しい番号を振り、次の差分で届ける。
+UPDATE user_articles SET seq = (SELECT max(
+  coalesce((SELECT max(seq) FROM user_articles), 0),
+  coalesce((SELECT `floor` FROM `seq_floors` WHERE `table_name` = 'user_articles'), 0)
+) + 1)
+WHERE article_id IN (SELECT article_id FROM article_translations WHERE status <> 'skipped');
+--> statement-breakpoint
 CREATE TRIGGER article_translations_sync_insert AFTER INSERT ON article_translations
 WHEN NEW.status <> 'skipped'
 BEGIN
