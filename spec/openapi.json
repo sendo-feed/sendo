@@ -635,7 +635,7 @@
         "properties": {
           "retranslate": {
             "type": "boolean",
-            "description": "true なら訳し直す（Opus）。なければ、その場で訳す"
+            "description": "true なら訳し直す（Opus）。false か、なければ（本文がなくてもよい）、その場で訳す"
           }
         }
       },
@@ -2690,6 +2690,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TranslationRequestAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本文が正しくない（invalid_request）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
