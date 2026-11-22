@@ -360,7 +360,7 @@
               "feed",
               "page"
             ],
-            "description": "本文の出どころ。feed はフィードに入っていた本文、page は記事のページから抜いた本文"
+            "description": "求めた本文の種類（クエリの source と同じ）。feed はフィードに入っていた本文、page は全文（記事のページから抜いた本文。Discord の投稿では、フィードの本文）"
           }
         },
         "required": [
@@ -2263,7 +2263,7 @@
     "/articles/{id}/content": {
       "get": {
         "summary": "記事の本文",
-        "description": "記事の本文（HTML）を返す。出どころは 2 つあり、source で選ぶ。\n- feed（既定）：フィードに入っていた本文。記事の hasContent が true のときだけ、取りにいく。\n- page：記事のページから抜いた本文。まだ抜いていなければ、このリクエストの中でページを取りにいって抜く（数秒かかることがある）。抜けなかったら 404（page_content_unavailable）で、1 日たつまで取りにいき直さない。\nHTML は Sendo がサニタイズしてある（決めたタグと属性だけ。スクリプトやスタイルはない）。それでも外部から来たデータなので、クライアントの側でも、信頼できない HTML として扱う。\n本文の中の画像は、中継を通る URL（/api/v1/images?…。オリジンは付けない）に書き換えてある。リンクは絶対の URL。\n引用（blockquote）の data-x-post 属性は、X の投稿の引用の印で、値は投稿の ID（数字だけの文字列）。Sendo が、引用の中の投稿のリンクから付けたもので、そのリンクと同じ投稿を指す。\n本文は、いったん返したらあとから変わらないので、手元に置いてよい。",
+        "description": "記事の本文（HTML）を返す。出どころは 2 つあり、source で選ぶ。\n- feed（既定）：フィードに入っていた本文。記事の hasContent が true のときだけ、取りにいく。\n- page：全文。記事のページから抜いた本文で、まだ抜いていなければ、このリクエストの中でページを取りにいって抜く（数秒かかることがある）。抜けなかったら 404（page_content_unavailable）で、1 日たつまで取りにいき直さない。Discord の投稿では、ページを取りにいかず、フィードの本文（投稿のテキストと埋め込み）を全文として返す。本文がなければ 404（page_content_unavailable）。\nHTML は Sendo がサニタイズしてある（決めたタグと属性だけ。スクリプトやスタイルはない）。それでも外部から来たデータなので、クライアントの側でも、信頼できない HTML として扱う。\n本文の中の画像は、中継を通る URL（/api/v1/images?…。オリジンは付けない）に書き換えてある。リンクは絶対の URL。\n引用（blockquote）の data-x-post 属性は、X の投稿の引用の印で、値は投稿の ID（数字だけの文字列）。Sendo が、引用の中の投稿のリンクから付けたもので、そのリンクと同じ投稿を指す。\n本文は、いったん返したらあとから変わらないので、手元に置いてよい。",
         "parameters": [
           {
             "schema": {
@@ -2283,10 +2283,10 @@
                 "page"
               ],
               "default": "feed",
-              "description": "本文の出どころ。feed はフィードに入っていた本文、page は記事のページから抜いた本文"
+              "description": "本文の出どころ。feed はフィードに入っていた本文、page は全文（記事のページから抜いた本文。Discord の投稿では、フィードの本文）"
             },
             "required": false,
-            "description": "本文の出どころ。feed はフィードに入っていた本文、page は記事のページから抜いた本文",
+            "description": "本文の出どころ。feed はフィードに入っていた本文、page は全文（記事のページから抜いた本文。Discord の投稿では、フィードの本文）",
             "name": "source",
             "in": "query"
           }
@@ -2303,7 +2303,7 @@
             }
           },
           "404": {
-            "description": "記事がない（not_found）か、その記事にフィードの本文がない（no_content）か、ページから本文を抜けなかった（page_content_unavailable）",
+            "description": "記事がない（not_found）か、その記事にフィードの本文がない（no_content）か、全文が取れなかった（page_content_unavailable。ページから本文を抜けなかったか、Discord の投稿に本文がない）",
             "content": {
               "application/json": {
                 "schema": {

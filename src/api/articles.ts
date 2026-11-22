@@ -1,4 +1,5 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { isDiscordArticle } from "../db/articles";
 import { dbNow } from "../db/clock";
 import {
   type ArticleCursor,
@@ -92,7 +93,7 @@ const contentRoute = createRoute({
   description: [
     "記事の本文（HTML）を返す。出どころは 2 つあり、source で選ぶ。",
     "- feed（既定）：フィードに入っていた本文。記事の hasContent が true のときだけ、取りにいく。",
-    "- page：記事のページから抜いた本文。まだ抜いていなければ、このリクエストの中でページを取りにいって抜く（数秒かかることがある）。抜けなかったら 404（page_content_unavailable）で、1 日たつまで取りにいき直さない。",
+    "- page：全文。記事のページから抜いた本文で、まだ抜いていなければ、このリクエストの中でページを取りにいって抜く（数秒かかることがある）。抜けなかったら 404（page_content_unavailable）で、1 日たつまで取りにいき直さない。Discord の投稿では、ページを取りにいかず、フィードの本文（投稿のテキストと埋め込み）を全文として返す。本文がなければ 404（page_content_unavailable）。",
     "HTML は Sendo がサニタイズしてある（決めたタグと属性だけ。スクリプトやスタイルはない）。それでも外部から来たデータなので、クライアントの側でも、信頼できない HTML として扱う。",
     "本文の中の画像は、中継を通る URL（/api/v1/images?…。オリジンは付けない）に書き換えてある。リンクは絶対の URL。",
     "引用（blockquote）の data-x-post 属性は、X の投稿の引用の印で、値は投稿の ID（数字だけの文字列）。Sendo が、引用の中の投稿のリンクから付けたもので、そのリンクと同じ投稿を指す。",
@@ -109,7 +110,7 @@ const contentRoute = createRoute({
     query: z.object({
       source: z.enum(["feed", "page"]).default("feed").openapi({
         description:
-          "本文の出どころ。feed はフィードに入っていた本文、page は記事のページから抜いた本文",
+          "本文の出どころ。feed はフィードに入っていた本文、page は全文（記事のページから抜いた本文。Discord の投稿では、フィードの本文）",
       }),
     }),
   },
@@ -123,7 +124,7 @@ const contentRoute = createRoute({
               html: z.string().openapi({ description: "サニタイズした HTML" }),
               source: z.enum(["feed", "page"]).openapi({
                 description:
-                  "本文の出どころ。feed はフィードに入っていた本文、page は記事のページから抜いた本文",
+                  "求めた本文の種類（クエリの source と同じ）。feed はフィードに入っていた本文、page は全文（記事のページから抜いた本文。Discord の投稿では、フィードの本文）",
               }),
             })
             .openapi("ArticleContent"),
@@ -132,7 +133,7 @@ const contentRoute = createRoute({
     },
     404: {
       description:
-        "記事がない（not_found）か、その記事にフィードの本文がない（no_content）か、ページから本文を抜けなかった（page_content_unavailable）",
+        "記事がない（not_found）か、その記事にフィードの本文がない（no_content）か、全文が取れなかった（page_content_unavailable。ページから本文を抜けなかったか、Discord の投稿に本文がない）",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -263,20 +264,23 @@ export function articlesApi(platform: Platform) {
       const { source } = c.req.valid("query");
       const article = await getInboxArticle(db, { userId: c.get("user").id, articleId: id });
       if (!article) return c.json(errorBody("not_found", "article does not exist"), 404);
+      const pageUnavailable = () =>
+        c.json(errorBody("page_content_unavailable", "could not extract the article page"), 404);
       let stored: string | null;
-      if (source === "page") {
+      if (source === "page" && !(await isDiscordArticle(db, id))) {
         const result = await loadPageContent(platform, platform.pageContent, id);
-        if (result.status !== "ok") {
-          return c.json(
-            errorBody("page_content_unavailable", "could not extract the article page"),
-            404,
-          );
-        }
+        if (result.status !== "ok") return pageUnavailable();
         stored = result.html;
       } else {
+        // フィードの本文。Discord の投稿では、全文（source=page）としても返す。ページを取りにいかず、
+        // 抜けなかった記録も付けない。置き場を読むのに失敗したら、そのまま 5xx にする
+        // （docs/decisions/discord.md の 6）
         stored =
           article.contentKey === null ? null : await platform.content.get(article.contentKey);
-        if (stored === null) return c.json(errorBody("no_content", "article has no content"), 404);
+        if (stored === null) {
+          if (source === "page") return pageUnavailable();
+          return c.json(errorBody("no_content", "article has no content"), 404);
+        }
       }
       // 保存の前にサニタイズしてあるが、今の決まりをもう一度当てる。あわせて、画像を中継の URL に
       // 書き換える（docs/decisions/content.md の 2、7）。URL は保存の前に絶対にしてあるので、

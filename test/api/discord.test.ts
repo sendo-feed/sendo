@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { connectDiscord, disconnectDiscord, insertDiscordArticles } from "../../src/db/discord";
 import { findFeedByUrl, getFeed } from "../../src/db/feeds";
-import { articles, contentNotes, feeds } from "../../src/db/schema";
+import { articles, contentNotes, feeds, pageContents } from "../../src/db/schema";
 import { createSession } from "../../src/db/sessions";
 import { readStorageUsage } from "../../src/db/storage";
 import { subscribeMany } from "../../src/db/subscriptions";
@@ -252,6 +252,7 @@ describe("Discord の購読", () => {
     const first = (owners as { items: { id: string }[] }).items[0];
     expect(first).toBeDefined();
     const fetchCount = remote.calls.length;
+    // 全文は、ページを取りにいかずに置いた本文を返す（docs/decisions/discord.md の 6）
     const content = await requestApp(
       platform,
       `/api/v1/articles/${first?.id}/content?source=page`,
@@ -259,8 +260,14 @@ describe("Discord の購読", () => {
         token: owner.token,
       },
     );
-    expect(content.status).toBe(404);
+    expect(content.status).toBe(200);
     expect(remote.calls).toHaveLength(fetchCount);
+    // ほかの人の投稿の全文は、ないものとして返す
+    const others = await requestApp(platform, `/api/v1/articles/${first?.id}/content?source=page`, {
+      token: other.token,
+    });
+    expect(others.status).toBe(404);
+    expect(await others.json()).toMatchObject({ error: { code: "not_found" } });
     expect(owners).toMatchObject({
       items: [
         {
@@ -790,6 +797,122 @@ describe("Discord の投稿の本文（docs/decisions/discord.md の 6）", () =
       summary: null,
       hasContent: false,
       html: null,
+    });
+  });
+
+  describe("全文（source=page）", () => {
+    async function contentOf(t: Awaited<ReturnType<typeof subscribed>>, guid: string) {
+      const { id: articleId } = await t.article(guid);
+      const get = (source: "feed" | "page") =>
+        requestApp(t.platform, `/api/v1/articles/${articleId}/content?source=${source}`, {
+          token: t.user.token,
+        });
+      return { articleId, get };
+    }
+
+    async function contentKeyOf(t: Awaited<ReturnType<typeof subscribed>>, articleId: string) {
+      const [row] = await t.platform.db
+        .select({ contentKey: articles.contentKey })
+        .from(articles)
+        .where(eq(articles.id, articleId));
+      if (!row?.contentKey) throw new Error("no content key");
+      return row.contentKey;
+    }
+
+    it("ページを取りにいかずに、置いた本文を全文として返す。抜いた本文の表には書かない", async () => {
+      const t = await subscribed();
+      t.remote.setMessages({
+        [id(1)]: {
+          content: "テキスト https://example.com/a",
+          embeds: [{ title: "埋め込み", url: "https://example.com/b", description: "説明" }],
+        },
+      });
+      await runFetchFeed(t.platform, t.feedId);
+      const { get } = await contentOf(t, id(1));
+      const feed = await get("feed");
+      expect(feed.status).toBe(200);
+      const feedBody = (await feed.json()) as { html: string; source: string };
+      const fetchCount = t.remote.calls.length;
+
+      const page = await get("page");
+      expect(page.status).toBe(200);
+      expect(await page.json()).toEqual({ html: feedBody.html, source: "page" });
+      expect(feedBody.html).toContain('<a href="https://example.com/b"');
+      // 外へ取りにいかず、抜く処理（既定のテストの緩衝層は、呼ぶと落ちる）も呼ばない
+      expect(t.remote.calls).toHaveLength(fetchCount);
+      expect(await t.platform.db.select().from(pageContents).all()).toEqual([]);
+      // 抜けなかった記録を付けないので、もう一度求めても同じに返る
+      expect((await get("page")).status).toBe(200);
+    });
+
+    it("返すときにも、フィードの本文と同じにサニタイズし、画像を中継の URL にする", async () => {
+      const t = await subscribed();
+      t.remote.setMessages({ [id(1)]: { content: "テキスト" } });
+      await runFetchFeed(t.platform, t.feedId);
+      const { articleId, get } = await contentOf(t, id(1));
+      // Discord の投稿の本文には画像が入らないので、置いた本文を直接書き換えて確かめる
+      await t.platform.content.put(
+        await contentKeyOf(t, articleId),
+        '<p>テキスト<img src="https://example.com/a.png"><script>alert(1)</script></p>',
+      );
+
+      const feed = (await (await get("feed")).json()) as { html: string };
+      const page = (await (await get("page")).json()) as { html: string };
+      expect(page.html).toBe(feed.html);
+      expect(page.html).toContain('src="/api/v1/images?url=');
+      expect(page.html).not.toContain("script");
+    });
+
+    it("本文を置いていない投稿は、全文も 404（page_content_unavailable）", async () => {
+      const t = await subscribed();
+      t.remote.setMessages({
+        [id(1)]: {
+          content: "",
+          attachments: [{ id: "9", url: "https://cdn.discordapp.com/a.png" }],
+        },
+      });
+      await runFetchFeed(t.platform, t.feedId);
+      const { get } = await contentOf(t, id(1));
+
+      const page = await get("page");
+      expect(page.status).toBe(404);
+      expect(await page.json()).toMatchObject({ error: { code: "page_content_unavailable" } });
+      expect(await t.platform.db.select().from(pageContents).all()).toEqual([]);
+    });
+
+    it("置き場から本文が消えていたら、全文は 404（page_content_unavailable）、フィードの本文は 404（no_content）", async () => {
+      const t = await subscribed();
+      t.remote.setMessages({ [id(1)]: { content: "テキスト" } });
+      await runFetchFeed(t.platform, t.feedId);
+      const { articleId, get } = await contentOf(t, id(1));
+      await t.platform.content.delete([await contentKeyOf(t, articleId)]);
+
+      const page = await get("page");
+      expect(page.status).toBe(404);
+      expect(await page.json()).toMatchObject({ error: { code: "page_content_unavailable" } });
+      const feed = await get("feed");
+      expect(feed.status).toBe(404);
+      expect(await feed.json()).toMatchObject({ error: { code: "no_content" } });
+      expect(await t.platform.db.select().from(pageContents).all()).toEqual([]);
+    });
+
+    it("置き場を読むのに失敗したら 5xx にし、抜けなかった記録を付けない。直ればまた返る", async () => {
+      const t = await subscribed();
+      t.remote.setMessages({ [id(1)]: { content: "テキスト" } });
+      await runFetchFeed(t.platform, t.feedId);
+      const { get } = await contentOf(t, id(1));
+      const store = t.platform.content;
+      t.platform.content = {
+        ...store,
+        async get() {
+          throw new Error("EIO");
+        },
+      };
+
+      expect((await get("page")).status).toBe(500);
+      expect(await t.platform.db.select().from(pageContents).all()).toEqual([]);
+      t.platform.content = store;
+      expect((await get("page")).status).toBe(200);
     });
   });
 
