@@ -60,32 +60,44 @@ export function createClaudeTranslator(input: {
   apiKey: string;
   model: string;
   fetch: typeof fetch;
+  /** 1 回の呼び出しの上限（テストで縮める） */
+  callTimeoutMs?: number;
 }): Translator {
-  // やり直しは仕事の側で数える（docs/decisions/translation.md の 8）ので、SDK ではやり直さない
+  const callTimeoutMs = input.callTimeoutMs ?? CALL_TIMEOUT_MS;
+  // やり直しは仕事の側で数える（docs/decisions/translation.md の 8）ので、SDK ではやり直さない。
+  // SDK が環境変数から読む設定（送り先、ログ、テレメトリ、webhook の鍵）は、ここで決めて読ませない。
+  // ログとテレメトリは、記事の文を外へ出しうるので切る
   const client = new Anthropic({
     apiKey: input.apiKey,
     baseURL: API_BASE_URL,
     fetch: input.fetch,
     maxRetries: 0,
-    timeout: CALL_TIMEOUT_MS,
+    timeout: callTimeoutMs,
+    logLevel: "off",
+    openTelemetry: false,
+    webhookKey: null,
   });
   return {
     async translate(segments) {
       let message: Anthropic.Beta.BetaMessage;
       try {
         message = await client.beta.messages
-          .stream({
-            model: input.model,
-            max_tokens: MAX_OUTPUT_TOKENS,
-            betas: [FALLBACK_BETA],
-            fallbacks: "default",
-            output_config: {
-              effort: "low",
-              format: { type: "json_schema", schema: OUTPUT_SCHEMA },
+          .stream(
+            {
+              model: input.model,
+              max_tokens: MAX_OUTPUT_TOKENS,
+              betas: [FALLBACK_BETA],
+              fallbacks: "default",
+              output_config: {
+                effort: "low",
+                format: { type: "json_schema", schema: OUTPUT_SCHEMA },
+              },
+              system: SYSTEM_PROMPT,
+              messages: [{ role: "user", content: JSON.stringify({ segments }) }],
             },
-            system: SYSTEM_PROMPT,
-            messages: [{ role: "user", content: JSON.stringify({ segments }) }],
-          })
+            // SDK の timeout は応答のヘッダーまでしか見ないので、流れを読み終えるまでを打ち切る
+            { signal: AbortSignal.timeout(callTimeoutMs) },
+          )
           .finalMessage();
       } catch (error) {
         throw toTranslatorError(error);
@@ -101,9 +113,13 @@ function readResult(
 ): TranslationResult {
   if (message.stop_reason === "refusal") return { status: "refused" };
   if (message.stop_reason !== "end_turn") return { status: "invalid" };
-  const text = message.content
-    .flatMap((block) => (block.type === "text" ? [block.text] : []))
-    .join("");
+  // 出力の途中で拒否されて代わりのモデルに替わると、断ったモデルの途中の出力のあとに fallback の
+  // 塊が入り、代わりのモデルの出力が続く。読むのは、最後の fallback の塊より後ろだけ
+  const lastFallback = message.content.findLastIndex((block) => block.type === "fallback");
+  const served = message.content.slice(lastFallback + 1);
+  const fallback = message.content[lastFallback];
+  const model = fallback?.type === "fallback" ? fallback.to.model : message.model;
+  const text = served.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
   let parsed: z.infer<typeof OutputSchema>;
   try {
     parsed = OutputSchema.parse(JSON.parse(text));
@@ -117,14 +133,25 @@ function readResult(
     if (!wanted.delete(segment.id)) continue;
     segments.push({ id: segment.id, text: segment.text });
   }
-  return { status: "translated", segments, model: message.model };
+  return { status: "translated", segments, model };
 }
 
-/** 要求の形の誤り（400）はやり直しても通らない。ほかの失敗はやり直す */
+/**
+ * やり直しても通らない失敗（要求の形の誤り、認証、モデルの名前の誤り）は retryable を false にする。
+ * ほかの失敗（429、529、5xx、時間切れ、届かない）はやり直す
+ */
 function toTranslatorError(error: unknown): TranslatorError {
-  if (error instanceof Anthropic.BadRequestError) {
-    // 400 の文は、要求のどこが受け付けられなかったかだけを言う（記事の中身やキーは含まない）
-    return new TranslatorError(`the translation request was rejected: ${error.message}`, false);
+  if (
+    error instanceof Anthropic.BadRequestError ||
+    error instanceof Anthropic.AuthenticationError ||
+    error instanceof Anthropic.PermissionDeniedError ||
+    error instanceof Anthropic.NotFoundError
+  ) {
+    // エラーの文は、要求のどこが受け付けられなかったかだけを言う（記事の中身やキーは含まない）
+    return new TranslatorError(
+      `the translation request was rejected (${error.status}): ${error.message}`,
+      false,
+    );
   }
   if (error instanceof Anthropic.APIError) {
     // 本文は返さない（キーや記事の中身をログに出さない）

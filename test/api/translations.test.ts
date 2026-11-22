@@ -1,6 +1,5 @@
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getRow } from "../../src/db";
 import { articles, articleTranslations, feeds, userArticles } from "../../src/db/schema";
 import { readStorageUsage } from "../../src/db/storage";
 import { runJob } from "../../src/jobs";
@@ -41,46 +40,91 @@ const languageDetection = {
   },
 };
 
-type Reply = { text?: string; stop?: string; status?: number; errorType?: string };
+type Reply = {
+  text?: string;
+  stop?: string;
+  status?: number;
+  errorType?: string;
+  /** 出力の途中で拒否され、代わりのモデルに替わる。断ったモデルが出した途中の出力 */
+  declinedText?: string;
+  /** 流れを閉じない（打ち切りを確かめる） */
+  hang?: boolean;
+};
+
+const sse = (events: [string, unknown][]) =>
+  events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
+
+const textBlock = (index: number, text: string): [string, unknown][] => [
+  [
+    "content_block_start",
+    { type: "content_block_start", index, content_block: { type: "text", text: "" } },
+  ],
+  [
+    "content_block_delta",
+    { type: "content_block_delta", index, delta: { type: "text_delta", text } },
+  ],
+  ["content_block_stop", { type: "content_block_stop", index }],
+];
 
 /** Messages API のストリーミング（SSE）の応答を組み立てる */
-function claudeResponse(reply: Reply): Response {
+function claudeResponse(reply: Reply, signal?: AbortSignal | null): Response {
   if (reply.status !== undefined) {
     return Response.json(
       { type: "error", error: { type: reply.errorType ?? "api_error", message: "failed" } },
       { status: reply.status },
     );
   }
+  const start: [string, unknown] = [
+    "message_start",
+    {
+      type: "message_start",
+      message: {
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-5-5",
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 10, output_tokens: 0 },
+      },
+    },
+  ];
+  if (reply.hang) {
+    // 最初の出来事だけを送って、閉じない。呼んだ側が打ち切ったら、流れも止める
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(sse([start])));
+        signal?.addEventListener("abort", () => controller.error(signal.reason));
+      },
+    });
+    return new Response(body, { headers: { "content-type": "text/event-stream" } });
+  }
+  const blocks: [string, unknown][] =
+    reply.declinedText === undefined
+      ? textBlock(0, reply.text ?? "")
+      : [
+          ...textBlock(0, reply.declinedText),
+          [
+            "content_block_start",
+            {
+              type: "content_block_start",
+              index: 1,
+              content_block: {
+                type: "fallback",
+                from: { model: "claude-sonnet-5-5" },
+                to: { model: "claude-opus-5" },
+                trigger: { type: "refusal", category: null },
+              },
+            },
+          ],
+          ["content_block_stop", { type: "content_block_stop", index: 1 }],
+          ...textBlock(2, reply.text ?? ""),
+        ];
   const events: [string, unknown][] = [
-    [
-      "message_start",
-      {
-        type: "message_start",
-        message: {
-          id: "msg_test",
-          type: "message",
-          role: "assistant",
-          model: "claude-sonnet-5-5",
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 10, output_tokens: 0 },
-        },
-      },
-    ],
-    [
-      "content_block_start",
-      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-    ],
-    [
-      "content_block_delta",
-      {
-        type: "content_block_delta",
-        index: 0,
-        delta: { type: "text_delta", text: reply.text ?? "" },
-      },
-    ],
-    ["content_block_stop", { type: "content_block_stop", index: 0 }],
+    start,
+    ...blocks,
     [
       "message_delta",
       {
@@ -91,8 +135,7 @@ function claudeResponse(reply: Reply): Response {
     ],
     ["message_stop", { type: "message_stop" }],
   ];
-  const body = events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  return new Response(body.join(""), { headers: { "content-type": "text/event-stream" } });
+  return new Response(sse(events), { headers: { "content-type": "text/event-stream" } });
 }
 
 const translated = (segments: { id: string; text: string }[]) => JSON.stringify({ segments });
@@ -109,7 +152,9 @@ interface Setup {
   feedId: string;
 }
 
-async function setup(options: { translator?: boolean } = {}): Promise<Setup> {
+async function setup(
+  options: { translator?: boolean; callTimeoutMs?: number } = {},
+): Promise<Setup> {
   const replies: Reply[] = [];
   const claude: Setup["claude"] = [];
   const fake = fakeFetch(async (url, init) => {
@@ -122,6 +167,7 @@ async function setup(options: { translator?: boolean } = {}): Promise<Setup> {
             { id: "summary", text: JA_SUMMARY },
           ]),
         },
+        init?.signal,
       );
     }
     if (url.pathname === "/feed.xml") return new Response(RSS);
@@ -135,6 +181,7 @@ async function setup(options: { translator?: boolean } = {}): Promise<Setup> {
         apiKey: "sk-test-secret",
         model: "claude-sonnet-5-5",
         fetch: fake.fetch,
+        ...(options.callTimeoutMs !== undefined && { callTimeoutMs: options.callTimeoutMs }),
       }),
     }),
   };
@@ -410,6 +457,7 @@ describe("失敗と、止まった翻訳（docs/decisions/translation.md の 7�
     ["上限で切れた応答", { text: '{"segments":[', stop: "max_tokens" }],
     ["読めない JSON", { text: "not json" }],
     ["要求の形の誤り（400）", { status: 400, errorType: "invalid_request_error" }],
+    ["モデルの名前の誤り（404）", { status: 404, errorType: "not_found_error" }],
   ])("%s は、1 回で untranslated にする", async (_name, reply) => {
     const s = await setup();
     await maintain(s.platform);
@@ -437,6 +485,97 @@ describe("失敗と、止まった翻訳（docs/decisions/translation.md の 7�
     await runQueuedTranslation(s);
     expect(s.claude).toHaveLength(0);
     expect(await translationOf(s.platform, id)).toMatchObject({ status: "untranslated" });
+  });
+
+  it("始めてから 1 時間たつ前は、戻さない", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    await request(s, id);
+    await s.platform.db
+      .update(articleTranslations)
+      .set({ startedAt: new Date(Date.now() - 59 * 60 * 1000) })
+      .where(eq(articleTranslations.articleId, id))
+      .run();
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, id)).toMatchObject({ status: "translating" });
+  });
+
+  it("同じ仕事が 2 回動いても、2 回目は呼ばず、書いた訳文を上書きしない", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    await request(s, id);
+    await runQueuedTranslation(s);
+    s.replies.push({ text: translated([{ id: "title", text: "別の訳" }]) });
+    await runQueuedTranslation(s);
+    expect(s.claude).toHaveLength(1);
+    expect(await translationOf(s.platform, id)).toMatchObject({ title: JA_TITLE });
+  });
+
+  it("訳す前に記事が消えたら、呼ばない", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    await request(s, id);
+    await s.platform.db.delete(articles).where(eq(articles.id, id)).run();
+    await runQueuedTranslation(s);
+    expect(s.claude).toHaveLength(0);
+  });
+
+  it("出力の途中で拒否され、代わりのモデルが訳したら、代わりのモデルの訳を読む", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    s.replies.push({
+      declinedText: '{"segments":[{"id":"ti',
+      text: translated([
+        { id: "title", text: JA_TITLE },
+        { id: "summary", text: JA_SUMMARY },
+      ]),
+    });
+    await request(s, id);
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      model: "claude-opus-5",
+    });
+  });
+
+  it("流れが打ち切りの時間までに終わらなければ打ち切り、やり直せる失敗として数える", async () => {
+    const s = await setup({ callTimeoutMs: 200 });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    s.replies.push({ hang: true });
+    await request(s, id);
+    await expect(runQueuedTranslation(s)).rejects.toThrow();
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translating",
+      attempts: 1,
+    });
+  });
+
+  it("仕事を積めなければ、始める前の状態に戻す", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    const platform: Platform = {
+      ...s.platform,
+      jobs: {
+        async enqueue() {
+          throw new Error("queue is busy");
+        },
+      },
+    };
+    const response = await requestApp(platform, `/api/v1/articles/${id}/translation`, {
+      method: "POST",
+    });
+    expect(response.status).toBe(500);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "queued",
+      startedAt: null,
+    });
   });
 
   it("API キーがなくても、止まった translating を戻す", async () => {
@@ -488,23 +627,36 @@ describe("置き場と容量（docs/decisions/translation.md の 12）", () => {
     expect(await translationOf(s.platform, id)).toBeUndefined();
   });
 
-  it("容量が足りなければ、送らずに断る", async () => {
+  it("容量が足りなければ、送らずに untranslated に戻す", async () => {
     const s = await setup();
     await maintain(s.platform);
     const id = await articleId(s.platform, "en");
+    expect((await request(s, id)).response.status).toBe(202);
     const usage = await readStorageUsage(s.platform.db);
-    await testDb.exec(`UPDATE storage_usage SET limit_bytes = ${usage.bytes + 100} WHERE id = 1`);
     const platform = { ...s.platform, retentionConfig: { maxBytes: usage.bytes + 100 } };
-    const response = await requestApp(platform, `/api/v1/articles/${id}/translation`, {
-      method: "POST",
-    });
-    expect(response.status).toBe(503);
-    expect(((await response.json()) as Body).error?.code).toBe("storage_full");
+    const job = s.enqueued.find((j) => j.type === "translate-article");
+    if (!job) throw new Error("no job");
+    await runJob(platform, job);
     expect(s.claude).toHaveLength(0);
-    const row = await getRow<{ status: string }>(
-      s.platform.db,
-      sql`select status from article_translations where article_id = ${id}`,
-    );
-    expect(row?.status).toBe("queued");
+    expect(await translationOf(s.platform, id)).toMatchObject({ status: "untranslated" });
+  });
+
+  it("受け取ったあとで容量が足りなければ、呼び直さずに untranslated に戻す", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    await request(s, id);
+    // 見積もり（入力の倍）には収まるが、受け取った訳文は収まらない上限にする
+    const usage = await readStorageUsage(s.platform.db);
+    const platform = { ...s.platform, retentionConfig: { maxBytes: usage.bytes + 2000 } };
+    s.replies.push({ text: translated([{ id: "title", text: "訳".repeat(5000) }]) });
+    const job = s.enqueued.find((j) => j.type === "translate-article");
+    if (!job) throw new Error("no job");
+    await runJob(platform, job);
+    expect(s.claude).toHaveLength(1);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "untranslated",
+      title: null,
+    });
   });
 });

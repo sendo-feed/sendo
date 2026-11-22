@@ -145,6 +145,17 @@ export async function failTranslating(
   return row !== undefined;
 }
 
+/** 始めたその場の翻訳を取り消し、始める前の状態に戻す（仕事を積めなかったとき）。始めた時刻が同じ行だけ */
+export async function cancelTranslating(
+  db: Database,
+  articleId: string,
+  startedAt: Date,
+  status: "queued" | "untranslated",
+): Promise<void> {
+  await db.run(sql`update article_translations set status = ${status}, started_at = null, attempts = 0
+    where ${stillTranslating(articleId, startedAt)}`);
+}
+
 /**
  * やり直せる失敗を 1 回数える。上限に達したら、同じ文で訳せなかったものとして戻す
  *
@@ -179,7 +190,7 @@ export async function revertStaleTranslating(db: Database): Promise<number> {
     update article_translations set
       status = case when translated_at is null then 'untranslated' else 'translated' end,
       started_at = null, attempts = 0
-    where status = 'translating' and started_at <= ${DB_NOW_MS} - ${STALE_TRANSLATING_MS}
+    where status = 'translating' and started_at < ${DB_NOW_MS} - ${STALE_TRANSLATING_MS}
     returning article_id as articleId
   `);
   return rows.length;

@@ -1,7 +1,6 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { getInboxArticle } from "../db/inbox";
-import { getTranslation, startTranslating } from "../db/translations";
-import { hasRoomForTranslation, segmentsOf } from "../jobs/translations";
+import { cancelTranslating, getTranslation, startTranslating } from "../db/translations";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
@@ -74,9 +73,7 @@ const requestRoute = createRoute({
     409: error(
       "訳せない記事（translation_not_supported：日本語の記事、Discord の投稿、訳すかどうかをまだ決めていない記事）か、もう訳しているか訳し終えた（translation_exists）",
     ),
-    503: error(
-      "Sendo で翻訳が使えない（translation_unavailable：API キーがない）か、保存容量が足りない（storage_full）",
-    ),
+    503: error("Sendo で翻訳が使えない（translation_unavailable：API キーがない）"),
   },
 });
 
@@ -118,17 +115,20 @@ export function translationsApi(platform: Platform) {
       if (row.status === "translated" || row.status === "translating") {
         return c.json(errorBody("translation_exists", "the article is already translated"), 409);
       }
-      if (!(await hasRoomForTranslation(platform, segmentsOf(article)))) {
-        return c.json(errorBody("storage_full", "storage limit reached"), 503);
-      }
       const startedAt = await startTranslating(db, id);
       if (startedAt === undefined) {
         // 確かめてから始めるまでの間に、ほかの求めやバッチが状態を変えた
         return c.json(errorBody("translation_exists", "the article is already translated"), 409);
       }
-      await platform.jobs.enqueue([
-        { type: "translate-article", articleId: id, startedAt: startedAt.getTime() },
-      ]);
+      try {
+        await platform.jobs.enqueue([
+          { type: "translate-article", articleId: id, startedAt: startedAt.getTime() },
+        ]);
+      } catch (error) {
+        // 積めなかったら、始める前の状態に戻す（1 時間 translating に残さない）
+        await cancelTranslating(db, id, startedAt, row.status);
+        throw error;
+      }
       return c.json({ status: "translating" as const }, 202);
     });
 }
