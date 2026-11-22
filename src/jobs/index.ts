@@ -6,6 +6,7 @@ import { runCleanUp } from "./clean-up";
 import { runFetchFeed } from "./fetch-feed";
 import { runImportFeeds } from "./import-feeds";
 import type { Job } from "./job";
+import { maintainTranslations, runTranslateArticle } from "./translations";
 
 /** キューから受け取った仕事を1つ実行する。例外を投げたら、キューがやり直す */
 export async function runJob(platform: Platform, job: Job): Promise<void> {
@@ -27,6 +28,16 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
     }
     case "clean-up": {
       console.info("cleaned up", await runCleanUp(platform));
+      return;
+    }
+    case "maintain-translations": {
+      const result = await maintainTranslations(platform);
+      if (result.reverted > 0 || result.decided > 0)
+        console.info("maintained translations", result);
+      return;
+    }
+    case "translate-article": {
+      await runTranslateArticle(platform, job.articleId, new Date(job.startedAt));
       return;
     }
     case "extract-page": {

@@ -309,6 +309,20 @@
       "when": 1795245433759,
       "tag": "0043_discord-feed-icon-detach",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1795315434967,
+      "tag": "0044_article-translations",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "6",
+      "when": 1795315440831,
+      "tag": "0045_article-translation-storage",
+      "breakpoints": true
     }
   ]
 }

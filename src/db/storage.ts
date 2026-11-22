@@ -64,6 +64,9 @@ export async function readEvictionCandidates(
     + coalesce((select bytes + article_bytes + 256 from content_sizes where key = a.content_key), 0)
     + coalesce((select length(cast(html as blob)) + 256 from page_contents where article_id = a.id), 0)
     + (select count(*) * 512 from article_languages where article_id = a.id)
+    + coalesce((select 512 + coalesce(length(cast(t.title as blob)), 0)
+      + coalesce(length(cast(t.summary as blob)), 0) + coalesce(length(cast(t.model as blob)), 0)
+      from article_translations t where t.article_id = a.id), 0)
     + coalesce((select bytes from article_search_documents where article_id = a.id), 0)
     + (select count(*) * 512 from user_articles u where u.article_id = a.id)
     - (select count(*) * 256 from user_articles u where u.article_id = a.id

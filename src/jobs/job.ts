@@ -29,6 +29,17 @@ export const jobSchema = z.discriminatedUnion("type", [
       })
       .optional(),
   }),
+  /**
+   * 訳文の行の手入れ（docs/decisions/translation.md の 1、7）。止まった翻訳を戻し、API キーがあれば
+   * 訳すかどうかを決める。定期実行が 5 分おきに積む
+   */
+  z.object({ type: z.literal("maintain-translations") }),
+  /** その場の翻訳（docs/decisions/translation.md の 5）。startedAt は行の始めた時刻（ミリ秒） */
+  z.object({
+    type: z.literal("translate-article"),
+    articleId: z.string().min(1),
+    startedAt: z.int().nonnegative(),
+  }),
   /** 記事のページから本文を抜く（docs/decisions/content.md の 10）。取得の仕事のあとで積む */
   z.object({ type: z.literal("extract-page"), articleId: z.string().min(1) }),
   z.object({

@@ -439,6 +439,46 @@ export const articleLanguages = sqliteTable(
 
 export type ArticleLanguage = typeof articleLanguages.$inferSelect;
 
+/**
+ * 記事の翻訳（docs/decisions/translation.md）。記事ごとに 1 行。全員で共有する。訳すかどうかを
+ * 決めたときに作り、記事の行は変えない。記事の行が消えると、連鎖で消える。
+ *
+ * - queued：自動の翻訳を待っている（バッチ）。untranslated：訳文がない（まだ訳していない ／ 訳せなかった）。
+ *   translating：その場の翻訳の最中。translated：訳文がある。skipped：日本語と決めた（配らず、訳さない）
+ * - 状態は、もとの状態を書き込みと同じ文で確かめて移す（決定の 4〜7）
+ */
+export const articleTranslations = sqliteTable(
+  "article_translations",
+  {
+    articleId: text("article_id")
+      .primaryKey()
+      .references(() => articles.id, { onDelete: "cascade" }),
+    status: text("status", {
+      enum: ["queued", "translating", "translated", "untranslated", "skipped"],
+    }).notNull(),
+    /** 決めたときの主言語（ISO 639-1、判定できなければ und） */
+    language: text("language").notNull(),
+    /** 訳したタイトルと要約（プレーンテキスト）。訳文がなければ null */
+    title: text("title"),
+    summary: text("summary"),
+    /** 訳したモデル。訳文がなければ null */
+    model: text("model"),
+    translatedAt: integer("translated_at", { mode: "timestamp_ms" }),
+    /** その場の翻訳を始めた時刻。translating のあいだだけ。結果を書く文で同じかを確かめる */
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    /** その場の翻訳で、やり直せる失敗が続いた回数。始めるたびに 0 に戻す */
+    attempts: integer("attempts").notNull().default(0),
+    decidedAt: integer("decided_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    index("article_translations_translating_idx")
+      .on(t.startedAt)
+      .where(sql`status = 'translating'`),
+  ],
+);
+
+export type ArticleTranslation = typeof articleTranslations.$inferSelect;
+
 /** FTS5 が参照する本文の写し。整数 ID は仮想表の rowid に使う。 */
 export const articleSearchDocuments = sqliteTable("article_search_documents", {
   id: integer("id").primaryKey(),
