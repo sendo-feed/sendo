@@ -60,6 +60,8 @@ Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS �
 docker compose pull && docker compose up -d
 ```
 
+自動で追いつかせたいときは、更新のスクリプトの例（[examples/auto-update](examples/auto-update/README.md)）を cron などで動かします。上流の `main` の最新のコミットで CI が通っているときだけ、sendo を上げる前にデータのバックアップを取り、sendo のあとに sendo-reader を上げます。新しい sendo が healthy にならなければ、前のイメージとバックアップに戻します（[決定](docs/decisions/container.md)の 13）。使うときは、手で `docker compose pull` しないでください。
+
 設定（`.env`）を変えたら、`docker compose up -d` でコンテナを作り直すと効きます。入れなければ、既定で動きます。
 
 | 名前 | 既定 | 中身 |
@@ -69,6 +71,8 @@ docker compose pull && docker compose up -d
 | `PUBLIC_URL`、`READER_URL` | なし | 外から呼ぶときのオリジンと、sendo-reader のオリジン。[OAuth でつなぐ](#oauth-でつなぐ) |
 | `ALLOWED_EMAILS`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` | なし | ブラウザのログイン。[ブラウザでログインする](#ブラウザでログインするgoogle) |
 | `DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN` | なし | Discord の購読。[Discord のチャンネルを購読する](#discord-のチャンネルを購読する) |
+| `ANTHROPIC_API_KEY` | なし | Claude API のキー。入れると、日本語以外の記事を Claude API で日本語に訳す。空なら翻訳は動かず、記事を外へ送らない（[決定](docs/decisions/translation.md)） |
+| `TRANSLATION_MODEL` | なし（最新の Sonnet） | 訳すモデルを固定するときのモデルの ID。空なら、Models API で最新の Sonnet を選ぶ（1 日 1 回選び直す） |
 
 ### 取得の間隔
 
@@ -296,6 +300,8 @@ sendo/
 │   ├── inception-deck.md
 │   ├── tech-deck.md
 │   └── features.md
+├── examples/
+│   └── auto-update/    # コンテナ版を自動で更新するスクリプトの例（使うかは使う人が決める）
 ├── Dockerfile          # イメージ（compose.yaml で動かす）
 ├── compose.yaml        # Sendo と sendo-reader を並べて動かす
 └── biome.json          # lint と整形の設定
