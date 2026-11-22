@@ -1,0 +1,1 @@
+CREATE INDEX `article_translations_retranslated_idx` ON `article_translations` (`url_key`,`body_hash`) WHERE retranslated = 1;

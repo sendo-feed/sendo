@@ -532,6 +532,10 @@ export const articleTranslations = sqliteTable(
     index("article_translations_url_key_idx")
       .on(t.urlKey, t.status)
       .where(sql`url_key is not null`),
+    // 訳し直しを広げる元の行を引く（定期実行が、写し損ねた行を探す）
+    index("article_translations_retranslated_idx")
+      .on(t.urlKey, t.bodyHash)
+      .where(sql`retranslated = 1`),
   ],
 );
 

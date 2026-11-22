@@ -1,4 +1,4 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { eq, inArray, type SQL, sql } from "drizzle-orm";
 import { normalizeSourceUrl } from "../translation/source-url";
 import { type Database, getRow } from ".";
 import { chunked } from "./chunk";
@@ -397,6 +397,92 @@ export async function finishCopiedTranslating(
       where ${stillTranslating(input.articleId, input.startedAt)}
         ${need(COPY_TITLE, titleSourceId)} ${need(COPY_SUMMARY, summarySourceId)}
         ${need(COPY_BODY, c.bodySrc)}
+      returning article_id as articleId`,
+  );
+  return row !== undefined;
+}
+
+/** 1 回に訳し直しを写す行の数の上限（残りは次の定期実行。docs/decisions/jobs.md の 4） */
+export const RETRANSLATION_COPY_LIMIT = 100;
+
+/**
+ * 訳し直した行（s。原文は sa）の訳したタイトルを、写す先に写せる。写す元が訳していない（原文と同じ
+ * 文字の）タイトルと、原文にタイトルのない記事（targetTitle が写す先の原文）には写さない
+ */
+const titleCopyable = (s: string, sa: string, targetTitle: SQL) =>
+  sql`${sql.raw(s)}.title is not null and ${sql.raw(s)}.title is not ${sql.raw(sa)}.title
+    and trim(coalesce(${targetTitle}, '')) <> ''`;
+
+/**
+ * 訳し直した行（s）から、写す先（t）の本文（本文がなければタイトル）を置き換えられる（決定の 16）。
+ * 写す先に訳した本文があるのに写す元に訳し直した本文がない（6 で本文を置けなかった）行と、両方に本文
+ * がなくタイトルも写せない行には写さない。Sonnet の訳文を残したまま印を付けると、二度と訳し直せない
+ * ため（決定の 6）
+ */
+const replaceable = (s: string, sa: string, t: string, targetTitle: SQL) =>
+  sql`(${sql.raw(s)}.content is not null
+    or (${sql.raw(t)}.content is null and ${titleCopyable(s, sa, targetTitle)}))`;
+
+/**
+ * 訳し直しを写す先の行（docs/decisions/translation.md の 16）。同じ正規化した URL で、本文の指紋が
+ * 同じ（どちらも「本文なし」を含む）訳し直した行がある、translated で訳し直しの印のない行。指紋の
+ * ない行と、本文（本文がなければタイトル）を置き換えられない行は写す先にしない。sourceId を渡したら、
+ * その行を写す元にできる行だけ
+ */
+export async function listRetranslationTargets(
+  db: Database,
+  options: { sourceId?: string | undefined; limit?: number } = {},
+): Promise<string[]> {
+  const rows = await db.all<{ articleId: string }>(
+    // 訳し直した行（部分索引）を外側にして、同じ正規化した URL の行を引く（訳文の表の全部をなめない）
+    sql`select distinct t.article_id as articleId from article_translations s
+      cross join article_translations t on t.url_key = s.url_key and t.body_hash = s.body_hash
+        and t.article_id <> s.article_id
+      join articles sa on sa.id = s.article_id
+      join articles ta on ta.id = t.article_id
+      where s.retranslated = 1 and s.status = 'translated' and s.url_key is not null
+        ${options.sourceId === undefined ? sql`` : sql`and s.article_id = ${options.sourceId}`}
+        and t.status = 'translated' and t.retranslated = 0
+        and ${replaceable("s", "sa", "t", sql`ta.title`)}
+      order by t.article_id
+      limit ${options.limit ?? RETRANSLATION_COPY_LIMIT}`,
+  );
+  return rows.map((row) => row.articleId);
+}
+
+/**
+ * 1 つの行に、同じ元記事の訳し直した訳を写す（決定の 16）。写す元（同じ正規化した URL で本文の指紋が
+ * 同じ、訳し直した行。原文の要約が同じもの、次に新しく訳したものを先に）と写す先（translated で
+ * 訳し直しの印がない）を、この文の中で確かめる。タイトルと本文を写し、原文の要約が同じなら要約も
+ * 写して、訳した時刻・モデル・訳し直しの印を写す元と同じにする。写す元が訳していない部分（原文と
+ * 同じ文字、本文がない）と、原文にタイトルのない記事のタイトルは写さない。本文（本文がなければ
+ * タイトル）を置き換えられない行には写さない。容量が足りなければ、トリガーが書かない
+ *
+ * @returns 写したら true
+ */
+export async function copyRetranslation(db: Database, articleId: string): Promise<boolean> {
+  const row = await getRow<{ articleId: string }>(
+    db,
+    sql`update article_translations as t set
+        title = case when ${titleCopyable("s", "sa", sql`ta.title`)} then s.title else t.title end,
+        summary = case when sa.summary = ta.summary and s.summary is not null
+          and s.summary is not sa.summary then s.summary else t.summary end,
+        content = coalesce(s.content, t.content),
+        content_source = case when s.content is null then t.content_source
+          else coalesce(t.content_source, s.content_source) end,
+        model = s.model, translated_at = s.translated_at, retranslated = 1
+      from article_translations s
+        join articles sa on sa.id = s.article_id
+        join articles ta on ta.id = ${articleId}
+      where t.article_id = ${articleId} and t.status = 'translated' and t.retranslated = 0
+        and s.article_id = (select r.article_id from article_translations r
+          join articles ra on ra.id = r.article_id
+          where r.url_key = t.url_key and r.body_hash = t.body_hash and r.article_id <> t.article_id
+            and r.status = 'translated' and r.retranslated = 1
+            and ${replaceable("r", "ra", "t", sql`(select x.title from articles x where x.id = ${articleId})`)}
+          -- 写した行も写す元になるので、原文の要約が同じ行を先に選ぶ（要約も写せるように）
+          order by ra.summary is (select x.summary from articles x where x.id = ${articleId}) desc,
+            r.translated_at desc, r.article_id limit 1)
       returning article_id as articleId`,
   );
   return row !== undefined;
