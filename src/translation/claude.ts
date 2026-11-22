@@ -177,6 +177,8 @@ export function createClaudeTranslator(input: {
         // 要求の形の誤りは、新しいモデルが受け付けない指定のことがある（同じく 9）
         if (error instanceof Anthropic.BadRequestError && error.type === "invalid_request_error") {
           models.invalidRequest(model);
+        } else {
+          models.otherOutcome(model);
         }
         throw toTranslatorError(error);
       }

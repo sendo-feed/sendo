@@ -2144,6 +2144,33 @@ describe("バッチの失敗を数える（docs/decisions/translation.md の 4�
     expect(s.batches.list[4]?.requests.map((r) => r.params.model)).toEqual(["claude-sonnet-6"]);
   });
 
+  it("バッチを作るときの要求の形の誤りの間にほかの失敗（401）が入ると、続けて数えない（モデルを外さない）", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+        ]),
+    });
+    const en = await articleId(s.platform, "en");
+    const failures = [
+      [400, "invalid_request_error"],
+      [401, "authentication_error"],
+      [400, "invalid_request_error"],
+      [400, "invalid_request_error"],
+    ] as const;
+    for (const [status, type] of failures) {
+      s.batches.createFailure = () =>
+        Response.json({ type: "error", error: { type, message: "x" } }, { status });
+      await maintain(s.platform);
+    }
+    s.batches.createFailure = null;
+    await maintain(s.platform);
+    expect(sentIds(s.batches.list[0])).toEqual([en]);
+    expect(s.batches.list[0]?.requests.map((r) => r.params.model)).toEqual(["claude-sonnet-6"]);
+  });
+
   it("拒否（refusal）された記事は、その回で untranslated になる", async () => {
     const s = await setup();
     const en = await articleId(s.platform, "en");
