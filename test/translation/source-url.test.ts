@@ -26,6 +26,7 @@ describe("normalizeSourceUrl", () => {
     ["utm_*", `${base}?utm_source=hn&utm_medium=rss`],
     ["大文字の UTM_", `${base}?UTM_Source=hn`],
     ["fbclid と gclid", `${base}?fbclid=x&gclid=y`],
+    ["空のパラメータ", `${base}?&utm_source=x&`],
   ])("%s の違いは同じとみなす", (_name, url) => {
     expect(normalizeSourceUrl(url)).toBe(base);
   });
@@ -63,5 +64,23 @@ describe("normalizeSourceUrl", () => {
 
   it("最初のページでも、計測用でないクエリがあれば使い回す", () => {
     expect(normalizeSourceUrl("https://example.com/?p=123")).toBe("https://example.com/?p=123");
+  });
+
+  it("残すパラメータの書き方は変えない（読み直して組み直さない）", () => {
+    expect(normalizeSourceUrl("https://example.com/a?q=a+b&utm_source=x")).toBe(
+      "https://example.com/a?q=a+b",
+    );
+    expect(normalizeSourceUrl("https://example.com/a?q=a%20b")).toBe(
+      "https://example.com/a?q=a%20b",
+    );
+    expect(normalizeSourceUrl("https://example.com/a?p")).not.toBe(
+      normalizeSourceUrl("https://example.com/a?p="),
+    );
+  });
+
+  it("大文字と小文字を区別せずに除くのは utm_ だけ（fbclid と gclid は、その名前だけ）", () => {
+    expect(normalizeSourceUrl("https://example.com/a?FBCLID=x")).toBe(
+      "https://example.com/a?FBCLID=x",
+    );
   });
 });

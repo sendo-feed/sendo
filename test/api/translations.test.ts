@@ -3051,11 +3051,24 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
   const topPage = () =>
     channel("Top", item("top-1", "GnuPG Security Advisory for GPGME", "https://lists.gnupg.org/"));
 
+  /** HN と同じ要約の、同じ元記事（すべて写せる） */
+  const hnCopy = () =>
+    channel(
+      "Hacker News: Front Page",
+      item(
+        "hn-copy-1",
+        "GnuPG Security Advisory for GPGME",
+        GPGME_URL,
+        `Article URL: ${GPGME_URL} Comments URL: https://news.ycombinator.com/item?id=1 Points: 262 # Comments: 113`,
+      ),
+    );
+
   const feeds = {
     "/hn.xml": hn,
     "/lobsters.xml": lobsters,
     "/mirror.xml": mirror,
     "/top.xml": topPage,
+    "/hn-copy.xml": hnCopy,
   };
   /** 訳したことの分かる訳し方 */
   const mark: Transform = (segment) => `訳:${segment.text}`;
@@ -3260,5 +3273,106 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       title: firstRow?.title,
       content: firstRow?.content,
     });
+  });
+
+  it("原文の要約が同じ記事は、要約も写す", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const firstRow = await translationOf(s.platform, first);
+    const copy = await deliver(s, "/hn-copy.xml");
+    const batches = s.batches.list.length;
+    await maintain(s.platform);
+    expect(s.batches.list).toHaveLength(batches);
+    expect(await translationOf(s.platform, copy)).toMatchObject({
+      status: "translated",
+      title: firstRow?.title,
+      summary: firstRow?.summary,
+      content: firstRow?.content,
+    });
+  });
+
+  it("訳し直した行を、新しく訳した行より先に写す元に選び、本文を写したら訳し直しの印も付く", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    s.enqueued.length = 0;
+    expect((await retranslate(s, first)).response.status).toBe(202);
+    s.replies.push({ transform: (segment) => `Opus:${segment.text}` });
+    await runQueuedTranslation(s);
+    const opusRow = await translationOf(s.platform, first);
+    expect(opusRow).toMatchObject({ retranslated: true, model: "claude-opus-5-5" });
+
+    // 訳し直した行より新しく訳した、訳し直していない同じ元記事の行（作りにくいので、同じ指紋の行を
+    // 直接書く）
+    const second = await deliver(s, "/lobsters.xml");
+    await decideTranslations(s.platform.db);
+    expect((await translationOf(s.platform, second))?.urlKey).toBe(GPGME_URL);
+    await testDb.exec(`UPDATE article_translations SET status = 'translated',
+      title = 'Sonnet の新しい訳', content = '<p>Sonnet の新しい本文</p>', model = 'claude-sonnet-5-5',
+      body_hash = '${opusRow?.bodyHash}', retranslated = 0,
+      translated_at = ${(opusRow?.translatedAt?.getTime() ?? 0) + 60_000}
+      WHERE article_id = '${second}'`);
+
+    const third = await deliver(s, "/mirror.xml");
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "translated",
+      title: opusRow?.title,
+      content: opusRow?.content,
+      model: "claude-opus-5-5",
+      retranslated: true,
+    });
+  });
+
+  it("容量の上限に当たったら、すべて写せる行は待ちに戻し、送った行は印を残して、次の定期実行で写す", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const firstRow = await translationOf(s.platform, first);
+    const second = await deliver(s, "/lobsters.xml");
+    await maintain(s.platform);
+    const third = await deliver(s, "/mirror.xml");
+    const batch = s.batches.list.at(-1);
+    if (batch) batch.ended = true;
+
+    const usage = await readStorageUsage(s.platform.db);
+    const tight = { ...s.platform, retentionConfig: { maxBytes: usage.bytes + 100 } };
+    await maintain(tight);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "queued",
+      title: null,
+      batchKey: null,
+    });
+    expect(await translationOf(s.platform, second)).toMatchObject({
+      status: "queued",
+      title: null,
+      batchId: batch?.id,
+      batchCopies: expect.any(Number),
+    });
+
+    await maintain(s.platform);
+    for (const id of [second, third]) {
+      expect(await translationOf(s.platform, id)).toMatchObject({
+        status: "translated",
+        title: firstRow?.title,
+        content: firstRow?.content,
+      });
+    }
+  });
+
+  it("本文の指紋が違う同じ元記事は、本文を送る", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    await translatedFirst(s);
+    const second = await deliver(
+      s,
+      "/lobsters.xml",
+      "<p>GnuPG Security Advisory, updated: a bug in GPGME allows a crafted message to crash.</p>",
+    );
+    const batches = s.batches.list.length;
+    await maintain(s.platform);
+    expect(sentSegments(s.batches.list[batches], second)).toEqual(["summary", "b1"]);
   });
 });

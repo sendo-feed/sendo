@@ -56,14 +56,18 @@ const SOURCE_ORDER = sql`order by s.retranslated desc, s.translated_at desc, s.a
 const sameSource = sql`s.url_key = article_translations.url_key
   and s.article_id <> article_translations.article_id and s.status = 'translated'`;
 
-/** 写す元の行の id。タイトル：訳したタイトルがある */
+/**
+ * 写す元の行の id。タイトル：訳したタイトルがある。原文と同じ文字の訳（写す元がなくて原文を書いた
+ * 行など）は、訳していないので写す元にしない
+ */
 const titleSourceId = sql`(select s.article_id from article_translations s
-  where ${sameSource} and s.title is not null ${SOURCE_ORDER})`;
+  join articles sa on sa.id = s.article_id
+  where ${sameSource} and s.title is not null and s.title is not sa.title ${SOURCE_ORDER})`;
 
 /** 写す元の行の id。要約：原文の要約の文字が同じ */
 const summarySourceId = sql`(select s.article_id from article_translations s
   join articles sa on sa.id = s.article_id
-  where ${sameSource} and s.summary is not null
+  where ${sameSource} and s.summary is not null and s.summary is not sa.summary
     and sa.summary = (select ta.summary from articles ta where ta.id = article_translations.article_id)
   ${SOURCE_ORDER})`;
 

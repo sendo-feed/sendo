@@ -4,7 +4,7 @@
  * パラメータ）だけをそろえ、中身が変わりうるクエリは残す。
  */
 
-/** 除く計測用のパラメータ（`utm_` で始まるものは別に除く） */
+/** 除く計測用のパラメータ（`utm_` で始まるものは、大文字と小文字を区別せずに別に除く） */
 const TRACKING_PARAMS = new Set(["fbclid", "gclid"]);
 
 const DEFAULT_PORTS: Record<string, string> = { "http:": "80", "https:": "443" };
@@ -27,15 +27,26 @@ export function normalizeSourceUrl(url: string | null | undefined): string | nul
   const host = parsed.hostname.toLowerCase();
   const explicitPort = parsed.port === "" || parsed.port === port ? "" : `:${parsed.port}`;
   const path = parsed.pathname.replace(/\/+$/, "") || "/";
-  const params = [...parsed.searchParams].filter(([name]) => {
-    const lower = name.toLowerCase();
-    return !lower.startsWith("utm_") && !TRACKING_PARAMS.has(lower);
-  });
-  const query =
-    params.length === 0
-      ? ""
-      : `?${params.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&")}`;
+  // 生のクエリを & で分け、名前だけを見て計測用のものを除く（残すものの書き方は変えない）
+  const params = parsed.search
+    .slice(1)
+    .split("&")
+    .filter((part) => {
+      if (part === "") return false;
+      const name = decodeName(part.split("=", 1)[0] ?? "");
+      return !name.toLowerCase().startsWith("utm_") && !TRACKING_PARAMS.has(name);
+    });
+  const query = params.length === 0 ? "" : `?${params.join("&")}`;
   // サイトの最初のページは、壊れたフィードですべての項目が指すことがあるので使い回さない
   if (path === "/" && query === "") return null;
   return `https://${host}${explicitPort}${path}${query}`;
+}
+
+/** パラメータの名前を読む（読めなければそのまま） */
+function decodeName(name: string): string {
+  try {
+    return decodeURIComponent(name.replace(/\+/g, " "));
+  } catch {
+    return name;
+  }
 }
