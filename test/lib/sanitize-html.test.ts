@@ -418,6 +418,219 @@ describe("sanitizeHtml の Imgur の公式埋め込み", () => {
   });
 });
 
+describe("sanitizeHtml の X の公式の埋め込みコード", () => {
+  const A = 'rel="noopener noreferrer nofollow"';
+  const ID = "1234567890123456789";
+  const POST = `https://x.com/example_user/status/${ID}`;
+  const tweet = (inner: string, attributes = 'class="twitter-tweet" data-lang="ja"') =>
+    `<blockquote ${attributes}>${inner}</blockquote>`;
+  const marked = (id: string) => `<blockquote data-x-post="${id}">`;
+
+  it("公式の形、文が空の形、リンクが段落の中だけの形、リンクだけの形で、印を付ける", () => {
+    expect(
+      clean(
+        tweet(
+          `<p lang="ja" dir="ltr">投稿の文 <a href="https://t.co/abc">pic.twitter.com/abc</a></p>` +
+            `&mdash; 名前 (@example_user) <a href="${POST}?ref_src=twsrc%5Etfw">November 21, 2026</a>`,
+        ),
+      ),
+    ).toBe(
+      `${marked(ID)}<p>投稿の文 <a href="https://t.co/abc" ${A}>pic.twitter.com/abc</a></p>` +
+        `— 名前 (@example_user) <a href="${POST}?ref_src=twsrc%5Etfw" ${A}>November 21, 2026</a></blockquote>`,
+    );
+    expect(clean(tweet(`<p></p> — (@example_user) <a href="${POST}"></a>`))).toBe(
+      `${marked(ID)}<p></p> — (@example_user) <a href="${POST}" ${A}></a></blockquote>`,
+    );
+    expect(clean(tweet(`<p><a href="${POST}">投稿の説明</a></p>`))).toBe(
+      `${marked(ID)}<p><a href="${POST}" ${A}>投稿の説明</a></p></blockquote>`,
+    );
+    expect(clean(tweet(`<a href="${POST}"></a>`))).toBe(
+      `${marked(ID)}<a href="${POST}" ${A}></a></blockquote>`,
+    );
+  });
+
+  it("x.com と twitter.com、クエリ付き、ID が 1 桁と 20 桁、末尾の / で、印を付ける", () => {
+    for (const [href, id] of [
+      ["https://twitter.com/example_user/status/42", "42"],
+      ["https://x.com/a/status/7?ref_src=twsrc%5Etfw&s=20", "7"],
+      ["https://x.com/a/status/1", "1"],
+      ["https://x.com/a/status/12345678901234567890", "12345678901234567890"],
+      ["https://x.com/a/status/5/", "5"],
+      ["https://X.COM/a/status/5#top", "5"],
+      ["//twitter.com/a/status/5", "5"],
+      ["https://x.com/abcdefghij_1234/status/5", "5"],
+    ]) {
+      expect(clean(tweet(`<a href="${href}">投稿</a>`)), href).toContain(marked(id as string));
+    }
+  });
+
+  it("印を付けない：class がない、投稿のリンクがない、別の投稿のリンクが 2 つ、条件に合わないリンク", () => {
+    const unmarked = (html: string) => expect(clean(html), html).toMatch(/^<blockquote>/);
+    unmarked(`<blockquote><a href="${POST}">投稿</a></blockquote>`);
+    unmarked(`<blockquote class="twitter-tweets"><a href="${POST}">投稿</a></blockquote>`);
+    unmarked(tweet("<p>文だけ</p>"));
+    unmarked(tweet('<a href="https://x.com/example_user">プロフィール</a>'));
+    unmarked(tweet(`<a href="${POST}">1</a><a href="https://x.com/other/status/2">2</a>`));
+    for (const href of [
+      `http://x.com/a/status/${ID}`,
+      `https://x.com:8443/a/status/${ID}`,
+      `https://user:pass@x.com/a/status/${ID}`,
+      `https://x.com.example.com/a/status/${ID}`,
+      `https://example.com/x.com/a/status/${ID}`,
+      `https://mobile.twitter.com/a/status/${ID}`,
+      `https://www.x.com/a/status/${ID}`,
+      `https://x.com/i/web/status/${ID}`,
+      "https://x.com/a/status/123456789012345678901",
+      "https://x.com/a/status/12a",
+      "https://x.com/a/status/",
+      "https://x.com/abcdefghij_12345/status/5",
+      "https://x.com/a-b/status/5",
+      "https://x.com/a/statuses/5",
+      "https://x.com/a/status/5/photo/1",
+    ]) {
+      unmarked(tweet(`<a href="${href}">投稿</a>`));
+    }
+  });
+
+  it("同じ ID を指すリンクが 2 つなら、印を付ける", () => {
+    expect(
+      clean(
+        tweet(
+          `<p><a href="https://twitter.com/a/status/${ID}">説明</a></p>` +
+            `<a href="${POST}?ref_src=twsrc%5Etfw">日付</a>`,
+        ),
+      ),
+    ).toMatch(new RegExp(`^${marked(ID)}`));
+  });
+
+  it("数えるのは、出力に残るリンク：落ちる要素の中は数えず、埋め込みを替えたリンクは数える", () => {
+    expect(clean(tweet(`<noscript><a href="${POST}">投稿</a></noscript>`))).toBe(
+      "<blockquote></blockquote>",
+    );
+    expect(clean(tweet(`<a>${ID}</a><a href="javascript:alert(1)">投稿</a>`))).toMatch(
+      /^<blockquote>/,
+    );
+    expect(clean(tweet(`<iframe src="${POST}"></iframe>`))).toBe(
+      `${marked(ID)}<a href="${POST}" ${A}>${POST}</a></blockquote>`,
+    );
+    const two = tweet(`<a href="${POST}">投稿</a><iframe src="https://x.com/b/status/2"></iframe>`);
+    expect(clean(two)).toMatch(/^<blockquote>/);
+    expect(clean(clean(two))).toBe(clean(two));
+  });
+
+  it("入力に書かれた印は、引用の中のリンクの ID で付け直す。条件に合わなければ落とす", () => {
+    for (const value of ["999", "abc", "", `${ID}" onclick="alert(1)`]) {
+      expect(
+        clean(
+          `<blockquote data-x-post="${value.replaceAll('"', "&quot;")}"><a href="${POST}">投稿</a></blockquote>`,
+        ),
+      ).toBe(`${marked(ID)}<a href="${POST}" ${A}>投稿</a></blockquote>`);
+    }
+    expect(clean('<blockquote data-x-post="999"><p>文だけ</p></blockquote>')).toBe(
+      "<blockquote><p>文だけ</p></blockquote>",
+    );
+    expect(
+      clean(
+        `<blockquote data-x-post="${ID}"><a href="${POST}">1</a><a href="https://x.com/b/status/2">2</a></blockquote>`,
+      ),
+    ).toMatch(/^<blockquote>/);
+    expect(clean(`<blockquote data-x-post><a href="${POST}">投稿</a></blockquote>`)).toMatch(
+      new RegExp(`^${marked(ID)}`),
+    );
+  });
+
+  it("blockquote でない要素の印は落とす", () => {
+    expect(clean(`<p data-x-post="${ID}"><a href="${POST}">投稿</a></p>`)).toBe(
+      `<p><a href="${POST}" ${A}>投稿</a></p>`,
+    );
+    expect(clean(`<div data-x-post="${ID}" class="twitter-tweet">文</div>`)).toBe("<div>文</div>");
+  });
+
+  it("入れ子の引用：中のリンクは外側でも数え、内側はそれ自身でも調べる", () => {
+    const inner = tweet('<a href="https://x.com/b/status/2">2</a>');
+    // 外側は ID が 2 つになるので付けない。内側には付ける
+    expect(clean(tweet(`<a href="${POST}">1</a>${inner}`))).toBe(
+      `<blockquote><a href="${POST}" ${A}>1</a>` +
+        `${marked("2")}<a href="https://x.com/b/status/2" ${A}>2</a></blockquote></blockquote>`,
+    );
+    // 内側が X の引用でなくても、中のリンクは外側で数える
+    expect(clean(tweet(`<blockquote><a href="${POST}">引用</a></blockquote>`))).toBe(
+      `${marked(ID)}<blockquote><a href="${POST}" ${A}>引用</a></blockquote></blockquote>`,
+    );
+    // 外側の引用の外にあるリンクは数えない
+    expect(clean(`<blockquote>${inner}<a href="${POST}">外</a></blockquote>`)).toBe(
+      `<blockquote>${marked("2")}<a href="https://x.com/b/status/2" ${A}>2</a></blockquote>` +
+        `<a href="${POST}" ${A}>外</a></blockquote>`,
+    );
+  });
+
+  it("閉じていない引用や、続く引用に、状態が漏れない", () => {
+    // 閉じていない引用は、外の要素が閉じるところで閉じる。そのあとのリンクは数えない
+    expect(
+      clean(
+        `<div>${tweet(`<a href="${POST}">1</a>`).replace("</blockquote>", "")}</div>` +
+          '<p><a href="https://x.com/b/status/2">2</a></p>',
+      ),
+    ).toBe(
+      `<div>${marked(ID)}<a href="${POST}" ${A}>1</a></blockquote></div>` +
+        `<p><a href="https://x.com/b/status/2" ${A}>2</a></p>`,
+    );
+    // 最後まで閉じていない引用も、終わりで閉じて調べる
+    expect(clean(`<blockquote class="twitter-tweet"><a href="${POST}">1</a>`)).toBe(
+      `${marked(ID)}<a href="${POST}" ${A}>1</a></blockquote>`,
+    );
+    // 続く引用は、それぞれ別に数える。ふつうの引用は付けない
+    expect(
+      clean(
+        tweet(`<a href="${POST}">1</a>`) +
+          '<blockquote><a href="https://x.com/c/status/3">3</a></blockquote>' +
+          tweet('<a href="https://x.com/b/status/2">2</a>'),
+      ),
+    ).toBe(
+      `${marked(ID)}<a href="${POST}" ${A}>1</a></blockquote>` +
+        `<blockquote><a href="https://x.com/c/status/3" ${A}>3</a></blockquote>` +
+        `${marked("2")}<a href="https://x.com/b/status/2" ${A}>2</a></blockquote>`,
+    );
+  });
+
+  it("Imgur の公式埋め込みと並んでも、互いの状態が漏れない", () => {
+    const imgur =
+      '<blockquote class="imgur-embed-pub"><a href="https://i.imgur.com/abc123.jpg">写真</a></blockquote>';
+    expect(clean(imgur + tweet(`<a href="${POST}">投稿</a>`) + imgur)).toBe(
+      `<blockquote><a href="https://i.imgur.com/abc123.jpg" ${A}>写真</a>` +
+        '<img src="https://i.imgur.com/abc123.jpg"></blockquote>' +
+        `${marked(ID)}<a href="${POST}" ${A}>投稿</a></blockquote>` +
+        `<blockquote><a href="https://i.imgur.com/abc123.jpg" ${A}>写真</a>` +
+        '<img src="https://i.imgur.com/abc123.jpg"></blockquote>',
+    );
+    // Imgur の引用の中の投稿のリンクには、印を付けない（twitter-tweet でないので）
+    expect(
+      clean(`<blockquote class="imgur-embed-pub"><a href="${POST}">投稿</a></blockquote>`),
+    ).toBe(`<blockquote><a href="${POST}" ${A}>投稿</a></blockquote>`);
+  });
+
+  it("2 回通しても、印も値も変わらない", () => {
+    const once = clean(
+      tweet(`<p>文</p>&mdash; 名前 (@a) <a href="${POST}?ref_src=twsrc%5Etfw">日付</a>`) +
+        tweet('<p><a href="https://twitter.com/b/status/2">説明</a></p>') +
+        tweet(`<a href="${POST}">1</a><a href="https://x.com/b/status/2">2</a>`),
+    );
+    expect(once.match(/data-x-post="(\d+)"/g)).toEqual([`data-x-post="${ID}"`, 'data-x-post="2"']);
+    expect(clean(once)).toBe(once);
+  });
+
+  it("返すとき（画像の差し替え）も、印を作り直して残す", async () => {
+    const out = await sanitizeHtmlWithImages(
+      `<blockquote data-x-post="999"><a href="${POST}">投稿</a><img src="https://img.example.com/a.png"></blockquote>`,
+      BASE,
+      async () => "/api/v1/images?x",
+    );
+    expect(out).toBe(
+      `${marked(ID)}<a href="${POST}" ${A}>投稿</a><img src="/api/v1/images?x"></blockquote>`,
+    );
+  });
+});
+
 describe("sanitizeHtmlWithImages", () => {
   it("画像の URL を差し替え、差し替え先のない画像は落とす", async () => {
     const out = await sanitizeHtmlWithImages(
