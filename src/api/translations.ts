@@ -1,7 +1,9 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { getInboxArticle } from "../db/inbox";
+import { imageSigner } from "../db/secrets";
 import { cancelTranslating, getTranslation, startTranslating } from "../db/translations";
 import { notifyTranslationChanged } from "../jobs/translations";
+import { sanitizeHtmlWithImages } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
@@ -25,8 +27,9 @@ const getRoute = createRoute({
   path: "/articles/{id}/translation",
   summary: "記事の訳文",
   description: [
-    "Sendo が日本語に訳した、記事のタイトルと要約を返す（docs/decisions/translation.md の 13）。",
-    "訳文は外部から来たデータを LLM が訳したもので、プレーンテキスト。表示する側でエスケープする。",
+    "Sendo が日本語に訳した、記事のタイトル・要約・本文を返す（docs/decisions/translation.md の 13）。",
+    "訳文は外部から来たデータを LLM が訳したもの。タイトルと要約はプレーンテキストで、表示する側でエスケープする。",
+    "本文は、GET /articles/{id}/content の html と同じく、サニタイズして画像を中継の URL に書き換えた HTML。それでも信頼せず、表示する側で通すタグと属性を決める。",
     "訳し直すと替わる。translatedAt が変わったら取り直す。",
   ].join("\n"),
   request: { params },
@@ -39,6 +42,14 @@ const getRoute = createRoute({
             .object({
               title: z.string().nullable().openapi({ description: "訳したタイトル" }),
               summary: z.string().nullable().openapi({ description: "訳した要約" }),
+              content: z.string().nullable().openapi({
+                description:
+                  "訳した本文（サニタイズした HTML）。本文のない記事、長すぎて訳さなかった本文は null（タイトルと要約だけを訳した）",
+              }),
+              contentSource: z.enum(["feed", "page"]).nullable().openapi({
+                description:
+                  "訳した本文の出どころ。page は記事のページから抜いた本文、feed はフィードの本文。訳した本文がなければ null",
+              }),
               model: z.string().openapi({ description: "訳したモデル" }),
               translatedAt: z.iso.datetime().openapi({ description: "訳した時刻" }),
             })
@@ -89,10 +100,21 @@ export function translationsApi(platform: Platform) {
       if (!row || row.translatedAt === null || row.model === null) {
         return c.json(errorBody("no_translation", "article has no translation"), 404);
       }
+      // 置く前にサニタイズしてあるが、今の決まりをもう一度当て、画像を中継の URL に書き換える
+      // （docs/decisions/content.md の 2、7）
+      const images = imageSigner(db);
+      const content =
+        row.content === null
+          ? null
+          : await sanitizeHtmlWithImages(row.content, "about:blank", (url) =>
+              images.toRelayUrl(url),
+            );
       return c.json(
         {
           title: row.title,
           summary: row.summary,
+          content,
+          contentSource: content === null ? null : row.contentSource,
           model: row.model,
           translatedAt: row.translatedAt.toISOString(),
         },

@@ -461,6 +461,13 @@ export const articleTranslations = sqliteTable(
     /** 訳したタイトルと要約（プレーンテキスト）。訳文がなければ null */
     title: text("title"),
     summary: text("summary"),
+    /**
+     * 訳した本文（サニタイズした HTML）。本文のない記事、長すぎる本文は null
+     * （docs/decisions/translation.md の 3、12）
+     */
+    content: text("content"),
+    /** 訳した本文の出どころ。訳した本文がなければ null */
+    contentSource: text("content_source", { enum: ["feed", "page"] }),
     /** 訳したモデル。訳文がなければ null */
     model: text("model"),
     translatedAt: integer("translated_at", { mode: "timestamp_ms" }),
