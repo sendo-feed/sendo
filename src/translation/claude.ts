@@ -14,6 +14,9 @@ export const DEFAULT_TRANSLATION_MODEL = "claude-sonnet-5-5";
 /** その場の翻訳に選ぶモデルの ID の頭（同じく 9） */
 export const TRANSLATION_MODEL_PREFIX = "claude-sonnet-";
 
+/** Models API の一覧を待つ上限（取れなければ、前に選んだものか既定で訳す） */
+export const MODEL_LIST_TIMEOUT_MS = 30 * 1000;
+
 /** 出力の上限（同じく 9） */
 export const MAX_OUTPUT_TOKENS = 64_000;
 
@@ -93,7 +96,12 @@ export function createClaudeTranslator(input: {
     now: () => input.now().getTime(),
     async listModels() {
       const list = [];
-      for await (const model of client.models.list({ limit: 1000 })) {
+      // 使えるモデル（新しく使い始められるもの）だけを取る
+      const page = client.models.list(
+        { limit: 1000, lifecycle: ["active"] },
+        { signal: AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS) },
+      );
+      for await (const model of page) {
         const createdAt = Date.parse(model.created_at);
         if (!Number.isNaN(createdAt)) list.push({ id: model.id, createdAt });
       }
@@ -129,11 +137,14 @@ export function createClaudeTranslator(input: {
         // 要求の形の誤りは、新しいモデルが受け付けない指定のことがある（同じく 9）
         if (error instanceof Anthropic.BadRequestError && error.type === "invalid_request_error") {
           models.invalidRequest(model);
+        } else {
+          models.otherOutcome(model);
         }
         throw toTranslatorError(error);
       }
       const result = readResult(message, segments);
       if (result.status === "translated") models.succeeded(model);
+      else models.otherOutcome(model);
       return result;
     },
   };

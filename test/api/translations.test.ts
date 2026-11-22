@@ -195,7 +195,7 @@ const DEFAULT_MODELS = [
 interface Setup {
   platform: Platform;
   /** Models API の答え。替えると、次に一覧を取るときから効く */
-  models: { reply: () => Response; requests: number };
+  models: { reply: () => Response; requests: number; urls: URL[] };
   /** 翻訳の側の時計（一覧を取り直す時期を進める） */
   clock: { ms: number };
   enqueued: Job[];
@@ -226,11 +226,13 @@ async function setup(
   const models: Setup["models"] = {
     reply: options.models ?? (() => modelsResponse(DEFAULT_MODELS)),
     requests: 0,
+    urls: [],
   };
   const clock = { ms: Date.now() };
   const fake = fakeFetch(async (url, init) => {
     if (url.hostname === "api.anthropic.com" && url.pathname === "/v1/models") {
       models.requests += 1;
+      models.urls.push(url);
       return models.reply();
     }
     if (url.hostname === "api.anthropic.com") {
@@ -1425,5 +1427,75 @@ describe("翻訳に使うモデルを選ぶ（docs/decisions/translation.md の 
     await translateOnce(s, id);
     expect(s.models.requests).toBe(2);
     expect(sentModels(s)).toEqual(["claude-sonnet-6", "claude-sonnet-6", "claude-sonnet-7"]);
+  });
+
+  /** claude-sonnet-6（いちばん新しい）、claude-sonnet-5-5、claude-sonnet-5 の一覧 */
+  const threeSonnets = () =>
+    modelsResponse([
+      modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+      modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+      modelInfo("claude-sonnet-5", "2026-01-01T00:00:00Z"),
+    ]);
+
+  it("一覧は、使えるモデル（active）だけを取る", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    await translateOnce(s, await articleId(s.platform, "en"));
+    // SDK は配列の指定を lifecycle[] で送る
+    expect(s.models.urls[0]?.searchParams.getAll("lifecycle[]")).toEqual(["active"]);
+  });
+
+  it("外すのはいちばん新しいモデルだけで、次のモデルで 400 が続いても、さらに古い版へは下がらない", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({ models: threeSonnets });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    // 利用上限やクレジットの不足も 400 で返る。claude-sonnet-6 を外したあとも続く
+    s.replies.push(...Array.from({ length: 6 }, () => invalidRequest));
+    for (let i = 0; i < 7; i++) await translateOnce(s, id);
+    expect(sentModels(s)).toEqual([
+      ...Array.from({ length: 3 }, () => "claude-sonnet-6"),
+      ...Array.from({ length: 4 }, () => "claude-sonnet-5-5"),
+    ]);
+  });
+
+  it("400 の間にほかの結果（拒否など）が入ると、続けて数えない", async () => {
+    const s = await setup({ models: threeSonnets });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    s.replies.push(invalidRequest, invalidRequest, { stop: "refusal" }, invalidRequest);
+    for (let i = 0; i < 5; i++) await translateOnce(s, id);
+    expect(sentModels(s)).toEqual(Array.from({ length: 5 }, () => "claude-sonnet-6"));
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      model: "claude-sonnet-6",
+    });
+  });
+
+  it("固定のモデル、一覧にほかの Sonnet がないとき、一覧を取れずに既定を使うときは、400 が続いても外さない", async () => {
+    for (const options of [
+      { model: "claude-sonnet-4-5" },
+      { models: () => modelsResponse([modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z")]) },
+      {
+        models: () =>
+          Response.json(
+            { type: "error", error: { type: "api_error", message: "x" } },
+            { status: 500 },
+          ),
+      },
+      // Sonnet が 1 つもない一覧も、既定を使う
+      { models: () => modelsResponse([modelInfo("claude-opus-6", "2026-09-01T00:00:00Z")]) },
+    ]) {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      await testDb.exec("DELETE FROM feeds");
+      const s = await setup(options);
+      await maintain(s.platform);
+      const id = await articleId(s.platform, "en");
+      s.replies.push(invalidRequest, invalidRequest, invalidRequest);
+      for (let i = 0; i < 4; i++) await translateOnce(s, id);
+      const models = sentModels(s);
+      expect(new Set(models).size).toBe(1);
+      expect(models).toHaveLength(4);
+    }
   });
 });
