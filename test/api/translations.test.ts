@@ -613,6 +613,52 @@ describe("失敗と、止まった翻訳（docs/decisions/translation.md の 7�
     });
   });
 
+  it("仕事を積めずに戻したときも、戻した状態が届き、知らされる", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    const before = await requestApp(s.platform, "/api/v1/sync");
+    const { cursor } = (await before.json()) as { cursor: string };
+    s.notified.length = 0;
+    const platform: Platform = {
+      ...s.platform,
+      jobs: {
+        async enqueue() {
+          throw new Error("queue is busy");
+        },
+      },
+    };
+    const response = await requestApp(platform, `/api/v1/articles/${id}/translation`, {
+      method: "POST",
+    });
+    expect(response.status).toBe(500);
+    expect(s.notified).toContain(TEST_USER.id);
+    const after = await requestApp(s.platform, `/api/v1/sync?cursor=${encodeURIComponent(cursor)}`);
+    const body = (await after.json()) as {
+      articles: { id: string; translation: { status: string } | null }[];
+    };
+    expect(body.articles.find((a) => a.id === id)?.translation).toMatchObject({ status: "queued" });
+  });
+
+  it("知らせる相手を読めなくても、求めは受け付けて 202 を返す", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const hook = statementHook(/select distinct "user_id" from "user_articles"/, async () => {
+      throw new Error("database is busy");
+    });
+    const response = await requestApp(
+      { ...s.platform, db: hook.db },
+      `/api/v1/articles/${id}/translation`,
+      { method: "POST" },
+    );
+    expect(hook.fired()).toBe(true);
+    expect(response.status).toBe(202);
+    expect(await translationOf(s.platform, id)).toMatchObject({ status: "translating" });
+    expect(s.enqueued.some((j) => j.type === "translate-article")).toBe(true);
+  });
+
   it("API キーがなくても、止まった translating を戻す", async () => {
     const s = await setup();
     await maintain(s.platform);

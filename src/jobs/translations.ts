@@ -24,7 +24,15 @@ export async function notifyTranslationChanged(
   articleIds: readonly string[],
 ): Promise<void> {
   if (articleIds.length === 0) return;
-  const userIds = await listArticleHolders(platform.db, articleIds);
+  // 知らせは欠けてもよい（クライアントは定期同期も続ける）。相手を読めなくても、済んだ書き込みや
+  // 応答を失敗にしない（lib/sync-notify.ts）
+  let userIds: string[];
+  try {
+    userIds = await listArticleHolders(platform.db, articleIds);
+  } catch {
+    console.warn("could not read whom to notify of translation changes");
+    return;
+  }
   await notifySync(platform.syncUpdates.notify, userIds);
 }
 
@@ -35,12 +43,14 @@ export async function notifyTranslationChanged(
 export async function maintainTranslations(
   platform: Pick<Platform, "db" | "translator" | "syncUpdates">,
 ): Promise<{ reverted: number; decided: number }> {
+  // 戻したことは、決める前に知らせる（決めるところで落ちても、戻した記事の知らせを欠かない）
   const reverted = await revertStaleTranslating(platform.db);
+  await notifyTranslationChanged(platform, reverted);
   const decided = platform.translator === undefined ? [] : await decideTranslations(platform.db);
-  await notifyTranslationChanged(platform, [
-    ...reverted,
-    ...decided.filter((row) => row.delivered).map((row) => row.articleId),
-  ]);
+  await notifyTranslationChanged(
+    platform,
+    decided.filter((row) => row.delivered).map((row) => row.articleId),
+  );
   return { reverted: reverted.length, decided: decided.length };
 }
 

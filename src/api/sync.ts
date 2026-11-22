@@ -151,7 +151,7 @@ const SyncArticleSchema = z
       deleted: z.literal(false).openapi({ description: "受信箱にある記事" }),
       translation: SyncTranslationSchema.nullable().openapi({
         description:
-          "Sendo の翻訳（docs/decisions/translation.md の 14）。日本語の記事、Discord の投稿、訳すかどうかをまだ決めていない記事は null。翻訳が変わると、記事が差分としてもう一度届く",
+          "Sendo の翻訳（docs/decisions/translation.md の 14）。訳さない記事（日本語の記事、Discord の投稿）と、訳すかどうかを決めていない記事（決める前の記事、取り込んでから 1 日のうちに決まらなかった記事、翻訳を使わない Sendo の記事）は null。翻訳が変わると、記事が差分としてもう一度届く",
       }),
     }).openapi("SyncInboxArticle"),
     z
