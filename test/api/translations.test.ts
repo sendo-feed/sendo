@@ -2121,6 +2121,29 @@ describe("バッチの失敗を数える（docs/decisions/translation.md の 4�
     expect(attempts).toBe(0);
   });
 
+  it("要求の形の誤りの間に expired が入ると、続けて数えない（モデルを外さない）", async () => {
+    const s = await setup({
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+        ]),
+    });
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    const sequence = [
+      errored("invalid_request_error"),
+      { type: "expired" },
+      errored("invalid_request_error"),
+      errored("invalid_request_error"),
+    ];
+    for (const [i, result] of sequence.entries()) {
+      endBatch(s, i, { [en]: result });
+      await maintain(s.platform);
+    }
+    expect(s.batches.list[4]?.requests.map((r) => r.params.model)).toEqual(["claude-sonnet-6"]);
+  });
+
   it("拒否（refusal）された記事は、その回で untranslated になる", async () => {
     const s = await setup();
     const en = await articleId(s.platform, "en");

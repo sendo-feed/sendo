@@ -223,6 +223,8 @@ export function createClaudeTranslator(input: {
             }
             results.push({ id, status: "errored", errorType, countedForModel });
           } else {
+            // expired ／ canceled も「ほかの結果」として、続けての数え方を戻す（決定の 9 の「続けて」）
+            if (model !== undefined) models.otherOutcome(model);
             results.push({ id, status: result.type });
           }
         }
