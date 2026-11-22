@@ -5,10 +5,9 @@
  * - 一覧は起動時と 1 日 1 回取り、ID が prefix で始まるもののうち、作られた日がいちばん新しいものを選ぶ
  * - 一覧を取れなければ、前に選んだもの（なければコードの既定）を使う
  * - 固定のモデル（env）があれば、一覧を見ずにそれを使う
- * - 一覧でいちばん新しいモデルで、まだ 1 件も訳せていないうちに、要求の形の誤りが続けて
- *   MAX_INVALID_REQUESTS 件起きたら、そのモデルを外し、次に新しいものを使う。外すのはいちばん新しい
- *   モデルだけで、そこから続けて古い版へは下がらない（利用上限やクレジットの不足も 400 で返るので、
- *   再起動のあとに順に下がっていかないように）
+ * - 一覧から選んだモデルで、まだ 1 件も訳せていないうちに、要求の形の誤り（invalid_request_error。
+ *   支払いの問題の billing_error などは数えない）が続けて MAX_INVALID_REQUESTS 件起きたら、そのモデルを
+ *   外し、次に新しいものを使う。間にほかの結果が入ったら、数え直す
  */
 
 /** 一覧を取り直す間隔 */
@@ -116,10 +115,10 @@ export function createModelSelector(input: {
       if (state.succeeded) return;
       state.invalid += 1;
       if (state.invalid < MAX_INVALID_REQUESTS || model !== chosen) return;
-      // 一覧でいちばん新しいモデルだけを外す（既定と固定のモデル、外したあとの次のモデルは外さない）。
-      // 次に新しいものがなければ、外さずに使い続ける
+      // 一覧から選んだモデルだけを外す（既定のモデルは外さない）。次に新しいものがなければ、外さずに
+      // 使い続ける
       const next = candidates.find((id) => id !== model && !excluded.has(id));
-      if (candidates[0] !== model || next === undefined) return;
+      if (!candidates.includes(model) || next === undefined) return;
       excluded.add(model);
       chosen = next;
       console.warn("excluded a translation model after repeated invalid requests", {

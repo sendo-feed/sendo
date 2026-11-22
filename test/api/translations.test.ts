@@ -1445,18 +1445,28 @@ describe("翻訳に使うモデルを選ぶ（docs/decisions/translation.md の 
     expect(s.models.urls[0]?.searchParams.getAll("lifecycle[]")).toEqual(["active"]);
   });
 
-  it("外すのはいちばん新しいモデルだけで、次のモデルで 400 が続いても、さらに古い版へは下がらない", async () => {
+  it("外したあとの次のモデルでも 400 が続けば、それも外して次に新しいものを使う", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const s = await setup({ models: threeSonnets });
     await maintain(s.platform);
     const id = await articleId(s.platform, "en");
-    // 利用上限やクレジットの不足も 400 で返る。claude-sonnet-6 を外したあとも続く
     s.replies.push(...Array.from({ length: 6 }, () => invalidRequest));
     for (let i = 0; i < 7; i++) await translateOnce(s, id);
     expect(sentModels(s)).toEqual([
       ...Array.from({ length: 3 }, () => "claude-sonnet-6"),
-      ...Array.from({ length: 4 }, () => "claude-sonnet-5-5"),
+      ...Array.from({ length: 3 }, () => "claude-sonnet-5-5"),
+      "claude-sonnet-5",
     ]);
+  });
+
+  it("支払いの問題（billing_error）の 400 は、要求の形の誤りとして数えない", async () => {
+    const s = await setup({ models: threeSonnets });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    const billing: Reply = { status: 400, errorType: "billing_error" };
+    s.replies.push(billing, billing, billing);
+    for (let i = 0; i < 4; i++) await translateOnce(s, id);
+    expect(sentModels(s)).toEqual(Array.from({ length: 4 }, () => "claude-sonnet-6"));
   });
 
   it("400 の間にほかの結果（拒否など）が入ると、続けて数えない", async () => {
