@@ -2724,6 +2724,16 @@
               }
             }
           },
+          "415": {
+            "description": "本文の Content-Type が application/json でない（unsupported_media_type）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Sendo で翻訳が使えない（translation_unavailable：API キーがない）",
             "content": {

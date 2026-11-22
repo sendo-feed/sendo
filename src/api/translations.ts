@@ -109,6 +109,7 @@ const requestRoute = createRoute({
     409: error(
       "訳せない記事（translation_not_supported：日本語の記事、Discord の投稿、訳すかどうかをまだ決めていない記事）、その場の翻訳を求めたが、もう訳しているか訳し終えた（translation_exists）、訳し直しを求めたが、訳文がないか、訳している最中か、もう訳し直した（retranslation_not_allowed）",
     ),
+    415: error("本文の Content-Type が application/json でない（unsupported_media_type）"),
     503: error("Sendo で翻訳が使えない（translation_unavailable：API キーがない）"),
   },
 });
