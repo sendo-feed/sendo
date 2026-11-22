@@ -33,7 +33,7 @@ export const BATCH_MARK_TTL_MS = 60 * 60 * 1000;
 
 /** バッチの印を外す（待ちに戻す、訳文を書いた） */
 const CLEAR_BATCH = sql`batch_key = null, batch_marked_at = null, batch_id = null,
-  batch_content_source = null`;
+  batch_content_source = null, batch_body_hash = null`;
 
 const languageFrom = (source: string) => sql`(select l.language from article_languages l
   where l.article_id = a.id and l.source = ${source} and l.status in ('detected', 'provisional'))`;
@@ -276,14 +276,15 @@ export async function markForBatch(
   return rows.map((row) => row.articleId);
 }
 
-/** バッチで送る本文の出どころを書き留める（印が同じ行だけ） */
-export async function setBatchContentSource(
+/** バッチで送る本文の出どころと、送る断片の指紋を書き留める（印が同じ行だけ） */
+export async function setBatchBody(
   db: Database,
   articleId: string,
   key: string,
-  source: "feed" | "page",
+  body: { source: "feed" | "page"; hash: string },
 ): Promise<void> {
-  await db.run(sql`update article_translations set batch_content_source = ${source}
+  await db.run(sql`update article_translations
+    set batch_content_source = ${body.source}, batch_body_hash = ${body.hash}
     where article_id = ${articleId} and batch_key = ${key}`);
 }
 
@@ -328,11 +329,14 @@ export async function listBatchesToCheck(
 export function listBatchRows(
   db: Database,
   batchId: string,
-): Promise<{ articleId: string; contentSource: "feed" | "page" | null }[]> {
+): Promise<
+  { articleId: string; contentSource: "feed" | "page" | null; bodyHash: string | null }[]
+> {
   return db
     .select({
       articleId: articleTranslations.articleId,
       contentSource: articleTranslations.batchContentSource,
+      bodyHash: articleTranslations.batchBodyHash,
     })
     .from(articleTranslations)
     .where(eq(articleTranslations.batchId, batchId))

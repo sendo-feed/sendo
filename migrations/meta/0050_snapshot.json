@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "566df1cd-9e69-4a94-8213-ec5fd6285749",
+  "id": "e62cfa99-2c21-466e-932f-eb5988dec527",
   "prevId": "eda935ea-66fe-4c24-af99-015d1b1d8b8a",
   "tables": {
     "access_tokens": {
@@ -619,6 +619,13 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "batch_body_hash": {
+          "name": "batch_body_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         }
       },
       "indexes": {
@@ -637,6 +644,23 @@
           ],
           "isUnique": false,
           "where": "batch_key is not null"
+        },
+        "article_translations_batch_queue_idx": {
+          "name": "article_translations_batch_queue_idx",
+          "columns": [
+            "decided_at",
+            "article_id"
+          ],
+          "isUnique": false,
+          "where": "status = 'queued' and batch_key is null"
+        },
+        "article_translations_batch_id_idx": {
+          "name": "article_translations_batch_id_idx",
+          "columns": [
+            "batch_id"
+          ],
+          "isUnique": false,
+          "where": "batch_id is not null"
         }
       },
       "foreignKeys": {

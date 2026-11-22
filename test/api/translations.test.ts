@@ -1871,6 +1871,132 @@ describe("バッチで訳す（docs/decisions/translation.md の 4）", () => {
     expect(sentIds(s.batches.list[2])).toEqual([en]);
   });
 
+  it("その場の翻訳の最中や、その場で訳せなかった行にも、まだ訳文がなければバッチの結果を書く", async () => {
+    const s = await setup({ extraEnglish: 1 });
+    s.batches.transform = (segment) => (segment.id === "title" ? "バッチの訳" : undefined);
+    const en = await articleId(s.platform, "en");
+    const other = await articleId(s.platform, "en-0");
+    await maintain(s.platform);
+    // en はその場の翻訳の最中、other はその場で訳せず untranslated
+    await request(s, en);
+    const job = s.enqueued.find((j) => j.type === "translate-article");
+    s.enqueued.length = 0;
+    await request(s, other);
+    s.replies.push({ status: 400, errorType: "invalid_request_error" });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, other)).toMatchObject({ status: "untranslated" });
+
+    const batch = s.batches.list[0];
+    if (batch) batch.ended = true;
+    await maintain(s.platform);
+    for (const id of [en, other]) {
+      expect(await translationOf(s.platform, id)).toMatchObject({
+        status: "translated",
+        title: "バッチの訳",
+        startedAt: null,
+      });
+    }
+    // あとで終わったその場の翻訳の仕事は、書かない
+    if (!job) throw new Error("no job");
+    await runJob(s.platform, job);
+    expect(await translationOf(s.platform, en)).toMatchObject({ title: "バッチの訳" });
+  });
+
+  it("結果を書く途中で落ちても、次の手入れで残りだけを書き、印を残さない", async () => {
+    const s = await setup({ extraEnglish: 1 });
+    const en = await articleId(s.platform, "en");
+    const other = await articleId(s.platform, "en-0");
+    await maintain(s.platform);
+    const batch = s.batches.list[0];
+    if (batch) batch.ended = true;
+    // 1 件目を書いたあと、2 件目を書く文の前で落ちる
+    let writes = 0;
+    const hook = statementHook(
+      (sql) =>
+        sql.startsWith("update article_translations set status = 'translated'") && ++writes === 2,
+      async () => {
+        throw new Error("crashed");
+      },
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await maintainWith({ ...s.platform, db: hook.db });
+    expect(hook.fired()).toBe(true);
+    const statuses = [await translationOf(s.platform, en), await translationOf(s.platform, other)];
+    expect(statuses.filter((row) => row?.status === "translated")).toHaveLength(1);
+
+    s.notified.length = 0;
+    await maintain(s.platform);
+    for (const id of [en, other]) {
+      expect(await translationOf(s.platform, id)).toMatchObject({
+        status: "translated",
+        batchKey: null,
+        batchId: null,
+      });
+    }
+    expect(s.batches.list).toHaveLength(1);
+  });
+
+  it("手入れが重なっても、同じ記事を 2 つのバッチで送らない", async () => {
+    const s = await setup({ extraEnglish: 3 });
+    await decideTranslations(s.platform.db);
+    await Promise.all([maintain(s.platform), maintain(s.platform)]);
+    const sent = s.batches.list.flatMap((b) => sentIds(b));
+    expect(sent).toHaveLength(4);
+    expect(new Set(sent).size).toBe(4);
+  });
+
+  it("送ったあとでページの本文が抜けても、送ったフィードの本文で組み立てる。知らない ID の結果は使わない", async () => {
+    const s = await setup({ body: "<p>Codemods change every call site.</p>" });
+    s.batches.transform = (segment) =>
+      segment.id === "b1" ? "コードモッドはすべての呼び出しを変える。" : defaultTransform(segment);
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    await recordExtractedPageContent(s.platform.db, {
+      articleId: en,
+      html: "<p>A different page body.</p><p>Second paragraph.</p>",
+      now: new Date(),
+    });
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    batch.results = new Map([
+      [
+        "unknown-article",
+        { type: "succeeded", message: messageJson("claude-sonnet-5-5", translated([])) },
+      ],
+    ]);
+    batch.requests.push({ custom_id: "unknown-article", params: {} });
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "translated",
+      content: "<p>コードモッドはすべての呼び出しを変える。</p>",
+      contentSource: "feed",
+    });
+  });
+
+  it("送ったときと本文の分け方が違えば（指紋が合わない）、本文を置かずにタイトルと要約だけを書く", async () => {
+    const s = await setup({ body: "<p>Codemods change every call site.</p>" });
+    s.batches.transform = (segment) =>
+      segment.id === "b1" ? "コードモッドはすべての呼び出しを変える。" : defaultTransform(segment);
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    // 送ったあとで分け方が変わった（その間のデプロイ）ことにする
+    await testDb.exec(
+      `UPDATE article_translations SET batch_body_hash = 'changed' WHERE article_id = '${en}'`,
+    );
+    const batch = s.batches.list[0];
+    if (batch) batch.ended = true;
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      content: null,
+      contentSource: null,
+    });
+  });
+
   it("API キーがない設定では、送らない", async () => {
     const s = await setup({ translator: false });
     await maintain(s.platform);

@@ -16,7 +16,7 @@ import {
   markForBatch,
   releaseStaleBatchMarks,
   revertStaleTranslating,
-  setBatchContentSource,
+  setBatchBody,
   setBatchId,
   skipEmptyBatchArticles,
   unmarkBatch,
@@ -129,8 +129,11 @@ async function sendBatch(platform: MaintainPlatform, translator: Translator): Pr
       continue;
     }
     if (body !== null) {
-      // 結果を組み立てるときに、同じ本文で分け直す
-      await setBatchContentSource(db, id, key, body.source);
+      // 結果を組み立てるときに、同じ本文で分け直し、送った断片と同じかを照らす
+      await setBatchBody(db, id, key, {
+        source: body.source,
+        hash: await segmentsHash(body.segments.segments),
+      });
       bodyBytes += new TextEncoder().encode(body.html).length;
     }
     requests.push({ id, segments });
@@ -171,56 +174,96 @@ async function checkBatches(platform: MaintainPlatform, translator: Translator):
   await configureStorage(db, platform.retentionConfig.maxBytes);
   let count = 0;
   for (const batchId of await listBatchesToCheck(db)) {
-    let status: Awaited<ReturnType<Translator["checkBatch"]>>;
     try {
-      status = await translator.checkBatch(batchId);
+      count += await checkBatch(platform, translator, batchId);
     } catch (error) {
-      console.warn("could not check a translation batch", {
+      // 1 つのバッチで落ちても、ほかのバッチと、送るほうを止めない（印は残り、次に見直す）
+      console.warn("could not write a translation batch", {
         batchId,
         error: error instanceof Error ? error.message : String(error),
       });
-      continue;
     }
-    if (status.status === "in_progress") continue;
-    if (status.status === "gone") {
-      await unmarkCheckedBatch(db, batchId);
-      continue;
-    }
-    const rows = new Map((await listBatchRows(db, batchId)).map((row) => [row.articleId, row]));
-    const written: string[] = [];
-    const keep: string[] = [];
-    for (const result of status.results) {
-      const row = rows.get(result.id);
-      if (row === undefined || result.status !== "translated") continue;
-      const article = await readArticle(platform, result.id);
-      if (article === undefined) continue;
-      const body =
-        row.contentSource === null
-          ? null
-          : await bodyToTranslate(platform, result.id, article.contentKey, row.contentSource);
-      // 返ってこなかった断片は、原文のまま残す（docs/decisions/translation.md の 10）
-      const translated = new Map(result.segments.map((s) => [s.id, s.text]));
-      const ok = await finishBatchTranslation(db, {
-        articleId: result.id,
-        batchId,
-        title: article.title == null ? null : (translated.get("title") ?? article.title),
-        summary: article.summary == null ? null : (translated.get("summary") ?? article.summary),
-        content: body === null ? null : assembleBody(body, translated),
-        model: result.model,
-      });
-      if (ok) {
-        written.push(result.id);
-        continue;
-      }
-      // 行がまだそのバッチの印を持ち訳文がないなら、容量のトリガーが書かなかった。次に書き直す
-      const current = await getTranslation(db, result.id);
-      if (current?.batchId === batchId && current.translatedAt === null) keep.push(result.id);
-    }
-    await unmarkCheckedBatch(db, batchId, keep);
-    await notifyTranslationChanged(platform, written);
-    count += written.length;
   }
   return count;
+}
+
+/** 1 つのバッチを見にいき、終わっていれば結果を書く。訳文を書いた記事の数を返す */
+async function checkBatch(
+  platform: MaintainPlatform,
+  translator: Translator,
+  batchId: string,
+): Promise<number> {
+  const { db } = platform;
+  let status: Awaited<ReturnType<Translator["checkBatch"]>>;
+  try {
+    status = await translator.checkBatch(batchId);
+  } catch (error) {
+    console.warn("could not check a translation batch", {
+      batchId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return 0;
+  }
+  if (status.status === "in_progress") return 0;
+  if (status.status === "gone") {
+    await unmarkCheckedBatch(db, batchId);
+    return 0;
+  }
+  const rows = new Map((await listBatchRows(db, batchId)).map((row) => [row.articleId, row]));
+  const written: string[] = [];
+  const keep: string[] = [];
+  for (const result of status.results) {
+    const row = rows.get(result.id);
+    // 知らない記事と、重なった結果は使わない
+    if (row === undefined || result.status !== "translated") continue;
+    rows.delete(result.id);
+    const article = await readArticle(platform, result.id);
+    if (article === undefined) continue;
+    let body =
+      row.contentSource === null
+        ? null
+        : await bodyToTranslate(platform, result.id, article.contentKey, row.contentSource);
+    // 分け方が送ったときと違えば（その間のデプロイなど）、訳がずれるので本文を置かない
+    if (body !== null && (await segmentsHash(body.segments.segments)) !== row.bodyHash) {
+      console.warn("the article body was split differently from the sent batch", {
+        articleId: result.id,
+      });
+      body = null;
+    }
+    // 送った断片の訳だけを使う。返ってこなかった断片は、原文のまま残す（決定の 10）
+    const sent = new Set([
+      ...segmentsOf(article).map((segment) => segment.id),
+      ...(body?.segments.segments.map((segment) => segment.id) ?? []),
+    ]);
+    const translated = new Map(
+      result.segments.filter((s) => sent.has(s.id)).map((s) => [s.id, s.text]),
+    );
+    const ok = await finishBatchTranslation(db, {
+      articleId: result.id,
+      batchId,
+      title: article.title == null ? null : (translated.get("title") ?? article.title),
+      summary: article.summary == null ? null : (translated.get("summary") ?? article.summary),
+      content: body === null ? null : assembleBody(body, translated),
+      model: result.model,
+    });
+    if (ok) {
+      written.push(result.id);
+      continue;
+    }
+    // 行がまだそのバッチの印を持ち訳文がないなら、容量のトリガーが書かなかった。次に書き直す
+    const current = await getTranslation(db, result.id);
+    if (current?.batchId === batchId && current.translatedAt === null) keep.push(result.id);
+  }
+  await unmarkCheckedBatch(db, batchId, keep);
+  await notifyTranslationChanged(platform, written);
+  return written.length;
+}
+
+/** 送る断片の指紋（SHA-256 の 16 進） */
+async function segmentsHash(segments: readonly TranslationSegment[]): Promise<string> {
+  const data = new TextEncoder().encode(JSON.stringify(segments.map((s) => [s.id, s.text])));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /**
