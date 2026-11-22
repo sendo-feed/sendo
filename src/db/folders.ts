@@ -7,11 +7,14 @@ import { nextSeq } from "./seq";
 
 export const MAX_FOLDER_NAME_LENGTH = 200;
 
-/** フォルダ名の空白をまとめ、長すぎれば切り詰める。中身がなければ null */
+/**
+ * フォルダ名の空白をまとめ、長すぎれば切り詰める。中身がなければ null。
+ * 切り詰めた位置の直前が空白なら、末尾に空白が残るので、もう一度除く
+ */
 export function normalizeFolderName(value: string | undefined): string | null {
   const name = value?.replace(/\s+/g, " ").trim();
   if (!name) return null;
-  return truncateUtf16(name, MAX_FOLDER_NAME_LENGTH);
+  return truncateUtf16(name, MAX_FOLDER_NAME_LENGTH).trimEnd();
 }
 
 /** そのユーザーの、消していないフォルダだけを扱う条件 */

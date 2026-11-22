@@ -433,6 +433,28 @@ describe("フォルダの API", () => {
     expect((await create(platform, "   ")).status).toBe(400);
   });
 
+  it("200 文字で切り詰め、切り詰めた位置の直前が空白なら、末尾に空白を残さない", async () => {
+    const { platform } = createTestPlatform();
+    const nameOf = async (name: string) => {
+      const res = await create(platform, name);
+      return ((await res.json()) as { folder: { name: string } }).folder.name;
+    };
+
+    // 切り詰めた位置の直前が空白
+    expect(await nameOf(`${"a".repeat(199)} b`)).toBe("a".repeat(199));
+    // 200 文字ちょうどは、そのまま
+    expect(await nameOf("b".repeat(200))).toBe("b".repeat(200));
+    // 切り詰めた位置が空白でなければ、中の空白は残す
+    expect(await nameOf(`${"c".repeat(198)} de`)).toBe(`${"c".repeat(198)} d`);
+    // 絵文字を途中で切らずに止めた位置の直前が空白
+    expect(await nameOf(`${"e".repeat(198)} 😀`)).toBe("e".repeat(198));
+
+    const list = await requestApp(platform, "/api/v1/folders", { method: "GET" });
+    expect(((await list.json()) as { items: { name: string }[] }).items.map((i) => i.name)).toEqual(
+      ["a".repeat(199), "b".repeat(200), `${"c".repeat(198)} d`, "e".repeat(198)],
+    );
+  });
+
   it("同じ名前への変更（変わらない）は 200", async () => {
     const { platform } = createTestPlatform();
     const { folder } = (await (await create(platform, "Tech")).json()) as {
