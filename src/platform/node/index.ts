@@ -4,7 +4,7 @@
  */
 import path from "node:path";
 import type { Database } from "../../db";
-import { createClaudeTranslator, DEFAULT_TRANSLATION_MODEL } from "../../translation/claude";
+import { createClaudeTranslator } from "../../translation/claude";
 import type { LanguageDetector, PageContentExtractor, Platform, SyncUpdates } from "..";
 import {
   readAuthConfig,
@@ -51,10 +51,11 @@ export function createNodePlatform(input: {
   const settings = definedSettings(input.env);
   const discord = readDiscordConfig(settings);
   const fetch = input.fetch ?? createSafeFetch();
-  const translation = readTranslationConfig(settings, DEFAULT_TRANSLATION_MODEL);
+  const translation = readTranslationConfig(settings);
+  const now = () => new Date();
   return {
     ...(discord && { discord }),
-    ...(translation && { translator: createClaudeTranslator({ ...translation, fetch }) }),
+    ...(translation && { translator: createClaudeTranslator({ ...translation, fetch, now }) }),
     pageContent: input.pageContent,
     languageDetection: input.languageDetection,
     syncUpdates: input.syncUpdates,
@@ -63,7 +64,7 @@ export function createNodePlatform(input: {
     jobs: input.jobs,
     content: createFileObjectStore(path.join(dataDirectory(input.env), "content")),
     fetch,
-    now: () => new Date(),
+    now,
     auth: readAuthConfig(settings),
     fetchConfig: readFetchConfig(settings),
     retentionConfig: readRetentionConfig(settings),
