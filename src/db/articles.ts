@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import { MAX_ITEMS } from "../fetcher/parse-feed";
 import type { Database } from ".";
 import { chunked } from "./chunk";
@@ -60,6 +60,20 @@ export async function insertArticles(
     inserted.push(...result);
   }
   return inserted;
+}
+
+/**
+ * Discord の投稿の記事か。Discord の投稿は、置いた本文を全文としても返す（docs/decisions/discord.md の 6）。
+ * フィードの discordCursor で見分ける（getArticlePageUrl と同じ）
+ */
+export async function isDiscordArticle(db: Database, articleId: string): Promise<boolean> {
+  const row = await db
+    .select({ id: articles.id })
+    .from(articles)
+    .innerJoin(feeds, eq(articles.feedId, feeds.id))
+    .where(and(eq(articles.id, articleId), isNotNull(feeds.discordCursor)))
+    .get();
+  return row !== undefined;
 }
 
 /** ページ抽出の取得先。Discord の投稿は認証が必要なため、Web のページを取りにいかない */
