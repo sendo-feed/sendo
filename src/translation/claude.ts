@@ -15,6 +15,9 @@ export const DEFAULT_TRANSLATION_MODEL = "claude-sonnet-5-5";
 /** その場の翻訳に選ぶモデルの ID の頭（同じく 9） */
 export const TRANSLATION_MODEL_PREFIX = "claude-sonnet-";
 
+/** 受け付けずに断ったと分かる応答の番号（バッチを作れなかったと分かり、すぐ待ちに戻せる） */
+const REJECTED_STATUSES = new Set([400, 401, 403, 404, 413, 429, 529]);
+
 /** Models API の一覧を待つ上限（取れなければ、前に選んだものか既定で訳す） */
 export const MODEL_LIST_TIMEOUT_MS = 30 * 1000;
 
@@ -171,6 +174,10 @@ export function createClaudeTranslator(input: {
         batchModels.set(batch.id, model);
         return batch.id;
       } catch (error) {
+        // 要求の形の誤りは、新しいモデルが受け付けない指定のことがある（同じく 9）
+        if (error instanceof Anthropic.BadRequestError && error.type === "invalid_request_error") {
+          models.invalidRequest(model);
+        }
         throw toTranslatorError(error);
       }
     },
@@ -191,6 +198,11 @@ export function createClaudeTranslator(input: {
         for await (const item of stream) items.push(item);
         const model = batchModels.get(batchId);
         batchModels.delete(batchId);
+        // 訳せた結果を先に知らせる（同じバッチで訳せていれば、そのモデルを外さず、要求の形の誤りは
+        // 記事の中身によるものとして数える。結果の並びによらない）
+        items.sort(
+          (a, b) => Number(b.result.type === "succeeded") - Number(a.result.type === "succeeded"),
+        );
         for (const item of items) {
           const id = item.custom_id;
           const result = item.result;
@@ -287,11 +299,11 @@ function toTranslatorError(error: unknown): TranslatorError {
   }
   if (error instanceof Anthropic.APIError) {
     // 本文は返さない（キーや記事の中身をログに出さない）
-    // 4xx と 529（混み合っている）は、受け付けずに断った応答。5xx はほかは、受け付けたあとに返る
-    // こともあるので、断ったとはみなさない
+    // 受け付けずに断ったと分かる応答だけを responded にする。ほか（408、409、5xx など）は、受け付けた
+    // あとに返ることもある
     const status = error.status;
     return new TranslatorError(`the translation call failed (${status ?? "network"})`, true, {
-      responded: typeof status === "number" && ((status >= 400 && status < 500) || status === 529),
+      responded: typeof status === "number" && REJECTED_STATUSES.has(status),
     });
   }
 

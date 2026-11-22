@@ -255,7 +255,7 @@ async function checkBatch(
 
 /**
  * バッチで訳せなかった結果の扱い（docs/decisions/translation.md の 4、8）。拒否はその回で諦める。
- * 待てば通る誤り（一時的な種類）と、要求の形の誤り（モデルを外す判断に数える。決定の 9）は数えない。
+ * 待てば通る誤り（一時的な種類）と、モデルを外す判断に数えた要求の形の誤り（決定の 9）は数えない。
  * ほか（上限で切れた・読めない応答、ほかの誤り、expired、canceled）は数える
  */
 function batchFailure(result: BatchTranslationResult): { count: boolean; giveUp: boolean } {
@@ -277,18 +277,12 @@ function batchFailure(result: BatchTranslationResult): { count: boolean; giveUp:
   }
 }
 
-/**
- * 回数に数えない、バッチの結果の誤りの種類。待てば通るもの（429、529、5xx、時間切れ）と、利用上限・
- * 認証・権限（キーや上限を直せば通る。決定の 8 では送らずに待つもの）
- */
+/** 回数に数えない、バッチの結果の一時的な誤りの種類（429、529、5xx、時間切れ。決定の 8） */
 const UNCOUNTED_BATCH_ERRORS = new Set([
   "rate_limit_error",
   "overloaded_error",
   "api_error",
   "timeout_error",
-  "billing_error",
-  "authentication_error",
-  "permission_error",
 ]);
 
 /**

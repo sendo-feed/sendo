@@ -193,8 +193,8 @@ export type TranslationResult =
 
 /**
  * 呼び出しの失敗。やり直しても通らないもの（要求の形の誤り）は retryable が false。responded は、
- * Claude API が応答を返して断った（要求は受け付けられていない）とき true。届かない・時間切れでは
- * false（受け付けられたかどうか分からない）
+ * Claude API が受け付けずに断ったと分かる応答（400、401、403、404、413、429、529）のとき true。
+ * 届かない・時間切れ・ほかの 5xx などでは false（受け付けられたかどうか分からない）
  */
 export class TranslatorError extends Error {
   readonly responded: boolean;

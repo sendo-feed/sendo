@@ -2192,22 +2192,51 @@ describe("バッチの失敗を数える（docs/decisions/translation.md の 4�
     });
   });
 
-  it("利用上限・認証・権限の errored は、回数に数えない", async () => {
+  it("一時的でない errored（利用上限、権限など）は回数に数え、3 回目で untranslated になる", async () => {
     const s = await setup();
     const en = await articleId(s.platform, "en");
     await maintain(s.platform);
     for (const [i, type] of [
       "billing_error",
-      "authentication_error",
       "permission_error",
+      "authentication_error",
     ].entries()) {
       endBatch(s, i, { [en]: errored(type) });
       await maintain(s.platform);
     }
     expect(await translationOf(s.platform, en)).toMatchObject({
-      status: "queued",
-      batchAttempts: 0,
+      status: "untranslated",
+      batchAttempts: 3,
     });
+  });
+
+  it("同じバッチで訳せたモデルの要求の形の誤りは、結果の並びによらず、記事の中身によるものとして数える", async () => {
+    const s = await setup({
+      extraEnglish: 1,
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+        ]),
+    });
+    const en = await articleId(s.platform, "en");
+    const other = await articleId(s.platform, "en-0");
+    await decideTranslations(s.platform.db);
+    await maintain(s.platform);
+    // 誤りが先に並んでいても、訳せた結果を先に数える
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    batch.results = new Map([[en, errored("invalid_request_error")]]);
+    batch.requests.sort((a) => (a.custom_id === en ? -1 : 1));
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, other)).toMatchObject({ status: "translated" });
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "queued",
+      batchAttempts: 1,
+    });
+    // モデルは外さない
+    expect(s.batches.list[1]?.requests.map((r) => r.params.model)).toEqual(["claude-sonnet-6"]);
   });
 
   it("その場の翻訳の最中の記事に拒否が返っても、状態と始めた時刻は変えない", async () => {
