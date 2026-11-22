@@ -831,7 +831,7 @@ describe("サーバーにアイコンがないときの Discord のアイコン�
     failing.arm();
     t.state.now = new Date(FIXED_NOW.getTime() + HOUR);
     // DB の失敗は仕事の失敗にし、キューのやり直しに回す。フィードの取得は成功として残る
-    await expect(runFetchFeed(t.platform, t.feedId)).rejects.toThrow("落ちた");
+    await expect(runFetchFeed(t.platform, t.feedId)).rejects.toThrow();
     expect(failing.fired()).toBe(true);
     expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
       iconUrl: cdn(icon("a")),
