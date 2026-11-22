@@ -435,7 +435,11 @@ export async function releaseStaleBatchMarks(db: Database): Promise<number> {
 
 /**
  * queued で印のない行を limit 件まで、同じ文で印（key と時刻）を付けて取る。重なった定期実行は、
- * 同じ行に印を付けない
+ * 同じ行に印を付けない。
+ *
+ * 同じ元記事（正規化した URL が同じ）の行がバッチの印を持っている間は取らずに待つ。印のない同じ元記事
+ * の行どうしでは、バッチで訳せなかった回数の少ない順、次に決めた順で 1 つだけを取る（決定の 16。
+ * 本文を重ねて送らない）。どちらも、この文の中で確かめる
  *
  * @returns 印を付けた記事
  */
@@ -447,9 +451,19 @@ export async function markForBatch(
   const rows = await db.all<{ articleId: string }>(sql`
     update article_translations set batch_key = ${key}, batch_marked_at = ${DB_NOW_MS}
     where article_id in (
-      select article_id from article_translations
-      where status = 'queued' and batch_key is null
-      order by decided_at, article_id
+      select c.article_id from article_translations c
+      where c.status = 'queued' and c.batch_key is null
+        and (c.url_key is null or (
+          not exists (select 1 from article_translations o
+            where o.url_key = c.url_key and o.batch_key is not null)
+          and not exists (select 1 from article_translations o
+            where o.url_key = c.url_key and o.article_id <> c.article_id
+              and o.status = 'queued' and o.batch_key is null
+              and (o.batch_attempts < c.batch_attempts
+                or (o.batch_attempts = c.batch_attempts and (o.decided_at < c.decided_at
+                  or (o.decided_at = c.decided_at and o.article_id < c.article_id)))))
+        ))
+      order by c.decided_at, c.article_id
       limit ${limit}
     ) and status = 'queued' and batch_key is null
     returning article_id as articleId

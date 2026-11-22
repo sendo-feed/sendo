@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordExtractedPageContent } from "../../src/db/page-contents";
 import { articles, articleTranslations, feeds, userArticles } from "../../src/db/schema";
 import { readStorageUsage } from "../../src/db/storage";
-import { BATCH_MARK_TTL_MS, decideTranslations } from "../../src/db/translations";
+import { BATCH_MARK_TTL_MS, decideTranslations, markForBatch } from "../../src/db/translations";
 import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Job } from "../../src/jobs/job";
@@ -3381,5 +3381,123 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
     const batches = s.batches.list.length;
     await maintain(s.platform);
     expect(sentSegments(s.batches.list[batches], second)).toEqual(["summary", "b1"]);
+  });
+
+  /** その記事を含むバッチ */
+  const batchOf = (s: Setup, id: string) =>
+    s.batches.list.filter((b) => b.requests.some((r) => r.custom_id === id));
+
+  it("先の記事がバッチの中にある間は後の記事を送らず、先の結果を書いた定期実行で要約だけを送る", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await deliver(s, "/hn.xml");
+    await maintain(s.platform);
+    const [firstBatch] = batchOf(s, first);
+    expect(firstBatch).toBeDefined();
+
+    const second = await deliver(s, "/lobsters.xml");
+    await maintain(s.platform);
+    await maintain(s.platform);
+    expect(batchOf(s, second)).toEqual([]);
+    expect(await translationOf(s.platform, second)).toMatchObject({
+      status: "queued",
+      batchKey: null,
+    });
+
+    if (firstBatch) firstBatch.ended = true;
+    await maintain(s.platform);
+    const [secondBatch] = batchOf(s, second);
+    expect(sentSegments(secondBatch, second)).toEqual(["summary"]);
+    // 本文を送ったのは 1 回だけ
+    const bodies = s.batches.list.flatMap((b) =>
+      b.requests.filter((r) => (sentSegments(b, r.custom_id) ?? []).includes("b1")),
+    );
+    expect(bodies).toHaveLength(1);
+  });
+
+  it("同じ定期実行で送られうる同じ元記事の記事は、1 つだけを送る", async () => {
+    const s = await setup({ feeds });
+    const first = await deliver(s, "/hn.xml");
+    const second = await deliver(s, "/lobsters.xml");
+    await maintain(s.platform);
+    const sent = [first, second].filter((id) => batchOf(s, id).length > 0);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("先の記事が訳せずに印が外れると、次の定期実行では待っていた記事を送る", async () => {
+    const s = await setup({ feeds });
+    const first = await deliver(s, "/hn.xml");
+    await maintain(s.platform);
+    const second = await deliver(s, "/lobsters.xml");
+    await maintain(s.platform);
+    const [firstBatch] = batchOf(s, first);
+    if (firstBatch) {
+      firstBatch.ended = true;
+      firstBatch.results = new Map([[first, { type: "expired" }]]);
+    }
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, first)).toMatchObject({
+      status: "queued",
+      batchAttempts: 1,
+    });
+    // 結果を書いた同じ定期実行で、待っていた記事を送り、訳せなかった記事は送らない
+    expect(batchOf(s, second)).toHaveLength(1);
+    expect(batchOf(s, first)).toHaveLength(1);
+  });
+
+  it("すべて写せる記事も、同じ元記事の行がバッチの中にある間は待つ", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const firstRow = await translationOf(s.platform, first);
+    const second = await deliver(s, "/lobsters.xml");
+    await maintain(s.platform);
+    const [secondBatch] = batchOf(s, second);
+    expect(secondBatch).toBeDefined();
+
+    const third = await deliver(s, "/mirror.xml");
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "queued",
+      batchKey: null,
+    });
+
+    if (secondBatch) secondBatch.ended = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "translated",
+      title: firstRow?.title,
+      content: firstRow?.content,
+    });
+  });
+
+  it("同じ元記事の行がその場の翻訳の最中（バッチの印がない）でも、バッチは待たない", async () => {
+    const s = await setup({ feeds });
+    const first = await deliver(s, "/hn.xml");
+    await decideTranslations(s.platform.db);
+    expect((await request(s, first)).response.status).toBe(202);
+    const second = await deliver(s, "/lobsters.xml");
+    await maintain(s.platform);
+    expect(batchOf(s, second)).toHaveLength(1);
+    expect(batchOf(s, first)).toEqual([]);
+  });
+
+  it("2 つの定期実行が重なっても、同じ元記事の行を 2 つ送らない", async () => {
+    const s = await setup({ feeds });
+    const first = await deliver(s, "/hn.xml");
+    const second = await deliver(s, "/lobsters.xml");
+    await decideTranslations(s.platform.db);
+    // 送る行を取る文の直前に、ほかの定期実行が先に印を付ける
+    const hook = statementHook(/update article_translations set batch_key/, async () => {
+      await markForBatch(s.platform.db, "other-run");
+    });
+    await maintain({ ...s.platform, db: hook.db });
+    expect(hook.fired()).toBe(true);
+    const marked = await testDb
+      .prepare(
+        `SELECT count(*) AS n FROM article_translations WHERE batch_key IS NOT NULL AND article_id IN ('${first}', '${second}')`,
+      )
+      .first<number>("n");
+    expect(marked).toBe(1);
   });
 });
