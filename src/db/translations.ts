@@ -1,4 +1,5 @@
 import { eq, inArray, sql } from "drizzle-orm";
+import { normalizeSourceUrl } from "../translation/source-url";
 import { type Database, getRow } from ".";
 import { chunked } from "./chunk";
 import { DB_NOW_MS } from "./clock";
@@ -187,6 +188,17 @@ export async function decideTranslations(
     on conflict (article_id) do nothing
     returning article_id as articleId, status
   `);
+  // 同じ元記事を見分ける、正規化した URL を書く（決定の 16）。行を作るのは、ここだけにする（ほかの
+  // 呼び出し元も URL を書き漏らさないように）。行を作る文のあとなので、その間に落ちた行は書かれず、
+  // 使い回さない（訳すのは今までどおり）
+  const delivered = rows.filter((row) => row.status !== "skipped").map((row) => row.articleId);
+  await setUrlKeys(
+    db,
+    (await listArticleUrls(db, delivered)).flatMap((row) => {
+      const urlKey = normalizeSourceUrl(row.url);
+      return urlKey === null ? [] : [{ articleId: row.id, urlKey }];
+    }),
+  );
   return rows.map((row) => ({ articleId: row.articleId, delivered: row.status !== "skipped" }));
 }
 

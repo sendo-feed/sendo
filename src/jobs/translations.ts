@@ -17,7 +17,6 @@ import {
   finishTranslating,
   getTranslation,
   listArticleHolders,
-  listArticleUrls,
   listBatchesToCheck,
   listBatchRows,
   markForBatch,
@@ -26,7 +25,6 @@ import {
   revertStaleTranslating,
   setBatchBody,
   setBatchId,
-  setUrlKeys,
   skipEmptyBatchArticles,
   unmarkBatch,
   unmarkCheckedBatch,
@@ -41,7 +39,6 @@ import {
   TranslatorError,
 } from "../platform";
 import { type BodySegments, splitBody } from "../translation/segments";
-import { normalizeSourceUrl } from "../translation/source-url";
 
 /** 本文から送る文の合計の上限（Unicode の文字。docs/decisions/translation.md の 3） */
 export const MAX_TRANSLATED_BODY_CHARS = 60_000;
@@ -92,10 +89,6 @@ export async function maintainTranslations(
     return { reverted: reverted.length, decided: 0, written: 0, sent: 0 };
   }
   const decided = await decideTranslations(platform.db);
-  await writeUrlKeys(
-    platform,
-    decided.filter((row) => row.delivered).map((row) => row.articleId),
-  );
   await notifyTranslationChanged(
     platform,
     decided.filter((row) => row.delivered).map((row) => row.articleId),
@@ -104,18 +97,6 @@ export async function maintainTranslations(
   const written = await checkBatches(platform, translator);
   const sent = await sendBatch(platform, translator);
   return { reverted: reverted.length, decided: decided.length, written, sent };
-}
-
-/**
- * 決めた行に、正規化した URL を書く（docs/decisions/translation.md の 16）。行を作る文のあとで書く
- * ので、その間に落ちた行は書かれず、使い回さない（訳すのは今までどおり）
- */
-async function writeUrlKeys(platform: Pick<Platform, "db">, articleIds: readonly string[]) {
-  const keys = (await listArticleUrls(platform.db, articleIds)).flatMap((row) => {
-    const urlKey = normalizeSourceUrl(row.url);
-    return urlKey === null ? [] : [{ articleId: row.id, urlKey }];
-  });
-  await setUrlKeys(platform.db, keys);
 }
 
 /** 訳す記事のタイトル・要約と、本文の置き場の名前 */
