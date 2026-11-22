@@ -458,6 +458,8 @@ describe("失敗と、止まった翻訳（docs/decisions/translation.md の 7�
     ["読めない JSON", { text: "not json" }],
     ["要求の形の誤り（400）", { status: 400, errorType: "invalid_request_error" }],
     ["モデルの名前の誤り（404）", { status: 404, errorType: "not_found_error" }],
+    ["認証の失敗（401）", { status: 401, errorType: "authentication_error" }],
+    ["権限の不足（403）", { status: 403, errorType: "permission_error" }],
   ])("%s は、1 回で untranslated にする", async (_name, reply) => {
     const s = await setup();
     await maintain(s.platform);

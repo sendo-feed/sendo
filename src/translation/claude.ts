@@ -153,9 +153,16 @@ function toTranslatorError(error: unknown): TranslatorError {
       false,
     );
   }
+  if (
+    error instanceof Anthropic.APIUserAbortError ||
+    error instanceof Anthropic.APIConnectionTimeoutError
+  ) {
+    return new TranslatorError("the translation call failed (timeout)", true);
+  }
   if (error instanceof Anthropic.APIError) {
     // 本文は返さない（キーや記事の中身をログに出さない）
     return new TranslatorError(`the translation call failed (${error.status ?? "network"})`, true);
   }
+
   return new TranslatorError("the translation call failed", true);
 }
