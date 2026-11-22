@@ -467,8 +467,22 @@ async function translateArticle(
     return failTranslating(db, articleId, startedAt);
   }
   const article = await readArticle(platform, articleId);
+  // 訳し直しで、もとの訳文に本文があれば、同じ出どころの本文を訳す。それでも本文を置けなければ、
+  // 呼ばずに失敗にする（訳文を減らさない。決定の 6）
+  const keepBody = retranslation && row.content !== null && row.contentSource !== null;
   const body =
-    article === undefined ? null : await bodyToTranslate(platform, articleId, article.contentKey);
+    article === undefined
+      ? null
+      : await bodyToTranslate(
+          platform,
+          articleId,
+          article.contentKey,
+          keepBody ? (row.contentSource ?? undefined) : undefined,
+        );
+  if (keepBody && body === null) {
+    console.warn("retranslation cannot keep the translated body", { articleId });
+    return failTranslating(db, articleId, startedAt);
+  }
   const segments = [
     ...(article === undefined ? [] : segmentsOf(article)),
     ...(body?.segments.segments ?? []),
@@ -500,12 +514,18 @@ async function translateArticle(
   }
   // 返ってこなかった断片は、原文のまま残す（docs/decisions/translation.md の 10）
   const translated = new Map(result.segments.map((s) => [s.id, s.text]));
+  const content = body === null ? null : assembleBody(body, translated);
+  if (keepBody && content === null) {
+    // 組み立てた本文が上限を超えた。呼び直さずに失敗にする（決定の 6、8）
+    console.warn("retranslation cannot keep the translated body", { articleId });
+    return failTranslating(db, articleId, startedAt);
+  }
   const written = await finishTranslating(db, {
     articleId,
     startedAt,
     title: article?.title == null ? null : (translated.get("title") ?? article.title),
     summary: article?.summary == null ? null : (translated.get("summary") ?? article.summary),
-    content: body === null ? null : assembleBody(body, translated),
+    content,
     model: result.model,
     retranslation,
   });

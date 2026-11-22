@@ -2900,4 +2900,97 @@ describe("Opus で訳し直す（docs/decisions/translation.md の 6、9、13）
       expect.not.objectContaining({ retranslation: true }),
     ]);
   });
+
+  it("もとの訳文に本文があれば、あとでページの本文が抜けても、同じ出どころ（フィード）の本文を訳し直す", async () => {
+    const s = await setup({ body: ARTICLE_BODY });
+    const id = await translatedArticle(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({ contentSource: "feed" });
+    // 訳したあとで抜けた、上限（60,000 文字）を超えるページの本文
+    await recordExtractedPageContent(s.platform.db, {
+      articleId: id,
+      html: `<p>${"Long page body. ".repeat(4000)}</p>`,
+      now: new Date(),
+    });
+    await retranslate(s, id);
+    s.replies.push({ transform: (segment) => `訳:${segment.text}` });
+    await runQueuedTranslation(s);
+    const sent = JSON.parse(s.claude[0]?.body ?? "{}") as { messages: { content: string }[] };
+    expect(sent.messages[0]?.content).toContain("Why codemods");
+    expect(sent.messages[0]?.content).not.toContain("Long page body");
+    const row = await translationOf(s.platform, id);
+    expect(row).toMatchObject({ status: "translated", contentSource: "feed", retranslated: true });
+    expect(row?.content).toContain("訳:Why codemods");
+  });
+
+  it("もとの訳文に本文があるのに、同じ出どころの本文を置けなければ、呼ばずにもとの訳文のまま戻す", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    await recordExtractedPageContent(s.platform.db, {
+      articleId: id,
+      html: "<p>Page body about codemods.</p>",
+      now: new Date(),
+    });
+    await request(s, id);
+    await runQueuedTranslation(s);
+    s.enqueued.length = 0;
+    s.claude.length = 0;
+    const before = await translationOf(s.platform, id);
+    expect(before).toMatchObject({ contentSource: "page" });
+    expect(before?.content).not.toBeNull();
+    // ページの本文がなくなった（本番では片付けなどで起きうるが、作りにくいので直接消す）
+    await testDb.exec(`DELETE FROM page_contents WHERE article_id = '${id}'`);
+
+    await retranslate(s, id);
+    await runQueuedTranslation(s);
+    expect(s.claude).toHaveLength(0);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      content: before?.content,
+      contentSource: "page",
+      retranslated: false,
+      startedAt: null,
+    });
+  });
+
+  it("訳し直した本文を組み立てて 256KB を超えたら、呼び直さずに、もとの訳文のまま戻す", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({ body: ARTICLE_BODY });
+    const id = await translatedArticle(s);
+    const before = await translationOf(s.platform, id);
+    expect(before?.content).not.toBeNull();
+    await retranslate(s, id);
+    s.replies.push({
+      transform: (segment) =>
+        segment.id === "title" || segment.id === "summary" ? OPUS_TITLE : "訳".repeat(30_000),
+    });
+    // やり直しのために例外を投げない（呼び直さない）
+    await runQueuedTranslation(s);
+    expect(s.claude).toHaveLength(1);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      content: before?.content,
+      model: "claude-sonnet-5-5",
+      retranslated: false,
+      startedAt: null,
+    });
+  });
+
+  it("もとの訳文に本文がなければ、本文を置けなくても、タイトルと要約だけを訳し直す", async () => {
+    const s = await setup();
+    const id = await translatedArticle(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({ content: null });
+    await retranslate(s, id);
+    s.replies.push(opusReply);
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: OPUS_TITLE,
+      content: null,
+      retranslated: true,
+    });
+  });
 });
