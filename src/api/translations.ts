@@ -1,6 +1,7 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { getInboxArticle } from "../db/inbox";
 import { cancelTranslating, getTranslation, startTranslating } from "../db/translations";
+import { notifyTranslationChanged } from "../jobs/translations";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
@@ -127,8 +128,12 @@ export function translationsApi(platform: Platform) {
       } catch (error) {
         // 積めなかったら、始める前の状態に戻す（1 時間 translating に残さない）
         await cancelTranslating(db, id, startedAt, row.status);
+        await notifyTranslationChanged(platform, [id]);
         throw error;
       }
+      // 訳文は記事ごとの共有のデータなので、求めた人だけでなく、記事を受信箱に持つ人すべてに
+      // 知らせる（求めた人には、入口のミドルウェアも知らせる）
+      await notifyTranslationChanged(platform, [id]);
       return c.json({ status: "translating" as const }, 202);
     });
 }

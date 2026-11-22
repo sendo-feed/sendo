@@ -1011,13 +1011,69 @@
                   false
                 ],
                 "description": "受信箱にある記事"
+              },
+              "translation": {
+                "$ref": "#/components/schemas/SyncArticleTranslation"
               }
             },
             "required": [
-              "deleted"
+              "deleted",
+              "translation"
             ]
           }
         ]
+      },
+      "SyncArticleTranslation": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "language": {
+            "type": "string",
+            "description": "訳すかどうかを決めたときの、記事の主言語（ISO 639-1。判定できなければ und）"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "translating",
+              "translated",
+              "untranslated"
+            ],
+            "description": "翻訳の状態。queued は自動の翻訳を待っている、translating は訳している、translated は訳文がある、untranslated は訳せなかった（求めればその場で訳せる）"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "訳したタイトル（プレーンテキスト。表示する側でエスケープする）。訳文がなければ null"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "訳した要約（プレーンテキスト）。訳文がなければ null"
+          },
+          "translatedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "訳した時刻。訳文がなければ null。変わったら、手元の訳した本文を GET /articles/{id}/translation で取り直す"
+          }
+        },
+        "required": [
+          "language",
+          "status",
+          "title",
+          "summary",
+          "translatedAt"
+        ],
+        "description": "Sendo の翻訳（docs/decisions/translation.md の 14）。訳さない記事（日本語の記事、Discord の投稿）と、訳すかどうかを決めていない記事（決める前の記事、取り込んでから 1 日のうちに決まらなかった記事、翻訳を使わない Sendo の記事）は null。翻訳が変わると、記事が差分としてもう一度届く"
       },
       "SyncRemovedArticle": {
         "type": "object",
