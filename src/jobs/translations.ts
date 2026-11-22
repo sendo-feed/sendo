@@ -576,18 +576,20 @@ async function translateArticle(
       bodyHash,
     });
     if (copied) return true;
-    // 書けなかった。写す元がなくなっていたら分け直して送る。写す元があるのに書けなければ、容量が
-    // 足りない（決定の 12 のとおり失敗にする）
-    const again = copiesFor(article, await findCopies(db, articleId, bodyHash));
-    if (again === copies) return failTranslating(db, articleId, startedAt);
-    copies = again;
+    // 書けなかった（写す元がなくなった、容量が足りない、行が変わった）。行が変わっていなければ、写さず
+    // にすべて送り直す（決定の 16）。容量が足りなければ、下の見積もりで呼ばずに失敗にする（決定の 12）
+    const current = await getTranslation(db, articleId);
+    if (current?.status !== "translating" || current.startedAt?.getTime() !== startedAt.getTime()) {
+      return false;
+    }
+    copies = 0;
   }
   const segments =
     article === undefined
       ? [...(body?.segments.segments ?? [])]
       : sentSegments(article, body, copies);
-  const bodyBytes =
-    body === null || (copies & COPY_BODY) !== 0 ? 0 : new TextEncoder().encode(body.html).length;
+  // 写す本文も、書くときに容量を使うので見積もりに入れる（呼んでから容量に当たって捨てないため）
+  const bodyBytes = body === null ? 0 : new TextEncoder().encode(body.html).length;
   if (segments.length === 0 || !(await hasRoomForTranslation(platform, segments, bodyBytes))) {
     return failTranslating(db, articleId, startedAt);
   }

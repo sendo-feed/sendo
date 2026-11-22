@@ -3631,4 +3631,40 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       title: null,
     });
   });
+
+  it("その場の翻訳で本文を写すときも、写す本文の分を容量に見積もり、足りなければ呼ばずに失敗にする", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    await translatedFirst(s);
+    const second = await requestOnDemand(s, "/lobsters.xml");
+    const job = s.enqueued.find((j) => j.type === "translate-article");
+    if (!job) throw new Error("no job");
+    // 送る要約の分は収まるが、写す本文の分は収まらない上限
+    const usage = await readStorageUsage(s.platform.db);
+    await runJob({ ...s.platform, retentionConfig: { maxBytes: usage.bytes + 600 } }, job);
+    expect(s.claude).toHaveLength(0);
+    expect(await translationOf(s.platform, second)).toMatchObject({ status: "untranslated" });
+  });
+
+  it("訳し直しは、同じ元記事の訳があっても写さず、すべてを Opus に送る", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    await translatedFirst(s);
+    const second = await deliver(s, "/lobsters.xml");
+    await maintain(s.platform);
+    const batch = batchOf(s, second)[0];
+    if (batch) batch.ended = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, second)).toMatchObject({ status: "translated" });
+
+    s.enqueued.length = 0;
+    expect((await retranslate(s, second)).response.status).toBe(202);
+    s.replies.push({ transform: (segment) => `Opus:${segment.text}` });
+    await runQueuedTranslation(s);
+    expect(claudeSegments(s).at(-1)).toEqual(expect.arrayContaining(["title", "summary", "b1"]));
+    expect(await translationOf(s.platform, second)).toMatchObject({
+      title: "Opus:GnuPG Security Advisory for GPGME (T8557,CVE-2026-129975)",
+      retranslated: true,
+    });
+  });
 });
