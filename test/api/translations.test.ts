@@ -16,16 +16,21 @@ import { createTestPlatform, fakeFetch, requestApp, subscribeFeed, TEST_USER } f
  * 記事のページは 404 を返し、抜けなかったものとして記録される
  */
 const FEED_HOST = "translation.example";
-const RSS = `<?xml version="1.0"?>
+/**
+ * 記事のページは、設定ごと・記事ごとに別のホストにする。同じホストへは 1 秒空けて取りにいく
+ * （docs/decisions/content.md の 17）ので、同じホストだとテストが遅くなる
+ */
+let setups = 0;
+const rss = (n: number) => `<?xml version="1.0"?>
 <rss version="2.0"><channel>
   <title>Martin Fowler</title><link>https://${FEED_HOST}/</link>
   <item><title>Refactoring with Codemods to Automate API Changes</title>
-    <link>https://${FEED_HOST}/articles/codemods-api-refactoring.html</link><guid>en</guid>
+    <link>https://en-${n}.${FEED_HOST}/articles/codemods-api-refactoring.html</link><guid>en</guid>
     <description>Codemods are automated scripts that transform code to apply API changes across a large codebase, removing the manual and error-prone work of updating every call site.</description></item>
   <item><title>社内の勉強会で、リファクタリングの進め方を話した</title>
-    <link>https://${FEED_HOST}/ja</link><guid>ja</guid>
+    <link>https://ja-${n}.${FEED_HOST}/ja</link><guid>ja</guid>
     <description>テストを先に書いてから、小さな変更を重ねる進め方を紹介した。</description></item>
-  <item><title>OK</title><link>https://${FEED_HOST}/short</link><guid>und</guid></item>
+  <item><title>OK</title><link>https://und-${n}.${FEED_HOST}/short</link><guid>und</guid></item>
 </channel></rss>`;
 
 /** タイトルと要約の文字で、記事の主言語を決める偽の判定 */
@@ -155,6 +160,7 @@ interface Setup {
 async function setup(
   options: { translator?: boolean; callTimeoutMs?: number } = {},
 ): Promise<Setup> {
+  const n = ++setups;
   const replies: Reply[] = [];
   const claude: Setup["claude"] = [];
   const fake = fakeFetch(async (url, init) => {
@@ -170,7 +176,7 @@ async function setup(
         init?.signal,
       );
     }
-    if (url.pathname === "/feed.xml") return new Response(RSS);
+    if (url.pathname === "/feed.xml") return new Response(rss(n));
     return new Response("not found", { status: 404 });
   });
   const created = createTestPlatform({ fetch: fake.fetch, languageDetection });
