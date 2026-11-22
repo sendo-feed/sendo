@@ -8,8 +8,12 @@ on:
 permissions:
   contents: read
 
+# PR では、新しい push が来たら前の CI を取り消す（ブランチごとに 1 本）。main への push では、
+# コミットごとに別のグループにして、どのコミットの CI も取り消さずに動かす。ブランチでまとめると、
+# 動いている CI のうしろに待てるのは 1 本だけで、続けてマージすると、待っていたコミットの CI が
+# 新しいほうに置き換えられて動かない。どのコミットで落ち始めたかを追えるように、全部を動かす
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
