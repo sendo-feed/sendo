@@ -14,6 +14,7 @@ import {
   findCopies,
   finishBatchTranslation,
   finishCopiedBatchArticle,
+  finishCopiedTranslating,
   finishTranslating,
   getTranslation,
   listArticleHolders,
@@ -382,6 +383,18 @@ async function sha256Hex(text: string): Promise<string> {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+/** 送る断片（写す部分を除く。決定の 16） */
+function sentSegments(
+  article: { title: string | null; summary: string | null },
+  body: Body | null,
+  copies: number,
+): TranslationSegment[] {
+  return [
+    ...segmentsOf(article, copies),
+    ...((copies & COPY_BODY) === 0 ? (body?.segments.segments ?? []) : []),
+  ];
+}
+
 /** 写す部分のうち、その記事に原文のあるものだけ（原文のないタイトル・要約は写さない） */
 function copiesFor(article: { title: string | null; summary: string | null }, copies: number) {
   let result = copies;
@@ -545,11 +558,36 @@ async function translateArticle(
     console.warn("retranslation cannot keep the translated body", { articleId });
     return failTranslating(db, articleId, startedAt);
   }
-  const segments = [
-    ...(article === undefined ? [] : segmentsOf(article)),
-    ...(body?.segments.segments ?? []),
-  ];
-  const bodyBytes = body === null ? 0 : new TextEncoder().encode(body.html).length;
+  const bodyHash = await bodyFingerprint(body);
+  // その場の翻訳は、同じ元記事から写せる部分を呼ばずに写す（決定の 16。待たない）。訳し直しは
+  // 写さない（Opus で訳し直す）
+  let copies =
+    retranslation || article === undefined
+      ? 0
+      : copiesFor(article, await findCopies(db, articleId, bodyHash));
+  if (copies !== 0 && article !== undefined && sentSegments(article, body, copies).length === 0) {
+    const copied = await finishCopiedTranslating(db, {
+      articleId,
+      startedAt,
+      copies,
+      originalTitle: article.title,
+      originalSummary: article.summary,
+      bodySource: body?.source ?? null,
+      bodyHash,
+    });
+    if (copied) return true;
+    // 書けなかった。写す元がなくなっていたら分け直して送る。写す元があるのに書けなければ、容量が
+    // 足りない（決定の 12 のとおり失敗にする）
+    const again = copiesFor(article, await findCopies(db, articleId, bodyHash));
+    if (again === copies) return failTranslating(db, articleId, startedAt);
+    copies = again;
+  }
+  const segments =
+    article === undefined
+      ? [...(body?.segments.segments ?? [])]
+      : sentSegments(article, body, copies);
+  const bodyBytes =
+    body === null || (copies & COPY_BODY) !== 0 ? 0 : new TextEncoder().encode(body.html).length;
   if (segments.length === 0 || !(await hasRoomForTranslation(platform, segments, bodyBytes))) {
     return failTranslating(db, articleId, startedAt);
   }
@@ -576,7 +614,8 @@ async function translateArticle(
   }
   // 返ってこなかった断片は、原文のまま残す（docs/decisions/translation.md の 10）
   const translated = new Map(result.segments.map((s) => [s.id, s.text]));
-  const content = body === null ? null : assembleBody(body, translated);
+  const content =
+    body === null || (copies & COPY_BODY) !== 0 ? null : assembleBody(body, translated);
   if (keepBody && content === null) {
     // 組み立てた本文が上限を超えた。呼び直さずに失敗にする（決定の 6、8）
     console.warn("retranslation cannot keep the translated body", { articleId });
@@ -590,7 +629,11 @@ async function translateArticle(
     content,
     model: result.model,
     retranslation,
-    bodyHash: await bodyFingerprint(body),
+    bodyHash,
+    copies,
+    originalTitle: article?.title ?? null,
+    originalSummary: article?.summary ?? null,
+    bodySource: body?.source ?? null,
   });
   if (written) return true;
   // 行がまだ同じなら、容量のトリガーが書かなかった。呼び直さずに戻す（決定の 12）

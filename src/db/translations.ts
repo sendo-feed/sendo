@@ -331,18 +331,72 @@ export async function finishTranslating(
     retranslation?: boolean;
     /** 送った本文の指紋（決定の 16） */
     bodyHash: string;
+    /** 送らずに同じ元記事から写す部分（決定の 16）。写す元はこの文の中で選び直す */
+    copies?: number;
+    originalTitle?: string | null;
+    originalSummary?: string | null;
+    bodySource?: "feed" | "page" | null;
   },
 ): Promise<boolean> {
+  const copies = input.copies ?? 0;
+  const c = translatedColumns({
+    copies,
+    title: input.title,
+    summary: input.summary,
+    content: input.content,
+    originalTitle: input.originalTitle ?? null,
+    originalSummary: input.originalSummary ?? null,
+    bodySource: input.bodySource ?? null,
+    bodyHash: input.bodyHash,
+  });
+  const retranslated =
+    input.retranslation === true ? sql`1` : copies !== 0 ? c.retranslated : sql`retranslated`;
   const row = await getRow<{ articleId: string }>(
     db,
     // バッチの印も同じ文で外す（あとで返ったバッチの結果を捨てる。docs/decisions/translation.md の 5）
-    sql`update article_translations set status = 'translated', title = ${input.title},
-        summary = ${input.summary}, content = ${input.content?.html ?? null},
-        content_source = ${input.content?.source ?? null}, model = ${input.model},
-        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0,
-        retranslated = ${input.retranslation === true ? sql`1` : sql`retranslated`},
-        body_hash = ${input.bodyHash}, ${CLEAR_BATCH}
+    sql`update article_translations set status = 'translated', title = ${c.title},
+        summary = ${c.summary}, content = ${c.content}, content_source = ${c.contentSource},
+        model = ${input.model}, translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0,
+        retranslated = ${retranslated}, body_hash = ${input.bodyHash}, ${CLEAR_BATCH}
       where ${stillTranslating(input.articleId, input.startedAt)}
+      returning article_id as articleId`,
+  );
+  return row !== undefined;
+}
+
+/**
+ * その場の翻訳で、すべて写せる記事を、呼ばずに写して translated にする（決定の 16）。始めた時刻が
+ * 同じ行だけ。写す元をこの文の中で選び直し、写すと決めた部分の写す元がなくなっていたら書かない。
+ * 容量が足りなければ、トリガーが書かない
+ *
+ * @returns 書いたら true
+ */
+export async function finishCopiedTranslating(
+  db: Database,
+  input: {
+    articleId: string;
+    startedAt: Date;
+    copies: number;
+    originalTitle: string | null;
+    originalSummary: string | null;
+    bodySource: "feed" | "page" | null;
+    bodyHash: string;
+  },
+): Promise<boolean> {
+  const c = translatedColumns({ ...input, title: null, summary: null, content: null });
+  const need = (flag: number, sourceId: ReturnType<typeof sql>) =>
+    (input.copies & flag) !== 0 ? sql`and ${sourceId} is not null` : sql``;
+  const row = await getRow<{ articleId: string }>(
+    db,
+    sql`update article_translations set status = 'translated', title = ${c.title},
+        summary = ${c.summary}, content = ${c.content}, content_source = ${c.contentSource},
+        model = coalesce(${columnOf("model", c.bodySrc)}, ${columnOf("model", titleSourceId)},
+          ${columnOf("model", summarySourceId)}),
+        retranslated = ${c.retranslated}, body_hash = ${input.bodyHash},
+        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH}
+      where ${stillTranslating(input.articleId, input.startedAt)}
+        ${need(COPY_TITLE, titleSourceId)} ${need(COPY_SUMMARY, summarySourceId)}
+        ${need(COPY_BODY, c.bodySrc)}
       returning article_id as articleId`,
   );
   return row !== undefined;
