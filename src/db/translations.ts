@@ -139,14 +139,17 @@ export async function finishTranslating(
     startedAt: Date;
     title: string | null;
     summary: string | null;
+    /** 訳した本文（サニタイズした HTML）と出どころ。本文を訳さなかったら null */
+    content: { html: string; source: "feed" | "page" } | null;
     model: string;
   },
 ): Promise<boolean> {
   const row = await getRow<{ articleId: string }>(
     db,
     sql`update article_translations set status = 'translated', title = ${input.title},
-        summary = ${input.summary}, model = ${input.model}, translated_at = ${DB_NOW_MS},
-        started_at = null, attempts = 0
+        summary = ${input.summary}, content = ${input.content?.html ?? null},
+        content_source = ${input.content?.source ?? null}, model = ${input.model},
+        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0
       where ${stillTranslating(input.articleId, input.startedAt)}
       returning article_id as articleId`,
   );
