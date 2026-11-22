@@ -71,7 +71,7 @@ flowchart LR
 | 全文抽出 | rs-trafilatura ／ dom_smoothie（Rust） | napi-rs で読み込む（[decisions/content.md](decisions/content.md)） |
 | 検索 | FTS5 ／ sqlite-vec | 意味検索は Phase 3 |
 | エージェント連携 | リモート MCP ＋ CLI・Skill | MCP は仕様 2026-07-28 準拠で /mcp に直接載せる |
-| LLM | OpenAI 互換で差し替え | Claude・OpenAI・Ollama |
+| LLM | 翻訳は Claude API（[decisions/translation.md](decisions/translation.md)）。ほかは OpenAI 互換で差し替え | Claude・OpenAI・Ollama |
 | 認証 | 自前の OpenID Connect ／ アクセストークン ／ OAuth 2.1（MCP） | ブラウザはセッションのクッキー、それ以外は Bearer（[decisions/accounts.md](decisions/accounts.md)）。Claude.ai などは Sendo が出す OAuth のトークンで /mcp につなぐ（[decisions/mcp.md](decisions/mcp.md)） |
 
 > テストは Vitest で、Node で動かす。重い処理（全文抽出、言語判定、画像の処理、埋め込みなど）は Rust で書き、napi-rs で Node のプロセスに読み込む（[decisions/tech-stack.md](decisions/tech-stack.md)）。
