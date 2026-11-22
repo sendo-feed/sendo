@@ -22,7 +22,13 @@ export async function openDatabase(
   url: string,
   options: { migrationsFolder: string },
 ): Promise<OpenedDatabase> {
-  const client = createClient({ url });
+  // 接続は 1 本にする。libsql のクライアントは既定で接続を最大 20 本持ち、重なった呼び出しに
+  // 別々の接続を使う。そうすると、下の PRAGMA（busy_timeout は接続ごと）が最初の 1 本にしか
+  // 効かず、書き込みが重なると待たずに SQLITE_BUSY になる。WAL では、ほかの接続が先に書くと
+  // SQLITE_BUSY_SNAPSHOT にもなる（busy_timeout では防げない。sendo-feed/sendo#215）。
+  // 書くのは 1 つのプロセスだけで、文は JavaScript の流れの中で 1 つずつ同期して動くので、
+  // 接続を増やしても速くはならない
+  const client = createClient({ url, concurrency: 1 });
   try {
     await client.execute("PRAGMA foreign_keys = ON");
     await client.execute("PRAGMA busy_timeout = 5000");
