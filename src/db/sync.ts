@@ -9,6 +9,7 @@ import {
   isNull,
   lte,
   max,
+  ne,
   notExists,
   or,
   type SQL,
@@ -20,7 +21,9 @@ import type { InboxArticle } from "./inbox";
 import { readRemovalHorizon } from "./retention";
 import { readSavedPageHorizon, type SavedPage, toSavedPage } from "./saved";
 import {
+  type ArticleTranslation,
   articles,
+  articleTranslations,
   clientSettings,
   type Feed,
   type Folder,
@@ -94,7 +97,55 @@ export const INITIAL_SYNC_DAYS = 30;
  * 同期で返す記事。受信箱の行か、受信箱から消えた記録（docs/decisions/sync.md の 3）。
  * クライアントは、消えた記録が届いたときだけ手元の記事を消す
  */
-export type SyncArticle = { deleted: false; article: InboxArticle } | { deleted: true; id: string };
+export type SyncArticle =
+  | { deleted: false; article: InboxArticle; translation: SyncTranslation | null }
+  | { deleted: true; id: string };
+
+/**
+ * 記事に付けて配る翻訳（docs/decisions/sync.md の 10、translation.md の 14）。訳文の行のない記事と
+ * skipped の記事には付けない（null）
+ */
+export type SyncTranslation = {
+  /** 決めたときの主言語（ISO 639-1、判定できなければ und） */
+  language: string;
+  status: "queued" | "translating" | "translated" | "untranslated";
+  title: string | null;
+  summary: string | null;
+  translatedAt: Date | null;
+};
+
+const t = articleTranslations;
+
+/** 記事の行に左結合して、配る翻訳の列を読む */
+const translationColumns = {
+  translationStatus: t.status,
+  translationLanguage: t.language,
+  translationTitle: t.title,
+  translationSummary: t.summary,
+  translationTranslatedAt: t.translatedAt,
+};
+
+/** 配る翻訳だけを結ぶ条件（skipped の行は付けない） */
+const deliveredTranslation = (articleId: AnyColumn | SQL) =>
+  and(eq(t.articleId, articleId), ne(t.status, "skipped"));
+
+function toSyncTranslation(row: {
+  translationStatus: ArticleTranslation["status"] | null;
+  translationLanguage: string | null;
+  translationTitle: string | null;
+  translationSummary: string | null;
+  translationTranslatedAt: Date | null;
+}): SyncTranslation | null {
+  const status = row.translationStatus;
+  if (status === null || status === "skipped" || row.translationLanguage === null) return null;
+  return {
+    language: row.translationLanguage,
+    status,
+    title: row.translationTitle,
+    summary: row.translationSummary,
+    translatedAt: row.translationTranslatedAt,
+  };
+}
 
 /** 同期で返す設定の項目。消した印の付いた項目には、値がない（docs/decisions/settings.md の 4） */
 export type SyncSetting = { deviceType: string; name: string } & (
@@ -298,9 +349,11 @@ export async function readChanges(
         starredAt: ua.starredAt,
         receivedAt: ua.createdAt,
         seq: ua.seq,
+        ...translationColumns,
       })
       .from(ua)
       .innerJoin(articles, eq(articles.id, ua.articleId))
+      .leftJoin(t, deliveredTranslation(ua.articleId))
       .where(
         and(
           eq(ua.userId, userId),
@@ -312,11 +365,31 @@ export async function readChanges(
       .orderBy(asc(ua.seq), asc(ua.articleId))
       .limit(limit)
       .all();
-    return rows.map(({ seq, ...article }) => ({
-      seq,
-      id: article.id,
-      item: { deleted: false, article },
-    }));
+    return rows.map(
+      ({
+        seq,
+        translationStatus,
+        translationLanguage,
+        translationTitle,
+        translationSummary,
+        translationTranslatedAt,
+        ...article
+      }) => ({
+        seq,
+        id: article.id,
+        item: {
+          deleted: false,
+          article,
+          translation: toSyncTranslation({
+            translationStatus,
+            translationLanguage,
+            translationTitle,
+            translationSummary,
+            translationTranslatedAt,
+          }),
+        },
+      }),
+    );
   };
 
   /**
@@ -348,6 +421,7 @@ export async function readChanges(
         readAt: ua.readAt,
         starredAt: ua.starredAt,
         receivedAt: ua.createdAt,
+        ...translationColumns,
       })
       .from(sql`(${branch(ua, 0)} union all ${branch(removals, 1)}) as ${c}`)
       .leftJoin(
@@ -362,6 +436,7 @@ export async function readChanges(
         articles,
         and(sql`${col("removed")} = 0`, eq(articles.id, sql`${col("article_id")}`)),
       )
+      .leftJoin(t, and(sql`${col("removed")} = 0`, deliveredTranslation(sql`${col("article_id")}`)))
       .orderBy(asc(col("seq")), asc(col("article_id")))
       .limit(limit)
       .all();
@@ -398,7 +473,7 @@ export async function readChanges(
         starredAt: row.starredAt,
         receivedAt,
       };
-      return { seq, id, item: { deleted: false, article } };
+      return { seq, id, item: { deleted: false, article, translation: toSyncTranslation(row) } };
     });
   };
 

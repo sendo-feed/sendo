@@ -9,7 +9,16 @@ import { runScheduled } from "../../src/jobs/schedule";
 import type { LanguageDetectionResult, Platform } from "../../src/platform";
 import { createClaudeTranslator } from "../../src/translation/claude";
 import { testDb } from "../db";
-import { createTestPlatform, fakeFetch, requestApp, subscribeFeed, TEST_USER } from "../helpers";
+import {
+  createTestPlatform,
+  createUser,
+  fakeFetch,
+  recordingSyncUpdates,
+  requestApp,
+  statementHook,
+  subscribeFeed,
+  TEST_USER,
+} from "../helpers";
 
 /**
  * 実在の英語のフィード（martinfowler.com）の項目の形と、日本語の項目、短くて判定できない項目。
@@ -155,10 +164,12 @@ interface Setup {
   claude: { body: string; headers: Headers }[];
   replies: Reply[];
   feedId: string;
+  /** WebSocket で知らせた利用者 */
+  notified: string[];
 }
 
 async function setup(
-  options: { translator?: boolean; callTimeoutMs?: number } = {},
+  options: { translator?: boolean; callTimeoutMs?: number; subscribers?: string[] } = {},
 ): Promise<Setup> {
   const n = ++setups;
   const replies: Reply[] = [];
@@ -179,7 +190,12 @@ async function setup(
     if (url.pathname === "/feed.xml") return new Response(rss(n));
     return new Response("not found", { status: 404 });
   });
-  const created = createTestPlatform({ fetch: fake.fetch, languageDetection });
+  const recording = recordingSyncUpdates();
+  const created = createTestPlatform({
+    fetch: fake.fetch,
+    languageDetection,
+    syncUpdates: recording.syncUpdates,
+  });
   const platform: Platform = {
     ...created.platform,
     ...(options.translator !== false && {
@@ -192,6 +208,9 @@ async function setup(
     }),
   };
   const feed = await subscribeFeed(platform, { url: `https://${FEED_HOST}/feed.xml` });
+  for (const userId of options.subscribers ?? []) {
+    await subscribeFeed(platform, { feedId: feed.id, url: feed.url, userId });
+  }
   await runFetchFeed(platform, feed.id);
   // 取得の仕事が積んだ、ページの抜き取りを動かす（ページは 404 で、抜けなかったと記録される）
   for (const job of created.enqueued.splice(0)) {
@@ -199,7 +218,15 @@ async function setup(
   }
   await runJob(platform, { type: "detect-article-languages" });
   created.enqueued.length = 0;
-  return { platform, enqueued: created.enqueued, claude, replies, feedId: feed.id };
+  recording.notified.length = 0;
+  return {
+    platform,
+    enqueued: created.enqueued,
+    claude,
+    replies,
+    feedId: feed.id,
+    notified: recording.notified,
+  };
 }
 
 async function articleId(platform: Platform, guid: string): Promise<string> {
@@ -666,5 +693,224 @@ describe("置き場と容量（docs/decisions/translation.md の 12）", () => {
       status: "untranslated",
       title: null,
     });
+  });
+});
+
+describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md の 14）", () => {
+  type SyncedArticle = {
+    id: string;
+    deleted: boolean;
+    readAt?: string | null;
+    translation?: {
+      language: string;
+      status: string;
+      title: string | null;
+      summary: string | null;
+      translatedAt: string | null;
+    } | null;
+  };
+
+  /** 差分同期を、hasMore が false になるまで続けて呼ぶ。token を省くとテストのユーザー */
+  async function sync(platform: Platform, token?: string, cursor?: string) {
+    const articles: SyncedArticle[] = [];
+    let next = cursor;
+    for (;;) {
+      const query = next === undefined ? "" : `?cursor=${encodeURIComponent(next)}`;
+      const response = await requestApp(platform, `/api/v1/sync${query}`, {
+        ...(token !== undefined && { token }),
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        cursor: string;
+        hasMore: boolean;
+        articles: SyncedArticle[];
+      };
+      articles.push(...body.articles);
+      next = body.cursor;
+      if (!body.hasMore) return { cursor: body.cursor, articles };
+    }
+  }
+
+  const translationIn = (body: { articles: SyncedArticle[] }, id: string) =>
+    body.articles.find((a) => a.id === id)?.translation;
+
+  it("訳すかどうかが決まると、記事を持つ 2 人に元の言語と状態が届き、知らされる。持たない人には届かない", async () => {
+    const other = await createUser();
+    const outsider = await createUser();
+    const s = await setup({ subscribers: [other.id] });
+    const en = await articleId(s.platform, "en");
+    const ja = await articleId(s.platform, "ja");
+    const und = await articleId(s.platform, "und");
+    const a0 = await sync(s.platform);
+    const b0 = await sync(s.platform, other.token);
+    const c0 = await sync(s.platform, outsider.token);
+    // まだ決めていない記事（行がない）には付かない
+    expect(a0.articles.map((a) => a.translation)).toEqual([null, null, null]);
+
+    await maintain(s.platform);
+    const a1 = await sync(s.platform, undefined, a0.cursor);
+    const b1 = await sync(s.platform, other.token, b0.cursor);
+    for (const body of [a1, b1]) {
+      expect(translationIn(body, en)).toEqual({
+        language: "en",
+        status: "queued",
+        title: null,
+        summary: null,
+        translatedAt: null,
+      });
+      expect(translationIn(body, und)).toMatchObject({ language: "und", status: "untranslated" });
+      // skipped は配らないので、番号も進まない
+      expect(body.articles.map((a) => a.id)).not.toContain(ja);
+    }
+    expect(new Set(s.notified)).toEqual(new Set([TEST_USER.id, other.id]));
+    expect((await sync(s.platform, outsider.token, c0.cursor)).articles).toEqual([]);
+
+    // 最初の同期でも、日本語の記事には付かない
+    const fresh = await sync(s.platform, other.token);
+    expect(translationIn(fresh, ja)).toBeNull();
+    expect(translationIn(fresh, en)).toMatchObject({ status: "queued" });
+  });
+
+  it("その場で訳すと、translating と、訳し終えた訳文が 2 人に届き、知らされる", async () => {
+    const other = await createUser();
+    const s = await setup({ subscribers: [other.id] });
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    const a0 = await sync(s.platform);
+    const b0 = await sync(s.platform, other.token);
+    s.notified.length = 0;
+
+    expect((await request(s, en)).response.status).toBe(202);
+    // 求めたのはテストのユーザーだけでも、記事を持つもう 1 人にも知らせる
+    expect(new Set(s.notified)).toEqual(new Set([TEST_USER.id, other.id]));
+    const a1 = await sync(s.platform, undefined, a0.cursor);
+    const b1 = await sync(s.platform, other.token, b0.cursor);
+    for (const body of [a1, b1]) {
+      expect(body.articles.map((a) => a.id)).toEqual([en]);
+      expect(translationIn(body, en)).toMatchObject({ status: "translating", title: null });
+    }
+
+    s.notified.length = 0;
+    await runQueuedTranslation(s);
+    expect(new Set(s.notified)).toEqual(new Set([TEST_USER.id, other.id]));
+    const row = await translationOf(s.platform, en);
+    for (const body of [
+      await sync(s.platform, undefined, a1.cursor),
+      await sync(s.platform, other.token, b1.cursor),
+    ]) {
+      expect(body.articles.map((a) => a.id)).toEqual([en]);
+      expect(translationIn(body, en)).toEqual({
+        language: "en",
+        status: "translated",
+        title: JA_TITLE,
+        summary: JA_SUMMARY,
+        translatedAt: row?.translatedAt?.toISOString(),
+      });
+    }
+
+    // 最初の同期では、訳し済みの記事に訳文が付く
+    const fresh = await sync(s.platform, other.token);
+    expect(translationIn(fresh, en)).toMatchObject({ status: "translated", title: JA_TITLE });
+  });
+
+  it("やり直しを数えただけでは番号が進まず、知らせない。やり直しを使い切って戻ると届き、知らされる", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    await request(s, en);
+    const a0 = await sync(s.platform);
+    s.notified.length = 0;
+    s.replies.push(
+      { status: 429, errorType: "rate_limit_error" },
+      { status: 529, errorType: "overloaded_error" },
+      { status: 500 },
+    );
+    const job = s.enqueued.find((j) => j.type === "translate-article");
+    if (!job) throw new Error("no job");
+
+    await expect(runJob(s.platform, job)).rejects.toThrow();
+    expect(s.notified).toEqual([]);
+    const a1 = await sync(s.platform, undefined, a0.cursor);
+    expect(a1.articles).toEqual([]);
+
+    await expect(runJob(s.platform, job)).rejects.toThrow();
+    await runJob(s.platform, job);
+    expect(s.notified).toEqual([TEST_USER.id]);
+    const a2 = await sync(s.platform, undefined, a1.cursor);
+    expect(translationIn(a2, en)).toMatchObject({ status: "untranslated", title: null });
+  });
+
+  it("止まった translating を戻すと、届き、知らされる", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    await request(s, en);
+    const a0 = await sync(s.platform);
+    s.notified.length = 0;
+    await s.platform.db
+      .update(articleTranslations)
+      .set({ startedAt: new Date(Date.now() - 60 * 60 * 1000 - 1000) })
+      .where(eq(articleTranslations.articleId, en))
+      .run();
+
+    await maintain(s.platform);
+    expect(s.notified).toEqual([TEST_USER.id]);
+    const a1 = await sync(s.platform, undefined, a0.cursor);
+    expect(translationIn(a1, en)).toMatchObject({ status: "untranslated" });
+  });
+
+  it("番号を振り直しても、既読・スター・既読の番号は変わらない", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    const patched = await requestApp(s.platform, `/api/v1/articles/${en}`, {
+      method: "PATCH",
+      json: { read: true, starred: true },
+    });
+    expect(patched.status).toBe(200);
+    const inbox = () =>
+      s.platform.db.select().from(userArticles).where(eq(userArticles.articleId, en)).get();
+    const before = await inbox();
+
+    await request(s, en);
+    await runQueuedTranslation(s);
+    const after = await inbox();
+    expect(after?.seq).toBeGreaterThan(before?.seq ?? Number.POSITIVE_INFINITY);
+    expect({ readAt: after?.readAt, starredAt: after?.starredAt, readSeq: after?.readSeq }).toEqual(
+      { readAt: before?.readAt, starredAt: before?.starredAt, readSeq: before?.readSeq },
+    );
+  });
+
+  it("訳文を書く文の直前に既読の操作が入っても、番号が重ならず、既読も訳文も残る", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    await request(s, en);
+    const a0 = await sync(s.platform);
+    const hook = statementHook(
+      /update article_translations set status = 'translated'/,
+      async () => {
+        const response = await requestApp(s.platform, `/api/v1/articles/${en}`, {
+          method: "PATCH",
+          json: { read: true },
+        });
+        expect(response.status).toBe(200);
+      },
+    );
+    const job = s.enqueued.find((j) => j.type === "translate-article");
+    if (!job) throw new Error("no job");
+
+    await runJob({ ...s.platform, db: hook.db }, job);
+    expect(hook.fired()).toBe(true);
+    const rows = await s.platform.db
+      .select({ seq: userArticles.seq })
+      .from(userArticles)
+      .where(eq(userArticles.userId, TEST_USER.id))
+      .all();
+    expect(new Set(rows.map((r) => r.seq)).size).toBe(rows.length);
+    const a1 = await sync(s.platform, undefined, a0.cursor);
+    const item = a1.articles.find((a) => a.id === en);
+    expect(item?.readAt).not.toBeNull();
+    expect(item?.translation).toMatchObject({ status: "translated", title: JA_TITLE });
   });
 });

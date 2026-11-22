@@ -122,10 +122,37 @@ const SyncFeedSchema = z
   })
   .openapi("SyncFeed");
 
+const SyncTranslationSchema = z
+  .object({
+    language: z.string().openapi({
+      description: "訳すかどうかを決めたときの、記事の主言語（ISO 639-1。判定できなければ und）",
+    }),
+    status: z.enum(["queued", "translating", "translated", "untranslated"]).openapi({
+      description:
+        "翻訳の状態。queued は自動の翻訳を待っている、translating は訳している、translated は訳文がある、untranslated は訳せなかった（求めればその場で訳せる）",
+    }),
+    title: z.string().nullable().openapi({
+      description:
+        "訳したタイトル（プレーンテキスト。表示する側でエスケープする）。訳文がなければ null",
+    }),
+    summary: z.string().nullable().openapi({
+      description: "訳した要約（プレーンテキスト）。訳文がなければ null",
+    }),
+    translatedAt: z.iso.datetime().nullable().openapi({
+      description:
+        "訳した時刻。訳文がなければ null。変わったら、手元の訳した本文を GET /articles/{id}/translation で取り直す",
+    }),
+  })
+  .openapi("SyncArticleTranslation");
+
 const SyncArticleSchema = z
   .union([
     ArticleSchema.extend({
       deleted: z.literal(false).openapi({ description: "受信箱にある記事" }),
+      translation: SyncTranslationSchema.nullable().openapi({
+        description:
+          "Sendo の翻訳（docs/decisions/translation.md の 14）。日本語の記事、Discord の投稿、訳すかどうかをまだ決めていない記事は null。翻訳が変わると、記事が差分としてもう一度届く",
+      }),
     }).openapi("SyncInboxArticle"),
     z
       .object({
@@ -263,7 +290,17 @@ export function syncApi(platform: Platform) {
             changes.articles.map(async (item) =>
               item.deleted
                 ? { id: item.id, deleted: true as const }
-                : { ...(await toArticleResponse(item.article, images)), deleted: false as const },
+                : {
+                    ...(await toArticleResponse(item.article, images)),
+                    deleted: false as const,
+                    translation:
+                      item.translation === null
+                        ? null
+                        : {
+                            ...item.translation,
+                            translatedAt: item.translation.translatedAt?.toISOString() ?? null,
+                          },
+                  },
             ),
           ),
           ...(changes.savedPages && {

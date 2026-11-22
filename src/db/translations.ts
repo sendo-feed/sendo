@@ -1,7 +1,8 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { type Database, getRow } from ".";
+import { chunked } from "./chunk";
 import { DB_NOW_MS } from "./clock";
-import { type ArticleTranslation, articleTranslations } from "./schema";
+import { type ArticleTranslation, articleTranslations, userArticles } from "./schema";
 
 /** 訳文の行の見積もり（行と主キー索引）。容量のトリガーと合わせる */
 export const ARTICLE_TRANSLATION_BYTES = 512;
@@ -31,9 +32,12 @@ const languageFrom = (source: string) => sql`(select l.language from article_lan
  * ある記事。Discord の投稿、取り込んでから 1 日たった記事、誰の受信箱にもない記事、行のある記事は
  * 決めない。行を作る文の中で、まだ行がないことを確かめる（重なった仕事が作り直さない）
  *
- * @returns 行を作った記事の数
+ * @returns 行を作った記事。差分同期で配る（skipped でない）ものかどうかも返す
  */
-export async function decideTranslations(db: Database, limit = DECIDE_BATCH_SIZE) {
+export async function decideTranslations(
+  db: Database,
+  limit = DECIDE_BATCH_SIZE,
+): Promise<{ articleId: string; delivered: boolean }[]> {
   // ページの判定が済んだ：ページの本文が抜けていて、その判定がある。抜けなかった、または URL のない
   // 記事は、フィードかタイトル・要約の判定がある
   const ready = sql`(
@@ -49,7 +53,7 @@ export async function decideTranslations(db: Database, limit = DECIDE_BATCH_SIZE
     or (a.created_at <= ${DB_NOW_MS} - ${DECIDE_WAIT_MS}
       and exists (select 1 from article_languages l where l.article_id = a.id))
   )`;
-  const rows = await db.all<{ articleId: string }>(sql`
+  const rows = await db.all<{ articleId: string; status: string }>(sql`
     insert into article_translations (article_id, status, language, decided_at)
     select c.id,
       case when c.lang is null then 'untranslated' when c.lang = 'ja' then 'skipped' else 'queued' end,
@@ -67,9 +71,28 @@ export async function decideTranslations(db: Database, limit = DECIDE_BATCH_SIZE
     ) c
     where true
     on conflict (article_id) do nothing
-    returning article_id as articleId
+    returning article_id as articleId, status
   `);
-  return rows.length;
+  return rows.map((row) => ({ articleId: row.articleId, delivered: row.status !== "skipped" }));
+}
+
+/**
+ * 記事を受信箱に持つ人（翻訳が変わったことを知らせる相手。docs/decisions/sync.md の 9、10）
+ */
+export async function listArticleHolders(
+  db: Database,
+  articleIds: readonly string[],
+): Promise<string[]> {
+  const userIds = new Set<string>();
+  for (const ids of chunked(articleIds, null)) {
+    const rows = await db
+      .selectDistinct({ userId: userArticles.userId })
+      .from(userArticles)
+      .where(inArray(userArticles.articleId, ids))
+      .all();
+    for (const row of rows) userIds.add(row.userId);
+  }
+  return [...userIds];
 }
 
 export function getTranslation(
@@ -183,9 +206,9 @@ export async function countTranslateFailure(
  * 止まった translating を戻す（docs/decisions/translation.md の 7）。訳文があれば translated、
  * なければ untranslated にする
  *
- * @returns 戻した行の数
+ * @returns 戻した記事
  */
-export async function revertStaleTranslating(db: Database): Promise<number> {
+export async function revertStaleTranslating(db: Database): Promise<string[]> {
   const rows = await db.all<{ articleId: string }>(sql`
     update article_translations set
       status = case when translated_at is null then 'untranslated' else 'translated' end,
@@ -193,5 +216,5 @@ export async function revertStaleTranslating(db: Database): Promise<number> {
     where status = 'translating' and started_at < ${DB_NOW_MS} - ${STALE_TRANSLATING_MS}
     returning article_id as articleId
   `);
-  return rows.length;
+  return rows.map((row) => row.articleId);
 }
