@@ -2614,7 +2614,7 @@
             }
           },
           "503": {
-            "description": "Sendo で翻訳が使えない（translation_unavailable：API キーがない）か、保存容量が足りない（storage_full）",
+            "description": "Sendo で翻訳が使えない（translation_unavailable：API キーがない）",
             "content": {
               "application/json": {
                 "schema": {
