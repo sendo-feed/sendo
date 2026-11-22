@@ -3226,6 +3226,12 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       content: null,
       contentSource: null,
     });
+
+    // 原文を書いた行は、訳していないので、あとの記事の写す元にしない（タイトルを送る）
+    const third = await deliver(s, "/mirror.xml");
+    const next = s.batches.list.length;
+    await maintain(s.platform);
+    expect(sentSegments(s.batches.list[next], third)).toEqual(expect.arrayContaining(["title"]));
   });
 
   it("すべて写せる記事で、写す文の直前に写す元が消えたら、書かずに待ちに戻す", async () => {
@@ -3349,7 +3355,8 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       status: "queued",
       title: null,
       batchId: batch?.id,
-      batchCopies: expect.any(Number),
+      // タイトルと本文を写す部分は、印と一緒に残る（1 + 4）
+      batchCopies: 5,
     });
 
     await maintain(s.platform);
