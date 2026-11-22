@@ -115,7 +115,15 @@ export async function maintainTranslations(platform: MaintainPlatform): Promise<
   // 戻したことは、決める前に知らせる（決めるところで落ちても、戻した記事の知らせを欠かない）
   const reverted = await revertStaleTranslating(platform.db);
   await notifyTranslationChanged(platform, reverted);
-  const spread = await spreadRetranslations(platform);
+  // 写すところで落ちても、ほかの手入れを止めない（写し損ねた行は次の定期実行で写す）
+  let spread = 0;
+  try {
+    spread = await spreadRetranslations(platform);
+  } catch (error) {
+    console.warn("could not spread retranslations; retrying at the next schedule", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   const { translator } = platform;
   if (translator === undefined) {
     return { reverted: reverted.length, spread, decided: 0, written: 0, sent: 0 };

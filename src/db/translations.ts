@@ -406,21 +406,31 @@ export async function finishCopiedTranslating(
 export const RETRANSLATION_COPY_LIMIT = 100;
 
 /**
+ * 写す元（s）の訳し直しで、写す先（t）の本文を置き換えられる。写す先に訳した本文があるのに、写す元
+ * に訳し直した本文がない（訳し直した本文が上限を超えて置けなかった）なら写さない。Sonnet の本文を
+ * 残したまま印を付けると、その本文を二度と訳し直せないため（決定の 6）
+ */
+const replacesBody = sql`(s.content is not null or t.content is null)`;
+
+/**
  * 訳し直しを写す先の行（docs/decisions/translation.md の 16）。同じ正規化した URL で、本文の指紋が
  * 同じ（どちらも「本文なし」を含む）訳し直した行がある、translated で訳し直しの印のない行。指紋の
- * ない行は写す先にしない。sourceId を渡したら、その行を写す元にできる行だけ
+ * ない行は写す先にしない。訳した本文のある行は、訳し直した本文のある写す元があるときだけ。
+ * sourceId を渡したら、その行を写す元にできる行だけ
  */
 export async function listRetranslationTargets(
   db: Database,
   options: { sourceId?: string | undefined; limit?: number } = {},
 ): Promise<string[]> {
   const rows = await db.all<{ articleId: string }>(
+    // 訳し直した行（部分索引）を外側にして、同じ正規化した URL の行を引く（訳文の表の全部をなめない）
     sql`select distinct t.article_id as articleId from article_translations s
-      join article_translations t on t.url_key = s.url_key and t.body_hash = s.body_hash
+      cross join article_translations t on t.url_key = s.url_key and t.body_hash = s.body_hash
         and t.article_id <> s.article_id
       where s.retranslated = 1 and s.status = 'translated' and s.url_key is not null
         ${options.sourceId === undefined ? sql`` : sql`and s.article_id = ${options.sourceId}`}
         and t.status = 'translated' and t.retranslated = 0
+        and ${replacesBody}
       order by t.article_id
       limit ${options.limit ?? RETRANSLATION_COPY_LIMIT}`,
   );
@@ -432,7 +442,8 @@ export async function listRetranslationTargets(
  * 同じ、訳し直した行。原文の要約が同じもの、次に新しく訳したものを先に）と写す先（translated で
  * 訳し直しの印がない）を、この文の中で確かめる。タイトルと本文を写し、原文の要約が同じなら要約も
  * 写して、訳した時刻・モデル・訳し直しの印を写す元と同じにする。写す元が訳していない部分（原文と
- * 同じ文字、本文がない）は写さない。容量が足りなければ、トリガーが書かない
+ * 同じ文字、本文がない）と、原文にタイトルのない記事のタイトルは写さない。写す先に訳した本文があり、
+ * 写す元に訳し直した本文がなければ写さない。容量が足りなければ、トリガーが書かない
  *
  * @returns 写したら true
  */
@@ -440,7 +451,8 @@ export async function copyRetranslation(db: Database, articleId: string): Promis
   const row = await getRow<{ articleId: string }>(
     db,
     sql`update article_translations as t set
-        title = case when s.title is not null and s.title is not sa.title then s.title else t.title end,
+        title = case when s.title is not null and s.title is not sa.title
+          and trim(coalesce(ta.title, '')) <> '' then s.title else t.title end,
         summary = case when sa.summary = ta.summary and s.summary is not null
           and s.summary is not sa.summary then s.summary else t.summary end,
         content = coalesce(s.content, t.content),
@@ -455,6 +467,7 @@ export async function copyRetranslation(db: Database, articleId: string): Promis
           join articles ra on ra.id = r.article_id
           where r.url_key = t.url_key and r.body_hash = t.body_hash and r.article_id <> t.article_id
             and r.status = 'translated' and r.retranslated = 1
+            and (r.content is not null or t.content is null)
           -- 写した行も写す元になるので、原文の要約が同じ行を先に選ぶ（要約も写せるように）
           order by ra.summary is (select x.summary from articles x where x.id = ${articleId}) desc,
             r.translated_at desc, r.article_id limit 1)

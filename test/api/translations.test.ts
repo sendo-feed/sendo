@@ -3063,12 +3063,17 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       ),
     );
 
+  /** タイトルのない、同じ元記事 */
+  const untitled = () =>
+    channel("Untitled", `<item><link>${GPGME_URL}</link><guid>untitled-1</guid></item>`);
+
   const feeds = {
     "/hn.xml": hn,
     "/lobsters.xml": lobsters,
     "/mirror.xml": mirror,
     "/top.xml": topPage,
     "/hn-copy.xml": hnCopy,
+    "/untitled.xml": untitled,
   };
   /** 訳したことの分かる訳し方 */
   const mark: Transform = (segment) => `訳:${segment.text}`;
@@ -3786,14 +3791,52 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
     expect(warn).toHaveBeenCalled();
     expect(await translationOf(s.platform, second)).toMatchObject({ retranslated: false });
 
+    // 写すのは呼ばないので、API キーがなくても定期実行が写す
     s.notified.length = 0;
-    await maintain(s.platform);
+    const { translator: _removed, ...withoutKey } = s.platform;
+    await maintain(withoutKey);
     expect(await translationOf(s.platform, second)).toMatchObject({
       title: opusRow?.title,
       content: opusRow?.content,
       retranslated: true,
     });
     expect(s.notified).toContain(TEST_USER.id);
+  });
+
+  it("原文にタイトルのない記事には、タイトルを写さない", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const untitledId = await translatedLater(s, "/untitled.xml");
+    expect(await translationOf(s.platform, untitledId)).toMatchObject({ title: null });
+
+    const opusRow = await retranslateNow(s, first);
+    expect(await translationOf(s.platform, untitledId)).toMatchObject({
+      title: null,
+      content: opusRow?.content,
+      retranslated: true,
+    });
+  });
+
+  it("写す元に訳し直した本文がなければ、訳した本文のある記事には写さず、印も付けない", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const second = await translatedLater(s, "/lobsters.xml");
+    const secondBefore = await translationOf(s.platform, second);
+    // 訳し直した本文が上限を超えて置けなかった（作りにくいので、写す直前に本文を外す）
+    const hook = statementHook(/update article_translations as t/, async () => {
+      await testDb.exec(
+        `UPDATE article_translations SET content = NULL, content_source = NULL WHERE article_id = '${first}'`,
+      );
+    });
+
+    await retranslateNow(s, first, { ...s.platform, db: hook.db });
+    expect(hook.fired()).toBe(true);
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, second)).toEqual(secondBefore);
+    // 印がないので、後の記事は自分で訳し直せる
+    expect((await retranslate(s, second)).response.status).toBe(202);
   });
 
   it("容量の上限に当たった記事には写さず、空いたあとの定期実行で写す", async () => {
