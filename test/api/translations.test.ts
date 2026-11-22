@@ -3500,4 +3500,28 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       .first<number>("n");
     expect(marked).toBe(1);
   });
+
+  it("バッチを作れたか分からずに印が残る間も待ち、印が 1 時間で外れたら、次の定期実行で 1 つだけ送る", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({ feeds });
+    const first = await deliver(s, "/hn.xml");
+    const second = await deliver(s, "/lobsters.xml");
+    s.batches.createFailure = () =>
+      Response.json({ type: "error", error: { type: "api_error", message: "x" } }, { status: 500 });
+    await maintain(s.platform);
+    const rows = await Promise.all([first, second].map((id) => translationOf(s.platform, id)));
+    expect(rows.filter((row) => row?.batchKey != null)).toHaveLength(1);
+
+    // 印が残っている間は、同じ元記事のもう一方も送らない
+    s.batches.createFailure = null;
+    await maintain(s.platform);
+    expect(batchOf(s, first)).toEqual([]);
+    expect(batchOf(s, second)).toEqual([]);
+
+    await testDb.exec(
+      `UPDATE article_translations SET batch_marked_at = batch_marked_at - ${BATCH_MARK_TTL_MS}`,
+    );
+    await maintain(s.platform);
+    expect(batchOf(s, first).length + batchOf(s, second).length).toBe(1);
+  });
 });
