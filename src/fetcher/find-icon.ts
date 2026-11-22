@@ -19,6 +19,9 @@ const TIMEOUT_MS = 5_000;
 /** 確かめる候補の数の上限 */
 const MAX_CANDIDATES = 5;
 
+/** フィードのアイコンを探し直す間隔（docs/decisions/images.md の 8） */
+export const ICON_CHECK_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
+
 /**
  * アイコンの URL を探す。候補を順に実際に取得し、画像と確かめられた最初のものを返す。
  * どれも確かめられなければ null。

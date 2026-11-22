@@ -1,4 +1,6 @@
+import { createClient } from "@libsql/client";
 import { eq } from "drizzle-orm";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { describe, expect, it } from "vitest";
 import { connectDiscord, disconnectDiscord, insertDiscordArticles } from "../../src/db/discord";
 import { findFeedByUrl, getFeed } from "../../src/db/feeds";
@@ -8,6 +10,8 @@ import { readStorageUsage } from "../../src/db/storage";
 import { subscribeMany } from "../../src/db/subscriptions";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Platform } from "../../src/platform";
+import { MIGRATIONS_DIR } from "../db";
+import { PNG } from "../fixtures/images";
 import { createTestPlatform, createUser, fakeFetch, requestApp, statementHook } from "../helpers";
 
 const BASE = "/api/v1/integrations/discord";
@@ -37,10 +41,21 @@ function discordFetch() {
   let systemIds: string[] = [];
   let bodies = new Map<string, Record<string, unknown>>();
   let guildIcon: unknown = null;
+  // discord.com のサイト（API の外）。サーバーにアイコンがないときに、Discord のアイコンを探す先
+  // （docs/decisions/discord.md の 7）。既定では何もない
+  let site: (path: string) => Response | Promise<Response> = () =>
+    new Response(null, { status: 404 });
+  const siteCalls: string[] = [];
   const result = fakeFetch(async (url, init) => {
     expect(url.origin).toBe("https://discord.com");
     expect(init?.redirect).toBe("manual");
     const path = url.pathname;
+    if (!path.startsWith("/api/")) {
+      // 読者や Bot のことを渡さない
+      expect(new Headers(init?.headers).get("authorization")).toBeNull();
+      siteCalls.push(path);
+      return site(path);
+    }
     const auth = new Headers(init?.headers).get("authorization");
     if (path === "/api/v10/oauth2/token") {
       expect(init?.method).toBe("POST");
@@ -127,6 +142,12 @@ function discordFetch() {
     setGuildIcon: (icon: unknown) => {
       guildIcon = icon;
     },
+    /** discord.com のサイトの応答を差し替える */
+    setSite: (handler: (path: string) => Response | Promise<Response>) => {
+      site = handler;
+    },
+    /** discord.com のサイトに届いた要求のパス */
+    siteCalls,
     setMessageStatus: (status: number, code?: number) => {
       messageStatus = status;
       errorCode = code;
@@ -516,6 +537,8 @@ describe("Discord の購読", () => {
 
     remote.deny();
     expect(await runFetchFeed(platform, feedId)).toMatchObject({ status: "missing" });
+    // 外すときは、Discord のアイコンを探しにいかない
+    expect(remote.siteCalls).toEqual([]);
     const changed = await sync(initial.cursor);
     // 外したフィードには、サーバーのアイコンも残さない
     expect(changed.feeds).toMatchObject([{ id: feedId, deleted: true, iconUrl: null }]);
@@ -620,6 +643,315 @@ describe("Discord の購読", () => {
     remote.setMessageStatus(403, 50001);
     expect(await runFetchFeed(platform, feedId)).toMatchObject({ status: "missing" });
     expect(await (await request(BASE)).json()).toMatchObject({ subscriptions: [] });
+  });
+});
+
+describe("サーバーにアイコンがないときの Discord のアイコン（docs/decisions/discord.md の 7）", () => {
+  const SITE_ICON = "https://discord.com/assets/favicon.png";
+  const DAY = 24 * HOUR;
+  const MONTH = 30 * DAY;
+  const icon = (n: string) => n.repeat(32);
+  const cdn = (hash: string) => `https://cdn.discordapp.com/icons/201/${hash}.png`;
+  type Sync = { cursor: string; feeds: { id: string; iconUrl: string | null }[] };
+
+  async function subscribed(overrides: Partial<Platform> = {}) {
+    const remote = discordFetch();
+    // ok：トップのページにアイコンがある。down：届かない。none：ページはあるがアイコンがない
+    const state = { now: FIXED_NOW, site: "ok" as "ok" | "down" | "none" };
+    remote.setSite((path) => {
+      if (state.site === "down") return new Response(null, { status: 503 });
+      if (path === "/" && state.site === "none") return new Response("<html></html>");
+      if (path === "/") return new Response('<link rel="icon" href="/assets/favicon.png">');
+      if (path === "/assets/favicon.png") return new Response(PNG);
+      return new Response(null, { status: 404 });
+    });
+    const { platform } = createTestPlatform({
+      discord: CONFIG,
+      fetch: remote.fetch,
+      now: () => state.now,
+      ...overrides,
+    });
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const request = await browser(platform, user.id);
+    const feedId = await subscribe(request);
+    const fetchAt = async (ms: number) => {
+      state.now = new Date(FIXED_NOW.getTime() + ms);
+      expect(await runFetchFeed(platform, feedId)).toMatchObject({
+        status: expect.stringMatching(/^(fetched|not-modified)$/),
+      });
+      return getFeed(platform.db, feedId);
+    };
+    const sync = async (cursor?: string) => {
+      const res = await requestApp(
+        platform,
+        `/api/v1/sync${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+        { token: user.token },
+      );
+      expect(res.status).toBe(200);
+      return (await res.json()) as Sync;
+    };
+    const relayed = (url: string | null | undefined) =>
+      url ? new URL(url, ORIGIN).searchParams.get("url") : url;
+    return { platform, remote, state, user, request, feedId, fetchAt, sync, relayed };
+  }
+
+  it("discord.com で見つけたアイコンを記録して同期に届け、30 日たつまで探し直さない", async () => {
+    const t = await subscribed();
+    const first = await t.fetchAt(0);
+    expect(first).toMatchObject({ iconUrl: SITE_ICON, iconCheckedAt: FIXED_NOW });
+    // チャンネルのページではなく、discord.com のトップを探す
+    expect(t.remote.siteCalls).toEqual(["/", "/assets/favicon.png"]);
+    const synced = await t.sync();
+    expect(t.relayed(synced.feeds.find((feed) => feed.id === t.feedId)?.iconUrl)).toBe(SITE_ICON);
+    const list = await requestApp(t.platform, "/api/v1/feeds", { token: t.user.token });
+    const items = ((await list.json()) as { items: { id: string; iconUrl: string | null }[] })
+      .items;
+    expect(t.relayed(items.find((feed) => feed.id === t.feedId)?.iconUrl)).toBe(SITE_ICON);
+
+    // 30 日たたないうちは探しにいかず、同期にも何も届かない
+    await t.fetchAt(HOUR);
+    await t.fetchAt(MONTH - 1);
+    expect(t.remote.siteCalls).toHaveLength(2);
+    expect((await t.sync(synced.cursor)).feeds).toEqual([]);
+
+    // 30 日ちょうどで探し直す
+    expect(await t.fetchAt(MONTH)).toMatchObject({
+      iconUrl: SITE_ICON,
+      iconCheckedAt: new Date(FIXED_NOW.getTime() + MONTH),
+    });
+    expect(t.remote.siteCalls).toHaveLength(4);
+  });
+
+  it("届かないときは、初めてなら null にし、前に見つけたアイコンは確かめずに残す。どちらも 30 日待つ", async () => {
+    const t = await subscribed();
+    t.state.site = "down";
+    const first = await t.fetchAt(0);
+    // フィードの取得は成功のまま
+    expect(first).toMatchObject({
+      iconUrl: null,
+      iconCheckedAt: FIXED_NOW,
+      lastSuccessfulFetchAt: FIXED_NOW,
+      errorCount: 0,
+    });
+    const tried = t.remote.siteCalls.length;
+    expect(tried).toBeGreaterThan(0);
+    await t.fetchAt(HOUR);
+    expect(t.remote.siteCalls).toHaveLength(tried);
+
+    t.state.site = "ok";
+    expect(await t.fetchAt(MONTH)).toMatchObject({ iconUrl: SITE_ICON });
+    const synced = await t.sync();
+
+    // 届かなくても、前に見つけたアイコンは確かめずに残し、同期にも届かない
+    t.state.site = "down";
+    const before = t.remote.siteCalls.length;
+    const kept = await t.fetchAt(2 * MONTH);
+    expect(kept).toMatchObject({
+      iconUrl: SITE_ICON,
+      iconCheckedAt: new Date(FIXED_NOW.getTime() + 2 * MONTH),
+    });
+    expect(t.remote.siteCalls.length).toBeGreaterThan(before);
+    expect(t.remote.siteCalls.slice(before)).not.toContain("/assets/favicon.png");
+    expect((await t.sync(synced.cursor)).feeds).toEqual([]);
+
+    // ページにアイコンがないときも、前に見つけたアイコンを残す
+    t.state.site = "none";
+    expect(await t.fetchAt(3 * MONTH)).toMatchObject({ iconUrl: SITE_ICON });
+  });
+
+  it("サーバーのアイコンが付いたらすぐ替え、消えたら 30 日によらず探す。消えたサーバーのアイコンは残さない", async () => {
+    const t = await subscribed();
+    await t.fetchAt(0);
+    const searched = t.remote.siteCalls.length;
+
+    // 付いたら、次の取得でサーバーのアイコンに替える。探した時刻は進めない
+    t.remote.setGuildIcon(icon("a"));
+    expect(await t.fetchAt(HOUR)).toMatchObject({
+      iconUrl: cdn(icon("a")),
+      iconCheckedAt: FIXED_NOW,
+    });
+    expect(t.remote.siteCalls).toHaveLength(searched);
+
+    // 消えたら、30 日たっていなくても探す。届かなくても、消えたサーバーのアイコンは残さない
+    t.remote.setGuildIcon(null);
+    t.state.site = "down";
+    expect(await t.fetchAt(2 * HOUR)).toMatchObject({
+      iconUrl: null,
+      iconCheckedAt: new Date(FIXED_NOW.getTime() + 2 * HOUR),
+    });
+    expect(t.remote.siteCalls.length).toBeGreaterThan(searched);
+
+    // もう一度付いて消えたら、すぐに探して、見つけたアイコンにする
+    t.remote.setGuildIcon(icon("b"));
+    await t.fetchAt(3 * HOUR);
+    t.remote.setGuildIcon(null);
+    t.state.site = "ok";
+    expect(await t.fetchAt(4 * HOUR)).toMatchObject({ iconUrl: SITE_ICON });
+  });
+
+  it("サーバーの icon が読めないときは、アイコンを変えず、探しもしない", async () => {
+    const t = await subscribed();
+    const malformed = [undefined, "../../evil", 123];
+    for (const [i, value] of malformed.entries()) {
+      t.remote.setGuildIcon(value);
+      expect(await t.fetchAt(i * HOUR)).toMatchObject({
+        iconUrl: null,
+        iconCheckedAt: null,
+        lastFetchedAt: new Date(FIXED_NOW.getTime() + i * HOUR),
+      });
+    }
+    // サーバーのアイコンがあるときも、消さず、探しもしない
+    t.remote.setGuildIcon(icon("a"));
+    await t.fetchAt(DAY);
+    for (const [i, value] of malformed.entries()) {
+      t.remote.setGuildIcon(value);
+      expect(await t.fetchAt(DAY + (i + 1) * HOUR)).toMatchObject({
+        iconUrl: cdn(icon("a")),
+        lastFetchedAt: new Date(FIXED_NOW.getTime() + DAY + (i + 1) * HOUR),
+      });
+    }
+    expect(t.remote.siteCalls).toEqual([]);
+  });
+
+  it("探した結果を記録する前に落ちても、次の取得で探し直す。消えたサーバーのアイコンも残らない", async () => {
+    const failing = statementHook(
+      /update "feeds" set "icon_url"/i,
+      async () => {
+        throw new Error("落ちた");
+      },
+      { armed: false },
+    );
+    const t = await subscribed({ db: failing.db });
+    t.remote.setGuildIcon(icon("a"));
+    await t.fetchAt(0);
+
+    // サーバーのアイコンが消えた取得で、探した結果を記録する前に落ちる
+    t.remote.setGuildIcon(null);
+    failing.arm();
+    t.state.now = new Date(FIXED_NOW.getTime() + HOUR);
+    // DB の失敗は仕事の失敗にし、キューのやり直しに回す。フィードの取得は成功として残る
+    await expect(runFetchFeed(t.platform, t.feedId)).rejects.toThrow();
+    expect(failing.fired()).toBe(true);
+    expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
+      iconUrl: cdn(icon("a")),
+      iconCheckedAt: null,
+      lastFetchedAt: new Date(FIXED_NOW.getTime() + HOUR),
+      lastSuccessfulFetchAt: new Date(FIXED_NOW.getTime() + HOUR),
+      lastError: null,
+      errorCount: 0,
+    });
+
+    // 次の取得で、30 日を待たずに探し直す
+    expect(await t.fetchAt(2 * HOUR)).toMatchObject({
+      iconUrl: SITE_ICON,
+      iconCheckedAt: new Date(FIXED_NOW.getTime() + 2 * HOUR),
+    });
+  });
+
+  it("探している間に連携を解除したら、外したフィードにアイコンを書かない", async () => {
+    const t = await subscribed();
+    t.remote.setSite(async (path) => {
+      if (path === "/") {
+        const res = await t.request(BASE, { method: "DELETE" });
+        expect(res.ok).toBe(true);
+        return new Response('<link rel="icon" href="/assets/favicon.png">');
+      }
+      if (path === "/assets/favicon.png") return new Response(PNG);
+      return new Response(null, { status: 404 });
+    });
+    await t.fetchAt(0);
+    expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
+      discordConnectionId: null,
+      iconUrl: null,
+      iconCheckedAt: null,
+    });
+  });
+
+  it("探している間に、後から始めた取得がサーバーのアイコンを記録したら、探した結果で上書きしない", async () => {
+    const t = await subscribed();
+    let interleaved = false;
+    t.remote.setSite(async (path) => {
+      if (!interleaved) {
+        interleaved = true;
+        // 探している途中に、サーバーにアイコンが付き、後から始めた取得がそれを記録する
+        t.remote.setGuildIcon(icon("a"));
+        await t.fetchAt(HOUR);
+      }
+      if (path === "/") return new Response('<link rel="icon" href="/assets/favicon.png">');
+      if (path === "/assets/favicon.png") return new Response(PNG);
+      return new Response(null, { status: 404 });
+    });
+    t.state.now = FIXED_NOW;
+    expect(await runFetchFeed(t.platform, t.feedId)).toMatchObject({ status: "fetched" });
+    expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
+      iconUrl: cdn(icon("a")),
+      iconCheckedAt: null,
+    });
+  });
+
+  it("消えたサーバーのアイコンが、探している間に同じ値で付き直しても、探した結果で上書きしない", async () => {
+    const t = await subscribed();
+    t.remote.setGuildIcon(icon("a"));
+    await t.fetchAt(0);
+    let interleaved = false;
+    t.remote.setSite(async (path) => {
+      if (!interleaved) {
+        interleaved = true;
+        // 同じアイコンが付き直し、後から始めた取得が同じ値を書き直す
+        t.remote.setGuildIcon(icon("a"));
+        await t.fetchAt(2 * HOUR);
+      }
+      if (path === "/") return new Response('<link rel="icon" href="/assets/favicon.png">');
+      if (path === "/assets/favicon.png") return new Response(PNG);
+      return new Response(null, { status: 404 });
+    });
+    t.remote.setGuildIcon(null);
+    await t.fetchAt(HOUR);
+    expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
+      iconUrl: cdn(icon("a")),
+      iconCheckedAt: null,
+      lastFetchedAt: new Date(FIXED_NOW.getTime() + 2 * HOUR),
+    });
+  });
+
+  it("マイグレーションで、前の実装が付けた Discord のフィードの探した時刻を空にする", async () => {
+    const client = createClient({ url: ":memory:" });
+    try {
+      await client.execute("PRAGMA foreign_keys = ON");
+      const migrations = readMigrationFiles({ migrationsFolder: MIGRATIONS_DIR });
+      const index = migrations.findIndex((m) =>
+        m.sql.some((statement) => statement.includes("discord.md の 7")),
+      );
+      expect(index).toBeGreaterThan(0);
+      for (const migration of migrations.slice(0, index)) {
+        for (const statement of migration.sql) await client.execute(statement);
+      }
+      // 前の実装：Discord のフィードは、サーバーのアイコンの記録と一緒に時刻が付いている
+      for (const [id, cursor, iconUrl] of [
+        ["discord-none", "'5'", "NULL"],
+        ["discord-guild", "'5'", `'${cdn(icon("a"))}'`],
+        ["public", "NULL", "'https://example.com/icon.png'"],
+      ]) {
+        await client.execute(
+          `INSERT INTO feeds (id, url, created_at, next_fetch_at, discord_cursor, icon_url, icon_checked_at)
+           VALUES ('${id}', 'https://example.com/${id}', 0, 0, ${cursor}, ${iconUrl}, 7)`,
+        );
+      }
+      for (const migration of migrations.slice(index)) {
+        for (const statement of migration.sql) await client.execute(statement);
+      }
+      const rows = await client.execute(
+        "SELECT id, icon_url, icon_checked_at FROM feeds ORDER BY id",
+      );
+      expect(rows.rows.map((row) => ({ ...row }))).toEqual([
+        { id: "discord-guild", icon_url: cdn(icon("a")), icon_checked_at: null },
+        { id: "discord-none", icon_url: null, icon_checked_at: null },
+        { id: "public", icon_url: "https://example.com/icon.png", icon_checked_at: 7 },
+      ]);
+    } finally {
+      client.close();
+    }
   });
 });
 
