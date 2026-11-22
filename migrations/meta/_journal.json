@@ -351,6 +351,13 @@
       "when": 1795346297804,
       "tag": "0049_discord-icon-search",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1795353914444,
+      "tag": "0050_article-translation-batch",
+      "breakpoints": true
     }
   ]
 }

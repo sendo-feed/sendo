@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import {
+  type BatchTranslationResult,
   type TranslationResult,
   type TranslationSegment,
   type Translator,
@@ -110,6 +111,17 @@ export function createClaudeTranslator(input: {
   });
   // 起動時に一覧を取っておく（失敗しても、最初の翻訳のときに前のものか既定で送る）
   void models.current();
+  /** 訳す要求の中身（その場の翻訳とバッチで同じ。docs/decisions/translation.md の 9、11） */
+  const requestBody = (model: string, segments: readonly TranslationSegment[]) => ({
+    model,
+    max_tokens: MAX_OUTPUT_TOKENS,
+    output_config: {
+      effort: "low" as const,
+      format: { type: "json_schema" as const, schema: OUTPUT_SCHEMA },
+    },
+    system: SYSTEM_PROMPT,
+    messages: [{ role: "user" as const, content: JSON.stringify({ segments }) }],
+  });
   return {
     async translate(segments) {
       const model = await models.current();
@@ -117,18 +129,7 @@ export function createClaudeTranslator(input: {
       try {
         message = await client.beta.messages
           .stream(
-            {
-              model,
-              max_tokens: MAX_OUTPUT_TOKENS,
-              betas: [FALLBACK_BETA],
-              fallbacks: "default",
-              output_config: {
-                effort: "low",
-                format: { type: "json_schema", schema: OUTPUT_SCHEMA },
-              },
-              system: SYSTEM_PROMPT,
-              messages: [{ role: "user", content: JSON.stringify({ segments }) }],
-            },
+            { ...requestBody(model, segments), betas: [FALLBACK_BETA], fallbacks: "default" },
             // SDK の timeout は応答のヘッダーまでしか見ないので、流れを読み終えるまでを打ち切る
             { signal: AbortSignal.timeout(callTimeoutMs) },
           )
@@ -147,12 +148,65 @@ export function createClaudeTranslator(input: {
       else models.otherOutcome(model);
       return result;
     },
+
+    // バッチ（docs/decisions/translation.md の 4）。代わりのモデル（fallbacks）はバッチでは使えない
+    async createBatch(requests) {
+      const model = await models.current();
+      try {
+        const batch = await client.beta.messages.batches.create(
+          {
+            requests: requests.map((request) => ({
+              custom_id: request.id,
+              params: requestBody(model, request.segments),
+            })),
+          },
+          { signal: AbortSignal.timeout(callTimeoutMs) },
+        );
+        return batch.id;
+      } catch (error) {
+        throw toTranslatorError(error);
+      }
+    },
+
+    async checkBatch(batchId) {
+      try {
+        const batch = await client.beta.messages.batches.retrieve(batchId, undefined, {
+          signal: AbortSignal.timeout(callTimeoutMs),
+        });
+        if (batch.processing_status !== "ended") return { status: "in_progress" };
+        const results: BatchTranslationResult[] = [];
+        const stream = await client.beta.messages.batches.results(batchId, undefined, {
+          signal: AbortSignal.timeout(callTimeoutMs),
+        });
+        for await (const item of stream) {
+          const id = item.custom_id;
+          const result = item.result;
+          if (result.type === "succeeded") {
+            const read = readResult(result.message);
+            if (read.status === "translated") models.succeeded(read.model);
+            results.push({ id, ...read });
+          } else if (result.type === "errored") {
+            results.push({ id, status: "errored", errorType: result.error?.error?.type ?? null });
+          } else {
+            results.push({ id, status: result.type });
+          }
+        }
+        return { status: "ended", results };
+      } catch (error) {
+        if (error instanceof Anthropic.NotFoundError) return { status: "gone" };
+        throw toTranslatorError(error);
+      }
+    },
   };
 }
 
+/**
+ * 応答を読む。sent を渡すと、送った ID のものだけを 1 つずつ受け取る。渡さなければ（バッチ。送った
+ * 断片は書くときに分け直す）、重なった ID だけを捨てる
+ */
 function readResult(
   message: Anthropic.Beta.BetaMessage,
-  sent: readonly TranslationSegment[],
+  sent?: readonly TranslationSegment[],
 ): TranslationResult {
   if (message.stop_reason === "refusal") return { status: "refused" };
   if (message.stop_reason !== "end_turn") return { status: "invalid" };
@@ -170,10 +224,12 @@ function readResult(
     return { status: "invalid" };
   }
   // 送った ID のものだけを、1 つずつ受け取る（増えた ID、重なった ID は捨てる）
-  const wanted = new Set(sent.map((segment) => segment.id));
+  const wanted = sent === undefined ? null : new Set(sent.map((segment) => segment.id));
+  const seen = new Set<string>();
   const segments: TranslationSegment[] = [];
   for (const segment of parsed.segments) {
-    if (!wanted.delete(segment.id)) continue;
+    if (seen.has(segment.id) || (wanted !== null && !wanted.has(segment.id))) continue;
+    seen.add(segment.id);
     segments.push({ id: segment.id, text: segment.text });
   }
   return { status: "translated", segments, model };

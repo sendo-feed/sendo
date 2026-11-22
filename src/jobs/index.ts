@@ -32,8 +32,9 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
     }
     case "maintain-translations": {
       const result = await maintainTranslations(platform);
-      if (result.reverted > 0 || result.decided > 0)
+      if (Object.values(result).some((count) => count > 0)) {
         console.info("maintained translations", result);
+      }
       return;
     }
     case "translate-article": {

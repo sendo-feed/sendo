@@ -476,11 +476,22 @@ export const articleTranslations = sqliteTable(
     /** その場の翻訳で、やり直せる失敗が続いた回数。始めるたびに 0 に戻す */
     attempts: integer("attempts").notNull().default(0),
     decidedAt: integer("decided_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * バッチで送る印（docs/decisions/translation.md の 4）。送る行を取る文で、そのバッチの印と時刻を
+     * 付ける。訳文を書いたとき、待ちに戻すときに外す。差分同期では配らない
+     */
+    batchKey: text("batch_key"),
+    batchMarkedAt: integer("batch_marked_at", { mode: "timestamp_ms" }),
+    /** 送れたバッチの ID。印を付けてから送れるまでは null */
+    batchId: text("batch_id"),
+    /** バッチで送った本文の出どころ（結果を組み立てるときに、同じ本文で分け直す）。本文を送らなければ null */
+    batchContentSource: text("batch_content_source", { enum: ["feed", "page"] }),
   },
   (t) => [
     index("article_translations_translating_idx")
       .on(t.startedAt)
       .where(sql`status = 'translating'`),
+    index("article_translations_batch_idx").on(t.batchMarkedAt).where(sql`batch_key is not null`),
   ],
 );
 
