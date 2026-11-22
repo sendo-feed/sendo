@@ -1,7 +1,7 @@
 # 記事の本文
 
 - 状態：提案中
-- 関連：[画像の中継とサムネイル](images.md)、[差分同期](sync.md)、[古い記事の片付け](retention.md)、[仕事の流し方](jobs.md)、[テックスタック](tech-stack.md)（Rust）、[コンテナ版](container.md)（1 つのプロセスで動かす）、[MCP サーバー](mcp.md)、[Google Reader API 互換](greader.md)
+- 関連：[画像の中継とサムネイル](images.md)、[差分同期](sync.md)、[古い記事の片付け](retention.md)、[仕事の流し方](jobs.md)、[テックスタック](tech-stack.md)（Rust）、[コンテナ版](container.md)（1 つのプロセスで動かす）、[MCP サーバー](mcp.md)、[Google Reader API 互換](greader.md)、[Discord チャンネルの購読](discord.md)
 
 本文の出どころは、**A：フィードに入っている本文**と、**B：記事のページから抜いた本文**の 2 つ。どちらも扱う。
 
@@ -56,6 +56,7 @@
 ### 本文を配る
 
 6. **本文は、差分同期に載せず、記事ごとに取りにいく。** `GET /api/v1/articles/{id}/content` で、サニタイズした HTML と出どころを返す。
+   - 出どころは、求めた種類（`feed`：フィードの本文、`page`：全文）。全文は B（10）で抜いた本文で、Discord の投稿では、置いた本文を全文としても返す（[Discord チャンネルの購読](discord.md)の 6）
    - 認証はほかの REST API と同じ。その人の受信箱にある記事だけを返す
    - 本文がなければ 404。記事（REST API と差分同期）に、本文があるかどうか（`hasContent`）を載せるので、クライアントは、ある記事だけを取りにいく
    - クライアントは、取った本文を手元に置いてよい。信頼できない HTML として扱う（そのままページに差し込まない、スクリプトを動かさない）のは、クライアントの側でも続ける
