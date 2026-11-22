@@ -1115,6 +1115,52 @@ describe("本文を訳す（docs/decisions/translation.md の 3、10、13）", (
     });
   });
 
+  it("訳した本文がサニタイズしたあとでちょうど 256KB なら置き、1 バイト多ければ置かない", async () => {
+    // <p></p> の 7 バイトを含めて、ちょうど 256KB にする
+    const limit = 256 * 1024;
+    const exact = await setup({ body: "<p>Short codemods body</p>" });
+    const exactId = await translate(exact, {
+      transform: (segment) =>
+        segment.id.startsWith("b") ? "a".repeat(limit - 7) : prefix(segment),
+    });
+    const kept = await translationOf(exact.platform, exactId);
+    expect(new TextEncoder().encode(kept?.content ?? "").length).toBe(limit);
+  });
+
+  it("訳した本文がサニタイズしたあとで 256KB を 1 バイト超えたら置かない", async () => {
+    const limit = 256 * 1024;
+    const over = await setup({ body: "<p>Short codemods body</p>" });
+    const overId = await translate(over, {
+      transform: (segment) =>
+        segment.id.startsWith("b") ? "a".repeat(limit - 6) : prefix(segment),
+    });
+    expect(await translationOf(over.platform, overId)).toMatchObject({
+      title: JA_TITLE,
+      content: null,
+    });
+  });
+
+  it("受け取った本文で容量を超えるなら、呼び直さずに untranslated に戻す", async () => {
+    const s = await setup({ body: "<p>Short codemods body</p>" });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    await request(s, id);
+    // 見積もり（送る文の倍と本文の HTML）には収まるが、受け取った本文は収まらない上限にする
+    const usage = await readStorageUsage(s.platform.db);
+    const platform = { ...s.platform, retentionConfig: { maxBytes: usage.bytes + 4000 } };
+    s.replies.push({
+      transform: (segment) => (segment.id.startsWith("b") ? "訳".repeat(5000) : prefix(segment)),
+    });
+    const job = s.enqueued.find((j) => j.type === "translate-article");
+    if (!job) throw new Error("no job");
+    await runJob(platform, job);
+    expect(s.claude).toHaveLength(1);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "untranslated",
+      content: null,
+    });
+  });
+
   it("ページの本文があればそれを訳し、出どころを page で返す", async () => {
     const s = await setup({ body: ARTICLE_BODY });
     await maintain(s.platform);
@@ -1156,8 +1202,16 @@ describe("本文を訳す（docs/decisions/translation.md の 3、10、13）", (
     const row = await translationOf(s.platform, id);
     const bytes = (text: string | null | undefined) => new TextEncoder().encode(text ?? "").length;
     expect(row?.content).not.toBeNull();
-    expect((await readStorageUsage(s.platform.db)).bytes - decided).toBe(
-      bytes(row?.title) + bytes(row?.summary) + bytes(row?.model) + bytes(row?.content),
-    );
+    const translatedBytes =
+      bytes(row?.title) + bytes(row?.summary) + bytes(row?.model) + bytes(row?.content);
+    const after = (await readStorageUsage(s.platform.db)).bytes;
+    expect(after - decided).toBe(translatedBytes);
+
+    // 訳文の行を消すと、本文の分も一緒に引く
+    await s.platform.db
+      .delete(articleTranslations)
+      .where(eq(articleTranslations.articleId, id))
+      .run();
+    expect(after - (await readStorageUsage(s.platform.db)).bytes).toBe(512 + translatedBytes);
   });
 });

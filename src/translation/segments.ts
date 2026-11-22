@@ -33,6 +33,9 @@ const UNTRANSLATED_BLOCKS = new Set(["pre"]);
 
 const MARKER = /⟦(\/)?(\d+)(\/)?⟧/g;
 
+/** URL に見える文字（リンクの文字が URL なら、その URL を送らない。決定の 10、11） */
+const URL_LIKE = /^(?:[a-z][a-z0-9+.-]*:\/\/|www\.)\S*$/i;
+
 type Node =
   | { type: "text"; raw: string }
   | { type: "element"; name: string; attributes: string; children: Node[] };
@@ -81,12 +84,14 @@ export function splitBody(sanitized: string): BodySegments {
       pending = [];
     };
     for (const child of children) {
-      if (child.type === "text" || INLINE.has(child.name)) {
+      if (isInline(child)) {
         pending.push(child);
         continue;
       }
       flush();
-      if (!UNTRANSLATED_BLOCKS.has(child.name)) visit(child.children);
+      if (child.type === "element" && !UNTRANSLATED_BLOCKS.has(child.name)) {
+        visit(child.children);
+      }
     }
     flush();
   };
@@ -110,7 +115,7 @@ export function splitBody(sanitized: string): BodySegments {
           pending = [];
         };
         for (const child of children) {
-          if (child.type === "text" || INLINE.has(child.name)) {
+          if (isInline(child) || child.type === "text") {
             pending.push(child);
             continue;
           }
@@ -145,7 +150,7 @@ function toRun(id: string, nodes: Node[]): Run | null {
         continue;
       }
       const n = next++;
-      if (ATOMIC.has(node.name)) {
+      if (isOpaque(node)) {
         markers.set(n, { node, paired: false, parent });
         out += `⟦${n}/⟧`;
       } else {
@@ -224,6 +229,45 @@ function parse(html: string): Node[] {
     if (!VOID.has(token.name)) stack.push(node);
   }
   return root;
+}
+
+/**
+ * 文の中のノードか。中にブロック（pre など）を持つ文の中の要素（リンクで包んだ段落など）は、
+ * ブロックとして扱い、中のブロックを別の断片にする。中身を送らない要素は、いつも文の中
+ */
+const blockInside = new WeakMap<Node, boolean>();
+function isInline(node: Node): boolean {
+  if (node.type === "text") return true;
+  if (ATOMIC.has(node.name)) return true;
+  return INLINE.has(node.name) && !hasBlock(node);
+}
+
+function hasBlock(node: Extract<Node, { type: "element" }>): boolean {
+  const cached = blockInside.get(node);
+  if (cached !== undefined) return cached;
+  const found = node.children.some(
+    (child) =>
+      child.type === "element" &&
+      !ATOMIC.has(child.name) &&
+      (!INLINE.has(child.name) || hasBlock(child)),
+  );
+  blockInside.set(node, found);
+  return found;
+}
+
+/**
+ * 中身を送らず、1 つの単独の印にする要素：画像・改行・文の中のコード、文字が URL のリンク、
+ * 中身のない要素（落とされても断片を原文に戻さずに済むよう）
+ */
+function isOpaque(node: Extract<Node, { type: "element" }>): boolean {
+  if (ATOMIC.has(node.name)) return true;
+  const text = decodeHTML(node.children.map(textOf).join("")).trim();
+  if (text === "") return true;
+  return node.name === "a" && URL_LIKE.test(text);
+}
+
+function textOf(node: Node): string {
+  return node.type === "text" ? node.raw : node.children.map(textOf).join("");
 }
 
 const openTag = (node: Extract<Node, { type: "element" }>) => `<${node.name}${node.attributes}>`;

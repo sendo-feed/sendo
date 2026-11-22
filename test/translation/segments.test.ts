@@ -72,6 +72,51 @@ describe("splitBody", () => {
     expect(out).toBe(source.replace("<p>Next</p>", "<p>次</p>"));
   });
 
+  it("同じ入れ子の中で印の順が変わるのは、訳の語順として受け入れる", () => {
+    const source = html('<p><a href="https://example.com/a">A</a> and <em>B</em></p>');
+    const body = splitBody(source);
+    expect(body.segments[0]?.text).toBe("⟦1⟧A⟦/1⟧ and ⟦2⟧B⟦/2⟧");
+    const out = body.assemble(new Map([["b1", "⟦2⟧B⟦/2⟧と⟦1⟧A⟦/1⟧"]]));
+    const link = /<a [^>]*>/.exec(source)?.[0];
+    expect(out).toBe(`<p><em>B</em>と${link}A</a></p>`);
+  });
+
+  it("文字が URL のリンクは、URL を送らず単独の印にする", () => {
+    const source = html(
+      '<p>See <a href="https://example.com/x">https://example.com/x</a> and <a href="https://example.com/y">www.example.com/y</a></p><iframe src="https://www.youtube.com/embed/abc"></iframe>',
+    );
+    const body = splitBody(source);
+    const sent = JSON.stringify(body.segments);
+    expect(sent).not.toContain("example.com");
+    expect(sent).not.toContain("youtube");
+    expect(body.segments[0]?.text).toBe("See ⟦1/⟧ and ⟦2/⟧");
+    expect(body.assemble(new Map([["b1", "⟦1/⟧ と ⟦2/⟧ を見る"]]))).toContain(
+      "https://example.com/x</a> と ",
+    );
+  });
+
+  it("文の中の要素の中にあるブロックは別の断片にし、pre の中身は送らない", () => {
+    const source = html(
+      '<p><a href="https://example.com/a">Title<span><p>Inner</p></span></a></p><p><strong><pre>secret code</pre></strong> after</p>',
+    );
+    const body = splitBody(source);
+    const sent = JSON.stringify(body.segments);
+    expect(sent).not.toContain("secret code");
+    expect(body.segments.map((segment) => segment.text)).toEqual(
+      ["Title", "Inner", "after"].map((text) => expect.stringContaining(text) as unknown as string),
+    );
+    const translated = new Map(body.segments.map((s) => [s.id, `訳${s.text}`]));
+    const out = body.assemble(translated);
+    expect(out).toContain("<pre>secret code</pre>");
+    expect(out).toContain("訳Title");
+    expect(out).toContain("<p>訳Inner</p>");
+  });
+
+  it("中身のない要素は単独の印にする（落とされても断片を原文に戻さない）", () => {
+    const body = splitBody(html("<p>Hello <em></em>world</p>"));
+    expect(body.segments[0]?.text).toBe("Hello ⟦1/⟧world");
+  });
+
   it("返ってこなかった断片は原文のまま残す", () => {
     const body = splitBody(html("<p>One</p><p>Two</p>"));
     expect(body.assemble(new Map([["b2", "二"]]))).toBe("<p>One</p><p>二</p>");
