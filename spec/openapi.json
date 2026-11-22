@@ -578,6 +578,25 @@
             ],
             "description": "訳した要約"
           },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "訳した本文（サニタイズした HTML）。本文のない記事、長すぎて訳さなかった本文は null（タイトルと要約だけを訳した）"
+          },
+          "contentSource": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "feed",
+              "page",
+              null
+            ],
+            "description": "訳した本文の出どころ。page は記事のページから抜いた本文、feed はフィードの本文。訳した本文がなければ null"
+          },
           "model": {
             "type": "string",
             "description": "訳したモデル"
@@ -591,6 +610,8 @@
         "required": [
           "title",
           "summary",
+          "content",
+          "contentSource",
           "model",
           "translatedAt"
         ]
@@ -2587,7 +2608,7 @@
     "/articles/{id}/translation": {
       "get": {
         "summary": "記事の訳文",
-        "description": "Sendo が日本語に訳した、記事のタイトルと要約を返す（docs/decisions/translation.md の 13）。\n訳文は外部から来たデータを LLM が訳したもので、プレーンテキスト。表示する側でエスケープする。\n訳し直すと替わる。translatedAt が変わったら取り直す。",
+        "description": "Sendo が日本語に訳した、記事のタイトル・要約・本文を返す（docs/decisions/translation.md の 13）。\n訳文は外部から来たデータを LLM が訳したもの。タイトルと要約はプレーンテキストで、表示する側でエスケープする。\n本文は、GET /articles/{id}/content の html と同じく、サニタイズして画像を中継の URL に書き換えた HTML。それでも信頼せず、表示する側で通すタグと属性を決める。\n訳し直すと替わる。translatedAt が変わったら取り直す。",
         "parameters": [
           {
             "schema": {

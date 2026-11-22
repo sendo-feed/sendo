@@ -330,6 +330,20 @@
       "when": 1795325941703,
       "tag": "0046_article-translation-sync",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1795343644811,
+      "tag": "0047_article-translation-content",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1795343657432,
+      "tag": "0048_article-translation-content-storage",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { recordExtractedPageContent } from "../../src/db/page-contents";
 import { articles, articleTranslations, feeds, userArticles } from "../../src/db/schema";
 import { readStorageUsage } from "../../src/db/storage";
 import { runJob } from "../../src/jobs";
@@ -9,6 +10,7 @@ import { runScheduled } from "../../src/jobs/schedule";
 import type { LanguageDetectionResult, Platform } from "../../src/platform";
 import { createClaudeTranslator } from "../../src/translation/claude";
 import { testDb } from "../db";
+import { ARTICLE_BODY } from "../fixtures/translation-article";
 import {
   createTestPlatform,
   createUser,
@@ -30,12 +32,14 @@ const FEED_HOST = "translation.example";
  * （docs/decisions/content.md の 17）ので、同じホストだとテストが遅くなる
  */
 let setups = 0;
-const rss = (n: number) => `<?xml version="1.0"?>
-<rss version="2.0"><channel>
+const rss = (n: number, body?: string) => `<?xml version="1.0"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>
   <title>Martin Fowler</title><link>https://${FEED_HOST}/</link>
   <item><title>Refactoring with Codemods to Automate API Changes</title>
     <link>https://en-${n}.${FEED_HOST}/articles/codemods-api-refactoring.html</link><guid>en</guid>
-    <description>Codemods are automated scripts that transform code to apply API changes across a large codebase, removing the manual and error-prone work of updating every call site.</description></item>
+    <description>Codemods are automated scripts that transform code to apply API changes across a large codebase, removing the manual and error-prone work of updating every call site.</description>${
+      body === undefined ? "" : `<content:encoded><![CDATA[${body}]]></content:encoded>`
+    }</item>
   <item><title>社内の勉強会で、リファクタリングの進め方を話した</title>
     <link>https://ja-${n}.${FEED_HOST}/ja</link><guid>ja</guid>
     <description>テストを先に書いてから、小さな変更を重ねる進め方を紹介した。</description></item>
@@ -63,6 +67,8 @@ type Reply = {
   declinedText?: string;
   /** 流れを閉じない（打ち切りを確かめる） */
   hang?: boolean;
+  /** 送った断片から訳を作る（undefined を返した断片は、返さない） */
+  transform?: (segment: { id: string; text: string }) => string | undefined;
 };
 
 const sse = (events: [string, unknown][]) =>
@@ -169,25 +175,40 @@ interface Setup {
 }
 
 async function setup(
-  options: { translator?: boolean; callTimeoutMs?: number; subscribers?: string[] } = {},
+  options: {
+    translator?: boolean;
+    callTimeoutMs?: number;
+    subscribers?: string[];
+    /** 英語の項目の本文（content:encoded） */
+    body?: string;
+  } = {},
 ): Promise<Setup> {
   const n = ++setups;
   const replies: Reply[] = [];
   const claude: Setup["claude"] = [];
   const fake = fakeFetch(async (url, init) => {
     if (url.hostname === "api.anthropic.com") {
-      claude.push({ body: String(init?.body ?? ""), headers: new Headers(init?.headers) });
-      return claudeResponse(
-        replies.shift() ?? {
-          text: translated([
-            { id: "title", text: JA_TITLE },
-            { id: "summary", text: JA_SUMMARY },
-          ]),
-        },
-        init?.signal,
-      );
+      const sent = String(init?.body ?? "");
+      claude.push({ body: sent, headers: new Headers(init?.headers) });
+      const reply = replies.shift() ?? {
+        transform: (segment) =>
+          segment.id === "title" ? JA_TITLE : segment.id === "summary" ? JA_SUMMARY : undefined,
+      };
+      const { transform } = reply;
+      if (transform !== undefined) {
+        const request = JSON.parse(sent) as { messages: { content: string }[] };
+        const input = JSON.parse(request.messages[0]?.content ?? "{}") as {
+          segments: { id: string; text: string }[];
+        };
+        const out = input.segments.flatMap((segment) => {
+          const text = transform(segment);
+          return text === undefined ? [] : [{ id: segment.id, text }];
+        });
+        return claudeResponse({ text: translated(out) }, init?.signal);
+      }
+      return claudeResponse(reply, init?.signal);
     }
-    if (url.pathname === "/feed.xml") return new Response(rss(n));
+    if (url.pathname === "/feed.xml") return new Response(rss(n, options.body));
     return new Response("not found", { status: 404 });
   });
   const recording = recordingSyncUpdates();
@@ -958,5 +979,185 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
     const item = a1.articles.find((a) => a.id === en);
     expect(item?.readAt).not.toBeNull();
     expect(item?.translation).toMatchObject({ status: "translated", title: JA_TITLE });
+  });
+});
+
+describe("本文を訳す（docs/decisions/translation.md の 3、10、13）", () => {
+  /** 訳した本文を GET で取る */
+  async function getTranslation(s: Setup, id: string) {
+    const response = await requestApp(s.platform, `/api/v1/articles/${id}/translation`);
+    expect(response.status).toBe(200);
+    return (await response.json()) as {
+      title: string | null;
+      content: string | null;
+      contentSource: string | null;
+    };
+  }
+
+  /** 送った本文の断片（Claude API の要求の中の JSON） */
+  function sentSegments(s: Setup) {
+    const request = JSON.parse(s.claude[0]?.body ?? "{}") as { messages: { content: string }[] };
+    return (
+      JSON.parse(request.messages[0]?.content ?? "{}") as {
+        segments: { id: string; text: string }[];
+      }
+    ).segments;
+  }
+
+  const tags = (html: string, name: string) =>
+    html.match(new RegExp(`<${name}[\\s>]`, "g"))?.length ?? 0;
+
+  /** 本文の断片には「訳:」を付け、タイトルと要約は決まった訳を返す */
+  const prefix = (segment: { id: string; text: string }) =>
+    segment.id === "title"
+      ? JA_TITLE
+      : segment.id === "summary"
+        ? JA_SUMMARY
+        : `訳:${segment.text}`;
+
+  async function translate(s: Setup, reply?: Reply) {
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    s.replies.push(reply ?? { transform: prefix });
+    expect((await request(s, id)).response.status).toBe(202);
+    await runQueuedTranslation(s);
+    return id;
+  }
+
+  it("タグ・URL・コードの中身を送らず、訳した本文は元の構造とリンク・画像・コードを保つ", async () => {
+    const s = await setup({ body: ARTICLE_BODY });
+    const id = await translate(s);
+    const sent = sentSegments(s);
+    const body = sent.filter((segment) => segment.id.startsWith("b"));
+    expect(body.map((segment) => segment.text)).toContain("Why codemods");
+    const text = JSON.stringify(body);
+    expect(text).not.toMatch(/[<>]/);
+    expect(text).not.toContain("martinfowler.com");
+    expect(text).not.toContain("npx jscodeshift");
+    expect(text).not.toContain("jscodeshift</code>");
+
+    const got = await getTranslation(s, id);
+    expect(got.contentSource).toBe("feed");
+    const content = got.content ?? "";
+    for (const name of ["h2", "p", "figure", "figcaption", "ul", "li", "table", "th", "td"]) {
+      expect(tags(content, name), name).toBe(tags(ARTICLE_BODY, name));
+    }
+    expect(tags(content, "blockquote")).toBe(1);
+    expect(content).toContain("<h2>訳:Why codemods</h2>");
+    expect(content).toContain("<td>訳:jscodeshift</td>");
+    expect(content).toContain("<blockquote><p>訳:Automate the boring parts.</p></blockquote>");
+    // リンクと強調は元の位置に、コードは中身ごと戻る
+    expect(content).toMatch(
+      /訳:Large codebases change their APIs often\. A <a href="https:\/\/martinfowler\.com\/bliki\/Refactoring\.html"[^>]*>refactoring<\/a> applied by hand is <strong>slow<\/strong> and <em>error-prone<\/em>\./,
+    );
+    expect(content).toContain("<li>訳:Rewrite it with <code>jscodeshift</code></li>");
+    expect(content).toContain("<pre><code>npx jscodeshift -t transform.js src/</code></pre>");
+    expect(content).toContain("訳:Run the tests after every change.<br>Then commit.");
+    // 画像は中継の URL に書き換えて返す
+    expect(content).toMatch(/<img src="\/api\/v1\/images\?[^"]+" alt="Flow of a codemod">/);
+  });
+
+  it("印が崩れた断片と返ってこなかった断片は原文のまま残し、ほかの断片は訳す", async () => {
+    const s = await setup({ body: ARTICLE_BODY });
+    const id = await translate(s, {
+      transform: (segment) => {
+        if (segment.text.startsWith("Large codebases")) return "印を落とした訳";
+        if (segment.text === "How a codemod runs") return undefined;
+        return prefix(segment);
+      },
+    });
+    const content = (await getTranslation(s, id)).content ?? "";
+    expect(content).toContain("Large codebases change their APIs often.");
+    expect(content).not.toContain("印を落とした訳");
+    expect(content).toContain("<figcaption>How a codemod runs</figcaption>");
+    expect(content).toContain("<h2>訳:Why codemods</h2>");
+  });
+
+  it("訳の中のタグの文字列は、要素にならず文字として残る", async () => {
+    const s = await setup({ body: "<p>Hello codemods</p>" });
+    const id = await translate(s, {
+      transform: (segment) =>
+        segment.id.startsWith("b")
+          ? '<script>alert(1)</script><img src=x onerror="y">'
+          : prefix(segment),
+    });
+    const content = (await getTranslation(s, id)).content ?? "";
+    expect(content).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(content).not.toMatch(/<script|<img/);
+  });
+
+  // 判定の偽物が英語と分かるよう「Codemods 」で始める（9 文字）
+  const longText = (length: number) => `Codemods ${"a".repeat(length - 9)}`;
+
+  it("送る本文の文字が 60,000 ちょうどなら本文も訳す", async () => {
+    const exact = await setup({ body: `<p>${longText(60_000)}</p>` });
+    const exactId = await translate(exact);
+    expect((await getTranslation(exact, exactId)).content).toBe(`<p>訳:${longText(60_000)}</p>`);
+  });
+
+  it("送る本文の文字が 60,001 なら本文を訳さず、タイトルと要約だけを訳す", async () => {
+    const over = await setup({ body: `<p>${longText(60_001)}</p>` });
+    const overId = await translate(over);
+    expect(sentSegments(over).map((segment) => segment.id)).toEqual(["title", "summary"]);
+    const got = await getTranslation(over, overId);
+    expect(got).toMatchObject({ title: JA_TITLE, content: null, contentSource: null });
+  });
+
+  it("訳した本文をサニタイズして 256KB を超えたら、本文を置かずタイトルと要約だけを置く", async () => {
+    const s = await setup({ body: "<p>Short codemods body</p>" });
+    const id = await translate(s, {
+      transform: (segment) => (segment.id.startsWith("b") ? "あ".repeat(90_000) : prefix(segment)),
+    });
+    expect(await getTranslation(s, id)).toMatchObject({
+      title: JA_TITLE,
+      content: null,
+      contentSource: null,
+    });
+  });
+
+  it("ページの本文があればそれを訳し、出どころを page で返す", async () => {
+    const s = await setup({ body: ARTICLE_BODY });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    // ページの本文が抜けた記事（抜き取りは Rust の処理で、テストの偽のページでは作りにくい）
+    await recordExtractedPageContent(s.platform.db, {
+      articleId: id,
+      html: "<p>Page body about codemods.</p>",
+      now: new Date(),
+    });
+    s.replies.push({ transform: prefix });
+    await request(s, id);
+    await runQueuedTranslation(s);
+    expect(await getTranslation(s, id)).toMatchObject({
+      content: "<p>訳:Page body about codemods.</p>",
+      contentSource: "page",
+    });
+  });
+
+  it("本文のない記事は、タイトルと要約だけを訳し、本文がないことが分かる", async () => {
+    const s = await setup();
+    const id = await translate(s);
+    expect(sentSegments(s).map((segment) => segment.id)).toEqual(["title", "summary"]);
+    expect(await getTranslation(s, id)).toMatchObject({
+      title: JA_TITLE,
+      content: null,
+      contentSource: null,
+    });
+  });
+
+  it("訳した本文の大きさを保存容量に入れる", async () => {
+    const s = await setup({ body: ARTICLE_BODY });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    const decided = (await readStorageUsage(s.platform.db)).bytes;
+    s.replies.push({ transform: prefix });
+    await request(s, id);
+    await runQueuedTranslation(s);
+    const row = await translationOf(s.platform, id);
+    const bytes = (text: string | null | undefined) => new TextEncoder().encode(text ?? "").length;
+    expect(row?.content).not.toBeNull();
+    expect((await readStorageUsage(s.platform.db)).bytes - decided).toBe(
+      bytes(row?.title) + bytes(row?.summary) + bytes(row?.model) + bytes(row?.content),
+    );
   });
 });
