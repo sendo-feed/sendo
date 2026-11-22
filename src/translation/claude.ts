@@ -7,13 +7,19 @@ import {
   type Translator,
   TranslatorError,
 } from "../platform";
-import { createModelSelector } from "./models";
+import { createModelCatalog, createModelSelector } from "./models";
 
 /** その場の翻訳の既定のモデル（docs/decisions/translation.md の 9。Models API で選ぶまでの既定） */
 export const DEFAULT_TRANSLATION_MODEL = "claude-sonnet-5-5";
 
 /** その場の翻訳に選ぶモデルの ID の頭（同じく 9） */
 export const TRANSLATION_MODEL_PREFIX = "claude-sonnet-";
+
+/** 訳し直しの既定のモデル（同じく 9。Models API で選ぶまでの既定） */
+export const DEFAULT_RETRANSLATION_MODEL = "claude-opus-5-5";
+
+/** 訳し直しに選ぶモデルの ID の頭（同じく 9） */
+export const RETRANSLATION_MODEL_PREFIX = "claude-opus-";
 
 /** 受け付けずに断ったと分かる応答の番号（バッチを作れなかったと分かり、すぐ待ちに戻せる） */
 const REJECTED_STATUSES = new Set([400, 401, 403, 404, 413, 429, 529]);
@@ -68,12 +74,15 @@ const OutputSchema = z.object({
 
 /**
  * Claude API で訳す。キーと外への取得は、実行環境（緩衝層）から受け取る。モデルは、model（env の
- * TRANSLATION_MODEL）があればそれに固定し、なければ Models API の一覧から選ぶ（同じく 9）
+ * TRANSLATION_MODEL）／ retranslationModel（RETRANSLATION_MODEL）があればそれに固定し、なければ
+ * Models API の一覧から、その場の翻訳とバッチは最新の Sonnet、訳し直しは最新の Opus を選ぶ（同じく 9）
  */
 export function createClaudeTranslator(input: {
   apiKey: string;
-  /** 固定のモデル */
+  /** その場の翻訳とバッチの固定のモデル */
   model?: string;
+  /** 訳し直しの固定のモデル */
+  retranslationModel?: string;
   fetch: typeof fetch;
   now: () => Date;
   /** 1 回の呼び出しの上限（テストで縮める） */
@@ -93,27 +102,37 @@ export function createClaudeTranslator(input: {
     openTelemetry: false,
     webhookKey: null,
   });
+  const listModels = async () => {
+    const list = [];
+    // 使えるモデル（新しく使い始められるもの）だけを取る
+    const page = client.models.list(
+      { limit: 1000, lifecycle: ["active"] },
+      { signal: AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS) },
+    );
+    for await (const model of page) {
+      const createdAt = Date.parse(model.created_at);
+      if (!Number.isNaN(createdAt)) list.push({ id: model.id, createdAt });
+    }
+    return list;
+  };
+  // 一覧は、その場の翻訳と訳し直しで同じものを使う（1 回の取り直しで 1 度だけ取る）
+  const catalog = createModelCatalog({ listModels, now: () => input.now().getTime() });
   const models = createModelSelector({
     prefix: TRANSLATION_MODEL_PREFIX,
     defaultModel: DEFAULT_TRANSLATION_MODEL,
     ...(input.model !== undefined && { pinned: input.model }),
-    now: () => input.now().getTime(),
-    async listModels() {
-      const list = [];
-      // 使えるモデル（新しく使い始められるもの）だけを取る
-      const page = client.models.list(
-        { limit: 1000, lifecycle: ["active"] },
-        { signal: AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS) },
-      );
-      for await (const model of page) {
-        const createdAt = Date.parse(model.created_at);
-        if (!Number.isNaN(createdAt)) list.push({ id: model.id, createdAt });
-      }
-      return list;
-    },
+    catalog,
+  });
+  // 訳し直しのモデルは、その場の翻訳とは別に選び、別に外す（決定の 9）
+  const retranslationModels = createModelSelector({
+    prefix: RETRANSLATION_MODEL_PREFIX,
+    defaultModel: DEFAULT_RETRANSLATION_MODEL,
+    ...(input.retranslationModel !== undefined && { pinned: input.retranslationModel }),
+    catalog,
   });
   // 起動時に一覧を取っておく（失敗しても、最初の翻訳のときに前のものか既定で送る）
   void models.current();
+  void retranslationModels.current();
   /**
    * 送ったバッチのモデル（結果の要求の形の誤りを、モデルを外す判断に数える。決定の 9）。プロセスの
    * メモリーにだけ持ち、結果を一度読んだら消す（読み直しで数え直さない）。再起動のあとに返った
@@ -132,8 +151,10 @@ export function createClaudeTranslator(input: {
     messages: [{ role: "user" as const, content: JSON.stringify({ segments }) }],
   });
   return {
-    async translate(segments) {
-      const model = await models.current();
+    async translate(segments, options) {
+      // 訳し直し（決定の 6）は Opus のモデルを選ぶ。送り方と失敗の扱いは、その場の翻訳と同じ
+      const selector = options?.retranslation ? retranslationModels : models;
+      const model = await selector.current();
       let message: Anthropic.Beta.BetaMessage;
       try {
         message = await client.beta.messages
@@ -146,15 +167,15 @@ export function createClaudeTranslator(input: {
       } catch (error) {
         // 要求の形の誤りは、新しいモデルが受け付けない指定のことがある（同じく 9）
         if (error instanceof Anthropic.BadRequestError && error.type === "invalid_request_error") {
-          models.invalidRequest(model);
+          selector.invalidRequest(model);
         } else {
-          models.otherOutcome(model);
+          selector.otherOutcome(model);
         }
         throw toTranslatorError(error);
       }
       const result = readResult(message, segments);
-      if (result.status === "translated") models.succeeded(model);
-      else models.otherOutcome(model);
+      if (result.status === "translated") selector.succeeded(model);
+      else selector.otherOutcome(model);
       return result;
     },
 

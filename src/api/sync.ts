@@ -129,7 +129,7 @@ const SyncTranslationSchema = z
     }),
     status: z.enum(["queued", "translating", "translated", "untranslated"]).openapi({
       description:
-        "翻訳の状態。queued は自動の翻訳を待っている、translating は訳している、translated は訳文がある、untranslated は訳せなかった（求めればその場で訳せる）",
+        "翻訳の状態。queued は自動の翻訳を待っている、translating は訳している（訳し直しの最中は、もとの訳文があり translatedAt も付く）、translated は訳文がある、untranslated は訳せなかった（求めればその場で訳せる）",
     }),
     title: z.string().nullable().openapi({
       description:
@@ -141,6 +141,10 @@ const SyncTranslationSchema = z
     translatedAt: z.iso.datetime().nullable().openapi({
       description:
         "訳した時刻。訳文がなければ null。変わったら、手元の訳した本文を GET /articles/{id}/translation で取り直す",
+    }),
+    retranslated: z.boolean().openapi({
+      description:
+        "Opus で訳し直したか（docs/decisions/translation.md の 6）。訳し直せるのは、translated で、これが false の記事だけ",
     }),
   })
   .openapi("SyncArticleTranslation");

@@ -138,6 +138,32 @@ export async function startTranslating(db: Database, articleId: string): Promise
   return row === undefined ? undefined : new Date(row.startedAt);
 }
 
+/**
+ * 訳し直しを始める（docs/decisions/translation.md の 6）。translated で訳し直しの印のない行だけを、
+ * 同じ文で translating にし、始めた時刻を書く。もとの訳文は、訳し直した訳文が入るまで残す。2 つの
+ * 求めが重なっても、始められるのは 1 つ
+ *
+ * @returns 始めた時刻。始められなければ undefined
+ */
+export async function startRetranslating(
+  db: Database,
+  articleId: string,
+): Promise<Date | undefined> {
+  const row = await getRow<{ startedAt: number }>(
+    db,
+    sql`update article_translations set status = 'translating', started_at = ${DB_NOW_MS}, attempts = 0
+      where article_id = ${articleId} and status = 'translated' and retranslated = 0
+      returning started_at as startedAt`,
+  );
+  return row === undefined ? undefined : new Date(row.startedAt);
+}
+
+/**
+ * 訳せなかったときに戻す状態。訳文があれば（訳し直しの失敗）もとの訳文のまま translated、なければ
+ * untranslated（docs/decisions/translation.md の 5、6）
+ */
+const STATUS_WITHOUT_RESULT = sql`case when translated_at is null then 'untranslated' else 'translated' end`;
+
 /** その場の翻訳の行が、始めたときのままか（ほかの書き込みや、止まったものとして戻されていないか） */
 const stillTranslating = (articleId: string, startedAt: Date) =>
   sql`article_id = ${articleId} and status = 'translating' and started_at = ${startedAt.getTime()}`;
@@ -158,6 +184,8 @@ export async function finishTranslating(
     /** 訳した本文（サニタイズした HTML）と出どころ。本文を訳さなかったら null */
     content: { html: string; source: "feed" | "page" } | null;
     model: string;
+    /** 訳し直しなら、訳し直しの印を付ける（docs/decisions/translation.md の 6） */
+    retranslation?: boolean;
   },
 ): Promise<boolean> {
   const row = await getRow<{ articleId: string }>(
@@ -166,14 +194,18 @@ export async function finishTranslating(
     sql`update article_translations set status = 'translated', title = ${input.title},
         summary = ${input.summary}, content = ${input.content?.html ?? null},
         content_source = ${input.content?.source ?? null}, model = ${input.model},
-        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH}
+        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0,
+        retranslated = ${input.retranslation === true ? sql`1` : sql`retranslated`}, ${CLEAR_BATCH}
       where ${stillTranslating(input.articleId, input.startedAt)}
       returning article_id as articleId`,
   );
   return row !== undefined;
 }
 
-/** その場の翻訳を、訳せなかったものとして戻す。始めた時刻が同じ行だけ */
+/**
+ * その場の翻訳を、訳せなかったものとして戻す。訳し直しなら、もとの訳文のまま translated に戻す
+ * （印は付けない）。始めた時刻が同じ行だけ
+ */
 export async function failTranslating(
   db: Database,
   articleId: string,
@@ -181,7 +213,7 @@ export async function failTranslating(
 ): Promise<boolean> {
   const row = await getRow<{ articleId: string }>(
     db,
-    sql`update article_translations set status = 'untranslated', started_at = null, attempts = 0
+    sql`update article_translations set status = ${STATUS_WITHOUT_RESULT}, started_at = null, attempts = 0
       where ${stillTranslating(articleId, startedAt)}
       returning article_id as articleId`,
   );
@@ -193,14 +225,15 @@ export async function cancelTranslating(
   db: Database,
   articleId: string,
   startedAt: Date,
-  status: "queued" | "untranslated",
+  status: "queued" | "untranslated" | "translated",
 ): Promise<void> {
   await db.run(sql`update article_translations set status = ${status}, started_at = null, attempts = 0
     where ${stillTranslating(articleId, startedAt)}`);
 }
 
 /**
- * やり直せる失敗を 1 回数える。上限に達したら、同じ文で訳せなかったものとして戻す
+ * やり直せる失敗を 1 回数える。上限に達したら、同じ文で訳せなかったものとして戻す（訳し直しなら、
+ * もとの訳文のまま translated）
  *
  * @returns まだやり直すなら "retry"、戻したなら "failed"、行が変わっていたら "gone"
  */
@@ -213,7 +246,7 @@ export async function countTranslateFailure(
     db,
     sql`update article_translations set
         attempts = attempts + 1,
-        status = case when attempts + 1 >= ${MAX_TRANSLATE_ATTEMPTS} then 'untranslated' else status end,
+        status = case when attempts + 1 >= ${MAX_TRANSLATE_ATTEMPTS} then ${STATUS_WITHOUT_RESULT} else status end,
         started_at = case when attempts + 1 >= ${MAX_TRANSLATE_ATTEMPTS} then null else started_at end
       where ${stillTranslating(articleId, startedAt)}
       returning status`,
@@ -231,8 +264,7 @@ export async function countTranslateFailure(
 export async function revertStaleTranslating(db: Database): Promise<string[]> {
   const rows = await db.all<{ articleId: string }>(sql`
     update article_translations set
-      status = case when translated_at is null then 'untranslated' else 'translated' end,
-      started_at = null, attempts = 0
+      status = ${STATUS_WITHOUT_RESULT}, started_at = null, attempts = 0
     where status = 'translating' and started_at < ${DB_NOW_MS} - ${STALE_TRANSLATING_MS}
     returning article_id as articleId
   `);

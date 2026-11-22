@@ -38,7 +38,9 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
       return;
     }
     case "translate-article": {
-      await runTranslateArticle(platform, job.articleId, new Date(job.startedAt));
+      await runTranslateArticle(platform, job.articleId, new Date(job.startedAt), {
+        retranslation: job.retranslation === true,
+      });
       return;
     }
     case "extract-page": {

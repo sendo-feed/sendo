@@ -88,21 +88,24 @@ function readOAuthServerConfig(
 
 export interface TranslationConfig {
   apiKey: string;
-  /** 固定のモデル（TRANSLATION_MODEL）。なければ Models API の一覧から選ぶ */
+  /** その場の翻訳とバッチの固定のモデル（TRANSLATION_MODEL）。なければ Models API の一覧から選ぶ */
   model?: string;
+  /** 訳し直しの固定のモデル（RETRANSLATION_MODEL）。なければ Models API の一覧から選ぶ */
+  retranslationModel?: string;
 }
 
 /**
  * 記事の翻訳の設定を読む（docs/decisions/translation.md の 9、15）。API キーがなければ翻訳は動かない。
- * TRANSLATION_MODEL があれば、そのモデルに固定する
+ * TRANSLATION_MODEL ／ RETRANSLATION_MODEL があれば、そのモデルに固定する
  */
 export function readTranslationConfig(
-  env: Partial<Record<"ANTHROPIC_API_KEY" | "TRANSLATION_MODEL", string>>,
+  env: Partial<Record<"ANTHROPIC_API_KEY" | "TRANSLATION_MODEL" | "RETRANSLATION_MODEL", string>>,
 ): TranslationConfig | undefined {
   const apiKey = env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) return undefined;
   const model = env.TRANSLATION_MODEL?.trim();
-  return { apiKey, ...(model && { model }) };
+  const retranslationModel = env.RETRANSLATION_MODEL?.trim();
+  return { apiKey, ...(model && { model }), ...(retranslationModel && { retranslationModel }) };
 }
 
 export type DiscordEnvName =

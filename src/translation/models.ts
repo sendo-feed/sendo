@@ -2,7 +2,8 @@
  * 翻訳に使うモデルを、Models API の一覧から選ぶ（docs/decisions/translation.md の 9）。状態は
  * プロセスのメモリーにだけ持つ（外したモデルも、再起動で戻る）。
  *
- * - 一覧は起動時と 1 日 1 回取り、ID が prefix で始まるもののうち、作られた日がいちばん新しいものを選ぶ
+ * - 一覧は起動時と 1 日 1 回取り（その場の翻訳と訳し直しで同じ一覧を使う）、ID が prefix で始まるもののうち、
+ *   作られた日がいちばん新しいものを選ぶ
  * - 一覧を取れなければ、前に選んだもの（なければコードの既定）を使う
  * - 固定のモデル（env）があれば、一覧を見ずにそれを使う
  * - 一覧から選んだモデルで、まだ 1 件も訳せていないうちに、要求の形の誤り（invalid_request_error。
@@ -40,6 +41,50 @@ export interface ModelSelector {
   otherOutcome(model: string): void;
 }
 
+/**
+ * Models API の一覧を、決まった間隔で取り直して持つ。その場の翻訳（Sonnet）と訳し直し（Opus）の
+ * モデル選びで使い回し、一覧は 1 回の取り直しで 1 度だけ取る
+ */
+export interface ModelCatalog {
+  /** いま持っている一覧。取り直す時期なら、取ってから返す。一度も取れていなければ null */
+  list(): Promise<readonly ModelInfo[] | null>;
+}
+
+export function createModelCatalog(input: {
+  listModels: () => Promise<ModelInfo[]>;
+  now: () => number;
+}): ModelCatalog {
+  let models: readonly ModelInfo[] | null = null;
+  /** 次に一覧を取る時刻 */
+  let nextRefresh = 0;
+  let refreshing: Promise<void> | null = null;
+
+  const refresh = async () => {
+    try {
+      models = await input.listModels();
+      nextRefresh = input.now() + MODEL_REFRESH_MS;
+    } catch (error) {
+      // 前に取れたもの（なければ、選ぶ側の既定）を使い続ける
+      console.warn("could not list the translation models", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      nextRefresh = input.now() + MODEL_RETRY_MS;
+    }
+  };
+
+  return {
+    async list() {
+      if (input.now() >= nextRefresh) {
+        refreshing ??= refresh().finally(() => {
+          refreshing = null;
+        });
+        await refreshing;
+      }
+      return models;
+    },
+  };
+}
+
 export function createModelSelector(input: {
   /** 選ぶモデルの ID の頭（"claude-sonnet-" など） */
   prefix: string;
@@ -47,8 +92,7 @@ export function createModelSelector(input: {
   defaultModel: string;
   /** 固定のモデル（env）。あれば一覧を見ない */
   pinned?: string;
-  listModels: () => Promise<ModelInfo[]>;
-  now: () => number;
+  catalog: ModelCatalog;
 }): ModelSelector {
   const pinned = input.pinned;
   if (pinned !== undefined) {
@@ -61,11 +105,10 @@ export function createModelSelector(input: {
   }
   /** 一覧から選べるモデル（新しい順） */
   let candidates: string[] = [];
+  /** candidates を作った一覧（取り直したら作り直す） */
+  let seen: readonly ModelInfo[] | null = null;
   /** 前に選んだもの */
   let chosen = input.defaultModel;
-  /** 次に一覧を取る時刻 */
-  let nextRefresh = 0;
-  let refreshing: Promise<void> | null = null;
   const excluded = new Set<string>();
   const usage = new Map<string, { succeeded: boolean; invalid: number }>();
 
@@ -74,31 +117,16 @@ export function createModelSelector(input: {
     if (next !== undefined) chosen = next;
   };
 
-  const refresh = async () => {
-    try {
-      const models = await input.listModels();
-      candidates = models
-        .filter((model) => model.id.startsWith(input.prefix))
-        .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1))
-        .map((model) => model.id);
-      choose();
-      nextRefresh = input.now() + MODEL_REFRESH_MS;
-    } catch (error) {
-      // 前に選んだもの（なければ既定）を使い続ける
-      console.warn("could not list the translation models", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      nextRefresh = input.now() + MODEL_RETRY_MS;
-    }
-  };
-
   return {
     async current() {
-      if (input.now() >= nextRefresh) {
-        refreshing ??= refresh().finally(() => {
-          refreshing = null;
-        });
-        await refreshing;
+      const models = await input.catalog.list();
+      if (models !== null && models !== seen) {
+        seen = models;
+        candidates = models
+          .filter((model) => model.id.startsWith(input.prefix))
+          .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1))
+          .map((model) => model.id);
+        choose();
       }
       return chosen;
     },

@@ -9,7 +9,11 @@ import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Job } from "../../src/jobs/job";
 import { runScheduled } from "../../src/jobs/schedule";
 import type { LanguageDetectionResult, Platform } from "../../src/platform";
-import { createClaudeTranslator, DEFAULT_TRANSLATION_MODEL } from "../../src/translation/claude";
+import {
+  createClaudeTranslator,
+  DEFAULT_RETRANSLATION_MODEL,
+  DEFAULT_TRANSLATION_MODEL,
+} from "../../src/translation/claude";
 import { testDb } from "../db";
 import { ARTICLE_BODY } from "../fixtures/translation-article";
 import {
@@ -291,6 +295,8 @@ async function setup(
     body?: string;
     /** 固定のモデル（TRANSLATION_MODEL） */
     model?: string;
+    /** 訳し直しの固定のモデル（RETRANSLATION_MODEL） */
+    retranslationModel?: string;
     /** Models API の最初の答え */
     models?: () => Response;
     /** 英語の項目をこれだけ足す（guid は en-0、en-1…） */
@@ -400,6 +406,9 @@ async function setup(
       translator: createClaudeTranslator({
         apiKey: "sk-test-secret",
         ...(options.model !== undefined && { model: options.model }),
+        ...(options.retranslationModel !== undefined && {
+          retranslationModel: options.retranslationModel,
+        }),
         fetch: fake.fetch,
         now: () => new Date(clock.ms),
         ...(options.callTimeoutMs !== undefined && { callTimeoutMs: options.callTimeoutMs }),
@@ -473,6 +482,37 @@ async function runQueuedTranslation(s: Setup) {
   if (!job) throw new Error("no translate-article job");
   await runJob(s.platform, job);
   return job;
+}
+
+const OPUS_TITLE = "コードモッドで、API の変更を自動で当てる";
+const OPUS_SUMMARY =
+  "コードモッドは、大きなコードベースの全体に API の変更を当てるスクリプトである。";
+
+/** Opus の訳（訳し直しの応答） */
+const opusReply: Reply = {
+  transform: (segment) =>
+    segment.id === "title" ? OPUS_TITLE : segment.id === "summary" ? OPUS_SUMMARY : undefined,
+};
+
+/** 英語の記事を、その場の翻訳で訳しておく（Sonnet。訳し直しの前提） */
+async function translatedArticle(s: Setup): Promise<string> {
+  await maintain(s.platform);
+  const id = await articleId(s.platform, "en");
+  expect((await request(s, id)).response.status).toBe(202);
+  await runQueuedTranslation(s);
+  s.enqueued.length = 0;
+  s.claude.length = 0;
+  s.notified.length = 0;
+  return id;
+}
+
+/** 訳し直しを求める（本文で指定する。docs/decisions/translation.md の 13） */
+async function retranslate(s: Setup, id: string, platform: Platform = s.platform) {
+  const response = await requestApp(platform, `/api/v1/articles/${id}/translation`, {
+    method: "POST",
+    json: { retranslate: true },
+  });
+  return { response, body: (await response.json()) as Body };
 }
 
 beforeEach(async () => {
@@ -961,6 +1001,7 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
       title: string | null;
       summary: string | null;
       translatedAt: string | null;
+      retranslated: boolean;
     } | null;
   };
 
@@ -1011,6 +1052,7 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
         title: null,
         summary: null,
         translatedAt: null,
+        retranslated: false,
       });
       expect(translationIn(body, und)).toMatchObject({ language: "und", status: "untranslated" });
       // skipped は配らないので、番号も進まない
@@ -1059,6 +1101,7 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
         title: JA_TITLE,
         summary: JA_SUMMARY,
         translatedAt: row?.translatedAt?.toISOString(),
+        retranslated: false,
       });
     }
 
@@ -1092,6 +1135,68 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
     expect(s.notified).toEqual([TEST_USER.id]);
     const a2 = await sync(s.platform, undefined, a1.cursor);
     expect(translationIn(a2, en)).toMatchObject({ status: "untranslated", title: null });
+  });
+
+  it("訳し直すと、記事を持つ全員に、最中はもとの訳文が、終わると新しい訳文と訳し直しの印が届き、知らされる", async () => {
+    const other = await createUser();
+    const s = await setup({ subscribers: [other.id] });
+    const en = await translatedArticle(s);
+    const before = await translationOf(s.platform, en);
+    const a0 = await sync(s.platform);
+    const b0 = await sync(s.platform, other.token);
+
+    expect((await retranslate(s, en)).response.status).toBe(202);
+    expect(new Set(s.notified)).toEqual(new Set([TEST_USER.id, other.id]));
+    const a1 = await sync(s.platform, undefined, a0.cursor);
+    const b1 = await sync(s.platform, other.token, b0.cursor);
+    for (const body of [a1, b1]) {
+      expect(body.articles.map((a) => a.id)).toEqual([en]);
+      expect(translationIn(body, en)).toEqual({
+        language: "en",
+        status: "translating",
+        title: JA_TITLE,
+        summary: JA_SUMMARY,
+        translatedAt: before?.translatedAt?.toISOString(),
+        retranslated: false,
+      });
+    }
+
+    s.notified.length = 0;
+    s.replies.push(opusReply);
+    await runQueuedTranslation(s);
+    expect(new Set(s.notified)).toEqual(new Set([TEST_USER.id, other.id]));
+    const row = await translationOf(s.platform, en);
+    for (const body of [
+      await sync(s.platform, undefined, a1.cursor),
+      await sync(s.platform, other.token, b1.cursor),
+    ]) {
+      expect(body.articles.map((a) => a.id)).toEqual([en]);
+      expect(translationIn(body, en)).toEqual({
+        language: "en",
+        status: "translated",
+        title: OPUS_TITLE,
+        summary: OPUS_SUMMARY,
+        translatedAt: row?.translatedAt?.toISOString(),
+        retranslated: true,
+      });
+    }
+    // 最初の同期でも印が付く
+    expect(translationIn(await sync(s.platform, other.token), en)).toMatchObject({
+      retranslated: true,
+    });
+  });
+
+  it("訳し直しの印だけが変わっても、番号が進んで届く（トリガーの条件）", async () => {
+    const s = await setup();
+    const en = await translatedArticle(s);
+    const a0 = await sync(s.platform);
+    // 印は本番では訳した時刻と一緒に変わる。印だけで振るかを、直接の書き込みで確かめる
+    await testDb.exec(
+      `UPDATE article_translations SET retranslated = 1 WHERE article_id = '${en}'`,
+    );
+    const a1 = await sync(s.platform, undefined, a0.cursor);
+    expect(a1.articles.map((a) => a.id)).toEqual([en]);
+    expect(translationIn(a1, en)).toMatchObject({ retranslated: true });
   });
 
   it("止まった translating を戻すと、届き、知らされる", async () => {
@@ -1444,8 +1549,8 @@ describe("翻訳に使うモデルを選ぶ（docs/decisions/translation.md の 
     });
   });
 
-  it("TRANSLATION_MODEL を書くと、一覧を見ずにそのモデルで送る", async () => {
-    const s = await setup({ model: "claude-sonnet-4-5" });
+  it("TRANSLATION_MODEL と RETRANSLATION_MODEL を書くと、一覧を見ずにそのモデルで送る", async () => {
+    const s = await setup({ model: "claude-sonnet-4-5", retranslationModel: "claude-opus-4-5" });
     await maintain(s.platform);
     await translateOnce(s, await articleId(s.platform, "en"));
     expect(sentModels(s)).toEqual(["claude-sonnet-4-5"]);
@@ -2349,5 +2454,543 @@ describe("バッチの失敗を数える（docs/decisions/translation.md の 4�
       await maintain(s.platform);
       expect(sentIds(s.batches.list[0])).toEqual([en]);
     }
+  });
+});
+
+describe("Opus で訳し直す（docs/decisions/translation.md の 6、9、13）", () => {
+  const sentModels = (s: Setup) =>
+    s.claude.map((sent) => (JSON.parse(sent.body) as { model: string }).model);
+
+  it("訳文のある記事を訳し直すと、最中ももとの訳文が残り、最新の Opus の訳文に置き換わって印が付く", async () => {
+    const s = await setup({
+      body: ARTICLE_BODY,
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-opus-6", "2026-10-01T00:00:00Z"),
+          modelInfo("claude-opus-5-5", "2026-07-01T00:00:00Z"),
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+        ]),
+    });
+    const id = await translatedArticle(s);
+    const before = await translationOf(s.platform, id);
+    expect(before).toMatchObject({
+      status: "translated",
+      model: "claude-sonnet-5-5",
+      retranslated: false,
+    });
+
+    const accepted = await retranslate(s, id);
+    expect(accepted.response.status).toBe(202);
+    expect(accepted.body).toEqual({ status: "translating" });
+    expect(s.enqueued).toEqual([
+      expect.objectContaining({ type: "translate-article", articleId: id, retranslation: true }),
+    ]);
+    // 訳し直した訳文が入るまで、もとの訳文を返す
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translating",
+      title: JA_TITLE,
+      translatedAt: before?.translatedAt,
+    });
+    const during = await requestApp(s.platform, `/api/v1/articles/${id}/translation`);
+    expect(during.status).toBe(200);
+    expect(await during.json()).toMatchObject({ title: JA_TITLE, model: "claude-sonnet-5-5" });
+
+    s.replies.push(opusReply);
+    await runQueuedTranslation(s);
+    expect(sentModels(s)).toEqual(["claude-opus-6"]);
+    // 本文も送り、訳文を置き換える
+    const sent = JSON.parse(s.claude[0]?.body ?? "{}") as { messages: { content: string }[] };
+    expect(sent.messages[0]?.content).toContain("Why codemods");
+    const after = await translationOf(s.platform, id);
+    expect(after).toMatchObject({
+      status: "translated",
+      title: OPUS_TITLE,
+      summary: OPUS_SUMMARY,
+      model: "claude-opus-6",
+      retranslated: true,
+      startedAt: null,
+      attempts: 0,
+    });
+    expect(after?.translatedAt?.getTime()).toBeGreaterThanOrEqual(
+      before?.translatedAt?.getTime() ?? Number.POSITIVE_INFINITY,
+    );
+    expect(after?.content).not.toBeNull();
+
+    // その場の翻訳のモデルは変わらない
+    const other = await articleId(s.platform, "und");
+    await translateWith(s, other);
+    expect(sentModels(s).at(-1)).toBe("claude-sonnet-5-5");
+  });
+
+  /** untranslated の記事をその場で訳す（訳し直しのあとも、その場の翻訳は Sonnet で送る） */
+  async function translateWith(s: Setup, id: string) {
+    s.enqueued.length = 0;
+    expect((await request(s, id)).response.status).toBe(202);
+    await runQueuedTranslation(s);
+  }
+
+  it("RETRANSLATION_MODEL を書くと、そのモデルで訳し直す", async () => {
+    const s = await setup({ retranslationModel: "claude-opus-4-5" });
+    const id = await translatedArticle(s);
+    await retranslate(s, id);
+    await runQueuedTranslation(s);
+    expect(sentModels(s)).toEqual(["claude-opus-4-5"]);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      model: "claude-opus-4-5",
+      retranslated: true,
+    });
+  });
+
+  it("訳し直した記事には、送らずに retranslation_not_allowed を返す", async () => {
+    const s = await setup();
+    const id = await translatedArticle(s);
+    await retranslate(s, id);
+    await runQueuedTranslation(s);
+    s.enqueued.length = 0;
+    const sent = s.claude.length;
+
+    const again = await retranslate(s, id);
+    expect(again.response.status).toBe(409);
+    expect(again.body.error?.code).toBe("retranslation_not_allowed");
+    expect(s.enqueued).toEqual([]);
+    expect(s.claude).toHaveLength(sent);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      retranslated: true,
+    });
+  });
+
+  it("訳文のない記事（queued ／ untranslated ／ translating）には retranslation_not_allowed、訳さない記事と使えない Sendo には、その場の翻訳と同じ答えを返す", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const en = await articleId(s.platform, "en");
+    const und = await articleId(s.platform, "und");
+    const ja = await articleId(s.platform, "ja");
+    for (const [id, status] of [
+      [en, "queued"],
+      [und, "untranslated"],
+    ] as const) {
+      expect(await translationOf(s.platform, id)).toMatchObject({ status });
+      const refused = await retranslate(s, id);
+      expect(refused.response.status).toBe(409);
+      expect(refused.body.error?.code).toBe("retranslation_not_allowed");
+    }
+    // その場の翻訳の最中
+    await request(s, en);
+    expect((await retranslate(s, en)).body.error?.code).toBe("retranslation_not_allowed");
+    const skipped = await retranslate(s, ja);
+    expect(skipped.response.status).toBe(409);
+    expect(skipped.body.error?.code).toBe("translation_not_supported");
+    expect(s.enqueued.filter((j) => j.type === "translate-article")).toHaveLength(1);
+
+    await testDb.exec("DELETE FROM feeds");
+    const off = await setup({ translator: false });
+    const unavailable = await retranslate(off, await articleId(off.platform, "en"));
+    expect(unavailable.response.status).toBe(503);
+    expect(unavailable.body.error?.code).toBe("translation_unavailable");
+  });
+
+  it("2 つの求めが重なっても、受け付けるのは 1 つで、Opus に送るのは 1 回だけ", async () => {
+    const s = await setup();
+    const id = await translatedArticle(s);
+    const results = await Promise.all([retranslate(s, id), retranslate(s, id)]);
+    expect(results.map((r) => r.response.status).sort()).toEqual([202, 409]);
+    expect(results.find((r) => r.response.status === 409)?.body.error?.code).toBe(
+      "retranslation_not_allowed",
+    );
+    expect(s.enqueued.filter((j) => j.type === "translate-article")).toHaveLength(1);
+    await runQueuedTranslation(s);
+    expect(s.claude).toHaveLength(1);
+  });
+
+  it("やり直しても通らない失敗はその回で、もとの訳文のまま translated に戻り、印は付かない。もう一度求められる", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const reply of [
+      { text: "", stop: "refusal" },
+      { status: 400, errorType: "invalid_request_error" },
+    ] satisfies Reply[]) {
+      await testDb.exec("DELETE FROM feeds");
+      const s = await setup();
+      const id = await translatedArticle(s);
+      const before = await translationOf(s.platform, id);
+      await retranslate(s, id);
+      s.replies.push(reply);
+      await runQueuedTranslation(s);
+      expect(s.claude).toHaveLength(1);
+      expect(await translationOf(s.platform, id)).toMatchObject({
+        status: "translated",
+        title: JA_TITLE,
+        model: "claude-sonnet-5-5",
+        translatedAt: before?.translatedAt,
+        retranslated: false,
+        startedAt: null,
+      });
+
+      s.enqueued.length = 0;
+      expect((await retranslate(s, id)).response.status).toBe(202);
+      s.replies.push(opusReply);
+      await runQueuedTranslation(s);
+      expect(await translationOf(s.platform, id)).toMatchObject({
+        title: OPUS_TITLE,
+        retranslated: true,
+      });
+    }
+  });
+
+  it("やり直せる失敗は 3 回目で、もとの訳文のまま translated に戻る", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const id = await translatedArticle(s);
+    await retranslate(s, id);
+    const overloaded: Reply = { status: 529, errorType: "overloaded_error" };
+    s.replies.push(overloaded, overloaded, overloaded);
+    await expect(runQueuedTranslation(s)).rejects.toThrow();
+    await expect(runQueuedTranslation(s)).rejects.toThrow();
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translating",
+      attempts: 2,
+      title: JA_TITLE,
+    });
+    await runQueuedTranslation(s);
+    expect(s.claude).toHaveLength(3);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      retranslated: false,
+      startedAt: null,
+    });
+  });
+
+  it("容量が足りなければ、送らずに（受け取ったあとなら呼び直さずに）もとの訳文のまま translated に戻る", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const id = await translatedArticle(s);
+    await retranslate(s, id);
+    const usage = await readStorageUsage(s.platform.db);
+    const job = s.enqueued.find((j) => j.type === "translate-article");
+    if (!job) throw new Error("no job");
+    await runJob({ ...s.platform, retentionConfig: { maxBytes: usage.bytes + 100 } }, job);
+    expect(s.claude).toHaveLength(0);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      retranslated: false,
+    });
+
+    s.enqueued.length = 0;
+    await retranslate(s, id);
+    const next = s.enqueued.find((j) => j.type === "translate-article");
+    if (!next) throw new Error("no job");
+    // 見積もり（入力の倍）には収まるが、受け取った訳文は収まらない上限にする
+    s.replies.push({ text: translated([{ id: "title", text: "訳".repeat(5000) }]) });
+    await runJob({ ...s.platform, retentionConfig: { maxBytes: usage.bytes + 2000 } }, next);
+    expect(s.claude).toHaveLength(1);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      retranslated: false,
+    });
+  });
+
+  it("仕事を積めなければ、もとの訳文のまま translated に戻す", async () => {
+    const s = await setup();
+    const id = await translatedArticle(s);
+    const platform: Platform = {
+      ...s.platform,
+      jobs: {
+        async enqueue() {
+          throw new Error("queue is busy");
+        },
+      },
+    };
+    expect((await retranslate(s, id, platform)).response.status).toBe(500);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      startedAt: null,
+      retranslated: false,
+    });
+  });
+
+  it("始めてから 1 時間を過ぎた訳し直しは、もとの訳文のまま translated に戻し、古い仕事は呼ばない", async () => {
+    const s = await setup();
+    const id = await translatedArticle(s);
+    await retranslate(s, id);
+    await s.platform.db
+      .update(articleTranslations)
+      .set({ startedAt: new Date(Date.now() - 60 * 60 * 1000 - 1000) })
+      .where(eq(articleTranslations.articleId, id))
+      .run();
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      retranslated: false,
+      startedAt: null,
+    });
+    await runQueuedTranslation(s);
+    expect(s.claude).toHaveLength(0);
+  });
+
+  it("バッチに送ったあとでその場で訳した記事を訳し直す最中に、そのバッチの結果が返っても、訳文を上書きしない", async () => {
+    const s = await setup();
+    // 決めた定期実行がバッチで送ったあとで、その場で訳した記事（その場の翻訳がバッチの印を外している）
+    const id = await translatedArticle(s);
+    expect(s.batches.list).toHaveLength(1);
+    expect(s.batches.list[0]?.requests.map((r) => r.custom_id)).toContain(id);
+    await retranslate(s, id);
+
+    const batch = s.batches.list[0];
+    if (batch) batch.ended = true;
+    s.batches.transform = (segment) => (segment.id === "title" ? "バッチの訳" : undefined);
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translating",
+      title: JA_TITLE,
+    });
+
+    s.replies.push(opusReply);
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: OPUS_TITLE,
+      retranslated: true,
+    });
+  });
+
+  it("バッチで訳した記事を訳し直す", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      retranslated: false,
+    });
+
+    expect((await retranslate(s, id)).response.status).toBe(202);
+    s.replies.push(opusReply);
+    await runQueuedTranslation(s);
+    expect(sentModels(s)).toEqual(["claude-opus-5-5"]);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: OPUS_TITLE,
+      model: "claude-opus-5-5",
+      retranslated: true,
+    });
+  });
+
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it("その場の翻訳と訳し直しは同じ一覧を使い、1 日ごとの取り直しも 1 度だけで、両方に効く", async () => {
+    let list = [
+      modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+      modelInfo("claude-opus-6", "2026-10-01T00:00:00Z"),
+    ];
+    const s = await setup({ models: () => modelsResponse(list) });
+    const en = await translatedArticle(s);
+    await retranslate(s, en);
+    await runQueuedTranslation(s);
+    expect(s.models.requests).toBe(1);
+
+    list = [
+      ...list,
+      modelInfo("claude-sonnet-7", "2026-11-01T00:00:00Z"),
+      modelInfo("claude-opus-7", "2026-11-02T00:00:00Z"),
+    ];
+    s.clock.ms += DAY;
+    const und = await articleId(s.platform, "und");
+    s.enqueued.length = 0;
+    await request(s, und);
+    await runQueuedTranslation(s);
+    s.enqueued.length = 0;
+    await retranslate(s, und);
+    await runQueuedTranslation(s);
+    expect(s.models.requests).toBe(2);
+    expect(sentModels(s)).toEqual(["claude-opus-6", "claude-sonnet-7", "claude-opus-7"]);
+  });
+
+  it("一覧を取れなければ、訳し直しはコードの既定の Opus（前に取れていれば、前に選んだもの）で送る", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({
+      models: () =>
+        Response.json(
+          { type: "error", error: { type: "api_error", message: "x" } },
+          { status: 500 },
+        ),
+    });
+    const id = await translatedArticle(s);
+    await retranslate(s, id);
+    await runQueuedTranslation(s);
+    expect(sentModels(s)).toEqual([DEFAULT_RETRANSLATION_MODEL]);
+
+    await testDb.exec("DELETE FROM feeds");
+    const t = await setup({
+      models: () => modelsResponse([modelInfo("claude-opus-6", "2026-10-01T00:00:00Z")]),
+    });
+    const other = await translatedArticle(t);
+    t.models.reply = () =>
+      Response.json({ type: "error", error: { type: "api_error", message: "x" } }, { status: 500 });
+    t.clock.ms += DAY;
+    await retranslate(t, other);
+    await runQueuedTranslation(t);
+    expect(t.models.requests).toBe(2);
+    expect(sentModels(t)).toEqual(["claude-opus-6"]);
+  });
+
+  it("新しい Opus で要求の形の誤りが続けて 3 件起きたら Opus だけを外し、その場の翻訳のモデルは変わらない", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-opus-6", "2026-10-01T00:00:00Z"),
+          modelInfo("claude-opus-5-5", "2026-07-01T00:00:00Z"),
+          modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+        ]),
+    });
+    const id = await translatedArticle(s);
+    const invalid: Reply = { status: 400, errorType: "invalid_request_error" };
+    for (let i = 0; i < 3; i++) {
+      s.enqueued.length = 0;
+      expect((await retranslate(s, id)).response.status).toBe(202);
+      s.replies.push(invalid);
+      await runQueuedTranslation(s);
+    }
+    s.enqueued.length = 0;
+    await retranslate(s, id);
+    await runQueuedTranslation(s);
+    const und = await articleId(s.platform, "und");
+    s.enqueued.length = 0;
+    await request(s, und);
+    await runQueuedTranslation(s);
+    expect(sentModels(s)).toEqual([
+      "claude-opus-6",
+      "claude-opus-6",
+      "claude-opus-6",
+      "claude-opus-5-5",
+      "claude-sonnet-6",
+    ]);
+  });
+
+  it("本文の指定は省いても、retranslate が false でも、その場の翻訳になる。読めない本文は 400、受け付けない Content-Type は 415 で、状態を変えない", async () => {
+    const s = await setup();
+    await maintain(s.platform);
+    const en = await articleId(s.platform, "en");
+    const und = await articleId(s.platform, "und");
+    const post = (id: string, init: RequestInit & { json?: unknown }) =>
+      requestApp(s.platform, `/api/v1/articles/${id}/translation`, { method: "POST", ...init });
+
+    const malformed = await post(en, { headers: { "content-type": "application/json" } });
+    expect(malformed.status).toBe(400);
+    expect(((await malformed.json()) as Body).error?.code).toBe("invalid_request");
+    const unsupported = await post(en, { headers: { "content-type": "text/plain" }, body: "x" });
+    expect(unsupported.status).toBe(415);
+    expect(((await unsupported.json()) as Body).error?.code).toBe("unsupported_media_type");
+    expect(await translationOf(s.platform, en)).toMatchObject({ status: "queued" });
+
+    expect((await post(en, { json: {} })).status).toBe(202);
+    expect((await post(und, { json: { retranslate: false } })).status).toBe(202);
+    expect(s.enqueued.filter((j) => j.type === "translate-article")).toEqual([
+      expect.not.objectContaining({ retranslation: true }),
+      expect.not.objectContaining({ retranslation: true }),
+    ]);
+  });
+
+  it("もとの訳文に本文があれば、あとでページの本文が抜けても、同じ出どころ（フィード）の本文を訳し直す", async () => {
+    const s = await setup({ body: ARTICLE_BODY });
+    const id = await translatedArticle(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({ contentSource: "feed" });
+    // 訳したあとで抜けた、上限（60,000 文字）を超えるページの本文
+    await recordExtractedPageContent(s.platform.db, {
+      articleId: id,
+      html: `<p>${"Long page body. ".repeat(4000)}</p>`,
+      now: new Date(),
+    });
+    await retranslate(s, id);
+    s.replies.push({ transform: (segment) => `訳:${segment.text}` });
+    await runQueuedTranslation(s);
+    const sent = JSON.parse(s.claude[0]?.body ?? "{}") as { messages: { content: string }[] };
+    expect(sent.messages[0]?.content).toContain("Why codemods");
+    expect(sent.messages[0]?.content).not.toContain("Long page body");
+    const row = await translationOf(s.platform, id);
+    expect(row).toMatchObject({ status: "translated", contentSource: "feed", retranslated: true });
+    expect(row?.content).toContain("訳:Why codemods");
+  });
+
+  it("もとの訳文に本文があるのに、同じ出どころの本文を置けなければ、呼ばずにもとの訳文のまま戻す", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    await recordExtractedPageContent(s.platform.db, {
+      articleId: id,
+      html: "<p>Page body about codemods.</p>",
+      now: new Date(),
+    });
+    await request(s, id);
+    await runQueuedTranslation(s);
+    s.enqueued.length = 0;
+    s.claude.length = 0;
+    const before = await translationOf(s.platform, id);
+    expect(before).toMatchObject({ contentSource: "page" });
+    expect(before?.content).not.toBeNull();
+    // ページの本文がなくなった（本番では片付けなどで起きうるが、作りにくいので直接消す）
+    await testDb.exec(`DELETE FROM page_contents WHERE article_id = '${id}'`);
+
+    await retranslate(s, id);
+    await runQueuedTranslation(s);
+    expect(s.claude).toHaveLength(0);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      content: before?.content,
+      contentSource: "page",
+      retranslated: false,
+      startedAt: null,
+    });
+  });
+
+  it("訳し直した本文を組み立てて 256KB を超えたら、呼び直さずに、もとの訳文のまま戻す", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({ body: ARTICLE_BODY });
+    const id = await translatedArticle(s);
+    const before = await translationOf(s.platform, id);
+    expect(before?.content).not.toBeNull();
+    await retranslate(s, id);
+    s.replies.push({
+      transform: (segment) =>
+        segment.id === "title" || segment.id === "summary" ? OPUS_TITLE : "訳".repeat(30_000),
+    });
+    // やり直しのために例外を投げない（呼び直さない）
+    await runQueuedTranslation(s);
+    expect(s.claude).toHaveLength(1);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      content: before?.content,
+      model: "claude-sonnet-5-5",
+      retranslated: false,
+      startedAt: null,
+    });
+  });
+
+  it("もとの訳文に本文がなければ、本文を置けなくても、タイトルと要約だけを訳し直す", async () => {
+    const s = await setup();
+    const id = await translatedArticle(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({ content: null });
+    await retranslate(s, id);
+    s.replies.push(opusReply);
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      title: OPUS_TITLE,
+      content: null,
+      retranslated: true,
+    });
   });
 });

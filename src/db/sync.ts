@@ -112,6 +112,8 @@ export type SyncTranslation = {
   title: string | null;
   summary: string | null;
   translatedAt: Date | null;
+  /** 訳し直したか（docs/decisions/translation.md の 6） */
+  retranslated: boolean;
 };
 
 const t = articleTranslations;
@@ -123,6 +125,7 @@ const translationColumns = {
   translationTitle: t.title,
   translationSummary: t.summary,
   translationTranslatedAt: t.translatedAt,
+  translationRetranslated: t.retranslated,
 };
 
 /** 配る翻訳だけを結ぶ条件（skipped の行は付けない） */
@@ -135,6 +138,7 @@ function toSyncTranslation(row: {
   translationTitle: string | null;
   translationSummary: string | null;
   translationTranslatedAt: Date | null;
+  translationRetranslated: boolean | null;
 }): SyncTranslation | null {
   const status = row.translationStatus;
   if (status === null || status === "skipped" || row.translationLanguage === null) return null;
@@ -144,6 +148,7 @@ function toSyncTranslation(row: {
     title: row.translationTitle,
     summary: row.translationSummary,
     translatedAt: row.translationTranslatedAt,
+    retranslated: row.translationRetranslated === true,
   };
 }
 
@@ -373,6 +378,7 @@ export async function readChanges(
         translationTitle,
         translationSummary,
         translationTranslatedAt,
+        translationRetranslated,
         ...article
       }) => ({
         seq,
@@ -386,6 +392,7 @@ export async function readChanges(
             translationTitle,
             translationSummary,
             translationTranslatedAt,
+            translationRetranslated,
           }),
         },
       }),
