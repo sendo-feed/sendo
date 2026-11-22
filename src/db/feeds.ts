@@ -151,10 +151,9 @@ export async function recordFetchSuccess(
     discord?: { cursor: string; connectionId: string };
     /**
      * Discord のサーバーのアイコン（docs/decisions/discord.md の 7）。undefined なら変えない。
-     * Discord のフィードは 30 日の間隔で探し直さない（refreshIcon を通らない）ので、iconCheckedAt は
-     * 記録した時刻として残すだけ
+     * iconCheckedAt（discord.com を探した時刻）は進めない
      */
-    iconUrl?: string | null | undefined;
+    iconUrl?: string | undefined;
     title?: string | null;
     siteUrl?: string | null;
   },
@@ -183,7 +182,7 @@ export async function recordFetchSuccess(
       }),
       ...(input.title !== undefined && { title: input.title }),
       ...(input.siteUrl !== undefined && { siteUrl: input.siteUrl }),
-      ...(input.iconUrl !== undefined && { iconUrl: input.iconUrl, iconCheckedAt: input.now }),
+      ...(input.iconUrl !== undefined && { iconUrl: input.iconUrl }),
     })
     .where(and(eq(feeds.id, id), fetchedBefore(input.now), sameConnection))
     .returning({
@@ -222,6 +221,33 @@ export async function recordFeedIcon(
     .update(feeds)
     .set({ iconUrl: input.iconUrl, iconCheckedAt: input.now })
     .where(eq(feeds.id, id));
+}
+
+/**
+ * Discord のフィードで、サーバーにアイコンがないときに discord.com を探した結果を記録する
+ * （docs/decisions/discord.md の 7）。探し始めたときのアイコン（expected）が変わっておらず、同じ接続の
+ * ときだけ記録する（同じ文の中で確かめる）。探している間に、後から始めた取得がサーバーのアイコンを
+ * 記録していたら、そちらを残す。アイコンが変わると、購読の変更番号はトリガーが進める
+ * @returns 記録したか
+ */
+export async function recordDiscordSiteIcon(
+  db: Database,
+  id: string,
+  input: { connectionId: string; expected: string | null; iconUrl: string | null; now: Date },
+): Promise<boolean> {
+  const recorded = await db
+    .update(feeds)
+    .set({ iconUrl: input.iconUrl, iconCheckedAt: input.now })
+    .where(
+      and(
+        eq(feeds.id, id),
+        eq(feeds.discordConnectionId, input.connectionId),
+        input.expected === null ? isNull(feeds.iconUrl) : eq(feeds.iconUrl, input.expected),
+      ),
+    )
+    .returning({ id: feeds.id })
+    .get();
+  return recorded !== undefined;
 }
 
 export async function recordFetchFailure(

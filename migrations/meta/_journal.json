@@ -330,6 +330,13 @@
       "when": 1795325941703,
       "tag": "0046_article-translation-sync",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1795345261461,
+      "tag": "0047_discord-icon-search",
+      "breakpoints": true
     }
   ]
 }

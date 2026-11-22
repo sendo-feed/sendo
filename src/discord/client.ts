@@ -164,6 +164,14 @@ export async function getReadableChannel(
   return { name: channel.name, iconUrl: discordGuildIconUrl(guildId, guild.icon) };
 }
 
+/** サーバーにアイコンがないときに、Discord のアイコンを探すサイト（docs/decisions/discord.md の 7） */
+export const DISCORD_ICON_SITE_URL = "https://discord.com/";
+
+/** サーバーのアイコンの URL か。Discord の CDN の URL の形で見分ける（docs/decisions/discord.md の 7） */
+export function isDiscordGuildIconUrl(guildId: string, url: string): boolean {
+  return url.startsWith(`https://cdn.discordapp.com/icons/${guildId}/`);
+}
+
 /**
  * サーバーのアイコンの URL（docs/decisions/discord.md の 7）。アイコンがなければ（null）null。
  * 項目がないか、値の形が違えば undefined（今のアイコンを変えない）。動くアイコン（a_）も png で

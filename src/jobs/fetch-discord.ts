@@ -12,22 +12,25 @@ import {
   getDiscordSubscriber,
   insertDiscordArticles,
 } from "../db/discord";
-import { recordFetchSuccess } from "../db/feeds";
+import { recordDiscordSiteIcon, recordFetchSuccess } from "../db/feeds";
 import { deliverNewArticles } from "../db/inbox";
 import type { Feed } from "../db/schema";
 import { readStorageUsage } from "../db/storage";
 import {
   DISCORD_CURSOR_START,
+  DISCORD_ICON_SITE_URL,
   DISCORD_INITIAL_MESSAGES,
   DISCORD_PAGE_SIZE,
   discordCursorBefore,
   getDiscordMessages,
   getReadableChannel,
   isDiscordAccessDenied,
+  isDiscordGuildIconUrl,
   parseDiscordChannelUrl,
 } from "../discord/client";
 import { toDiscordPost } from "../discord/message";
 import { FetchFeedError } from "../fetcher/fetch-feed";
+import { findFeedIcon, ICON_CHECK_INTERVAL_MS } from "../fetcher/find-icon";
 import { sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
 import type { FetchFeedOutcome } from "./fetch-feed";
@@ -159,18 +162,87 @@ export async function runFetchDiscord(
           minMs,
           feedCreatedAt: feed.createdAt,
         });
-  await recordFetchSuccess(db, feed.id, {
+  const recorded = await recordFetchSuccess(db, feed.id, {
     now: startedAt,
     nextFetchAt: new Date(startedAt.getTime() + interval),
     fetchIntervalMs: interval,
     etag: null,
     lastModified: null,
     title: channel.name,
-    // アイコンが変わると、購読の変更番号はトリガーが進める（docs/decisions/images.md の 8）
-    iconUrl: channel.iconUrl,
+    // サーバーのアイコンは、取得のたびに記録する。ないとき（null）と読めないとき（undefined）は、
+    // ここでは変えない（docs/decisions/discord.md の 7）。アイコンが変わると、購読の変更番号は
+    // トリガーが進める（docs/decisions/images.md の 8）
+    iconUrl: channel.iconUrl ?? undefined,
     discord: { cursor, connectionId: discordConnectionId },
   });
+  if (recorded && channel.iconUrl === null) {
+    await refreshDiscordSiteIcon(platform, {
+      feedId: feed.id,
+      connectionId: discordConnectionId,
+      guildId: address.guildId,
+      current: recorded.iconUrl,
+      checkedAt: recorded.iconCheckedAt,
+      now: startedAt,
+    });
+  }
   return messages.length === 0 ? { status: "not-modified" } : { status: "fetched", inserted };
+}
+
+/**
+ * サーバーにアイコンがないとき、discord.com から Discord のアイコンを探して記録する
+ * （docs/decisions/discord.md の 7）。
+ *
+ * - 探すのは、最後に探した時刻（iconCheckedAt）から 30 日たったとき。今のアイコンがサーバーのアイコン
+ *   （サーバーのアイコンが消えた）なら、30 日によらず探す
+ * - 見つからない・届かない・途中で失敗した、のどれでも、前に discord.com で見つけたアイコンは確かめずに
+ *   残し、それ以外は null にする。どれも探した結果として記録する（30 日たつまで探し直さない）
+ * - 探している間に、後から始めた取得がアイコンを変えていたら、記録しない
+ *
+ * フィードの取得を記録したあとに呼ぶ。探すのに失敗しても、フィードの取得は失敗にしない
+ */
+async function refreshDiscordSiteIcon(
+  platform: Pick<Platform, "db" | "fetch">,
+  input: {
+    feedId: string;
+    connectionId: string;
+    guildId: string;
+    current: string | null;
+    checkedAt: Date | null;
+    now: Date;
+  },
+): Promise<void> {
+  const guildIcon = input.current !== null && isDiscordGuildIconUrl(input.guildId, input.current);
+  const checkedAt = input.checkedAt?.getTime();
+  if (
+    !guildIcon &&
+    checkedAt !== undefined &&
+    input.now.getTime() - checkedAt < ICON_CHECK_INTERVAL_MS
+  )
+    return;
+
+  // 見つからないときに残すのは、前に discord.com で見つけたアイコンだけ。アイコンは探す先と同じ
+  // discord.com にあり、届かないときは確かめる取得も届かないので、確かめずに残す
+  const kept = guildIcon ? null : input.current;
+  let iconUrl: string | null;
+  try {
+    iconUrl =
+      (await findFeedIcon({
+        fetch: platform.fetch,
+        feedIconUrl: null,
+        siteUrl: DISCORD_ICON_SITE_URL,
+        currentIconUrl: null,
+      })) ?? kept;
+  } catch (error) {
+    // 外から来た中身の扱いで起きた例外。見つからないときと同じに扱う
+    console.warn("failed to look for the Discord icon", { feedId: input.feedId, error });
+    iconUrl = kept;
+  }
+  await recordDiscordSiteIcon(platform.db, input.feedId, {
+    connectionId: input.connectionId,
+    expected: input.current,
+    iconUrl,
+    now: input.now,
+  });
 }
 
 /**

@@ -17,7 +17,7 @@ import type { Feed, FeedErrorCode } from "../db/schema";
 import { isStorageLimitError, readStorageUsage } from "../db/storage";
 import { findFeedRelocation, MAX_FEED_LINK_PAGE_BYTES } from "../fetcher/discover";
 import { type FetchedFeedPage, FetchFeedError, fetchFeed } from "../fetcher/fetch-feed";
-import { findFeedIcon } from "../fetcher/find-icon";
+import { findFeedIcon, ICON_CHECK_INTERVAL_MS } from "../fetcher/find-icon";
 import { htmlToText, type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
@@ -37,8 +37,7 @@ import { canStoreArticles, measureExistingContents, reportStorageFull } from "./
  * その下限（docs/decisions/jobs.md の 6、7。決め方は fetch-interval.ts）。
  */
 
-/** フィードのアイコンを探し直す間隔（docs/decisions/images.md の 8） */
-export const ICON_CHECK_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
+export { ICON_CHECK_INTERVAL_MS };
 
 /** 1 回の取得で本文を置く、新しい記事の数の上限（docs/decisions/content.md の 4） */
 export const MAX_CONTENTS_PER_FETCH = 30;
