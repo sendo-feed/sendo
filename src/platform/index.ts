@@ -240,8 +240,14 @@ export type BatchTranslationStatus =
 
 /** 記事を日本語に訳す（Claude API。docs/decisions/translation.md） */
 export interface Translator {
-  /** その場で訳す（通常の Messages API）。呼び出しが失敗したら TranslatorError を投げる */
-  translate(segments: readonly TranslationSegment[]): Promise<TranslationResult>;
+  /**
+   * その場で訳す（通常の Messages API）。retranslation なら、訳し直しのモデル（Opus）で訳す
+   * （docs/decisions/translation.md の 6、9）。呼び出しが失敗したら TranslatorError を投げる
+   */
+  translate(
+    segments: readonly TranslationSegment[],
+    options?: { retranslation?: boolean },
+  ): Promise<TranslationResult>;
   /**
    * バッチを作って送る（Message Batches API）。バッチの ID を返す。失敗したら TranslatorError を投げる
    * （作れたかどうか分からないこともある）

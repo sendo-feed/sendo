@@ -431,18 +431,21 @@ export function segmentsOf(article: {
 }
 
 /**
- * その場の翻訳の仕事（docs/decisions/translation.md の 5、8）。始めた時刻が今の行と同じときだけ動く。
+ * その場の翻訳と訳し直しの仕事（docs/decisions/translation.md の 5、6、8）。始めた時刻が今の行と
+ * 同じときだけ動く。訳し直しは Opus のモデルで訳し、書く文で訳し直しの印を付ける。
  *
  * やり直せる失敗は、行の回数を 1 つ数えてから例外を投げ、仕事の表にやり直させる。3 回目で
- * untranslated に戻す。拒否・上限で切れた応答・読めない応答・要求の形の誤りは、すぐに戻す
+ * 訳せなかったものとして戻す（訳し直しなら、もとの訳文のまま translated）。拒否・上限で切れた応答・
+ * 読めない応答・要求の形の誤りは、すぐに戻す
  */
 export async function runTranslateArticle(
   platform: Pick<Platform, "db" | "translator" | "retentionConfig" | "syncUpdates" | "content">,
   articleId: string,
   startedAt: Date,
+  options: { retranslation?: boolean } = {},
 ): Promise<void> {
   // やり直せる失敗で例外を投げるときは、回数しか変えていないので知らせない
-  if (await translateArticle(platform, articleId, startedAt)) {
+  if (await translateArticle(platform, articleId, startedAt, options.retranslation === true)) {
     await notifyTranslationChanged(platform, [articleId]);
   }
 }
@@ -452,6 +455,7 @@ async function translateArticle(
   platform: Pick<Platform, "db" | "translator" | "retentionConfig" | "content">,
   articleId: string,
   startedAt: Date,
+  retranslation: boolean,
 ): Promise<boolean> {
   const { db, translator } = platform;
   const row = await getTranslation(db, articleId);
@@ -476,7 +480,7 @@ async function translateArticle(
 
   let result: Awaited<ReturnType<typeof translator.translate>>;
   try {
-    result = await translator.translate(segments);
+    result = await translator.translate(segments, { retranslation });
   } catch (error) {
     if (error instanceof TranslatorError && !error.retryable) {
       console.warn("translation request was rejected", { articleId, error: error.message });
@@ -503,6 +507,7 @@ async function translateArticle(
     summary: article?.summary == null ? null : (translated.get("summary") ?? article.summary),
     content: body === null ? null : assembleBody(body, translated),
     model: result.model,
+    retranslation,
   });
   if (written) return true;
   // 行がまだ同じなら、容量のトリガーが書かなかった。呼び直さずに戻す（決定の 12）

@@ -496,6 +496,11 @@ export const articleTranslations = sqliteTable(
      * 上限で untranslated にする
      */
     batchAttempts: integer("batch_attempts").notNull().default(0),
+    /**
+     * 訳し直したかどうかの印（docs/decisions/translation.md の 6）。訳し直した訳文を書く文で付け、
+     * 付いた記事は訳し直さない。差分同期で配る（同じく 14）
+     */
+    retranslated: integer("retranslated", { mode: "boolean" }).notNull().default(false),
   },
   (t) => [
     index("article_translations_translating_idx")

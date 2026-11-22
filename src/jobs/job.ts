@@ -34,11 +34,15 @@ export const jobSchema = z.discriminatedUnion("type", [
    * 訳すかどうかを決める。定期実行が 5 分おきに積む
    */
   z.object({ type: z.literal("maintain-translations") }),
-  /** その場の翻訳（docs/decisions/translation.md の 5）。startedAt は行の始めた時刻（ミリ秒） */
+  /**
+   * その場の翻訳と訳し直し（docs/decisions/translation.md の 5、6）。startedAt は行の始めた時刻
+   * （ミリ秒）。retranslation なら訳し直し（Opus で訳し、訳し直しの印を付ける）
+   */
   z.object({
     type: z.literal("translate-article"),
     articleId: z.string().min(1),
     startedAt: z.int().nonnegative(),
+    retranslation: z.boolean().optional(),
   }),
   /** 記事のページから本文を抜く（docs/decisions/content.md の 10）。取得の仕事のあとで積む */
   z.object({ type: z.literal("extract-page"), articleId: z.string().min(1) }),
