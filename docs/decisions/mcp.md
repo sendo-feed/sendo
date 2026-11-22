@@ -49,9 +49,9 @@ MCP のクライアントのつなぎ方は 2 通りある。
 9. **購読・フォルダ・記事・開封履歴をツールで扱う。**
    - 読み取りは `list_feeds`、`list_folders`、`get_unread`、`list_articles`、`get_article`、`search_articles`、`list_activity`。キーワード検索と開封履歴は、[記事のキーワード検索](article-search.md)と[記事を開いた履歴](activity.md)に従う
    - 書き込みは `subscribe`、`move_feed`、`rename_feed`、`unsubscribe`、`mark_read`、`star`、`create_folder`、`rename_folder`、`delete_folder`
-   - `create_folder` は名前だけを受け、ID はクライアントに決めさせない。名前は REST API と同じく整え（前後の空白を除き、続く空白を 1 つにまとめ、200 文字までに切り詰める）、整えた名前と完全に一致するフォルダ（大文字と小文字は区別する）が、その人の消していないフォルダにもうあれば、作らずにそれを返す。同じ名前を同時に作っても 1 つにまとまる。結果には、作ったか、今あるものを返したかの印を付ける
+   - `create_folder` は名前だけを受け、ID はクライアントに決めさせない。名前は REST API と同じく整え（前後の空白を除き、空白（全角も含む）の並びを半角の空白 1 つにし、200 文字までに切り詰める。整えて空になる名前は誤りにする）、整えた名前と完全に一致するフォルダ（大文字と小文字は区別する）が、その人の消していないフォルダにもうあれば、作らずにそれを返す。同じ名前を同時に作っても 1 つにまとまる。結果には、作ったか、今あるものを返したかの印を付ける
    - `rename_folder` と `delete_folder` は、`list_folders` で調べたフォルダの ID を受ける。消したフォルダと、ほかの人のフォルダは、ないフォルダと同じに扱う（[ユーザーと認証](accounts.md)）
-   - `rename_folder` で、ほかのフォルダと同じ名前に変えようとしたら、誤りを返して名前を変えない
+   - `rename_folder` も、新しい名前を `create_folder` と同じく整えて比べる。ほかのフォルダと同じ名前に変えようとしたら、誤りを返して名前を変えない
    - `delete_folder` は、入っていたフィードの購読をやめず、未分類に戻す（REST API でフォルダを消すときと同じ）。ないフォルダなら、誤りにせず「消さなかった」と返す（`unsubscribe` と同じく、やり直しても失敗にならない）
    - `delete_folder` は、`unsubscribe` と同じく、取り消せない操作の印（`destructiveHint`）を付け、クライアントが実行の前に利用者に確かめられるようにする
    - `create_folder`、`rename_folder`、`delete_folder` の説明には、利用者に頼まれたときだけ使うと書く（8）
