@@ -34,6 +34,18 @@ export async function getFolder(
     .get();
 }
 
+/** ユーザーの、その名前のフォルダ（名前は整えたものと完全に一致させる）。消したものは undefined */
+export async function getFolderByName(
+  db: Database,
+  input: { userId: string; name: string },
+): Promise<Folder | undefined> {
+  return db
+    .select()
+    .from(folders)
+    .where(and(active(input.userId), eq(folders.name, input.name)))
+    .get();
+}
+
 export class FolderNameTakenError extends Error {
   override readonly name = "FolderNameTakenError";
 }
