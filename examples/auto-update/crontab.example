@@ -1,0 +1,7 @@
+# auto-update.sh を cron で動かす例。crontab -e で、docker を動かせる利用者の crontab に足す。
+# /srv/sendo は、compose.yaml と auto-update.sh を置いたディレクトリに読み替える。
+#
+# 1 時間おき（毎時 17 分）。前の回が終わっていなければ、その回は何もしない。
+# 上流の main に入るたびに sendo を止めてバックアップを取るので、止まるのを減らしたいときは間隔を広げる
+# （例：毎日 4:17 なら「17 4 * * *」）。
+17 * * * * /srv/sendo/auto-update.sh >> /srv/sendo/auto-update.log 2>&1
