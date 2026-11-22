@@ -65,6 +65,18 @@ async function connect(platform: Platform, token: string, era: Era = "legacy") {
 
 type Structured<T> = { structuredContent?: T; isError?: boolean };
 
+/** MCP の create_folder でフォルダを作り、返ったフォルダを返す */
+async function createFolderTool(client: Client, name: string) {
+  const res = (await client.callTool({
+    name: "create_folder",
+    arguments: { name },
+  })) as Structured<{
+    folder: { id: string; name: string };
+  }>;
+  if (!res.structuredContent) throw new Error(`create_folder failed: ${name}`);
+  return res.structuredContent.folder;
+}
+
 async function setup(scopes: McpScope[] = ["read"]) {
   const user = await createUser();
   const { platform } = createTestPlatform();
@@ -911,15 +923,14 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
   it("rename_folder で名前を変え、同じ名前・消したフォルダ・ほかの人のフォルダでは変えない", async () => {
     const { platform, token, user, feed } = await setup(["read", "write"]);
     const other = await createUser();
-    const makeFolder = async (userId: string, name: string) =>
-      (await createFolder(platform.db, { userId, name, id: crypto.randomUUID(), now: new Date() }))
-        .folder;
-    const tech = await makeFolder(user.id, "技術");
-    const news = await makeFolder(user.id, "ニュース");
-    const removed = await makeFolder(user.id, "削除済み");
-    await deleteFolder(platform.db, { userId: user.id, id: removed.id, now: new Date() });
-    const foreign = await makeFolder(other.id, "他ユーザー");
     const { client } = await connect(platform, token, era);
+    const otherClient = (await connect(platform, await mcpToken(other.id, ["read", "write"]), era))
+      .client;
+    const tech = await createFolderTool(client, "技術");
+    const news = await createFolderTool(client, "ニュース");
+    const removed = await createFolderTool(client, "削除済み");
+    await client.callTool({ name: "delete_folder", arguments: { folderId: removed.id } });
+    const foreign = await createFolderTool(otherClient, "他ユーザー");
     await client.callTool({ name: "move_feed", arguments: { feedId: feed.id, folderId: tech.id } });
     const rename = (folderId: string, name: string) =>
       client.callTool({ name: "rename_folder", arguments: { folderId, name } });
@@ -951,9 +962,9 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
         { id: tech.id, name: "プログラミング" },
       ],
     });
-    expect(await listFolders(platform.db, other.id)).toEqual([
-      expect.objectContaining({ id: foreign.id, name: "他ユーザー" }),
-    ]);
+    expect((await otherClient.callTool({ name: "list_folders" })).structuredContent).toEqual({
+      folders: [{ id: foreign.id, name: "他ユーザー" }],
+    });
   });
 
   it("delete_folder は購読をやめずに未分類に戻し、差分同期に届く。ないフォルダやほかの人のフォルダは消さない", async () => {
@@ -961,17 +972,14 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     const second = await subscribeFeed(platform, { userId: user.id });
     const other = await createUser();
     const otherFeed = await subscribeFeed(platform, { userId: other.id });
-    const makeFolder = async (userId: string, name: string) =>
-      (await createFolder(platform.db, { userId, name, id: crypto.randomUUID(), now: new Date() }))
-        .folder;
-    const tech = await makeFolder(user.id, "技術");
-    const foreign = await makeFolder(other.id, "他ユーザー");
     const { client } = await connect(platform, token, era);
+    const otherClient = (await connect(platform, await mcpToken(other.id, ["read", "write"]), era))
+      .client;
+    const tech = await createFolderTool(client, "技術");
+    const foreign = await createFolderTool(otherClient, "他ユーザー");
     for (const feedId of [feed.id, second.id]) {
       await client.callTool({ name: "move_feed", arguments: { feedId, folderId: tech.id } });
     }
-    const otherClient = (await connect(platform, await mcpToken(other.id, ["read", "write"]), era))
-      .client;
     await otherClient.callTool({
       name: "move_feed",
       arguments: { feedId: otherFeed.id, folderId: foreign.id },
