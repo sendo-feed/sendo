@@ -861,6 +861,53 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     ]);
   });
 
+  it("create_folder は、読み直すたびにぶつかったフォルダが消されると、3 回で諦めて誤りを返す", async () => {
+    const { platform, token, user } = await setup(["read", "write"]);
+    const make = () =>
+      createFolder(platform.db, {
+        userId: user.id,
+        id: crypto.randomUUID(),
+        name: "技術",
+        now: new Date(),
+      });
+    await make();
+    // 作る文の直前には別のリクエストが同じ名前のフォルダを作り（1 回目は前からある）、
+    // 名前で読み直す文の直前にはそれを消す。これを毎回くり返す
+    let calls = 0;
+    const hooked = statementHook(
+      (sql) =>
+        /^\s*insert\s+into\s+"folders"/i.test(sql) ||
+        (/^\s*select\b/i.test(sql) && /from "folders"/i.test(sql) && /"name" = \?/.test(sql)),
+      async () => {
+        if (calls % 2 === 1) {
+          for (const folder of await listFolders(platform.db, user.id)) {
+            await deleteFolder(platform.db, { userId: user.id, id: folder.id, now: new Date() });
+          }
+        } else if (calls > 0) {
+          await make();
+        }
+        calls++;
+        hooked.arm();
+      },
+    );
+    const recording = recordingSyncUpdates();
+    const { client } = await connect(
+      { ...platform, db: hooked.db, syncUpdates: recording.syncUpdates },
+      token,
+      era,
+    );
+
+    expect(
+      await client.callTool({ name: "create_folder", arguments: { name: "技術" } }),
+    ).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: "folder name is being changed concurrently; try again" }],
+    });
+    // 作る ／ 読み直すを 3 回ずつ
+    expect(calls).toBe(6);
+    expect(recording.notified).toEqual([]);
+  });
+
   it("rename_folder で名前を変え、同じ名前・消したフォルダ・ほかの人のフォルダでは変えない", async () => {
     const { platform, token, user, feed } = await setup(["read", "write"]);
     const other = await createUser();
