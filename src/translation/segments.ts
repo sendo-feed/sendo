@@ -74,11 +74,15 @@ export function splitBody(sanitized: string): BodySegments {
   /** 断片にした並び（並びの最初のノードで引く。ノードは 1 つの並びにしか入らない） */
   const runs = new Map<Node, Run>();
   let next = 1;
-  const visit = (children: Node[]) => {
+  /**
+   * 子を断片に分ける。hrefs は、ブロックとして扱った祖先のリンクの href（そのリンクが見せている URL
+   * を、中のブロックの断片からも送らない）
+   */
+  const visit = (children: Node[], hrefs: readonly string[]) => {
     let pending: Node[] = [];
     const flush = () => {
       if (pending.length === 0) return;
-      const run = toRun(`b${next}`, pending);
+      const run = toRun(`b${next}`, pending, hrefs);
       const first = pending[0];
       if (run !== null && first !== undefined) {
         runs.set(first, run);
@@ -93,12 +97,13 @@ export function splitBody(sanitized: string): BodySegments {
       }
       flush();
       if (child.type === "element" && !UNTRANSLATED_BLOCKS.has(child.name)) {
-        visit(child.children);
+        const href = child.name === "a" ? parseAttributes(child.attributes).get("href") : undefined;
+        visit(child.children, href === undefined ? hrefs : [...hrefs, href]);
       }
     }
     flush();
   };
-  visit(root);
+  visit(root, []);
 
   const segments = [...runs.values()].map((run) => ({ id: run.id, text: run.text }));
   return {
@@ -136,7 +141,7 @@ export function splitBody(sanitized: string): BodySegments {
 }
 
 /** 並びを、印の付いた文にする。訳す文字がなければ null */
-function toRun(id: string, nodes: Node[]): Run | null {
+function toRun(id: string, nodes: Node[], hrefs: readonly string[]): Run | null {
   const markers = new Map<number, Marker>();
   let next = 1;
   let hasText = false;
@@ -165,6 +170,9 @@ function toRun(id: string, nodes: Node[]): Run | null {
   };
   const text = encode(nodes, 0);
   if (!hasText || unsafe) return null;
+  // 祖先のリンクの URL を見せる断片は送らない（リンクで包んだ段落の文字が URL のとき）
+  const plain = decodeHTML(nodes.map(textOf).join("")).replace(INVISIBLE, "").trim();
+  if (hrefs.some((href) => showsUrl(plain, href))) return null;
   return { id, nodes, text, markers };
 }
 
@@ -285,8 +293,16 @@ function showsUrl(text: string, rawHref: string | undefined): boolean {
     return false;
   }
   const lower = text.toLowerCase();
-  if (href.protocol === "mailto:")
-    return lower.includes(decodeURIComponent(href.pathname).toLowerCase());
+  if (href.protocol === "mailto:") {
+    let address: string;
+    try {
+      address = decodeURIComponent(href.pathname);
+    } catch {
+      // 読めないあて先は、見せているかを確かめられないので、送らない
+      return true;
+    }
+    return lower.includes(address.toLowerCase());
+  }
   const host = href.hostname.toLowerCase().replace(/^www\./, "");
   return host !== "" && lower.includes(host);
 }

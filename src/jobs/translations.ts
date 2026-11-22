@@ -114,7 +114,17 @@ async function bodyToTranslate(
   if (stored === null) return null;
   // 保存の前にサニタイズしてあるが、今の決まりをもう一度当ててから分ける（URL は絶対にしてある）
   const html = sanitizeHtml(stored.html, "about:blank");
-  const segments = splitBody(html);
+  let segments: BodySegments;
+  try {
+    segments = splitBody(html);
+  } catch (error) {
+    // 本文を分けられなくても、タイトルと要約は訳す
+    console.warn("could not split the article body for translation", {
+      articleId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
   if (segments.segments.length === 0 || segments.length > MAX_TRANSLATED_BODY_CHARS) return null;
   return { source: stored.source, html, segments };
 }

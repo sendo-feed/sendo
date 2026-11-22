@@ -126,6 +126,23 @@ describe("splitBody", () => {
     expect(body.segments[0]?.text).toBe("Read ⟦1/⟧ now");
   });
 
+  it("ブロックとして扱ったリンクの中の断片でも、そのリンクの URL を見せる文字は送らない", () => {
+    const body = splitBody(
+      html(
+        '<a href="https://example.com/private"><p>https://example.com/private</p><p>Read more</p></a>',
+      ),
+    );
+    expect(JSON.stringify(body.segments)).not.toContain("example.com");
+    expect(body.segments.map((segment) => segment.text)).toEqual(["Read more"]);
+  });
+
+  it("読めない mailto のあて先は、見せているか確かめられないので送らない", () => {
+    const body = splitBody(
+      html('<p>Write <a href="mailto:foo%bar@example.com">Contact us</a></p>'),
+    );
+    expect(body.segments[0]?.text).toBe("Write ⟦1/⟧");
+  });
+
   it("中身を送らない要素は、中にブロックがあっても単独の印にする", () => {
     const body = splitBody(html("<p>A <code>c<pre>SECRET</pre></code> B</p>"));
     expect(JSON.stringify(body.segments)).not.toContain("SECRET");
