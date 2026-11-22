@@ -654,7 +654,7 @@ describe("サーバーにアイコンがないときの Discord のアイコン�
   const cdn = (hash: string) => `https://cdn.discordapp.com/icons/201/${hash}.png`;
   type Sync = { cursor: string; feeds: { id: string; iconUrl: string | null }[] };
 
-  async function subscribed() {
+  async function subscribed(overrides: Partial<Platform> = {}) {
     const remote = discordFetch();
     // ok：トップのページにアイコンがある。down：届かない。none：ページはあるがアイコンがない
     const state = { now: FIXED_NOW, site: "ok" as "ok" | "down" | "none" };
@@ -669,10 +669,12 @@ describe("サーバーにアイコンがないときの Discord のアイコン�
       discord: CONFIG,
       fetch: remote.fetch,
       now: () => state.now,
+      ...overrides,
     });
     const user = await createUser();
     await connectDiscord(platform.db, user.id, DISCORD_USER);
-    const feedId = await subscribe(await browser(platform, user.id));
+    const request = await browser(platform, user.id);
+    const feedId = await subscribe(request);
     const fetchAt = async (ms: number) => {
       state.now = new Date(FIXED_NOW.getTime() + ms);
       expect(await runFetchFeed(platform, feedId)).toMatchObject({
@@ -691,7 +693,7 @@ describe("サーバーにアイコンがないときの Discord のアイコン�
     };
     const relayed = (url: string | null | undefined) =>
       url ? new URL(url, ORIGIN).searchParams.get("url") : url;
-    return { platform, remote, state, user, feedId, fetchAt, sync, relayed };
+    return { platform, remote, state, user, request, feedId, fetchAt, sync, relayed };
   }
 
   it("discord.com で見つけたアイコンを記録して同期に届け、30 日たつまで探し直さない", async () => {
@@ -743,12 +745,14 @@ describe("サーバーにアイコンがないときの Discord のアイコン�
 
     // 届かなくても、前に見つけたアイコンは確かめずに残し、同期にも届かない
     t.state.site = "down";
+    const before = t.remote.siteCalls.length;
     const kept = await t.fetchAt(2 * MONTH);
     expect(kept).toMatchObject({
       iconUrl: SITE_ICON,
       iconCheckedAt: new Date(FIXED_NOW.getTime() + 2 * MONTH),
     });
-    expect(t.remote.calls.at(-1)?.url).not.toBe(SITE_ICON);
+    expect(t.remote.siteCalls.length).toBeGreaterThan(before);
+    expect(t.remote.siteCalls.slice(before)).not.toContain("/assets/favicon.png");
     expect((await t.sync(synced.cursor)).feeds).toEqual([]);
 
     // ページにアイコンがないときも、前に見つけたアイコンを残す
@@ -788,11 +792,75 @@ describe("サーバーにアイコンがないときの Discord のアイコン�
 
   it("サーバーの icon が読めないときは、アイコンを変えず、探しもしない", async () => {
     const t = await subscribed();
-    for (const malformed of [undefined, "../../evil", 123]) {
-      t.remote.setGuildIcon(malformed);
-      expect(await t.fetchAt(0)).toMatchObject({ iconUrl: null, iconCheckedAt: null });
+    const malformed = [undefined, "../../evil", 123];
+    for (const [i, value] of malformed.entries()) {
+      t.remote.setGuildIcon(value);
+      expect(await t.fetchAt(i * HOUR)).toMatchObject({
+        iconUrl: null,
+        iconCheckedAt: null,
+        lastFetchedAt: new Date(FIXED_NOW.getTime() + i * HOUR),
+      });
+    }
+    // サーバーのアイコンがあるときも、消さず、探しもしない
+    t.remote.setGuildIcon(icon("a"));
+    await t.fetchAt(DAY);
+    for (const [i, value] of malformed.entries()) {
+      t.remote.setGuildIcon(value);
+      expect(await t.fetchAt(DAY + (i + 1) * HOUR)).toMatchObject({
+        iconUrl: cdn(icon("a")),
+        lastFetchedAt: new Date(FIXED_NOW.getTime() + DAY + (i + 1) * HOUR),
+      });
     }
     expect(t.remote.siteCalls).toEqual([]);
+  });
+
+  it("探した結果を記録する前に落ちても、次の取得で探し直す。消えたサーバーのアイコンも残らない", async () => {
+    const failing = statementHook(
+      /update "feeds" set "icon_url"/i,
+      async () => {
+        throw new Error("落ちた");
+      },
+      { armed: false },
+    );
+    const t = await subscribed({ db: failing.db });
+    t.remote.setGuildIcon(icon("a"));
+    await t.fetchAt(0);
+
+    // サーバーのアイコンが消えた取得で、探した結果を記録する前に落ちる
+    t.remote.setGuildIcon(null);
+    failing.arm();
+    t.state.now = new Date(FIXED_NOW.getTime() + HOUR);
+    await runFetchFeed(t.platform, t.feedId).catch(() => undefined);
+    expect(failing.fired()).toBe(true);
+    expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
+      iconUrl: cdn(icon("a")),
+      iconCheckedAt: null,
+    });
+
+    // 次の取得で、30 日を待たずに探し直す
+    expect(await t.fetchAt(2 * HOUR)).toMatchObject({
+      iconUrl: SITE_ICON,
+      iconCheckedAt: new Date(FIXED_NOW.getTime() + 2 * HOUR),
+    });
+  });
+
+  it("探している間に連携を解除したら、外したフィードにアイコンを書かない", async () => {
+    const t = await subscribed();
+    t.remote.setSite(async (path) => {
+      if (path === "/") {
+        const res = await t.request(BASE, { method: "DELETE" });
+        expect(res.ok).toBe(true);
+        return new Response('<link rel="icon" href="/assets/favicon.png">');
+      }
+      if (path === "/assets/favicon.png") return new Response(PNG);
+      return new Response(null, { status: 404 });
+    });
+    await t.fetchAt(0);
+    expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
+      discordConnectionId: null,
+      iconUrl: null,
+      iconCheckedAt: null,
+    });
   });
 
   it("探している間に、後から始めた取得がサーバーのアイコンを記録したら、探した結果で上書きしない", async () => {
@@ -814,6 +882,31 @@ describe("サーバーにアイコンがないときの Discord のアイコン�
     expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
       iconUrl: cdn(icon("a")),
       iconCheckedAt: null,
+    });
+  });
+
+  it("消えたサーバーのアイコンが、探している間に同じ値で付き直しても、探した結果で上書きしない", async () => {
+    const t = await subscribed();
+    t.remote.setGuildIcon(icon("a"));
+    await t.fetchAt(0);
+    let interleaved = false;
+    t.remote.setSite(async (path) => {
+      if (!interleaved) {
+        interleaved = true;
+        // 同じアイコンが付き直し、後から始めた取得が同じ値を書き直す
+        t.remote.setGuildIcon(icon("a"));
+        await t.fetchAt(2 * HOUR);
+      }
+      if (path === "/") return new Response('<link rel="icon" href="/assets/favicon.png">');
+      if (path === "/assets/favicon.png") return new Response(PNG);
+      return new Response(null, { status: 404 });
+    });
+    t.remote.setGuildIcon(null);
+    await t.fetchAt(HOUR);
+    expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
+      iconUrl: cdn(icon("a")),
+      iconCheckedAt: null,
+      lastFetchedAt: new Date(FIXED_NOW.getTime() + 2 * HOUR),
     });
   });
 

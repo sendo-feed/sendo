@@ -196,7 +196,7 @@ export async function runFetchDiscord(
  *   （サーバーのアイコンが消えた）なら、30 日によらず探す
  * - 見つからない・届かない・途中で失敗した、のどれでも、前に discord.com で見つけたアイコンは確かめずに
  *   残し、それ以外は null にする。どれも探した結果として記録する（30 日たつまで探し直さない）
- * - 探している間に、後から始めた取得がアイコンを変えていたら、記録しない
+ * - 探している間に、後から始めた取得がアイコンを記録していたら、記録しない
  *
  * フィードの取得を記録したあとに呼ぶ。探すのに失敗しても、フィードの取得は失敗にしない
  */
@@ -241,7 +241,7 @@ async function refreshDiscordSiteIcon(
     connectionId: input.connectionId,
     expected: input.current,
     iconUrl,
-    now: input.now,
+    fetchedAt: input.now,
   });
 }
 
