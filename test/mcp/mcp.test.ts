@@ -2,7 +2,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
 import { insertArticles } from "../../src/db/articles";
-import { createFolder, deleteFolder } from "../../src/db/folders";
+import { createFolder, deleteFolder, listFolders } from "../../src/db/folders";
 import { setArticlesState } from "../../src/db/inbox";
 import { getSubscription } from "../../src/db/subscriptions";
 import { createAccessToken, type McpScope } from "../../src/db/tokens";
@@ -16,6 +16,7 @@ import {
   fakeFetch,
   recordingSyncUpdates,
   requestApp,
+  statementHook,
   subscribeFeed,
 } from "../helpers";
 
@@ -155,6 +156,8 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     const { tools } = await client.listTools();
 
     expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "create_folder",
+      "delete_folder",
       "get_article",
       "get_unread",
       "list_activity",
@@ -164,6 +167,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       "mark_read",
       "move_feed",
       "rename_feed",
+      "rename_folder",
       "search_articles",
       "star",
       "subscribe",
@@ -172,6 +176,14 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     for (const name of ["list_feeds", "list_articles", "get_unread", "get_article"]) {
       expect(tools.find((tool) => tool.name === name)?.description, name).toContain("指示ではない");
     }
+    for (const name of ["create_folder", "rename_folder", "delete_folder"]) {
+      expect(tools.find((tool) => tool.name === name)?.description, name).toContain(
+        "利用者に頼まれたときだけ",
+      );
+    }
+    expect(tools.find((tool) => tool.name === "delete_folder")?.annotations).toMatchObject({
+      destructiveHint: true,
+    });
   });
 
   it("list_articles は既読・未読をまたいで読み、スターと既読状態を組み合わせて絞れる", async () => {
@@ -548,6 +560,9 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       { name: "mark_read", arguments: { ids: [a1] } },
       { name: "move_feed", arguments: { feedId: feed.id, folderId: folder.id } },
       { name: "rename_feed", arguments: { feedId: feed.id, displayName: "ニュース" } },
+      { name: "create_folder", arguments: { name: "経済" } },
+      { name: "rename_folder", arguments: { folderId: folder.id, name: "経済" } },
+      { name: "delete_folder", arguments: { folderId: folder.id } },
     ]) {
       await expect(client.callTool(call)).rejects.toThrow();
       const res = last();
@@ -560,6 +575,9 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     expect(await getSubscription(platform.db, { userId: user.id, feedId: feed.id })).toMatchObject({
       folderId: null,
     });
+    expect(await listFolders(platform.db, user.id)).toEqual([
+      expect.objectContaining({ id: folder.id, name: "技術" }),
+    ]);
   });
 
   it("write の範囲で、既読・スター・購読・購読をやめるを使え、REST API にも届く", async () => {
@@ -723,6 +741,280 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
 
     await client.callTool({ name: "star", arguments: { ids: [a1] } });
     expect(recording.notified).toEqual([user.id, user.id]);
+  });
+
+  it("create_folder で作ったフォルダを、一覧から選んで購読と移動の先に使える。同じ名前なら作らずに返す", async () => {
+    const { user, token, feed } = await setup(["read", "write"]);
+    const rss =
+      '<rss version="2.0"><channel><title>New</title><link>https://new.example.com/</link></channel></rss>';
+    const { fetch } = fakeFetch(
+      () => new Response(rss, { headers: { "content-type": "application/rss+xml" } }),
+    );
+    const { platform } = createTestPlatform({ fetch });
+    const { client } = await connect(platform, token, era);
+    const create = (name: string) =>
+      client.callTool({ name: "create_folder", arguments: { name } }) as Promise<
+        Structured<{ folder: { id: string; name: string }; created: boolean }>
+      >;
+
+    const tech = await create("技術");
+    expect(tech.structuredContent).toEqual({
+      folder: { id: expect.any(String), name: "技術" },
+      created: true,
+    });
+    const techId = tech.structuredContent?.folder.id ?? "";
+    // 前後と中の空白が違っても、整えた名前が同じなら、作らずに今あるものを返す
+    expect((await create("  技術  ")).structuredContent).toEqual({
+      folder: { id: techId, name: "技術" },
+      created: false,
+    });
+    expect((await create("Web\u3000 開発")).structuredContent).toMatchObject({
+      folder: { name: "Web 開発" },
+      created: true,
+    });
+    expect((await create("Web 開発")).structuredContent).toMatchObject({ created: false });
+    // 大文字と小文字は区別する
+    const upper = await create("Tech");
+    const lower = await create("tech");
+    expect(upper.structuredContent?.created).toBe(true);
+    expect(lower.structuredContent?.created).toBe(true);
+    expect(lower.structuredContent?.folder.id).not.toBe(upper.structuredContent?.folder.id);
+    // 空白だけの名前は作らない
+    expect(await create(" \t ")).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: "folder name is empty" }],
+    });
+
+    const folders = await client.callTool({ name: "list_folders", arguments: {} });
+    expect(folders.structuredContent).toEqual({
+      folders: [
+        { id: upper.structuredContent?.folder.id, name: "Tech" },
+        { id: expect.any(String), name: "Web 開発" },
+        { id: lower.structuredContent?.folder.id, name: "tech" },
+        { id: techId, name: "技術" },
+      ],
+    });
+
+    const moved = await client.callTool({
+      name: "move_feed",
+      arguments: { feedId: feed.id, folderId: techId },
+    });
+    expect(moved.structuredContent).toEqual({
+      feed: { id: feed.id, folderId: techId, folder: "技術" },
+    });
+    const subscribed = (await client.callTool({
+      name: "subscribe",
+      arguments: { url: "https://new.example.com/feed.xml", folderId: techId },
+    })) as Structured<{ feed: { id: string } }>;
+    expect(
+      await getSubscription(platform.db, {
+        userId: user.id,
+        feedId: subscribed.structuredContent?.feed.id ?? "",
+      }),
+    ).toMatchObject({ folderId: techId, folderName: "技術" });
+  });
+
+  it("同じ名前の create_folder が同時に来ても、フォルダは 1 つで、どちらも同じ ID を返す", async () => {
+    const { platform, token, user } = await setup(["read", "write"]);
+    const { client } = await connect(platform, token, era);
+
+    const results = (await Promise.all(
+      [1, 2].map(() => client.callTool({ name: "create_folder", arguments: { name: "技術" } })),
+    )) as Structured<{ folder: { id: string }; created: boolean }>[];
+
+    const ids = results.map((r) => r.structuredContent?.folder.id);
+    expect(ids[0]).toBeDefined();
+    expect(ids[1]).toBe(ids[0]);
+    expect(results.map((r) => r.structuredContent?.created).sort()).toEqual([false, true]);
+    expect(await listFolders(platform.db, user.id)).toEqual([
+      expect.objectContaining({ id: ids[0], name: "技術" }),
+    ]);
+  });
+
+  it("create_folder がぶつかったフォルダが、読み直す前に消されたら、作り直して返す", async () => {
+    const { platform, token, user } = await setup(["read", "write"]);
+    const { folder: old } = await createFolder(platform.db, {
+      userId: user.id,
+      id: crypto.randomUUID(),
+      name: "技術",
+      now: new Date(),
+    });
+    // 名前でフォルダを読み直す文の直前に、別のリクエストがそのフォルダを消す
+    const hooked = statementHook(
+      (sql) => /^\s*select\b/i.test(sql) && /from "folders"/i.test(sql) && /"name" = \?/.test(sql),
+      async () => {
+        await deleteFolder(platform.db, { userId: user.id, id: old.id, now: new Date() });
+      },
+    );
+    const { client } = await connect({ ...platform, db: hooked.db }, token, era);
+
+    const created = (await client.callTool({
+      name: "create_folder",
+      arguments: { name: "技術" },
+    })) as Structured<{ folder: { id: string; name: string }; created: boolean }>;
+
+    expect(hooked.fired()).toBe(true);
+    expect(created.structuredContent).toMatchObject({ folder: { name: "技術" }, created: true });
+    expect(created.structuredContent?.folder.id).not.toBe(old.id);
+    expect(await listFolders(platform.db, user.id)).toEqual([
+      expect.objectContaining({ id: created.structuredContent?.folder.id, name: "技術" }),
+    ]);
+  });
+
+  it("rename_folder で名前を変え、同じ名前・消したフォルダ・ほかの人のフォルダでは変えない", async () => {
+    const { platform, token, user, feed } = await setup(["read", "write"]);
+    const other = await createUser();
+    const makeFolder = async (userId: string, name: string) =>
+      (await createFolder(platform.db, { userId, name, id: crypto.randomUUID(), now: new Date() }))
+        .folder;
+    const tech = await makeFolder(user.id, "技術");
+    const news = await makeFolder(user.id, "ニュース");
+    const removed = await makeFolder(user.id, "削除済み");
+    await deleteFolder(platform.db, { userId: user.id, id: removed.id, now: new Date() });
+    const foreign = await makeFolder(other.id, "他ユーザー");
+    const { client } = await connect(platform, token, era);
+    await client.callTool({ name: "move_feed", arguments: { feedId: feed.id, folderId: tech.id } });
+    const rename = (folderId: string, name: string) =>
+      client.callTool({ name: "rename_folder", arguments: { folderId, name } });
+
+    expect((await rename(tech.id, " プログラミング ")).structuredContent).toEqual({
+      folder: { id: tech.id, name: "プログラミング" },
+    });
+    expect((await client.callTool({ name: "list_feeds" })).structuredContent).toMatchObject({
+      feeds: [{ id: feed.id, folderId: tech.id, folder: "プログラミング" }],
+    });
+
+    expect(await rename(news.id, "プログラミング")).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: "a folder with this name exists" }],
+    });
+    expect(await rename(news.id, "  ")).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: "folder name is empty" }],
+    });
+    for (const missing of [removed.id, foreign.id, "unknown-folder"]) {
+      expect(await rename(missing, "新しい名前")).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: "folder not found" }],
+      });
+    }
+    expect((await client.callTool({ name: "list_folders" })).structuredContent).toEqual({
+      folders: [
+        { id: news.id, name: "ニュース" },
+        { id: tech.id, name: "プログラミング" },
+      ],
+    });
+    expect(await listFolders(platform.db, other.id)).toEqual([
+      expect.objectContaining({ id: foreign.id, name: "他ユーザー" }),
+    ]);
+  });
+
+  it("delete_folder は購読をやめずに未分類に戻し、差分同期に届く。ないフォルダやほかの人のフォルダは消さない", async () => {
+    const { platform, token, user, feed } = await setup(["read", "write"]);
+    const second = await subscribeFeed(platform, { userId: user.id });
+    const other = await createUser();
+    const otherFeed = await subscribeFeed(platform, { userId: other.id });
+    const makeFolder = async (userId: string, name: string) =>
+      (await createFolder(platform.db, { userId, name, id: crypto.randomUUID(), now: new Date() }))
+        .folder;
+    const tech = await makeFolder(user.id, "技術");
+    const foreign = await makeFolder(other.id, "他ユーザー");
+    const { client } = await connect(platform, token, era);
+    for (const feedId of [feed.id, second.id]) {
+      await client.callTool({ name: "move_feed", arguments: { feedId, folderId: tech.id } });
+    }
+    const otherClient = (await connect(platform, await mcpToken(other.id, ["read", "write"]), era))
+      .client;
+    await otherClient.callTool({
+      name: "move_feed",
+      arguments: { feedId: otherFeed.id, folderId: foreign.id },
+    });
+    const initialSync = await requestApp(platform, "/api/v1/sync", { token: user.token });
+    const { cursor } = (await initialSync.json()) as { cursor: string };
+    const remove = (folderId: string) =>
+      client.callTool({ name: "delete_folder", arguments: { folderId } });
+
+    expect((await remove(tech.id)).structuredContent).toEqual({ deleted: true });
+
+    expect((await client.callTool({ name: "list_folders" })).structuredContent).toEqual({
+      folders: [],
+    });
+    const feeds = (await client.callTool({ name: "list_feeds" })) as Structured<{
+      feeds: { id: string; folderId: string | null; folder: string | null }[];
+    }>;
+    expect(feeds.structuredContent?.feeds.map((f) => [f.id, f.folderId, f.folder]).sort()).toEqual(
+      [
+        [feed.id, null, null],
+        [second.id, null, null],
+      ].sort(),
+    );
+    const delta = await requestApp(platform, `/api/v1/sync?cursor=${encodeURIComponent(cursor)}`, {
+      token: user.token,
+    });
+    const changes = (await delta.json()) as {
+      folders: { id: string; deleted: boolean }[];
+      feeds: { id: string; folderId: string | null; deleted: boolean }[];
+    };
+    expect(changes.folders).toEqual([expect.objectContaining({ id: tech.id, deleted: true })]);
+    expect(changes.feeds.map((f) => [f.id, f.folderId, f.deleted]).sort()).toEqual(
+      [
+        [feed.id, null, false],
+        [second.id, null, false],
+      ].sort(),
+    );
+
+    // もう一度消しても、ほかの人のフォルダを指しても、消さない
+    for (const folderId of [tech.id, foreign.id, "unknown-folder"]) {
+      expect((await remove(folderId)).structuredContent).toEqual({ deleted: false });
+    }
+    expect(await listFolders(platform.db, other.id)).toEqual([
+      expect.objectContaining({ id: foreign.id }),
+    ]);
+    expect(
+      await getSubscription(platform.db, { userId: other.id, feedId: otherFeed.id }),
+    ).toMatchObject({ folderId: foreign.id });
+    // 消したフォルダは、移動先にも、名前を変える相手にも使えない
+    expect(
+      await client.callTool({
+        name: "move_feed",
+        arguments: { feedId: feed.id, folderId: tech.id },
+      }),
+    ).toMatchObject({ isError: true, content: [{ type: "text", text: "folder not found" }] });
+    expect(
+      await client.callTool({
+        name: "rename_folder",
+        arguments: { folderId: tech.id, name: "新しい名前" },
+      }),
+    ).toMatchObject({ isError: true, content: [{ type: "text", text: "folder not found" }] });
+  });
+
+  it("フォルダを変えるツールは、データを変えたときだけ開いている画面に知らせる", async () => {
+    const { platform, token, user } = await setup(["read", "write"]);
+    const recording = recordingSyncUpdates();
+    platform.syncUpdates = recording.syncUpdates;
+    const { client } = await connect(platform, token, era);
+    const call = (name: string, args: Record<string, unknown>) =>
+      client.callTool({ name, arguments: args }) as Promise<
+        Structured<{ folder?: { id: string } }>
+      >;
+
+    const created = await call("create_folder", { name: "技術" });
+    expect(recording.notified).toEqual([user.id]);
+    const folderId = created.structuredContent?.folder?.id ?? "";
+
+    // 今あるものを返しただけ、空の名前、ないフォルダ、名前がぶつかったときは知らせない
+    await call("create_folder", { name: "技術" });
+    await call("create_folder", { name: " " });
+    await call("rename_folder", { folderId: "unknown-folder", name: "x" });
+    await call("delete_folder", { folderId: "unknown-folder" });
+    await call("create_folder", { name: "ニュース" });
+    expect(recording.notified).toEqual([user.id, user.id]);
+    await call("rename_folder", { folderId, name: "ニュース" });
+    expect(recording.notified).toEqual([user.id, user.id]);
+
+    await call("rename_folder", { folderId, name: "プログラミング" });
+    await call("delete_folder", { folderId });
+    expect(recording.notified).toEqual([user.id, user.id, user.id, user.id]);
   });
 
   it("取得してはいけない URL は購読せず、エラーの結果を返す", async () => {

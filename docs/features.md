@@ -86,6 +86,7 @@ Google Reader API 互換は実装と自動テストを完了している。日�
 | `list_feeds` ／ `subscribe` ／ `unsubscribe` | 購読管理 |
 | `rename_feed` | 購読ごとの表示名を設定し、null で配信元の名前に戻す |
 | `list_folders` ／ `move_feed` | 空のフォルダも含めて名前と ID を調べ、購読済みのフィードを別のフォルダか未分類へ移す |
+| `create_folder` ／ `rename_folder` ／ `delete_folder` | フォルダを作る（同じ名前があればそれを返す）、名前を変える、消す（中のフィードは購読したまま未分類に戻す） |
 | `list_articles` | 既読・未読を含む記事一覧。既読状態、スター、フィード、フォルダで絞り込み、公開日時か既読にした日時で期間の指定と並び替えができる |
 | `get_unread` | 未読の取得。フィード、フォルダ、件数、公開日時の期間（`since` 以上、`until` 未満）で絞り込む。日時はタイムゾーン付き ISO 8601。ページ送りでは期間も同じ値を渡す |
 | `list_activity` | reader で記事を開いた履歴を、期間・操作元・種類で絞って読む |
