@@ -62,7 +62,7 @@ const languageDetection = {
   pipelineRevision: 1,
   async detect(html: string): Promise<LanguageDetectionResult> {
     const base = { score: 1, margin: 1, inputHash: "a".repeat(64) };
-    if (html.includes("Codemods")) return { ...base, language: "en", status: "detected" };
+    if (/Codemods|GnuPG/.test(html)) return { ...base, language: "en", status: "detected" };
     if (/[ぁ-ん]/.test(html)) return { ...base, language: "ja", status: "detected" };
     return { ...base, language: "und", status: "insufficient" };
   },
@@ -282,6 +282,8 @@ interface Setup {
   claude: { body: string; headers: Headers }[];
   replies: Reply[];
   feedId: string;
+  /** options.feeds のフィードの ID（パス → ID） */
+  feedIds: Record<string, string>;
   /** WebSocket で知らせた利用者 */
   notified: string[];
 }
@@ -301,6 +303,8 @@ async function setup(
     models?: () => Response;
     /** 英語の項目をこれだけ足す（guid は en-0、en-1…） */
     extraEnglish?: number;
+    /** ほかのフィード（パス → RSS）。購読だけして、取得は deliver で行う */
+    feeds?: Record<string, () => string>;
   } = {},
 ): Promise<Setup> {
   const n = ++setups;
@@ -392,6 +396,8 @@ async function setup(
     if (url.pathname === "/feed.xml") {
       return new Response(rss(n, options.body, options.extraEnglish));
     }
+    const other = options.feeds?.[url.pathname];
+    if (url.hostname === FEED_HOST && other !== undefined) return new Response(other());
     return new Response("not found", { status: 404 });
   });
   const recording = recordingSyncUpdates();
@@ -416,6 +422,10 @@ async function setup(
     }),
   };
   const feed = await subscribeFeed(platform, { url: `https://${FEED_HOST}/feed.xml` });
+  const feedIds: Record<string, string> = {};
+  for (const path of Object.keys(options.feeds ?? {})) {
+    feedIds[path] = (await subscribeFeed(platform, { url: `https://${FEED_HOST}${path}` })).id;
+  }
   for (const userId of options.subscribers ?? []) {
     await subscribeFeed(platform, { feedId: feed.id, url: feed.url, userId });
   }
@@ -442,6 +452,7 @@ async function setup(
     claude,
     replies,
     feedId: feed.id,
+    feedIds,
     notified: recording.notified,
   };
 }
@@ -2991,6 +3002,263 @@ describe("Opus で訳し直す（docs/decisions/translation.md の 6、9、13）
       title: OPUS_TITLE,
       content: null,
       retranslated: true,
+    });
+  });
+});
+
+describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16）", () => {
+  /** 実例：Hacker News: Best と Lobsters が、同じ GnuPG の勧告を違うタイトル・要約で配る */
+  const GPGME_URL = "https://lists.gnupg.org/pipermail/gnupg-announce/2026q4/000517.html";
+  const GPGME_PAGE =
+    "<p>GnuPG Security Advisory: a bug in GPGME allows a crafted message to crash the client.</p><p>Update GPGME to version 2.0.1.</p>";
+  const item = (guid: string, title: string, link: string, description?: string) =>
+    `<item><title>${title}</title><link>${link}</link><guid>${guid}</guid>${
+      description === undefined ? "" : `<description>${description}</description>`
+    }</item>`;
+  const channel = (title: string, items: string) =>
+    `<?xml version="1.0"?><rss version="2.0"><channel><title>${title}</title><link>https://${FEED_HOST}/</link>${items}</channel></rss>`;
+  const hn = () =>
+    channel(
+      "Hacker News: Best",
+      item(
+        "hn-1",
+        "GnuPG Security Advisory for GPGME",
+        GPGME_URL,
+        `Article URL: ${GPGME_URL} Comments URL: https://news.ycombinator.com/item?id=1 Points: 262 # Comments: 113`,
+      ),
+    );
+  const lobsters = () =>
+    channel(
+      "Lobsters",
+      item(
+        "lobsters-1",
+        "GnuPG Security Advisory for GPGME (T8557,CVE-2026-129975)",
+        GPGME_URL,
+        "Comments",
+      ),
+    );
+  /** 要約のない、URL の表記の違う同じ元記事 */
+  const mirror = () =>
+    channel(
+      "Mirror",
+      item(
+        "mirror-1",
+        "GnuPG Security Advisory for GPGME",
+        "http://Lists.GnuPG.org/pipermail/gnupg-announce/2026q4/000517.html/?utm_source=feed#top",
+      ),
+    );
+  /** サイトの最初のページを指す記事（使い回さない） */
+  const topPage = () =>
+    channel("Top", item("top-1", "GnuPG Security Advisory for GPGME", "https://lists.gnupg.org/"));
+
+  const feeds = {
+    "/hn.xml": hn,
+    "/lobsters.xml": lobsters,
+    "/mirror.xml": mirror,
+    "/top.xml": topPage,
+  };
+  /** 訳したことの分かる訳し方 */
+  const mark: Transform = (segment) => `訳:${segment.text}`;
+
+  /** フィードを取得し、ページの本文を抜けたことにして、言語を判定する。記事の ID を返す */
+  async function deliver(s: Setup, path: string, page: string | null = GPGME_PAGE) {
+    const feedId = s.feedIds[path];
+    if (feedId === undefined) throw new Error(`no feed ${path}`);
+    await runFetchFeed(s.platform, feedId);
+    for (const job of s.enqueued.splice(0)) {
+      if (job.type === "extract-page") await runJob(s.platform, job);
+    }
+    const row = await s.platform.db
+      .select({ id: articles.id })
+      .from(articles)
+      .where(eq(articles.feedId, feedId))
+      .get();
+    if (!row) throw new Error(`no article in ${path}`);
+    // ページの本文が抜けた記事（抜き取りは Rust の処理で、テストの偽のページでは作りにくい）
+    if (page !== null) {
+      await recordExtractedPageContent(s.platform.db, {
+        articleId: row.id,
+        html: page,
+        now: new Date(),
+      });
+    }
+    await runJob(s.platform, { type: "detect-article-languages" });
+    for (let job = s.enqueued.find((j) => j.type === "detect-article-languages"); job; ) {
+      s.enqueued.splice(s.enqueued.indexOf(job), 1);
+      await runJob(s.platform, job);
+      job = s.enqueued.find((j) => j.type === "detect-article-languages");
+    }
+    s.enqueued.length = 0;
+    return row.id;
+  }
+
+  /** 送ったバッチの、記事の断片の ID */
+  const sentSegments = (batch: FakeBatch | undefined, id: string) => {
+    const request = batch?.requests.find((r) => r.custom_id === id);
+    const content = (request?.params.messages as { content: string }[] | undefined)?.[0]?.content;
+    return (JSON.parse(content ?? "{}") as { segments?: { id: string }[] }).segments?.map(
+      (segment) => segment.id,
+    );
+  };
+
+  /** 先の記事（HN）を、バッチで訳し終える */
+  async function translatedFirst(s: Setup) {
+    const first = await deliver(s, "/hn.xml");
+    await maintain(s.platform);
+    const batch = s.batches.list.find((b) => b.requests.some((r) => r.custom_id === first));
+    if (!batch) throw new Error("the first article was not sent");
+    batch.ended = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, first)).toMatchObject({ status: "translated" });
+    return first;
+  }
+
+  async function translationApi(s: Setup, id: string) {
+    const response = await requestApp(s.platform, `/api/v1/articles/${id}/translation`);
+    expect(response.status).toBe(200);
+    return (await response.json()) as { title: string | null; content: string | null };
+  }
+
+  it("訳し終えた同じ元記事があると、後の記事のバッチには要約だけを送り、タイトルと本文を写す", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const firstRow = await translationOf(s.platform, first);
+    expect(firstRow?.urlKey).toBe(GPGME_URL);
+    expect(firstRow?.bodyHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(firstRow?.content).toContain("訳:");
+
+    const second = await deliver(s, "/lobsters.xml");
+    const batches = s.batches.list.length;
+    await maintain(s.platform);
+    const batch = s.batches.list[batches];
+    expect(sentSegments(batch, second)).toEqual(["summary"]);
+    if (batch) batch.ended = true;
+    s.notified.length = 0;
+    await maintain(s.platform);
+
+    const secondRow = await translationOf(s.platform, second);
+    expect(secondRow).toMatchObject({
+      status: "translated",
+      title: firstRow?.title,
+      summary: "訳:Comments",
+      content: firstRow?.content,
+      contentSource: "page",
+      bodyHash: firstRow?.bodyHash,
+      urlKey: GPGME_URL,
+      retranslated: false,
+    });
+    expect((await translationApi(s, second)).content).toBe(
+      (await translationApi(s, first)).content,
+    );
+    // 写した記事も、受信箱に持つ人に知らせる
+    expect(s.notified).toContain(TEST_USER.id);
+
+    // 先の記事が消えても、残った記事の訳文は読める
+    await s.platform.db.delete(articles).where(eq(articles.id, first)).run();
+    expect((await translationApi(s, second)).content).toBe(secondRow?.content);
+  });
+
+  it("すべて写せる記事は、バッチに送らずに translated になる（URL の表記が違っても同じ元記事）。空のバッチを作らない", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const firstRow = await translationOf(s.platform, first);
+    const third = await deliver(s, "/mirror.xml");
+    const batches = s.batches.list.length;
+    s.notified.length = 0;
+    await maintain(s.platform);
+    expect(s.batches.list).toHaveLength(batches);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "translated",
+      title: firstRow?.title,
+      summary: null,
+      content: firstRow?.content,
+      model: firstRow?.model,
+      urlKey: GPGME_URL,
+      batchKey: null,
+      batchCopies: 0,
+    });
+    expect(s.notified).toContain(TEST_USER.id);
+  });
+
+  it("サイトの最初のページを指す記事は使い回さず、すべて送る", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    await translatedFirst(s);
+    const top = await deliver(s, "/top.xml");
+    const batches = s.batches.list.length;
+    await maintain(s.platform);
+    expect(sentSegments(s.batches.list[batches], top)).toEqual(
+      expect.arrayContaining(["title", "b1"]),
+    );
+    expect((await translationOf(s.platform, top))?.urlKey).toBeNull();
+  });
+
+  it("結果を書くときに写す元の記事が消えていたら、タイトルは原文、本文は置かずに書く", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const second = await deliver(s, "/lobsters.xml");
+    const batches = s.batches.list.length;
+    await maintain(s.platform);
+    await s.platform.db.delete(articles).where(eq(articles.id, first)).run();
+    const batch = s.batches.list[batches];
+    if (batch) batch.ended = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, second)).toMatchObject({
+      status: "translated",
+      title: "GnuPG Security Advisory for GPGME (T8557,CVE-2026-129975)",
+      summary: "訳:Comments",
+      content: null,
+      contentSource: null,
+    });
+  });
+
+  it("すべて写せる記事で、写す文の直前に写す元が消えたら、書かずに待ちに戻す", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const third = await deliver(s, "/mirror.xml");
+    const hook = statementHook(
+      /update article_translations set status = 'translated'/,
+      async () => {
+        await testDb.exec(`DELETE FROM articles WHERE id = '${first}'`);
+      },
+    );
+    await maintain({ ...s.platform, db: hook.db });
+    expect(hook.fired()).toBe(true);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "queued",
+      title: null,
+      batchKey: null,
+    });
+    // 次の定期実行で、写す元がないのですべて送る
+    const batches = s.batches.list.length;
+    await maintain(s.platform);
+    expect(sentSegments(s.batches.list[batches], third)).toEqual(
+      expect.arrayContaining(["title", "b1"]),
+    );
+  });
+
+  it("その場の翻訳で訳した記事も、指紋を書き、あとの記事の写す元になる", async () => {
+    const s = await setup({ feeds });
+    const first = await deliver(s, "/hn.xml");
+    await maintain(s.platform);
+    // バッチを待たずに、その場で訳す（バッチの結果は捨てられる）
+    s.enqueued.length = 0;
+    expect((await request(s, first)).response.status).toBe(202);
+    s.replies.push({ transform: mark });
+    await runQueuedTranslation(s);
+    const firstRow = await translationOf(s.platform, first);
+    expect(firstRow?.bodyHash).toMatch(/^[0-9a-f]{64}$/);
+
+    const third = await deliver(s, "/mirror.xml");
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "translated",
+      title: firstRow?.title,
+      content: firstRow?.content,
     });
   });
 });

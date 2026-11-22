@@ -501,6 +501,21 @@ export const articleTranslations = sqliteTable(
      * 付いた記事は訳し直さない。差分同期で配る（同じく 14）
      */
     retranslated: integer("retranslated", { mode: "boolean" }).notNull().default(false),
+    /**
+     * 同じ元記事を見分ける、正規化した記事の URL（docs/decisions/translation.md の 16）。行を作る
+     * ときに書く。使い回さない記事（URL がない、サイトの最初のページ、16 より前に作った行）は null
+     */
+    urlKey: text("url_key"),
+    /**
+     * 訳した（写した）ときに送った本文の指紋（サニタイズした HTML の SHA-256 の 16 進）。本文を
+     * 送らなかったら "none"。16 より前に訳した行と、まだ訳していない行は null（同じく 16）
+     */
+    bodyHash: text("body_hash"),
+    /**
+     * バッチで送らずに、結果を書くときに同じ元記事から写す部分（1 タイトル、2 要約、4 本文の和。
+     * 同じく 16）。送る印と一緒に付け、一緒に外す
+     */
+    batchCopies: integer("batch_copies").notNull().default(0),
   },
   (t) => [
     index("article_translations_translating_idx")
@@ -513,6 +528,10 @@ export const articleTranslations = sqliteTable(
       .where(sql`status = 'queued' and batch_key is null`),
     // バッチの結果を書く行を、バッチの ID で引く
     index("article_translations_batch_id_idx").on(t.batchId).where(sql`batch_id is not null`),
+    // 同じ元記事の行を引く（写す元を選ぶ、バッチで待つ）
+    index("article_translations_url_key_idx")
+      .on(t.urlKey, t.status)
+      .where(sql`url_key is not null`),
   ],
 );
 
