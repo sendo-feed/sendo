@@ -7,14 +7,29 @@ import {
   countTranslateFailure,
   decideTranslations,
   failTranslating,
+  finishBatchTranslation,
   finishTranslating,
   getTranslation,
   listArticleHolders,
+  listBatchesToCheck,
+  listBatchRows,
+  markForBatch,
+  releaseStaleBatchMarks,
   revertStaleTranslating,
+  setBatchBody,
+  setBatchId,
+  skipEmptyBatchArticles,
+  unmarkBatch,
+  unmarkCheckedBatch,
 } from "../db/translations";
 import { sanitizeHtml } from "../lib/sanitize-html";
 import { notifySync } from "../lib/sync-notify";
-import { type Platform, type TranslationSegment, TranslatorError } from "../platform";
+import {
+  type Platform,
+  type TranslationSegment,
+  type Translator,
+  TranslatorError,
+} from "../platform";
 import { type BodySegments, splitBody } from "../translation/segments";
 
 /** 本文から送る文の合計の上限（Unicode の文字。docs/decisions/translation.md の 3） */
@@ -45,22 +60,234 @@ export async function notifyTranslationChanged(
   await notifySync(platform.syncUpdates.notify, userIds);
 }
 
+type MaintainPlatform = Pick<
+  Platform,
+  "db" | "translator" | "syncUpdates" | "retentionConfig" | "content"
+>;
+
 /**
- * 訳文の行の手入れ（docs/decisions/translation.md の 1、7）。5 分おきの定期実行が積む。
- * 止まった翻訳を戻すのは、API キーがなくても行う。訳すかどうかを決めるのは、キーがあるときだけ
+ * 訳文の行の手入れ（docs/decisions/translation.md の 1、4、7）。5 分おきの定期実行が積む。
+ * 止まった翻訳を戻すのは、API キーがなくても行う。訳すかどうかを決めるのと、バッチで訳すのは、
+ * キーがあるときだけ
  */
 export async function maintainTranslations(
-  platform: Pick<Platform, "db" | "translator" | "syncUpdates">,
-): Promise<{ reverted: number; decided: number }> {
+  platform: MaintainPlatform,
+): Promise<{ reverted: number; decided: number; written: number; sent: number }> {
   // 戻したことは、決める前に知らせる（決めるところで落ちても、戻した記事の知らせを欠かない）
   const reverted = await revertStaleTranslating(platform.db);
   await notifyTranslationChanged(platform, reverted);
-  const decided = platform.translator === undefined ? [] : await decideTranslations(platform.db);
+  const { translator } = platform;
+  if (translator === undefined) {
+    return { reverted: reverted.length, decided: 0, written: 0, sent: 0 };
+  }
+  const decided = await decideTranslations(platform.db);
   await notifyTranslationChanged(
     platform,
     decided.filter((row) => row.delivered).map((row) => row.articleId),
   );
-  return { reverted: reverted.length, decided: decided.length };
+  // 結果を先に書く（送るところで落ちても、返った訳文を書き損ねない）
+  const written = await checkBatches(platform, translator);
+  const sent = await sendBatch(platform, translator);
+  return { reverted: reverted.length, decided: decided.length, written, sent };
+}
+
+/** 訳す記事のタイトル・要約と、本文の置き場の名前 */
+function readArticle(platform: Pick<Platform, "db">, articleId: string) {
+  return platform.db
+    .select({ title: articles.title, summary: articles.summary, contentKey: articles.contentKey })
+    .from(articles)
+    .where(eq(articles.id, articleId))
+    .get();
+}
+
+/**
+ * queued の記事を、1 つのバッチにして送る（docs/decisions/translation.md の 4）。1 時間たっても
+ * バッチの ID がない印は、先に外して待ちに戻す。容量が足りなければ送らない。送れなければ印を残し、
+ * 1 時間たったら待ちに戻る（作れたかどうか分からないときに、2 回送らないため）
+ *
+ * @returns 送った記事の数
+ */
+async function sendBatch(platform: MaintainPlatform, translator: Translator): Promise<number> {
+  const { db } = platform;
+  await releaseStaleBatchMarks(db);
+  const key = crypto.randomUUID();
+  const ids = await markForBatch(db, key);
+  if (ids.length === 0) return 0;
+  const requests: { id: string; segments: TranslationSegment[] }[] = [];
+  const empty: string[] = [];
+  let bodyBytes = 0;
+  for (const id of ids) {
+    const article = await readArticle(platform, id);
+    const body =
+      article === undefined ? null : await bodyToTranslate(platform, id, article.contentKey);
+    const segments = [
+      ...(article === undefined ? [] : segmentsOf(article)),
+      ...(body?.segments.segments ?? []),
+    ];
+    if (segments.length === 0) {
+      empty.push(id);
+      continue;
+    }
+    if (body !== null) {
+      // 結果を組み立てるときに、同じ本文で分け直し、送った断片と同じかを照らす
+      await setBatchBody(db, id, key, {
+        source: body.source,
+        hash: await segmentsHash(body.segments.segments),
+      });
+      bodyBytes += new TextEncoder().encode(body.html).length;
+    }
+    requests.push({ id, segments });
+  }
+  // 訳すものがない記事は、訳せないものとして待ちから外す
+  const skipped = await skipEmptyBatchArticles(db, key, empty);
+  await notifyTranslationChanged(platform, skipped);
+  if (requests.length === 0) return 0;
+  const all = requests.flatMap((request) => request.segments);
+  if (!(await hasRoomForTranslation(platform, all, bodyBytes))) {
+    await unmarkBatch(db, key);
+    return 0;
+  }
+  let batchId: string;
+  try {
+    batchId = await translator.createBatch(requests);
+  } catch (error) {
+    console.warn("could not send a translation batch", {
+      articles: requests.length,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return 0;
+  }
+  await setBatchId(db, key, batchId);
+  return requests.length;
+}
+
+/**
+ * 送ったバッチを、古い順に見にいき、終わっていれば結果を書く（docs/decisions/translation.md の 4）。
+ * 見にいけなければ印を残す。訳せなかった記事と、結果のない記事は、印を外して待ちに戻す。容量が
+ * 足りずに書けなかった記事は、印を残して次の定期実行で書き直す
+ *
+ * @returns 訳文を書いた記事の数
+ */
+async function checkBatches(platform: MaintainPlatform, translator: Translator): Promise<number> {
+  const { db } = platform;
+  // 書く文の容量のトリガーが、今の上限で確かめるようにする（docs/decisions/translation.md の 12）
+  await configureStorage(db, platform.retentionConfig.maxBytes);
+  let count = 0;
+  for (const batchId of await listBatchesToCheck(db)) {
+    try {
+      count += await checkBatch(platform, translator, batchId);
+    } catch (error) {
+      // 1 つのバッチで落ちても、ほかのバッチと、送るほうを止めない（印は残り、次に見直す）
+      console.warn("could not write a translation batch", {
+        batchId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return count;
+}
+
+/** 1 つのバッチを見にいき、終わっていれば結果を書く。訳文を書いた記事の数を返す */
+async function checkBatch(
+  platform: MaintainPlatform,
+  translator: Translator,
+  batchId: string,
+): Promise<number> {
+  const { db } = platform;
+  let status: Awaited<ReturnType<Translator["checkBatch"]>>;
+  try {
+    status = await translator.checkBatch(batchId);
+  } catch (error) {
+    console.warn("could not check a translation batch", {
+      batchId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return 0;
+  }
+  if (status.status === "in_progress") return 0;
+  if (status.status === "gone") {
+    await unmarkCheckedBatch(db, batchId);
+    return 0;
+  }
+  const rows = new Map((await listBatchRows(db, batchId)).map((row) => [row.articleId, row]));
+  const written: string[] = [];
+  const keep: string[] = [];
+  for (const result of status.results) {
+    const row = rows.get(result.id);
+    // 知らない記事と、重なった結果は使わない
+    if (row === undefined || result.status !== "translated") continue;
+    rows.delete(result.id);
+    try {
+      const outcome = await writeBatchResult(platform, batchId, row, result);
+      if (outcome === "written") written.push(result.id);
+      else if (outcome === "keep") keep.push(result.id);
+    } catch (error) {
+      // この記事は印を残して次の定期実行で書き直し、ほかの記事は書き続ける
+      keep.push(result.id);
+      console.warn("could not write a translation batch result", {
+        batchId,
+        articleId: result.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  await unmarkCheckedBatch(db, batchId, keep);
+  await notifyTranslationChanged(platform, written);
+  return written.length;
+}
+
+/**
+ * バッチの 1 件の訳を書く。written は書いた、keep は容量が足りずに書けなかった（印を残して次に書き直す）、
+ * requeue は書かずに待ちに戻す（記事が消えた、送ったときと分け方が違う。ほかの書き込みで訳文が入った）
+ */
+async function writeBatchResult(
+  platform: MaintainPlatform,
+  batchId: string,
+  row: { contentSource: "feed" | "page" | null; bodyHash: string | null },
+  result: { id: string; segments: TranslationSegment[]; model: string },
+): Promise<"written" | "keep" | "requeue"> {
+  const { db } = platform;
+  const article = await readArticle(platform, result.id);
+  if (article === undefined) return "requeue";
+  const body =
+    row.contentSource === null
+      ? null
+      : await bodyToTranslate(platform, result.id, article.contentKey, row.contentSource);
+  // 分け方が送ったときと違えば（その間のデプロイ）、訳がずれるので書かずに待ちに戻し、今の分け方で
+  // 送り直す
+  if (body !== null && (await segmentsHash(body.segments.segments)) !== row.bodyHash) {
+    console.warn("the article body was split differently from the sent batch", {
+      articleId: result.id,
+    });
+    return "requeue";
+  }
+  // 送った断片の訳だけを使う。返ってこなかった断片は、原文のまま残す（決定の 10）
+  const sent = new Set([
+    ...segmentsOf(article).map((segment) => segment.id),
+    ...(body?.segments.segments.map((segment) => segment.id) ?? []),
+  ]);
+  const translated = new Map(
+    result.segments.filter((s) => sent.has(s.id)).map((s) => [s.id, s.text]),
+  );
+  const ok = await finishBatchTranslation(db, {
+    articleId: result.id,
+    batchId,
+    title: article.title == null ? null : (translated.get("title") ?? article.title),
+    summary: article.summary == null ? null : (translated.get("summary") ?? article.summary),
+    content: body === null ? null : assembleBody(body, translated),
+    model: result.model,
+  });
+  if (ok) return "written";
+  // 行がまだそのバッチの印を持ち訳文がないなら、容量のトリガーが書かなかった。次に書き直す
+  const current = await getTranslation(db, result.id);
+  return current?.batchId === batchId && current.translatedAt === null ? "keep" : "requeue";
+}
+
+/** 送る断片の指紋（SHA-256 の 16 進） */
+async function segmentsHash(segments: readonly TranslationSegment[]): Promise<string> {
+  const data = new TextEncoder().encode(JSON.stringify(segments.map((s) => [s.id, s.text])));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /**
@@ -97,17 +324,19 @@ interface Body {
 
 /**
  * 訳す本文を読み、断片に分ける。本文がない記事と、送る文の合計が上限を超える記事は null
- * （タイトルと要約だけを訳す）
+ * （タイトルと要約だけを訳す）。source を渡すと、その出どころだけを読む（バッチの結果を、送ったときと
+ * 同じ本文で組み立てる）
  */
 async function bodyToTranslate(
   platform: Pick<Platform, "db" | "content">,
   articleId: string,
   contentKey: string | null,
+  source?: "feed" | "page",
 ): Promise<Body | null> {
-  const page = await getPageContent(platform.db, articleId);
+  const page = source === "feed" ? undefined : await getPageContent(platform.db, articleId);
   let stored: { source: "feed" | "page"; html: string } | null = null;
   if (page?.html != null) stored = { source: "page", html: page.html };
-  else if (contentKey !== null) {
+  else if (contentKey !== null && source !== "page") {
     const feed = await platform.content.get(contentKey);
     if (feed !== null) stored = { source: "feed", html: feed };
   }
@@ -184,11 +413,7 @@ async function translateArticle(
     // キーを外した
     return failTranslating(db, articleId, startedAt);
   }
-  const article = await db
-    .select({ title: articles.title, summary: articles.summary, contentKey: articles.contentKey })
-    .from(articles)
-    .where(eq(articles.id, articleId))
-    .get();
+  const article = await readArticle(platform, articleId);
   const body =
     article === undefined ? null : await bodyToTranslate(platform, articleId, article.contentKey);
   const segments = [

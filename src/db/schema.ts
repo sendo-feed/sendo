@@ -476,11 +476,33 @@ export const articleTranslations = sqliteTable(
     /** その場の翻訳で、やり直せる失敗が続いた回数。始めるたびに 0 に戻す */
     attempts: integer("attempts").notNull().default(0),
     decidedAt: integer("decided_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * バッチで送る印（docs/decisions/translation.md の 4）。送る行を取る文で、そのバッチの印と時刻を
+     * 付ける。訳文を書いたとき、待ちに戻すときに外す。差分同期では配らない
+     */
+    batchKey: text("batch_key"),
+    batchMarkedAt: integer("batch_marked_at", { mode: "timestamp_ms" }),
+    /** 送れたバッチの ID。印を付けてから送れるまでは null */
+    batchId: text("batch_id"),
+    /** バッチで送った本文の出どころ（結果を組み立てるときに、同じ本文で分け直す）。本文を送らなければ null */
+    batchContentSource: text("batch_content_source", { enum: ["feed", "page"] }),
+    /**
+     * バッチで送った断片の指紋（SHA-256）。結果を組み立てるときに分け直した断片と照らし、合わなければ
+     * 本文を置かない（送ってから返るまでに、分け方が変わったとき）
+     */
+    batchBodyHash: text("batch_body_hash"),
   },
   (t) => [
     index("article_translations_translating_idx")
       .on(t.startedAt)
       .where(sql`status = 'translating'`),
+    index("article_translations_batch_idx").on(t.batchMarkedAt).where(sql`batch_key is not null`),
+    // バッチで送る行を、決めた順に取る
+    index("article_translations_batch_queue_idx")
+      .on(t.decidedAt, t.articleId)
+      .where(sql`status = 'queued' and batch_key is null`),
+    // バッチの結果を書く行を、バッチの ID で引く
+    index("article_translations_batch_id_idx").on(t.batchId).where(sql`batch_id is not null`),
   ],
 );
 

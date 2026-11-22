@@ -22,6 +22,19 @@ export const STALE_TRANSLATING_MS = 60 * 60 * 1000;
 /** その場の翻訳で、やり直せる失敗を受け入れる回数（同じく 8、docs/decisions/jobs.md の 5） */
 export const MAX_TRANSLATE_ATTEMPTS = 3;
 
+/** 1 つのバッチで送る記事の数（同じく 4） */
+export const BATCH_SIZE = 100;
+
+/** 1 回の定期実行で見にいくバッチの数（同じく 4） */
+export const BATCH_CHECK_LIMIT = 10;
+
+/** 印を付けてからバッチの ID がないまま、印を外すまでの長さ（同じく 4） */
+export const BATCH_MARK_TTL_MS = 60 * 60 * 1000;
+
+/** バッチの印を外す（待ちに戻す、訳文を書いた） */
+const CLEAR_BATCH = sql`batch_key = null, batch_marked_at = null, batch_id = null,
+  batch_content_source = null, batch_body_hash = null`;
+
 const languageFrom = (source: string) => sql`(select l.language from article_languages l
   where l.article_id = a.id and l.source = ${source} and l.status in ('detected', 'provisional'))`;
 
@@ -146,10 +159,11 @@ export async function finishTranslating(
 ): Promise<boolean> {
   const row = await getRow<{ articleId: string }>(
     db,
+    // バッチの印も同じ文で外す（あとで返ったバッチの結果を捨てる。docs/decisions/translation.md の 5）
     sql`update article_translations set status = 'translated', title = ${input.title},
         summary = ${input.summary}, content = ${input.content?.html ?? null},
         content_source = ${input.content?.source ?? null}, model = ${input.model},
-        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0
+        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH}
       where ${stillTranslating(input.articleId, input.startedAt)}
       returning article_id as articleId`,
   );
@@ -217,6 +231,179 @@ export async function revertStaleTranslating(db: Database): Promise<string[]> {
       status = case when translated_at is null then 'untranslated' else 'translated' end,
       started_at = null, attempts = 0
     where status = 'translating' and started_at < ${DB_NOW_MS} - ${STALE_TRANSLATING_MS}
+    returning article_id as articleId
+  `);
+  return rows.map((row) => row.articleId);
+}
+
+// --- バッチ（docs/decisions/translation.md の 4） ---
+
+/**
+ * 印を付けてから 1 時間たってもバッチの ID がない行の印を外し、待ちに戻す（バッチを作る途中で
+ * 落ちた、作れたか分からない）
+ */
+export async function releaseStaleBatchMarks(db: Database): Promise<number> {
+  const rows = await db.all<{ articleId: string }>(sql`
+    update article_translations set ${CLEAR_BATCH}
+    where batch_key is not null and batch_id is null
+      and batch_marked_at <= ${DB_NOW_MS} - ${BATCH_MARK_TTL_MS}
+    returning article_id as articleId
+  `);
+  return rows.length;
+}
+
+/**
+ * queued で印のない行を limit 件まで、同じ文で印（key と時刻）を付けて取る。重なった定期実行は、
+ * 同じ行に印を付けない
+ *
+ * @returns 印を付けた記事
+ */
+export async function markForBatch(
+  db: Database,
+  key: string,
+  limit = BATCH_SIZE,
+): Promise<string[]> {
+  const rows = await db.all<{ articleId: string }>(sql`
+    update article_translations set batch_key = ${key}, batch_marked_at = ${DB_NOW_MS}
+    where article_id in (
+      select article_id from article_translations
+      where status = 'queued' and batch_key is null
+      order by decided_at, article_id
+      limit ${limit}
+    ) and status = 'queued' and batch_key is null
+    returning article_id as articleId
+  `);
+  return rows.map((row) => row.articleId);
+}
+
+/** バッチで送る本文の出どころと、送る断片の指紋を書き留める（印が同じ行だけ） */
+export async function setBatchBody(
+  db: Database,
+  articleId: string,
+  key: string,
+  body: { source: "feed" | "page"; hash: string },
+): Promise<void> {
+  await db.run(sql`update article_translations
+    set batch_content_source = ${body.source}, batch_body_hash = ${body.hash}
+    where article_id = ${articleId} and batch_key = ${key}`);
+}
+
+/** 送れたバッチの ID を、印が同じ行に書き留める */
+export async function setBatchId(db: Database, key: string, batchId: string): Promise<void> {
+  await db.run(sql`update article_translations set batch_id = ${batchId}
+    where batch_key = ${key} and batch_id is null`);
+}
+
+/** 送らなかった印を外し、待ちに戻す（バッチの ID がない、印が同じ行だけ） */
+export async function unmarkBatch(
+  db: Database,
+  key: string,
+  articleIds?: readonly string[],
+): Promise<void> {
+  if (articleIds === undefined) {
+    await db.run(sql`update article_translations set ${CLEAR_BATCH}
+      where batch_key = ${key} and batch_id is null`);
+    return;
+  }
+  await db.run(sql`update article_translations set ${CLEAR_BATCH}
+    where batch_key = ${key} and batch_id is null
+      and article_id in (select value from json_each(${JSON.stringify(articleIds)}))`);
+}
+
+/** 見にいくバッチ（印を付けたのが古い順に limit 個まで） */
+export async function listBatchesToCheck(
+  db: Database,
+  limit = BATCH_CHECK_LIMIT,
+): Promise<string[]> {
+  const rows = await db.all<{ batchId: string }>(sql`
+    select batch_id as batchId from article_translations
+    where batch_key is not null and batch_id is not null
+    group by batch_id
+    order by min(batch_marked_at), batch_id
+    limit ${limit}
+  `);
+  return rows.map((row) => row.batchId);
+}
+
+/** そのバッチの印を持つ行（結果を書く前に、送った本文の出どころを読む） */
+export function listBatchRows(
+  db: Database,
+  batchId: string,
+): Promise<
+  { articleId: string; contentSource: "feed" | "page" | null; bodyHash: string | null }[]
+> {
+  return db
+    .select({
+      articleId: articleTranslations.articleId,
+      contentSource: articleTranslations.batchContentSource,
+      bodyHash: articleTranslations.batchBodyHash,
+    })
+    .from(articleTranslations)
+    .where(eq(articleTranslations.batchId, batchId))
+    .all();
+}
+
+/**
+ * バッチの結果を書く。行がそのバッチの印を持ち、まだ訳文がないときだけ書き、印を外して translated に
+ * する（同じ文で確かめる）。その場の翻訳の最中なら、それも終える。容量が足りなければ、トリガーが
+ * 書かない（印は残る）
+ *
+ * @returns 書いたら true
+ */
+export async function finishBatchTranslation(
+  db: Database,
+  input: {
+    articleId: string;
+    batchId: string;
+    title: string | null;
+    summary: string | null;
+    content: { html: string; source: "feed" | "page" } | null;
+    model: string;
+  },
+): Promise<boolean> {
+  const row = await getRow<{ articleId: string }>(
+    db,
+    sql`update article_translations set status = 'translated', title = ${input.title},
+        summary = ${input.summary}, content = ${input.content?.html ?? null},
+        content_source = ${input.content?.source ?? null}, model = ${input.model},
+        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH}
+      where article_id = ${input.articleId} and batch_id = ${input.batchId}
+        and translated_at is null and status in ('queued', 'untranslated', 'translating')
+      returning article_id as articleId`,
+  );
+  return row !== undefined;
+}
+
+/**
+ * そのバッチの印を外し、待ちに戻す（印が同じ行だけ）。keep の記事は印を残す（容量が足りずに書けず、
+ * 次の定期実行で書き直す）
+ */
+export async function unmarkCheckedBatch(
+  db: Database,
+  batchId: string,
+  keep: readonly string[] = [],
+): Promise<void> {
+  await db.run(sql`update article_translations set ${CLEAR_BATCH}
+    where batch_id = ${batchId}
+      and article_id not in (select value from json_each(${JSON.stringify(keep)}))`);
+}
+
+/**
+ * 送る印を付けたが、訳すもの（タイトル、要約、本文）がない記事を、訳せないもの（untranslated）にして
+ * 印を外す（印が同じ queued の行だけ）
+ *
+ * @returns 変えた記事
+ */
+export async function skipEmptyBatchArticles(
+  db: Database,
+  key: string,
+  articleIds: readonly string[],
+): Promise<string[]> {
+  if (articleIds.length === 0) return [];
+  const rows = await db.all<{ articleId: string }>(sql`
+    update article_translations set status = 'untranslated', ${CLEAR_BATCH}
+    where batch_key = ${key} and batch_id is null and status = 'queued'
+      and article_id in (select value from json_each(${JSON.stringify(articleIds)}))
     returning article_id as articleId
   `);
   return rows.map((row) => row.articleId);

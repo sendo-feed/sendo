@@ -203,10 +203,43 @@ export class TranslatorError extends Error {
   }
 }
 
+/** バッチで訳してもらう 1 件（docs/decisions/translation.md の 4）。id は記事の ID */
+export interface BatchTranslationRequest {
+  id: string;
+  segments: readonly TranslationSegment[];
+}
+
+/**
+ * バッチの 1 件の結果。訳せた ／ 拒否 ／ 読めない応答（TranslationResult。訳せたときの断片は、送った
+ * ものに絞っていない）か、errored ／ expired ／ canceled
+ */
+export type BatchTranslationResult = { id: string } & (
+  | TranslationResult
+  /** 要求が通らなかった。errorType は Claude API の誤りの種類（invalid_request_error など） */
+  | { status: "errored"; errorType: string | null }
+  | { status: "expired" }
+  | { status: "canceled" }
+);
+
+export type BatchTranslationStatus =
+  /** まだ終わっていない */
+  | { status: "in_progress" }
+  /** 終わった。結果は記事ごと（返らなかった記事は入らない） */
+  | { status: "ended"; results: BatchTranslationResult[] }
+  /** もう見られない（404） */
+  | { status: "gone" };
+
 /** 記事を日本語に訳す（Claude API。docs/decisions/translation.md） */
 export interface Translator {
   /** その場で訳す（通常の Messages API）。呼び出しが失敗したら TranslatorError を投げる */
   translate(segments: readonly TranslationSegment[]): Promise<TranslationResult>;
+  /**
+   * バッチを作って送る（Message Batches API）。バッチの ID を返す。失敗したら TranslatorError を投げる
+   * （作れたかどうか分からないこともある）
+   */
+  createBatch(requests: readonly BatchTranslationRequest[]): Promise<string>;
+  /** バッチを見にいき、終わっていれば結果を読む。見にいけなければ TranslatorError を投げる */
+  checkBatch(batchId: string): Promise<BatchTranslationStatus>;
 }
 
 /** アプリが実行環境から受け取るもの */
