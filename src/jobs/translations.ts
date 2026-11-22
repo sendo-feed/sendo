@@ -7,6 +7,7 @@ import {
   COPY_BODY,
   COPY_SUMMARY,
   COPY_TITLE,
+  copyRetranslation,
   countTranslateFailure,
   decideTranslations,
   failBatchArticles,
@@ -20,6 +21,7 @@ import {
   listArticleHolders,
   listBatchesToCheck,
   listBatchRows,
+  listRetranslationTargets,
   markForBatch,
   NO_BODY_HASH,
   releaseStaleBatchMarks,
@@ -75,19 +77,48 @@ type MaintainPlatform = Pick<
 >;
 
 /**
- * 訳文の行の手入れ（docs/decisions/translation.md の 1、4、7）。5 分おきの定期実行が積む。
- * 止まった翻訳を戻すのは、API キーがなくても行う。訳すかどうかを決めるのと、バッチで訳すのは、
- * キーがあるときだけ
+ * 同じ元記事の、訳し直した訳を写し損ねた行に写し、その記事を持つ人に知らせる（docs/decisions/
+ * translation.md の 16）。sourceId を渡したら、その行から写せる行だけ（訳し直した直後）。1 行ずつ
+ * 写し、写す元と写す先の条件は写す文の中で確かめる。写せなかった行（容量、状態）は、次の定期実行で
+ * また試す
+ *
+ * @returns 写した行の数
  */
-export async function maintainTranslations(
-  platform: MaintainPlatform,
-): Promise<{ reverted: number; decided: number; written: number; sent: number }> {
+export async function spreadRetranslations(
+  platform: Pick<Platform, "db" | "syncUpdates">,
+  sourceId?: string,
+): Promise<number> {
+  const copied: string[] = [];
+  try {
+    for (const articleId of await listRetranslationTargets(platform.db, { sourceId })) {
+      if (await copyRetranslation(platform.db, articleId)) copied.push(articleId);
+    }
+  } finally {
+    // 途中で落ちても、写した行は知らせる
+    await notifyTranslationChanged(platform, copied);
+  }
+  return copied.length;
+}
+
+/**
+ * 訳文の行の手入れ（docs/decisions/translation.md の 1、4、7、16）。5 分おきの定期実行が積む。
+ * 止まった翻訳を戻すのと、訳し直しを写し直すのは、API キーがなくても行う（呼ばないため）。訳すか
+ * どうかを決めるのと、バッチで訳すのは、キーがあるときだけ
+ */
+export async function maintainTranslations(platform: MaintainPlatform): Promise<{
+  reverted: number;
+  spread: number;
+  decided: number;
+  written: number;
+  sent: number;
+}> {
   // 戻したことは、決める前に知らせる（決めるところで落ちても、戻した記事の知らせを欠かない）
   const reverted = await revertStaleTranslating(platform.db);
   await notifyTranslationChanged(platform, reverted);
+  const spread = await spreadRetranslations(platform);
   const { translator } = platform;
   if (translator === undefined) {
-    return { reverted: reverted.length, decided: 0, written: 0, sent: 0 };
+    return { reverted: reverted.length, spread, decided: 0, written: 0, sent: 0 };
   }
   const decided = await decideTranslations(platform.db);
   await notifyTranslationChanged(
@@ -97,7 +128,7 @@ export async function maintainTranslations(
   // 結果を先に書く（送るところで落ちても、返った訳文を書き損ねない）
   const written = await checkBatches(platform, translator);
   const sent = await sendBatch(platform, translator);
-  return { reverted: reverted.length, decided: decided.length, written, sent };
+  return { reverted: reverted.length, spread, decided: decided.length, written, sent };
 }
 
 /** 訳す記事のタイトル・要約と、本文の置き場の名前 */
@@ -520,8 +551,19 @@ export async function runTranslateArticle(
   options: { retranslation?: boolean } = {},
 ): Promise<void> {
   // やり直せる失敗で例外を投げるときは、回数しか変えていないので知らせない
-  if (await translateArticle(platform, articleId, startedAt, options.retranslation === true)) {
-    await notifyTranslationChanged(platform, [articleId]);
+  const retranslation = options.retranslation === true;
+  if (!(await translateArticle(platform, articleId, startedAt, retranslation))) return;
+  await notifyTranslationChanged(platform, [articleId]);
+  if (!retranslation) return;
+  // 訳し直した直後に、同じ元記事のほかの行に写す（決定の 16）。写せなければ（訳し直せずに戻した、
+  // 写すところで落ちた）定期実行が写し直すので、仕事を失敗にしない
+  try {
+    await spreadRetranslations(platform, articleId);
+  } catch (error) {
+    console.warn("could not spread the retranslation; retrying at the next schedule", {
+      articleId,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
