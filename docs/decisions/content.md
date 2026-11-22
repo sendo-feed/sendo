@@ -73,7 +73,7 @@
     - Discord の投稿からは抜かない。`source=page` には、置いた本文を返す（[Discord チャンネルの購読](discord.md)の 6）
     - 抜いた結果は、全員で共有する（記事と同じく、フィードを購読している全員のもの）
     - 読者が開いたときに抽出結果の行がなければ、そのリクエストの中で抜く
-    - 配る入口は 6 と同じ `GET /api/v1/articles/{id}/content` にし、`source=page` を付けたときにページの本文を返す
+    - 配る入口は 6 と同じ `GET /api/v1/articles/{id}/content` にし、`source=page` を付けたときにページの本文（全文）を返す
     - サニタイズ（2）と画像の書き換え（7）も、同じものを通す。サニタイズしたあとで 256KB を超える本文は、置かない（抜けなかったものとして扱う）
 11. **抜く処理は Rust で書き、napi-rs で読み込む**（[テックスタック](tech-stack.md)の 5、[コンテナ版](container.md)の 2）。
     - 本文の手掛かりを rs-trafilatura で集める。手掛かりが得られないときは dom_smoothie（Readability）も試す。出力は抽出器の HTML ではなく、元の DOM の本文領域から作る（19）
