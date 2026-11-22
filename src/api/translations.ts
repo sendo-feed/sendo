@@ -55,7 +55,7 @@ const requestRoute = createRoute({
   summary: "記事をその場で訳す",
   description: [
     "訳文のない記事（翻訳の状態が queued か untranslated）を、Claude API でその場で訳す（docs/decisions/translation.md の 5）。",
-    "受け付けたら 202 を返し、裏で訳す。訳し終えたことは、差分同期で届く。費用がかかるので、読む人が求めたときだけ呼ぶ。",
+    "受け付けたら 202 を返し、裏で訳す。訳し終えると、GET /articles/{id}/translation で訳文が取れる（訳し終えなければ 404 の no_translation）。費用がかかるので、読む人が求めたときだけ呼ぶ。",
   ].join("\n"),
   request: { params },
   responses: {
