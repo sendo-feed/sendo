@@ -1,0 +1,1 @@
+ALTER TABLE `article_translations` ADD `batch_attempts` integer DEFAULT 0 NOT NULL;

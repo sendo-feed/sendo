@@ -6,6 +6,7 @@ import {
   ARTICLE_TRANSLATION_BYTES,
   countTranslateFailure,
   decideTranslations,
+  failBatchArticles,
   failTranslating,
   finishBatchTranslation,
   finishTranslating,
@@ -25,6 +26,7 @@ import {
 import { sanitizeHtml } from "../lib/sanitize-html";
 import { notifySync } from "../lib/sync-notify";
 import {
+  type BatchTranslationResult,
   type Platform,
   type TranslationSegment,
   type Translator,
@@ -155,6 +157,9 @@ async function sendBatch(platform: MaintainPlatform, translator: Translator): Pr
       articles: requests.length,
       error: error instanceof Error ? error.message : String(error),
     });
+    // 断られた（認証、利用上限など）なら作られていないので、すぐ待ちに戻して次の定期実行で送る。
+    // 届かない・時間切れは作れたか分からないので、印を残す（1 時間たったら待ちに戻る）
+    if (error instanceof TranslatorError && error.responded) await unmarkBatch(db, key);
     return 0;
   }
   await setBatchId(db, key, batchId);
@@ -206,17 +211,28 @@ async function checkBatch(
   }
   if (status.status === "in_progress") return 0;
   if (status.status === "gone") {
-    await unmarkCheckedBatch(db, batchId);
+    // もう見られない（結果の期限が過ぎた）。どの記事も訳せなかったものとして数える（決定の 8）
+    const changed = await failBatchArticles(db, batchId, { count: true, giveUp: false });
+    await notifyTranslationChanged(platform, changed);
     return 0;
   }
   const rows = new Map((await listBatchRows(db, batchId)).map((row) => [row.articleId, row]));
   const written: string[] = [];
   const keep: string[] = [];
+  const failed: string[] = [];
   for (const result of status.results) {
     const row = rows.get(result.id);
     // 知らない記事と、重なった結果は使わない
-    if (row === undefined || result.status !== "translated") continue;
+    if (row === undefined) continue;
     rows.delete(result.id);
+    if (result.status !== "translated") {
+      const changed = await failBatchArticles(db, batchId, {
+        articleId: result.id,
+        ...batchFailure(result),
+      });
+      failed.push(...changed);
+      continue;
+    }
     try {
       const outcome = await writeBatchResult(platform, batchId, row, result);
       if (outcome === "written") written.push(result.id);
@@ -231,10 +247,39 @@ async function checkBatch(
       });
     }
   }
+  // 結果のなかった記事は、数えずに待ちに戻す
   await unmarkCheckedBatch(db, batchId, keep);
-  await notifyTranslationChanged(platform, written);
+  await notifyTranslationChanged(platform, [...written, ...failed]);
   return written.length;
 }
+
+/**
+ * バッチで訳せなかった結果の扱い（docs/decisions/translation.md の 4、8）。拒否はその回で諦める。
+ * 待てば通る誤り（一時的な種類）と、要求の形の誤り（モデルを外す判断に数える。決定の 9）は数えない。
+ * ほか（上限で切れた・読めない応答、ほかの誤り、expired、canceled）は数える
+ */
+function batchFailure(result: BatchTranslationResult): { count: boolean; giveUp: boolean } {
+  switch (result.status) {
+    case "refused":
+      return { count: false, giveUp: true };
+    case "errored":
+      return {
+        count: result.errorType === null || !UNCOUNTED_BATCH_ERRORS.has(result.errorType),
+        giveUp: false,
+      };
+    default:
+      return { count: true, giveUp: false };
+  }
+}
+
+/** 回数に数えない、バッチの結果の誤りの種類（429、529、5xx と、要求の形の誤り） */
+const UNCOUNTED_BATCH_ERRORS = new Set([
+  "rate_limit_error",
+  "overloaded_error",
+  "api_error",
+  "timeout_error",
+  "invalid_request_error",
+]);
 
 /**
  * バッチの 1 件の訳を書く。written は書いた、keep は容量が足りずに書けなかった（印を残して次に書き直す）、

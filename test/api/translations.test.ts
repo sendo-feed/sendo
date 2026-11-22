@@ -1776,9 +1776,10 @@ describe("バッチで訳す（docs/decisions/translation.md の 4）", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const s = await setup();
     const en = await articleId(s.platform, "en");
-    // 作れたかどうか分からない失敗（ID を書き留める前に落ちたのと同じく、印が残る）
-    s.batches.createFailure = () =>
-      Response.json({ type: "error", error: { type: "api_error", message: "x" } }, { status: 500 });
+    // 作れたかどうか分からない失敗（届かない。ID を書き留める前に落ちたのと同じく、印が残る）
+    s.batches.createFailure = () => {
+      throw new TypeError("fetch failed");
+    };
     await maintain(s.platform);
     expect(await translationOf(s.platform, en)).toMatchObject({ status: "queued", batchId: null });
     expect((await translationOf(s.platform, en))?.batchKey).not.toBeNull();
@@ -2031,5 +2032,172 @@ describe("バッチで訳す（docs/decisions/translation.md の 4）", () => {
     await maintain(s.platform);
     expect(s.batches.list).toHaveLength(0);
     expect(s.claude).toHaveLength(0);
+  });
+});
+
+describe("バッチの失敗を数える（docs/decisions/translation.md の 4、8、9）", () => {
+  const sentIds = (batch: FakeBatch | undefined) => batch?.requests.map((r) => r.custom_id) ?? [];
+  /** そのバッチを終えて、記事ごとの結果を決める */
+  function endBatch(s: Setup, index: number, results: Record<string, unknown>) {
+    const batch = s.batches.list[index];
+    if (!batch) throw new Error(`no batch ${index}`);
+    batch.ended = true;
+    batch.results = new Map(Object.entries(results));
+  }
+  const errored = (type: string) => ({
+    type: "errored",
+    error: { type: "error", error: { type, message: "failed" } },
+  });
+  const succeeded = (text: string, stop = "end_turn") => ({
+    type: "succeeded",
+    message: messageJson("claude-sonnet-5-5", text, stop),
+  });
+
+  it("expired の記事は待ちに戻って送り直され、3 回目も expired なら untranslated になる", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    for (let i = 0; i < 3; i++) {
+      endBatch(s, i, { [en]: { type: "expired" } });
+      await maintain(s.platform);
+      expect((await translationOf(s.platform, en))?.batchAttempts).toBe(i + 1);
+    }
+    expect(s.batches.list).toHaveLength(3);
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "untranslated",
+      batchKey: null,
+    });
+    expect(s.notified).toContain(TEST_USER.id);
+  });
+
+  it("一時的な errored は何回続いても数えず、待ちに戻る", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    for (const [i, type] of [
+      "overloaded_error",
+      "rate_limit_error",
+      "api_error",
+      "overloaded_error",
+    ].entries()) {
+      endBatch(s, i, { [en]: errored(type) });
+      await maintain(s.platform);
+    }
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "queued",
+      batchAttempts: 0,
+    });
+    expect(s.batches.list).toHaveLength(5);
+  });
+
+  it("新しく選んだモデルで errored の invalid_request_error が続けて 3 件起きると、次のバッチから 1 つ前のモデルで送る。回数は数えない", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({
+      extraEnglish: 2,
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+        ]),
+    });
+    await decideTranslations(s.platform.db);
+    await maintain(s.platform);
+    const first = s.batches.list[0];
+    expect(first?.requests.map((r) => r.params.model)).toEqual(Array(3).fill("claude-sonnet-6"));
+    endBatch(
+      s,
+      0,
+      Object.fromEntries(
+        (first?.requests ?? []).map((r) => [r.custom_id, errored("invalid_request_error")]),
+      ),
+    );
+    await maintain(s.platform);
+    expect(s.batches.list[1]?.requests.map((r) => r.params.model)).toEqual(
+      Array(3).fill("claude-sonnet-5-5"),
+    );
+    const attempts = await testDb
+      .prepare("SELECT max(batch_attempts) AS n FROM article_translations")
+      .first<number>("n");
+    expect(attempts).toBe(0);
+  });
+
+  it("拒否（refusal）された記事は、その回で untranslated になる", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    endBatch(s, 0, { [en]: succeeded("", "refusal") });
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({ status: "untranslated" });
+    expect(s.batches.list).toHaveLength(1);
+  });
+
+  it("上限で切れた応答と、読めない応答は、回数に数える", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    endBatch(s, 0, { [en]: succeeded(translated([]), "max_tokens") });
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "queued",
+      batchAttempts: 1,
+    });
+    endBatch(s, 1, { [en]: succeeded("not json") });
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "queued",
+      batchAttempts: 2,
+    });
+  });
+
+  it("もう見られないバッチの記事は、印を外して回数に数える", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    const batch = s.batches.list[0];
+    if (batch) batch.gone = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "queued",
+      batchAttempts: 1,
+    });
+    expect(sentIds(s.batches.list[1])).toEqual([en]);
+  });
+
+  it("結果が返る前にその場の翻訳を始めた記事に expired が返ると、translating のまま始めた時刻も変わらない", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    await request(s, en);
+    const before = await translationOf(s.platform, en);
+    endBatch(s, 0, { [en]: { type: "expired" } });
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "translating",
+      startedAt: before?.startedAt,
+      batchKey: null,
+    });
+  });
+
+  it("バッチを送ろうとして認証の失敗（401）か利用上限が返ると、待ちのまま回数は変わらず、次の定期実行で送る", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const [status, type] of [
+      [401, "authentication_error"],
+      [400, "billing_error"],
+    ] as const) {
+      await testDb.exec("DELETE FROM feeds");
+      const s = await setup();
+      const en = await articleId(s.platform, "en");
+      s.batches.createFailure = () =>
+        Response.json({ type: "error", error: { type, message: "x" } }, { status });
+      await maintain(s.platform);
+      expect(await translationOf(s.platform, en)).toMatchObject({
+        status: "queued",
+        batchKey: null,
+        batchAttempts: 0,
+      });
+      s.batches.createFailure = null;
+      await maintain(s.platform);
+      expect(sentIds(s.batches.list[0])).toEqual([en]);
+    }
   });
 });

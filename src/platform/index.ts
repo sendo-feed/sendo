@@ -191,15 +191,21 @@ export type TranslationResult =
   /** 上限で切れた、または形の読めない応答 */
   | { status: "invalid" };
 
-/** 呼び出しの失敗。やり直しても通らないもの（要求の形の誤り）は retryable が false */
+/**
+ * 呼び出しの失敗。やり直しても通らないもの（要求の形の誤り）は retryable が false。responded は、
+ * Claude API が応答を返して断った（要求は受け付けられていない）とき true。届かない・時間切れでは
+ * false（受け付けられたかどうか分からない）
+ */
 export class TranslatorError extends Error {
+  readonly responded: boolean;
   constructor(
     message: string,
     readonly retryable: boolean,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; responded?: boolean },
   ) {
     super(message, options);
     this.name = "TranslatorError";
+    this.responded = options?.responded ?? false;
   }
 }
 

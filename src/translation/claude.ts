@@ -111,6 +111,12 @@ export function createClaudeTranslator(input: {
   });
   // 起動時に一覧を取っておく（失敗しても、最初の翻訳のときに前のものか既定で送る）
   void models.current();
+  /**
+   * 送ったバッチのモデル（結果の要求の形の誤りを、モデルを外す判断に数える。決定の 9）。プロセスの
+   * メモリーにだけ持ち、結果を一度読んだら消す（読み直しで数え直さない）。再起動のあとに返った
+   * バッチの誤りは数えない
+   */
+  const batchModels = new Map<string, string>();
   /** 訳す要求の中身（その場の翻訳とバッチで同じ。docs/decisions/translation.md の 9、11） */
   const requestBody = (model: string, segments: readonly TranslationSegment[]) => ({
     model,
@@ -162,6 +168,7 @@ export function createClaudeTranslator(input: {
           },
           { signal: AbortSignal.timeout(callTimeoutMs) },
         );
+        batchModels.set(batch.id, model);
         return batch.id;
       } catch (error) {
         throw toTranslatorError(error);
@@ -178,6 +185,7 @@ export function createClaudeTranslator(input: {
         const stream = await client.beta.messages.batches.results(batchId, undefined, {
           signal: AbortSignal.timeout(callTimeoutMs),
         });
+        const model = batchModels.get(batchId);
         for await (const item of stream) {
           const id = item.custom_id;
           const result = item.result;
@@ -186,14 +194,23 @@ export function createClaudeTranslator(input: {
             if (read.status === "translated") models.succeeded(read.model);
             results.push({ id, ...read });
           } else if (result.type === "errored") {
-            results.push({ id, status: "errored", errorType: result.error?.error?.type ?? null });
+            const errorType = result.error?.error?.type ?? null;
+            if (model !== undefined) {
+              if (errorType === "invalid_request_error") models.invalidRequest(model);
+              else models.otherOutcome(model);
+            }
+            results.push({ id, status: "errored", errorType });
           } else {
             results.push({ id, status: result.type });
           }
         }
+        batchModels.delete(batchId);
         return { status: "ended", results };
       } catch (error) {
-        if (error instanceof Anthropic.NotFoundError) return { status: "gone" };
+        if (error instanceof Anthropic.NotFoundError) {
+          batchModels.delete(batchId);
+          return { status: "gone" };
+        }
         throw toTranslatorError(error);
       }
     },
@@ -250,6 +267,7 @@ function toTranslatorError(error: unknown): TranslatorError {
     return new TranslatorError(
       `the translation request was rejected (${error.status}): ${error.message}`,
       false,
+      { responded: true },
     );
   }
   if (
@@ -260,7 +278,9 @@ function toTranslatorError(error: unknown): TranslatorError {
   }
   if (error instanceof Anthropic.APIError) {
     // 本文は返さない（キーや記事の中身をログに出さない）
-    return new TranslatorError(`the translation call failed (${error.status ?? "network"})`, true);
+    return new TranslatorError(`the translation call failed (${error.status ?? "network"})`, true, {
+      responded: typeof error.status === "number",
+    });
   }
 
   return new TranslatorError("the translation call failed", true);
