@@ -446,10 +446,12 @@ describe("フォルダの API", () => {
     expect(await nameOf("b".repeat(200))).toBe("b".repeat(200));
     // 切り詰めた位置が空白でなければ、中の空白は残す
     expect(await nameOf(`${"c".repeat(198)} de`)).toBe(`${"c".repeat(198)} d`);
+    // 絵文字を途中で切らずに止めた位置の直前が空白
+    expect(await nameOf(`${"e".repeat(198)} 😀`)).toBe("e".repeat(198));
 
     const list = await requestApp(platform, "/api/v1/folders", { method: "GET" });
     expect(((await list.json()) as { items: { name: string }[] }).items.map((i) => i.name)).toEqual(
-      ["a".repeat(199), "b".repeat(200), `${"c".repeat(198)} d`],
+      ["a".repeat(199), "b".repeat(200), `${"c".repeat(198)} d`, "e".repeat(198)],
     );
   });
 
