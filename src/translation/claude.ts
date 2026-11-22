@@ -185,26 +185,35 @@ export function createClaudeTranslator(input: {
         const stream = await client.beta.messages.batches.results(batchId, undefined, {
           signal: AbortSignal.timeout(callTimeoutMs),
         });
+        // 結果をすべて読んでから、モデルを選ぶ仕組みに知らせる（途中で切れて読み直したときに、
+        // 二重に数えない）
+        const items = [];
+        for await (const item of stream) items.push(item);
         const model = batchModels.get(batchId);
-        for await (const item of stream) {
+        batchModels.delete(batchId);
+        for (const item of items) {
           const id = item.custom_id;
           const result = item.result;
           if (result.type === "succeeded") {
             const read = readResult(result.message);
             if (read.status === "translated") models.succeeded(read.model);
+            else if (model !== undefined) models.otherOutcome(model);
             results.push({ id, ...read });
           } else if (result.type === "errored") {
             const errorType = result.error?.error?.type ?? null;
+            let countedForModel = false;
             if (model !== undefined) {
-              if (errorType === "invalid_request_error") models.invalidRequest(model);
-              else models.otherOutcome(model);
+              if (errorType === "invalid_request_error") {
+                countedForModel = models.invalidRequest(model);
+              } else {
+                models.otherOutcome(model);
+              }
             }
-            results.push({ id, status: "errored", errorType });
+            results.push({ id, status: "errored", errorType, countedForModel });
           } else {
             results.push({ id, status: result.type });
           }
         }
-        batchModels.delete(batchId);
         return { status: "ended", results };
       } catch (error) {
         if (error instanceof Anthropic.NotFoundError) {
@@ -278,8 +287,11 @@ function toTranslatorError(error: unknown): TranslatorError {
   }
   if (error instanceof Anthropic.APIError) {
     // 本文は返さない（キーや記事の中身をログに出さない）
-    return new TranslatorError(`the translation call failed (${error.status ?? "network"})`, true, {
-      responded: typeof error.status === "number",
+    // 4xx と 529（混み合っている）は、受け付けずに断った応答。5xx はほかは、受け付けたあとに返る
+    // こともあるので、断ったとはみなさない
+    const status = error.status;
+    return new TranslatorError(`the translation call failed (${status ?? "network"})`, true, {
+      responded: typeof status === "number" && ((status >= 400 && status < 500) || status === 529),
     });
   }
 

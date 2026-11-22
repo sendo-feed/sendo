@@ -263,6 +263,11 @@ function batchFailure(result: BatchTranslationResult): { count: boolean; giveUp:
     case "refused":
       return { count: false, giveUp: true };
     case "errored":
+      // 要求の形の誤りは、モデルを外す判断に数えたときだけ数えない（一度訳せたモデルでの誤りは、
+      // 記事の中身によるものとして数える）
+      if (result.errorType === "invalid_request_error") {
+        return { count: !result.countedForModel, giveUp: false };
+      }
       return {
         count: result.errorType === null || !UNCOUNTED_BATCH_ERRORS.has(result.errorType),
         giveUp: false,
@@ -272,13 +277,18 @@ function batchFailure(result: BatchTranslationResult): { count: boolean; giveUp:
   }
 }
 
-/** 回数に数えない、バッチの結果の誤りの種類（429、529、5xx と、要求の形の誤り） */
+/**
+ * 回数に数えない、バッチの結果の誤りの種類。待てば通るもの（429、529、5xx、時間切れ）と、利用上限・
+ * 認証・権限（キーや上限を直せば通る。決定の 8 では送らずに待つもの）
+ */
 const UNCOUNTED_BATCH_ERRORS = new Set([
   "rate_limit_error",
   "overloaded_error",
   "api_error",
   "timeout_error",
-  "invalid_request_error",
+  "billing_error",
+  "authentication_error",
+  "permission_error",
 ]);
 
 /**

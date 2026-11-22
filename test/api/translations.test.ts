@@ -2178,6 +2178,77 @@ describe("バッチの失敗を数える（docs/decisions/translation.md の 4�
     });
   });
 
+  it("モデルを外す判断に数えない要求の形の誤り（固定のモデル、一度訳せたモデル）は、回数に数え、3 回目で untranslated になる", async () => {
+    const s = await setup({ model: "claude-sonnet-4-5" });
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    for (let i = 0; i < 3; i++) {
+      endBatch(s, i, { [en]: errored("invalid_request_error") });
+      await maintain(s.platform);
+    }
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "untranslated",
+      batchAttempts: 3,
+    });
+  });
+
+  it("利用上限・認証・権限の errored は、回数に数えない", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    for (const [i, type] of [
+      "billing_error",
+      "authentication_error",
+      "permission_error",
+    ].entries()) {
+      endBatch(s, i, { [en]: errored(type) });
+      await maintain(s.platform);
+    }
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "queued",
+      batchAttempts: 0,
+    });
+  });
+
+  it("その場の翻訳の最中の記事に拒否が返っても、状態と始めた時刻は変えない", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    await request(s, en);
+    const before = await translationOf(s.platform, en);
+    endBatch(s, 0, { [en]: succeeded("", "refusal") });
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({
+      status: "translating",
+      startedAt: before?.startedAt,
+      batchKey: null,
+    });
+  });
+
+  it("バッチを作ろうとして 5xx が返ると（作られたかもしれない）印を残す。529 は断られたものとしてすぐ戻す", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    s.batches.createFailure = () =>
+      Response.json({ type: "error", error: { type: "api_error", message: "x" } }, { status: 500 });
+    await maintain(s.platform);
+    expect((await translationOf(s.platform, en))?.batchKey).not.toBeNull();
+    s.batches.createFailure = null;
+    await maintain(s.platform);
+    expect(s.batches.list).toHaveLength(0);
+
+    await testDb.exec(
+      `UPDATE article_translations SET batch_key = NULL, batch_marked_at = NULL WHERE article_id = '${en}'`,
+    );
+    s.batches.createFailure = () =>
+      Response.json(
+        { type: "error", error: { type: "overloaded_error", message: "x" } },
+        { status: 529 },
+      );
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({ status: "queued", batchKey: null });
+  });
+
   it("バッチを送ろうとして認証の失敗（401）か利用上限が返ると、待ちのまま回数は変わらず、次の定期実行で送る", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     for (const [status, type] of [

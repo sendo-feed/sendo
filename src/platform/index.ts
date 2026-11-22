@@ -221,8 +221,11 @@ export interface BatchTranslationRequest {
  */
 export type BatchTranslationResult = { id: string } & (
   | TranslationResult
-  /** 要求が通らなかった。errorType は Claude API の誤りの種類（invalid_request_error など） */
-  | { status: "errored"; errorType: string | null }
+  /**
+   * 要求が通らなかった。errorType は Claude API の誤りの種類（invalid_request_error など）。
+   * countedForModel は、要求の形の誤りをモデルを外す判断に数えた（回数には数えない。決定の 8、9）
+   */
+  | { status: "errored"; errorType: string | null; countedForModel: boolean }
   | { status: "expired" }
   | { status: "canceled" }
 );

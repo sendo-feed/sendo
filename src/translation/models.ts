@@ -30,8 +30,12 @@ export interface ModelSelector {
   current(): Promise<string>;
   /** そのモデルで訳せた */
   succeeded(model: string): void;
-  /** そのモデルへの要求が、要求の形の誤り（400 の invalid_request_error）で断られた */
-  invalidRequest(model: string): void;
+  /**
+   * そのモデルへの要求が、要求の形の誤り（400 の invalid_request_error）で断られた。外す判断に数えたら
+   * true（まだ 1 件も訳せていない、一覧から選ぶモデル）。一度訳せたモデルと固定のモデルは false
+   * （記事の中身による誤りとみなす）
+   */
+  invalidRequest(model: string): boolean;
   /** そのモデルへの要求が、ほかの形で終わった（拒否、読めない応答、ほかの失敗）。続けて数えない */
   otherOutcome(model: string): void;
 }
@@ -51,7 +55,7 @@ export function createModelSelector(input: {
     return {
       current: async () => pinned,
       succeeded() {},
-      invalidRequest() {},
+      invalidRequest: () => false,
       otherOutcome() {},
     };
   }
@@ -112,19 +116,20 @@ export function createModelSelector(input: {
       const state = usage.get(model) ?? { succeeded: false, invalid: 0 };
       usage.set(model, state);
       // 一度でも訳せたモデルは、記事の中身による誤りとみなして外さない
-      if (state.succeeded) return;
+      if (state.succeeded) return false;
       state.invalid += 1;
-      if (state.invalid < MAX_INVALID_REQUESTS || model !== chosen) return;
+      if (state.invalid < MAX_INVALID_REQUESTS || model !== chosen) return true;
       // 一覧から選んだモデルだけを外す（既定のモデルは外さない）。次に新しいものがなければ、外さずに
       // 使い続ける
       const next = candidates.find((id) => id !== model && !excluded.has(id));
-      if (!candidates.includes(model) || next === undefined) return;
+      if (!candidates.includes(model) || next === undefined) return true;
       excluded.add(model);
       chosen = next;
       console.warn("excluded a translation model after repeated invalid requests", {
         model,
         next,
       });
+      return true;
     },
   };
 }
