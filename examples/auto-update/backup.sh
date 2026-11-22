@@ -71,6 +71,19 @@ if [[ -z $data || -z $image ]]; then
   fi
 fi
 
+# 名前付きのボリュームなら、あるものだけを受ける（ない名前を渡すと、docker が空のボリュームを作ってしまう）
+if [[ $data != /* ]]; then
+  docker volume inspect "$data" >/dev/null 2>&1 || die "ボリューム $data がない（バインドマウントなら絶対パスで書く）"
+fi
+
+# バックアップのファイルが /data の中にあると、戻すときに中身を消すので、バックアップごと消える
+ensure_outside_data() {
+  [[ $data == /* ]] || return 0
+  case $(realpath -m "$1")/ in
+  "$(realpath -m "$data")"/*) die "バックアップのファイル（$1）が /data（$data）の中にある。外に置く" ;;
+  esac
+}
+
 ensure_stopped() {
   local cid
   cid=$(docker compose ps -q --status running "$service" 2>/dev/null | head -n 1)
@@ -92,6 +105,7 @@ size)
   ;;
 create)
   file=${2:?バックアップのファイルを指定する}
+  ensure_outside_data "$file"
   ensure_stopped
   dir=$(cd "$(dirname "$file")" && pwd)
   name=$(basename "$file")
@@ -108,6 +122,7 @@ create)
 restore)
   file=${2:?戻すバックアップのファイルを指定する}
   [[ -f $file ]] || die "$file がない（取り終えたバックアップだけを戻す）"
+  ensure_outside_data "$file"
   ensure_stopped
   dir=$(cd "$(dirname "$file")" && pwd)
   name=$(basename "$file")

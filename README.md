@@ -71,7 +71,7 @@ docker compose pull && docker compose up -d
 | `PUBLIC_URL`、`READER_URL` | なし | 外から呼ぶときのオリジンと、sendo-reader のオリジン。[OAuth でつなぐ](#oauth-でつなぐ) |
 | `ALLOWED_EMAILS`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` | なし | ブラウザのログイン。[ブラウザでログインする](#ブラウザでログインするgoogle) |
 | `DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN` | なし | Discord の購読。[Discord のチャンネルを購読する](#discord-のチャンネルを購読する) |
-| `ANTHROPIC_API_KEY` | なし | Claude API のキー。入れると、日本語以外の記事を Claude API で日本語に訳す。空なら翻訳は動かず、記事を外へ送らない（[決定](docs/decisions/translation.md)） |
+| `ANTHROPIC_API_KEY` | なし | Claude API のキー。入れると、そのあとに取り込んだ日本語以外の記事（Discord の投稿を除く）を、Claude API で日本語に訳す。空なら翻訳は動かず、記事を外へ送らない（[決定](docs/decisions/translation.md)） |
 | `TRANSLATION_MODEL` | なし（最新の Sonnet） | 訳すモデルを固定するときのモデルの ID。空なら、Models API で最新の Sonnet を選ぶ（1 日 1 回選び直す） |
 
 ### 取得の間隔

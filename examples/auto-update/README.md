@@ -15,14 +15,17 @@ Docker Compose で動かしている Sendo と sendo-reader を、上流の `mai
 
 ## 使い方
 
-1. `auto-update.sh` と `backup.sh` を、`compose.yaml` と `.env` を置いたディレクトリに写し、実行できるようにする
+1. `auto-update.sh` と `backup.sh` を、`compose.yaml` と `.env` を置いたディレクトリに取ってきて、実行できるようにする
 
    ```sh
+   for f in auto-update.sh backup.sh auto-update.env.example; do
+     curl -fsSLO "https://raw.githubusercontent.com/sendo-feed/sendo/main/examples/auto-update/$f"
+   done
    chmod +x auto-update.sh backup.sh
    ```
 
-2. 要るものを入れる：Docker（Compose v2）、`jq`、`curl`、`flock`（util-linux）。Linux を想定しています
-3. 知らせなどを設定するなら、`auto-update.env.example` を `auto-update.env` に写して書く（書かなくても動きます）
+2. 要るものを入れる：Docker と Docker Compose v2（`docker compose config --format json`、`ps --status`、`up --pull never` を使う。Compose 5.7 で確かめた）、`jq`、`curl`、`flock` と `realpath`（util-linux と coreutils）。Linux を想定しています
+3. 知らせなどを設定するなら、`auto-update.env.example` を `auto-update.env` に写して書く（書かなくても動きます）。cron から動かすときに、手で動かすときと違う compose や Docker の設定（`COMPOSE_PROJECT_NAME`、`DOCKER_HOST` など）が要るなら、ここに書く
 4. 何をするかを確かめる。何も変えません
 
    ```sh
@@ -40,7 +43,7 @@ Docker Compose で動かしている Sendo と sendo-reader を、上流の `mai
    （--check なので、何も変えていない）
    ```
 
-5. cron に足す（`crontab.example`）。1 時間おきくらいを勧めます
+5. cron に足す（`crontab.example`）。1 時間おきくらいを勧めます。ログ（`auto-update.log`）は増え続けるので、logrotate などで回してください
 
 この例を使うときは、手で `docker compose pull` しないでください。手元の `main` のタグが進み、次にコンテナを作り直したとき（`.env` を変えたあとの `docker compose up -d` など）に、確かめていない版やバックアップを取っていない版が動きます。スクリプトが動いている間は、compose の操作（`up`、`restart`、`stop` など）もしないでください。
 
@@ -50,7 +53,7 @@ Docker Compose で動かしている Sendo と sendo-reader を、上流の `mai
 
 1. 前の実行が終わっていなければ、何もしない（`flock` のロック。実行が落ちれば外れる）
 2. 前の実行が途中で落ちていたら（`.auto-update/journal` が残っていたら）、書き留めた段から続きを戻して終わる
-3. `compose.yaml` から、`ghcr.io/sendo-feed/sendo` と `ghcr.io/sendo-feed/sendo-reader` のイメージを使うサービスを探す。ほかのサービスには触らない。sendo-reader のない構成（sendo のポートを出す構成）では使えない
+3. `compose.yaml` から、`ghcr.io/sendo-feed/sendo` と `ghcr.io/sendo-feed/sendo-reader` のイメージを使うサービスを探す。ほかのサービスには触らない。sendo-reader がない構成と、sendo のポートを出している構成（sendo-reader と並べていても）では、何もせずに終わる
 4. sendo か sendo-reader が動いていなければ、使う人が止めたのかもしれないので、何も変えない
 5. それぞれについて、上げてよいかを確かめる。どちらかを上げられなければ、どちらも上げない
    - `compose.yaml` のイメージが `main` のタグ（`sha-<コミット>` のタグやダイジェストで固定していない）
@@ -58,16 +61,20 @@ Docker Compose で動かしている Sendo と sendo-reader を、上流の `mai
    - そのコミットで、CI のワークフロー（`ci.yml`）が通っている
    - 前に戻して飛ばした版ではない
 6. sendo を上げるとき
-   1. イメージを取り、バックアップを置く場所の空きを確かめる（足りなければ上げない）
+   1. 前のイメージに `auto-update-prev` のタグを付けてから、新しいイメージを取る。バックアップを置く場所に書けるか、空きが足りるかを確かめる（だめなら上げない）
    2. sendo-reader を止め、sendo を止めて、`/data` をまるごと `backups/sendo-data.tar` にする（前のバックアップは消す）
    3. 新しい sendo を起こし、healthy になるのを待つ
-   4. healthy になったら、sendo-reader を起こす（上げてよければ新しいイメージで）
+   4. healthy になったら、sendo-reader を起こす（上げてよければ新しいイメージで）。終わったら、前のイメージのタグを外す（使われていなければ、イメージも消える）
    5. healthy にならなければ、sendo を止めて消し、`/data` の中身をまるごとバックアップに置き換えて、前のイメージで起こす。その版は、上流の `main` に次のコミットが入るまで上げない
 7. sendo に上げる版がなく、sendo-reader だけにあれば、sendo には触らず sendo-reader を上げる。healthy にならなければ前のイメージに戻す
 
 sendo を上げるあいだ sendo-reader を止めておくのは、healthy になる前の新しい sendo に外から要求を届かせないためです。届いた要求で同期の番号が進んでからバックアップに戻すと、端末が以後の変更を取りこぼします（[差分同期](../../docs/decisions/sync.md)の 1）。同じ理由で、sendo-reader を新しい sendo で起こしたあとは、バックアップで戻しません。
 
-上流の `main` には、文書だけの変更でも新しいイメージが出ます。そのたびに数秒〜数十秒止まってバックアップを取るので、止まるのを減らしたいときは、cron の間隔を広げてください。
+途中でコマンドが失敗したときは、その回のうちに、書き留めた段（`.auto-update/journal`）から戻します。新しい版で起こす前なら前のイメージのまま起こし直し、起こしたあとなら上の 5 のとおりに戻します。実行ごと落ちたとき（ホストの再起動など）は、次の実行が同じように戻します。同じ段から 3 回戻せなければ、止まったとして手に任せます。
+
+上流の `main` には、文書だけの変更でも新しいイメージが出ます。そのたびに、止めてバックアップを取り、新しい sendo が healthy になるまで、画面も使えません（数十秒、データが大きいときやマイグレーションが重いときは数分）。止まるのを減らしたいときは、cron の間隔を広げてください。
+
+前の版のイメージは、上げ終えたら外すので、ふつうはたまりません。戻した回に取った新しい版のイメージは、タグのないまま残るので、ときどき `docker image prune` で消してください。
 
 ## 知らせ
 
@@ -82,7 +89,20 @@ sendo を上げるあいだ sendo-reader を止めておくのは、healthy に�
 
 ## 止まったとき
 
-戻しても sendo が healthy にならないときなどは、`.auto-update/journal` に「止まった」と書き留め、以後の実行は何もしません。`docker compose logs sendo` などで原因を確かめて直したあと、`.auto-update/journal` を消してください。
+戻しても sendo が healthy にならないときなどは、`.auto-update/journal` に「止まった」（`STAGE=stuck`）と書き留め、以後の実行は何もしません（`--check` も、止まっていると出します）。`docker compose logs sendo` などで原因を確かめて直したあと、`.auto-update/journal` を消してください。
+
+止まったとき、手元の `main` のタグは新しい版のままのことがあります。そのまま `docker compose up -d` すると、壊れた新しい版をまた起こします。前の版に戻すときは、書き留めにある前のイメージにタグを付け直してから起こします。
+
+```sh
+. .auto-update/journal   # PREV_SENDO_IMAGE、PREV_READER_IMAGE、NEW_SENDO_REV などが読める
+docker compose stop reader sendo
+docker tag "$PREV_SENDO_IMAGE" ghcr.io/sendo-feed/sendo:main
+docker tag "$PREV_READER_IMAGE" ghcr.io/sendo-feed/sendo-reader:main
+# 新しい sendo を起こしたあとに止まったなら、データもバックアップに戻す（下）
+echo "$NEW_SENDO_REV" > .auto-update/skip-sendo   # この版を飛ばす
+rm .auto-update/journal
+docker compose up -d --pull never
+```
 
 バックアップを手で戻すときは、sendo-reader と sendo を止めてから、次で戻します。戻すと、sendo の同期の番号も戻ります。バックアップを取ったあとに同期した端末があるときは、その端末でログアウトしてログインし直し、最初から同期させてください。
 
