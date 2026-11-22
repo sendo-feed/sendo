@@ -56,7 +56,7 @@ command=${1:-}
 
 # sendo のコンテナ（止まっていてもよい）。restore では、消したあとなのでないこともある
 container_id() {
-  docker compose ps -aq "$service" 2>/dev/null | head -n 1
+  docker compose ps -aq "$service" 2>/dev/null | awk 'NR == 1'
 }
 
 if [[ -z $data || -z $image ]]; then
@@ -86,7 +86,7 @@ ensure_outside_data() {
 
 ensure_stopped() {
   local cid
-  cid=$(docker compose ps -q --status running "$service" 2>/dev/null | head -n 1)
+  cid=$(docker compose ps -q --status running "$service" 2>/dev/null | awk 'NR == 1')
   [[ -z $cid ]] || die "$service が動いている。止めてから（docker compose stop $service）"
 }
 

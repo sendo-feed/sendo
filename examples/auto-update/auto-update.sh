@@ -79,16 +79,16 @@ done
 
 journal=$STATE_DIR/journal
 
-# 知らせは、NOTIFY_URL を設定したときだけ送る。続けて同じ文になるとき（同じ理由で上げられない回が
-# 続くなど）は、2 回目から送らない。送れなくても、更新は止めない。URL は引数に出さない（ps に見える）
+# 知らせは、NOTIFY_URL を設定したときだけ送る。「上げなかった」が同じ理由で続くときは、2 回目から
+# 送らない（数字は比べない）。送れなくても、更新は止めない。URL は引数に出さない（ps に見える）
 notify() {
-  local text="[sendo auto-update] $*"
+  local text="[sendo auto-update] $*" key=
   log "$*"
   [[ -n $NOTIFY_URL ]] || return 0
-  if [[ $(cat "$STATE_DIR/last-notify" 2>/dev/null) == "$*" ]]; then
-    return 0
+  if [[ $* == 上げなかった：* ]]; then
+    key=$(tr -d '0-9' <<<"$*")
+    [[ $(cat "$STATE_DIR/last-notify" 2>/dev/null) != "$key" ]] || return 0
   fi
-  printf '%s' "$*" >"$STATE_DIR/last-notify"
   local body type=application/json
   case $NOTIFY_FORMAT in
   discord) body=$(jq -n --arg t "$text" '{content: $t}') ;;
@@ -98,8 +98,13 @@ notify() {
     type='text/plain; charset=utf-8'
     ;;
   esac
-  curl -fsS -m 30 -K <(printf 'url = "%s"\n' "$NOTIFY_URL") -X POST -H "Content-Type: $type" \
-    --data-binary @- <<<"$body" >/dev/null || log "知らせを送れなかった"
+  if curl -fsS -m 30 -K <(printf 'url = "%s"\n' "$NOTIFY_URL") -X POST -H "Content-Type: $type" \
+    --data-binary @- <<<"$body" >/dev/null; then
+    printf '%s' "$key" >"$STATE_DIR/last-notify" 2>/dev/null || true
+  else
+    log "知らせを送れなかった"
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -117,7 +122,7 @@ find_service() {
       | select(.value.image != null)
       | select(.value.image | startswith($r + ":") or startswith($r + "@") or . == $r)
       | "\(.key) \(.value.image)"' |
-    head -n 1
+    awk 'NR == 1'
 }
 
 # sendo に、sendo-reader を通らない入口（ポートやホストのネットワーク）があるか
@@ -127,11 +132,11 @@ has_direct_entry() {
 }
 
 running_cid() {
-  compose ps -q --status running "$1" | head -n 1
+  compose ps -q --status running "$1" | awk 'NR == 1'
 }
 
 any_cid() {
-  compose ps -aq "$1" 2>/dev/null | head -n 1
+  compose ps -aq "$1" 2>/dev/null | awk 'NR == 1'
 }
 
 image_of_container() {
@@ -286,8 +291,6 @@ rollback_reader() {
   docker tag "$PREV_READER_IMAGE" "$READER_IMAGE:main"
   up "$READER_SERVICE"
   skip_revision reader "$rev"
-  NEW_READER_REV=
-  save_journal sendo_healthy
   if wait_healthy "$READER_SERVICE"; then
     READER_RESULT=rolled_back
     notify "戻した：sendo-reader ${rev:0:7} が healthy にならないので、前のイメージに戻した。上流の main に次のコミットが入るまで上げない"
@@ -295,12 +298,18 @@ rollback_reader() {
     READER_RESULT=unhealthy
     notify "止まった：sendo-reader を前のイメージに戻しても healthy にならない。docker compose logs で確かめる"
   fi
+  # 知らせたあとで段を進める（それまでに落ちたら、この戻しをやり直す。何度やっても同じ結果になる）
+  NEW_READER_REV=
+  save_journal sendo_healthy
 }
 
-# sendo-reader が起きているか。分からなければ（docker が答えない）、起きていると見る
-reader_may_be_running() {
+# sendo-reader が起きているか。分からなければ（docker が答えない）、戻さずに抜けて、やり直しに任せる
+reader_is_running() {
   local cid
-  cid=$(running_cid "$READER_SERVICE") || return 0
+  cid=$(running_cid "$READER_SERVICE") || {
+    log "sendo-reader が起きているかを確かめられない（docker が答えない）"
+    exit 1
+  }
   [[ -n $cid ]]
 }
 
@@ -309,7 +318,7 @@ reader_may_be_running() {
 rollback_sendo() {
   save_journal rolling_back
   # sendo-reader を新しい sendo で起こしたあとに戻すと、端末が進めた同期の番号より前に戻る
-  if reader_may_be_running; then
+  if reader_is_running; then
     stuck "sendo を戻す前に sendo-reader が起きていたので、戻していない（同期の番号が食い違うため）"
   fi
   [[ -f $BACKUP_FILE ]] || stuck "sendo を戻すバックアップ（$BACKUP_FILE）がない"
@@ -382,7 +391,10 @@ resume() {
   }
   ATTEMPTS=$((ATTEMPTS + 1))
   ((ATTEMPTS <= MAX_ATTEMPTS)) || stuck "段「$STAGE」から戻すのに ${MAX_ATTEMPTS} 回失敗した"
-  save_journal "$STAGE"
+  save_journal "$STAGE" || {
+    notify "止まった：書き留め（$journal）を書けない（ディスクがいっぱい？）。段「$STAGE」のまま"
+    exit 1
+  }
   log "段「$STAGE」から戻す（${ATTEMPTS} 回目）"
   case $STAGE in
   pulled)
@@ -391,14 +403,18 @@ resume() {
     ;;
   stopping | backing_up) recover_before_start ;;
   sendo_started)
-    # 新しい版で起こす前に落ちていたら、動いていない版を「healthy にならない」と見て飛ばさない
-    local cid rev=
+    # sendo のコンテナが前のイメージのまま（新しい版で起こす前に落ちた）なら、前のイメージで起こし直す。
+    # それ以外（新しい版か、分からない）は、新しい版がマイグレーションを当てたかもしれないので、
+    # 新しい版で起こし直して healthy を待ち、だめならバックアップと組で戻す（バックアップは取り終え、
+    # sendo-reader も止めてある）
+    local cid image=
     cid=$(any_cid "$SENDO_SERVICE")
-    [[ -z $cid ]] || rev=$(revision_of_image "$(image_of_container "$cid")")
-    if [[ $rev == "$NEW_SENDO_REV" ]]; then
-      after_sendo_started
-    else
+    [[ -z $cid ]] || image=$(image_of_container "$cid" 2>/dev/null || true)
+    if [[ -n $image && $image == "$PREV_SENDO_IMAGE" ]]; then
       recover_before_start
+    else
+      up "$SENDO_SERVICE"
+      after_sendo_started
     fi
     ;;
   sendo_healthy) finish ;;
@@ -410,18 +426,28 @@ resume() {
   rolled_back) after_rolled_back ;;
   *) stuck "知らない段「$STAGE」" ;;
   esac
+  return 0
 }
 
 # 途中で失敗して抜けるとき（set -e）：その回のうちに、書き留めた段から戻す
 # （trap の中では、引数のない return が trap の前の終了コードを返すので、どの関数も return 0 と書く）
-in_recovery=false
 on_exit() {
-  local rc=$?
+  local rc=$? rc2
   trap - EXIT
-  if ((rc != 0)) && ! $in_recovery && [[ -f $journal && $(journal_stage) != stuck ]]; then
-    in_recovery=true
+  if ((rc != 0)) && [[ -f $journal && $(journal_stage) != stuck ]]; then
     log "途中で失敗した（終了コード $rc）。この回のうちに戻す"
-    resume
+    # 戻すのにも失敗したら、止まったままのことがあるので、知らせてから抜ける（次の実行がやり直す）。
+    # trap の中で張った trap は動かないので、サブシェルで動かし、終了コードを見る
+    set +e
+    (
+      set -e
+      resume
+    )
+    rc2=$?
+    set -e
+    if ((rc2 != 0)) && [[ -f $journal && $(journal_stage) != stuck ]]; then
+      notify "止まった：途中の失敗から戻すのにも失敗した（段「$(journal_stage)」）。次の実行でやり直す。続くときは README の「止まったとき」"
+    fi
   fi
   exit "$rc"
 }
@@ -607,8 +633,7 @@ main() {
   # バックアップを置けるか（書けるか、空きが足りるか）を、止める前に確かめる。
   # 前のバックアップは、新しいものを取る前に消すので、その分も空きに足す
   local need free old=0
-  mkdir -p "$BACKUP_DIR"
-  if ! { : >"$BACKUP_FILE.write-test" && rm -f "$BACKUP_FILE.write-test"; } 2>/dev/null; then
+  if ! { mkdir -p "$BACKUP_DIR" && : >"$BACKUP_FILE.write-test" && rm -f "$BACKUP_FILE.write-test"; } 2>/dev/null; then
     restore_tags
     clear_journal
     notify "上げなかった：バックアップを置く場所（$BACKUP_DIR）に書けない"
