@@ -62,13 +62,16 @@ describe("enqueueDueFeeds", () => {
 describe("runScheduled（docs/decisions/jobs.md の 12）", () => {
   const at = (time: string) => new Date(`2026-11-14T${time}:00Z`);
 
-  it("5 分の区切りでは、時期の来たフィードだけを積む", async () => {
+  it("5 分の区切りでは、時期の来たフィードと、訳文の手入れを積む", async () => {
     await testDb.exec("DELETE FROM feeds");
     const { platform, enqueued } = createTestPlatform({ now: () => NOW });
     const feed = await subscribeFeed(platform, { now: NOW });
 
     await runScheduled(platform, at("12:05"));
-    expect(enqueued).toEqual([{ type: "fetch-feed", feedId: feed.id }]);
+    expect(enqueued).toEqual([
+      { type: "fetch-feed", feedId: feed.id },
+      { type: "maintain-translations" },
+    ]);
   });
 
   it("10 分の区切りでは、言語の判定と検索の索引も積む", async () => {
@@ -79,6 +82,7 @@ describe("runScheduled（docs/decisions/jobs.md の 12）", () => {
     await runScheduled(platform, at("12:10"));
     expect(enqueued).toEqual([
       { type: "fetch-feed", feedId: feed.id },
+      { type: "maintain-translations" },
       { type: "detect-article-languages" },
       { type: "index-article-search" },
     ]);
