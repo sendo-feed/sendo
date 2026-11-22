@@ -561,6 +561,54 @@
           "folders"
         ]
       },
+      "ArticleTranslation": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "訳したタイトル"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "訳した要約"
+          },
+          "model": {
+            "type": "string",
+            "description": "訳したモデル"
+          },
+          "translatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "訳した時刻"
+          }
+        },
+        "required": [
+          "title",
+          "summary",
+          "model",
+          "translatedAt"
+        ]
+      },
+      "TranslationRequestAccepted": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "translating"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
       "Folder": {
         "type": "object",
         "properties": {
@@ -2469,6 +2517,104 @@
           },
           "400": {
             "description": "クエリが正しくない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/articles/{id}/translation": {
+      "get": {
+        "summary": "記事の訳文",
+        "description": "Sendo が日本語に訳した、記事のタイトルと要約を返す（docs/decisions/translation.md の 13）。\n訳文は外部から来たデータを LLM が訳したもので、プレーンテキスト。表示する側でエスケープする。\n訳し直すと替わる。translatedAt が変わったら取り直す。",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "訳文",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArticleTranslation"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "記事がない（not_found）か、訳文がない（no_translation）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "記事をその場で訳す",
+        "description": "訳文のない記事（翻訳の状態が queued か untranslated）を、Claude API でその場で訳す（docs/decisions/translation.md の 5）。\n受け付けたら 202 を返し、裏で訳す。訳し終えたことは、差分同期で届く。費用がかかるので、読む人が求めたときだけ呼ぶ。",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "受け付けた。状態は translating になった",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslationRequestAccepted"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "記事がない（not_found）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "訳せない記事（translation_not_supported：日本語の記事、Discord の投稿、訳すかどうかをまだ決めていない記事）か、もう訳しているか訳し終えた（translation_exists）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Sendo で翻訳が使えない（translation_unavailable：API キーがない）か、保存容量が足りない（storage_full）",
             "content": {
               "application/json": {
                 "schema": {

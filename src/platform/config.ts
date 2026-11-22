@@ -86,6 +86,24 @@ function readOAuthServerConfig(
   }
 }
 
+export interface TranslationConfig {
+  apiKey: string;
+  model: string;
+}
+
+/**
+ * 記事の翻訳の設定を読む（docs/decisions/translation.md の 9、15）。API キーがなければ翻訳は動かない。
+ * モデルは TRANSLATION_MODEL、なければ既定
+ */
+export function readTranslationConfig(
+  env: Partial<Record<"ANTHROPIC_API_KEY" | "TRANSLATION_MODEL", string>>,
+  defaultModel: string,
+): TranslationConfig | undefined {
+  const apiKey = env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) return undefined;
+  return { apiKey, model: env.TRANSLATION_MODEL?.trim() || defaultModel };
+}
+
 export type DiscordEnvName =
   | "DISCORD_CLIENT_ID"
   | "DISCORD_CLIENT_SECRET"

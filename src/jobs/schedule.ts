@@ -50,6 +50,22 @@ export async function enqueueLanguageDetection(platform: Pick<Platform, "jobs">)
 }
 
 /**
+ * 訳文の行の手入れを積む（docs/decisions/jobs.md の 12、translation.md の 1、7）。止まった翻訳を
+ * 戻すのは API キーがなくても行うので、毎回積む。投入の失敗で、ほかの定期実行を止めない
+ */
+export async function enqueueTranslationMaintenance(
+  platform: Pick<Platform, "jobs">,
+): Promise<void> {
+  try {
+    await platform.jobs.enqueue([{ type: "maintain-translations" }]);
+  } catch (error) {
+    console.warn("could not enqueue translation maintenance; retrying at the next schedule", {
+      error,
+    });
+  }
+}
+
+/**
  * 定期実行の時刻が、1 日 1 回の片付けの時刻なら、片付けの仕事を積む（docs/decisions/retention.md の 4）。
  *
  * 定期実行は SCHEDULE_INTERVAL_MINUTES おきに動くので、片付けの時刻の最初のその分の間に
@@ -98,6 +114,7 @@ export async function runScheduled(
   }
   const count = await enqueueDueFeeds(platform);
   if (count > 0) console.info("enqueued due feeds", { count });
+  await enqueueTranslationMaintenance(platform);
   if (!isBackgroundSlot(scheduledTime)) return;
   await enqueueLanguageDetection(platform);
   try {

@@ -177,6 +177,38 @@ export interface SyncUpdates {
   notify: SyncNotifier;
 }
 
+/** 訳す文。断片ごとに ID を付ける（docs/decisions/translation.md の 10） */
+export interface TranslationSegment {
+  id: string;
+  text: string;
+}
+
+export type TranslationResult =
+  /** 訳せた。返ってこなかった断片は入らない */
+  | { status: "translated"; segments: TranslationSegment[]; model: string }
+  /** 拒否された（代わりのモデルでも訳せなかった） */
+  | { status: "refused" }
+  /** 上限で切れた、または形の読めない応答 */
+  | { status: "invalid" };
+
+/** 呼び出しの失敗。やり直しても通らないもの（要求の形の誤り）は retryable が false */
+export class TranslatorError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "TranslatorError";
+  }
+}
+
+/** 記事を日本語に訳す（Claude API。docs/decisions/translation.md） */
+export interface Translator {
+  /** その場で訳す（通常の Messages API）。呼び出しが失敗したら TranslatorError を投げる */
+  translate(segments: readonly TranslationSegment[]): Promise<TranslationResult>;
+}
+
 /** アプリが実行環境から受け取るもの */
 export interface Platform {
   db: Database;
@@ -196,6 +228,8 @@ export interface Platform {
   /** 記事の主言語を調べる（Rust） */
   languageDetection: LanguageDetector;
   syncUpdates: SyncUpdates;
+  /** 記事を訳す。API キーがなければない（docs/decisions/translation.md の 15） */
+  translator?: Translator;
 }
 
 /** 取得の間隔の既定（分） */
