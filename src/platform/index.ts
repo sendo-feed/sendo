@@ -11,6 +11,7 @@ import type { ArticleCursor, ArticleListInput, InboxArticle } from "../db/inbox"
 import type { SessionIdentity } from "../db/sessions";
 import type { Job } from "../jobs/job";
 import type { SyncNotifier } from "../lib/sync-notify";
+import type { TranslationEffort } from "./config";
 
 /** 重い処理を、API の応答と切り離して後で実行する */
 export interface JobQueue {
@@ -183,9 +184,27 @@ export interface TranslationSegment {
   text: string;
 }
 
+/**
+ * 訳せた呼び出しのトークン数（応答の usage。docs/decisions/translation.md の 18）。代わりのモデルに
+ * 替わったときは、応答が返す合計
+ */
+export interface TranslationUsage {
+  /** 入力のトークン数（キャッシュに書いた・読んだ分も足す） */
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export type TranslationResult =
-  /** 訳せた。返ってこなかった断片は入らない */
-  | { status: "translated"; segments: TranslationSegment[]; model: string }
+  /**
+   * 訳せた。返ってこなかった断片は入らない。model は応答が返したモデル（代わりのモデルに替わったら、
+   * 代わりのモデル）
+   */
+  | {
+      status: "translated";
+      segments: TranslationSegment[];
+      model: string;
+      usage: TranslationUsage;
+    }
   /**
    * 拒否された（代わりのモデルでも訳せなかった）。category は拒否の応答の stop_details.category
    * （cyber など。なければ null。docs/decisions/translation.md の 17）
@@ -212,8 +231,24 @@ export class TranslatorError extends Error {
   }
 }
 
+/** 翻訳の段階（docs/decisions/translation.md の 9）。通常 ／ 長文 ／ 品質優先 */
+export type TranslationTier = "normal" | "long" | "quality";
+
 /** バッチで送る記事の段階（docs/decisions/translation.md の 9。送る本文が閾値以上なら長文） */
-export type BatchTier = "normal" | "long";
+export type BatchTier = Exclude<TranslationTier, "quality">;
+
+/** その場で訳す段階（その場の翻訳は通常、訳し直しは品質優先。docs/decisions/translation.md の 9） */
+export type OnDemandTier = Exclude<TranslationTier, "long">;
+
+/**
+ * 段階で送るときの条件（思考量とプロンプトの版）。訳文の行に残す（docs/decisions/translation.md の 9、
+ * 18）
+ */
+export interface TranslationConditions {
+  effort: TranslationEffort;
+  /** プロンプトの版（システムプロンプトと送る形を変えるたびに上げる、コードに持つ番号） */
+  promptVersion: number;
+}
 
 /**
  * バッチで訳してもらう 1 件（docs/decisions/translation.md の 4）。id は記事の ID。tier の段階の
@@ -256,12 +291,17 @@ export interface Translator {
    */
   batchTier(sentBodyChars: number): BatchTier;
   /**
-   * その場で訳す（通常の Messages API）。通常の段階で訳し、retranslation なら品質優先の段階で訳す
+   * その段階で送るときの思考量とプロンプトの版（docs/decisions/translation.md の 18）。バッチは送る印を
+   * 付けるときに、その場の翻訳は結果を書くときに、行に書く
+   */
+  conditions(tier: TranslationTier): TranslationConditions;
+  /**
+   * その場で訳す（通常の Messages API）。その場の翻訳は通常の段階、訳し直しは品質優先の段階で訳す
    * （docs/decisions/translation.md の 6、9）。呼び出しが失敗したら TranslatorError を投げる
    */
   translate(
     segments: readonly TranslationSegment[],
-    options?: { retranslation?: boolean },
+    options: { tier: OnDemandTier },
   ): Promise<TranslationResult>;
   /**
    * バッチを作って送る（Message Batches API）。バッチの ID を返す。失敗したら TranslatorError を投げる

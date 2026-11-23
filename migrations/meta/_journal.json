@@ -407,6 +407,20 @@
       "when": 1795398072841,
       "tag": "0057_article-translation-failure-sync",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "6",
+      "when": 1795424825923,
+      "tag": "0058_article-translation-conditions",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "6",
+      "when": 1795424827470,
+      "tag": "0059_article-translation-conditions-storage",
+      "breakpoints": true
     }
   ]
 }

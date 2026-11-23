@@ -15,7 +15,11 @@ import type { Job } from "../../src/jobs/job";
 import { runScheduled } from "../../src/jobs/schedule";
 import type { LanguageDetectionResult, Platform } from "../../src/platform";
 import { readTranslationConfig, type TranslationEnvName } from "../../src/platform/config";
-import { createClaudeTranslator, DEFAULT_FAMILY_MODELS } from "../../src/translation/claude";
+import {
+  createClaudeTranslator,
+  DEFAULT_FAMILY_MODELS,
+  PROMPT_VERSION,
+} from "../../src/translation/claude";
 import { splitBody } from "../../src/translation/segments";
 import { testDb } from "../db";
 import { ARTICLE_BODY } from "../fixtures/translation-article";
@@ -84,6 +88,16 @@ type Reply = {
   stopDetails?: { type: "refusal"; category: string | null; explanation: string | null };
   /** 送った断片から訳を作る（undefined を返した断片は、返さない） */
   transform?: (segment: { id: string; text: string }) => string | undefined;
+  /** 応答の usage（既定は入力 10、出力 10） */
+  usage?: Usage;
+};
+
+/** 応答の usage（実際の形の一部） */
+type Usage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 };
 
 const sse = (events: [string, unknown][]) =>
@@ -125,7 +139,7 @@ function claudeResponse(
         content: [],
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: 10, output_tokens: 0 },
+        usage: { ...(reply.usage ?? { input_tokens: 10 }), output_tokens: 0 },
       },
     },
   ];
@@ -173,7 +187,7 @@ function claudeResponse(
           stop_sequence: null,
           ...(reply.stopDetails !== undefined && { stop_details: reply.stopDetails }),
         },
-        usage: { output_tokens: 10 },
+        usage: { output_tokens: reply.usage?.output_tokens ?? 10 },
       },
     ],
     ["message_stop", { type: "message_stop" }],
@@ -240,6 +254,7 @@ const messageJson = (
   text: string,
   stop = "end_turn",
   stopDetails: Reply["stopDetails"] | null = null,
+  usage: Usage = { input_tokens: 10, output_tokens: 10 },
 ) => ({
   id: "msg_batch",
   type: "message",
@@ -249,7 +264,7 @@ const messageJson = (
   stop_reason: stop,
   stop_sequence: null,
   stop_details: stopDetails,
-  usage: { input_tokens: 10, output_tokens: 10 },
+  usage,
 });
 
 /** Message Batches API のバッチの形 */
@@ -298,6 +313,8 @@ interface Setup {
     checkFailure: (() => Response) | null;
     /** バッチの訳し方 */
     transform: Transform;
+    /** バッチの訳した応答の usage */
+    usage: Usage;
   };
   /** Models API の答え。替えると、次に一覧を取るときから効く */
   models: { reply: () => Response; requests: number; urls: URL[] };
@@ -346,6 +363,7 @@ async function setup(
     checks: [],
     checkFailure: null,
     transform: defaultTransform,
+    usage: { input_tokens: 10, output_tokens: 10 },
   };
   const fake = fakeFetch(async (url, init) => {
     const batchPath = /^\/v1\/messages\/batches(?:\/([^/]+))?(\/results)?$/.exec(url.pathname);
@@ -381,6 +399,9 @@ async function setup(
               (request.params.messages as { content: string }[])[0]?.content ?? "{}",
               batches.transform,
             ),
+            "end_turn",
+            null,
+            batches.usage,
           ),
         };
         return JSON.stringify({ custom_id: request.custom_id, result });
@@ -413,7 +434,11 @@ async function setup(
           const text = transform(segment);
           return text === undefined ? [] : [{ id: segment.id, text }];
         });
-        return claudeResponse({ text: translated(out) }, init?.signal, model);
+        return claudeResponse(
+          { text: translated(out), ...(reply.usage !== undefined && { usage: reply.usage }) },
+          init?.signal,
+          model,
+        );
       }
       return claudeResponse(reply, init?.signal, model);
     }
@@ -989,7 +1014,15 @@ describe("置き場と容量（docs/decisions/translation.md の 12）", () => {
     await runQueuedTranslation(s);
     const after = (await readStorageUsage(s.platform.db)).bytes;
     const bytes = (text: string) => new TextEncoder().encode(text).length;
-    expect(after - decided).toBe(bytes(JA_TITLE) + bytes(JA_SUMMARY) + bytes("claude-sonnet-5-5"));
+    // 訳したときの条件の文字（思考量、段階、呼び出しのモデル）も数える（決定の 18）
+    expect(after - decided).toBe(
+      bytes(JA_TITLE) +
+        bytes(JA_SUMMARY) +
+        bytes("claude-sonnet-5-5") +
+        bytes("medium") +
+        bytes("normal") +
+        bytes("claude-sonnet-5-5"),
+    );
 
     await s.platform.db.delete(articles).where(eq(articles.id, id)).run();
     expect(await translationOf(s.platform, id)).toBeUndefined();
@@ -1539,8 +1572,15 @@ describe("本文を訳す（docs/decisions/translation.md の 3、10、13）", (
     const row = await translationOf(s.platform, id);
     const bytes = (text: string | null | undefined) => new TextEncoder().encode(text ?? "").length;
     expect(row?.content).not.toBeNull();
+    // 訳したときの条件の文字（思考量、段階、呼び出しのモデル）も数える（決定の 18）
     const translatedBytes =
-      bytes(row?.title) + bytes(row?.summary) + bytes(row?.model) + bytes(row?.content);
+      bytes(row?.title) +
+      bytes(row?.summary) +
+      bytes(row?.model) +
+      bytes(row?.content) +
+      bytes(row?.effort) +
+      bytes(row?.tier) +
+      bytes(row?.callModel);
     const after = (await readStorageUsage(s.platform.db)).bytes;
     expect(after - decided).toBe(translatedBytes);
 
@@ -3683,6 +3723,14 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       summary: "訳:Comments",
       content: null,
       contentSource: null,
+      // 写せなかったので、条件は要約を送った呼び出しのもの、写した元は空（決定の 18）
+      model: "claude-sonnet-5-5",
+      effort: "medium",
+      tier: "normal",
+      callModel: "claude-sonnet-5-5",
+      titleCopiedFrom: null,
+      summaryCopiedFrom: null,
+      contentCopiedFrom: null,
     });
 
     // 原文を書いた行は、訳していないので、あとの記事の写す元にしない（タイトルを送る）
@@ -4474,6 +4522,204 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       retranslated: true,
     });
   });
+
+  // --- 訳したときの条件（決定の 18） ---
+
+  it("要約だけを送って写した行（バッチ）は、条件が写した元の行のもの、トークン数と呼び出しのモデルは要約を送った呼び出しのもので、写した部分に写した元の記事の ID が残る（決定の 18）", async () => {
+    // 先の記事は本文を送るので長文（Haiku・low）、後の記事は要約だけなので通常（Sonnet・medium）
+    const s = await setup({ feeds, env: { TRANSLATION_LONG_THRESHOLD_CHARS: "1" } });
+    s.batches.transform = mark;
+    s.batches.usage = { input_tokens: 500, output_tokens: 700 };
+    const first = await translatedFirst(s);
+    expect(await translationOf(s.platform, first)).toMatchObject({
+      model: "claude-haiku-5-5",
+      effort: "low",
+      tier: "long",
+      promptVersion: PROMPT_VERSION,
+      inputTokens: 500,
+      outputTokens: 700,
+      callModel: "claude-haiku-5-5",
+      titleCopiedFrom: null,
+      summaryCopiedFrom: null,
+      contentCopiedFrom: null,
+    });
+
+    const second = await deliver(s, "/lobsters.xml");
+    s.batches.usage = { input_tokens: 30, output_tokens: 40 };
+    await maintain(s.platform);
+    for (const batch of batchOf(s, second)) batch.ended = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, second)).toMatchObject({
+      status: "translated",
+      summary: "訳:Comments",
+      model: "claude-haiku-5-5",
+      effort: "low",
+      tier: "long",
+      promptVersion: PROMPT_VERSION,
+      inputTokens: 30,
+      outputTokens: 40,
+      callModel: "claude-sonnet-5-5",
+      titleCopiedFrom: first,
+      summaryCopiedFrom: null,
+      contentCopiedFrom: first,
+      batchTier: null,
+      batchEffort: null,
+      batchPromptVersion: null,
+    });
+  });
+
+  it("要約だけを送って写した行（その場の翻訳）も、条件は写した元の行のもの、トークン数と呼び出しのモデルは要約を送った呼び出しのもの（決定の 18）", async () => {
+    const s = await setup({ feeds, env: { TRANSLATION_LONG_THRESHOLD_CHARS: "1" } });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    const second = await requestOnDemand(s, "/lobsters.xml");
+    s.replies.push({ transform: mark, usage: { input_tokens: 21, output_tokens: 43 } });
+    await runQueuedTranslation(s);
+    expect(claudeSegments(s)).toEqual([["summary"]]);
+    expect(await translationOf(s.platform, second)).toMatchObject({
+      status: "translated",
+      model: "claude-haiku-5-5",
+      effort: "low",
+      tier: "long",
+      promptVersion: PROMPT_VERSION,
+      inputTokens: 21,
+      outputTokens: 43,
+      callModel: "claude-sonnet-5-5",
+      titleCopiedFrom: first,
+      summaryCopiedFrom: null,
+      contentCopiedFrom: first,
+    });
+  });
+
+  it.each(["batch", "on_demand"])(
+    "すべて写した行（%s）は、写した元の行の条件で、トークン数は 0、呼び出しのモデルは空（決定の 18）",
+    async (path) => {
+      const s = await setup({ feeds, env: { TRANSLATION_LONG_THRESHOLD_CHARS: "1" } });
+      s.batches.transform = mark;
+      const first = await translatedFirst(s);
+      let third: string;
+      if (path === "batch") {
+        third = await deliver(s, "/mirror.xml");
+        await maintain(s.platform);
+      } else {
+        third = await requestOnDemand(s, "/mirror.xml");
+        await runQueuedTranslation(s);
+        expect(s.claude).toHaveLength(0);
+      }
+      expect(await translationOf(s.platform, third)).toMatchObject({
+        status: "translated",
+        model: "claude-haiku-5-5",
+        effort: "low",
+        tier: "long",
+        promptVersion: PROMPT_VERSION,
+        inputTokens: 0,
+        outputTokens: 0,
+        callModel: null,
+        titleCopiedFrom: first,
+        // 要約のない記事
+        summaryCopiedFrom: null,
+        contentCopiedFrom: first,
+      });
+    },
+  );
+
+  it("本文のない記事で、タイトルを写して要約だけを送った行は、代表の部分（タイトル）を訳した写す元の条件が残る（決定の 18）", async () => {
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await deliver(s, "/hn.xml", null);
+    await maintain(s.platform);
+    for (const batch of batchOf(s, first)) batch.ended = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, first)).toMatchObject({
+      status: "translated",
+      bodyHash: NO_BODY_HASH,
+      model: "claude-sonnet-5-5",
+      effort: "medium",
+      tier: "normal",
+    });
+
+    // 設定を変えた sendo で、後の記事の要約だけを送る
+    const changed: Platform = {
+      ...s.platform,
+      translator: createClaudeTranslator({
+        ...translationConfig({ TRANSLATION_MODEL: "claude-sonnet-5", TRANSLATION_EFFORT: "high" }),
+        fetch: s.platform.fetch,
+        now: () => new Date(s.clock.ms),
+      }),
+    };
+    const second = await deliver(s, "/lobsters.xml", null);
+    await maintain(changed);
+    expect(sentSegments(batchOf(s, second)[0], second)).toEqual(["summary"]);
+    for (const batch of batchOf(s, second)) batch.ended = true;
+    await maintain(changed);
+    expect(await translationOf(s.platform, second)).toMatchObject({
+      status: "translated",
+      model: "claude-sonnet-5-5",
+      effort: "medium",
+      tier: "normal",
+      promptVersion: PROMPT_VERSION,
+      callModel: "claude-sonnet-5",
+      titleCopiedFrom: first,
+      summaryCopiedFrom: null,
+      contentCopiedFrom: null,
+    });
+  });
+
+  it("訳し直しを広げた行は、訳し直した行の条件で、トークン数は 0、呼び出しのモデルは空。写した部分に訳し直した記事の ID が残り、写さなかった部分の写した元は変わらない（決定の 18）", async () => {
+    const s = await setup({ feeds, env: { RETRANSLATION_EFFORT: "high" } });
+    s.batches.transform = mark;
+    const first = await translatedFirst(s);
+    // 後の記事は、先の記事からタイトルと本文を写し、要約を送る
+    const second = await translatedLater(s, "/lobsters.xml");
+    // すべて写す。タイトルと本文は新しく訳した後の記事から、要約は原文の要約が同じ先の記事から
+    const copy = await translatedLater(s, "/hn-copy.xml");
+    expect(await translationOf(s.platform, copy)).toMatchObject({
+      titleCopiedFrom: second,
+      summaryCopiedFrom: first,
+      contentCopiedFrom: second,
+    });
+
+    // 後の記事を訳し直すと、先の記事と写した記事に広がる
+    s.replies.length = 0;
+    s.enqueued.length = 0;
+    expect((await retranslate(s, second)).response.status).toBe(202);
+    const job = s.enqueued.find((j) => j.type === "translate-article" && j.articleId === second);
+    if (!job) throw new Error("no retranslation job");
+    s.replies.push({ transform: opusMark, usage: { input_tokens: 77, output_tokens: 88 } });
+    await runJob(s.platform, job);
+    const quality = {
+      model: "claude-opus-5-5",
+      effort: "high",
+      tier: "quality",
+      promptVersion: PROMPT_VERSION,
+      retranslated: true,
+    };
+    // 訳し直した行は、すべて送ったので写した元は空
+    expect(await translationOf(s.platform, second)).toMatchObject({
+      ...quality,
+      inputTokens: 77,
+      outputTokens: 88,
+      callModel: "claude-opus-5-5",
+      titleCopiedFrom: null,
+      summaryCopiedFrom: null,
+      contentCopiedFrom: null,
+    });
+    const spreadTo = { ...quality, inputTokens: 0, outputTokens: 0, callModel: null };
+    // 先の記事：タイトルと本文を写す。原文の要約が違うので要約は写さず、送って訳したまま
+    expect(await translationOf(s.platform, first)).toMatchObject({
+      ...spreadTo,
+      titleCopiedFrom: second,
+      summaryCopiedFrom: null,
+      contentCopiedFrom: second,
+    });
+    // 写した記事：要約は写さないので、先の記事から写したまま
+    expect(await translationOf(s.platform, copy)).toMatchObject({
+      ...spreadTo,
+      titleCopiedFrom: second,
+      summaryCopiedFrom: first,
+      contentCopiedFrom: second,
+    });
+  });
 });
 
 describe("訳せなかった理由（docs/decisions/translation.md の 17）", () => {
@@ -4850,5 +5096,331 @@ describe("訳せなかった理由（docs/decisions/translation.md の 17）", (
     s.replies.push(refusedBy(cyber));
     await runQueuedTranslation(s);
     expect(await reasonOf(s, id)).toEqual(noReason("translated"));
+  });
+});
+
+describe("訳したときの条件（docs/decisions/translation.md の 9、18）", () => {
+  /** 条件の列のうち、まだ何も書いていない値（送った条件も含む） */
+  const noConditions = {
+    model: null,
+    effort: null,
+    tier: null,
+    promptVersion: null,
+    inputTokens: null,
+    outputTokens: null,
+    callModel: null,
+    titleCopiedFrom: null,
+    summaryCopiedFrom: null,
+    contentCopiedFrom: null,
+    batchTier: null,
+    batchEffort: null,
+    batchPromptVersion: null,
+  };
+  /** 訳したときの条件の列（比べるため） */
+  const conditionsOf = (row: Awaited<ReturnType<typeof translationOf>>) => ({
+    model: row?.model,
+    effort: row?.effort,
+    tier: row?.tier,
+    promptVersion: row?.promptVersion,
+    inputTokens: row?.inputTokens,
+    outputTokens: row?.outputTokens,
+    callModel: row?.callModel,
+    titleCopiedFrom: row?.titleCopiedFrom,
+    summaryCopiedFrom: row?.summaryCopiedFrom,
+    contentCopiedFrom: row?.contentCopiedFrom,
+  });
+
+  /** 訳すかどうかを決め（バッチには送らない）、英語の記事のその場の翻訳を受け付ける */
+  async function onDemand(s: Setup): Promise<string> {
+    await decideTranslations(s.platform.db);
+    const id = await articleId(s.platform, "en");
+    s.enqueued.length = 0;
+    expect((await request(s, id)).response.status).toBe(202);
+    return id;
+  }
+
+  /** 設定を変えた翻訳で動く sendo（送ってから結果が返るまでに設定を変える） */
+  const withEnv = (s: Setup, env: Partial<Record<TranslationEnvName, string>>): Platform => ({
+    ...s.platform,
+    translator: createClaudeTranslator({
+      ...translationConfig(env),
+      fetch: s.platform.fetch,
+      now: () => new Date(s.clock.ms),
+    }),
+  });
+
+  it("その場の翻訳は、応答のモデル、通常の段階の思考量・段階、プロンプトの版、トークン数と呼び出しのモデルを残し、写した元は空。GET と差分同期には載せない", async () => {
+    const s = await setup();
+    const id = await onDemand(s);
+    s.replies.push({
+      transform: defaultTransform,
+      usage: { input_tokens: 1200, cache_read_input_tokens: 34, output_tokens: 560 },
+    });
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      ...noConditions,
+      status: "translated",
+      model: "claude-sonnet-5-5",
+      effort: "medium",
+      tier: "normal",
+      promptVersion: PROMPT_VERSION,
+      // 入力は、キャッシュから読んだ分も足す
+      inputTokens: 1234,
+      outputTokens: 560,
+      callModel: "claude-sonnet-5-5",
+    });
+
+    // 段階、プロンプトの版、トークン数、写した元は返さず、配らない
+    const got = await requestApp(s.platform, `/api/v1/articles/${id}/translation`);
+    expect(Object.keys((await got.json()) as object).sort()).toEqual([
+      "content",
+      "contentSource",
+      "model",
+      "summary",
+      "title",
+      "translatedAt",
+    ]);
+    const synced = (await (await requestApp(s.platform, "/api/v1/sync")).json()) as {
+      articles: { id: string; translation?: Record<string, unknown> | null }[];
+    };
+    const translation = synced.articles.find((a) => a.id === id)?.translation;
+    expect(translation).toMatchObject({ status: "translated" });
+    for (const key of [
+      "tier",
+      "promptVersion",
+      "inputTokens",
+      "outputTokens",
+      "callModel",
+      "titleCopiedFrom",
+      "summaryCopiedFrom",
+      "contentCopiedFrom",
+    ]) {
+      expect(translation).not.toHaveProperty(key);
+    }
+  });
+
+  it("思考量は、設定で選んだ通常の段階の思考量を残す", async () => {
+    const s = await setup({ env: { TRANSLATION_EFFORT: "high" } });
+    const id = await onDemand(s);
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      effort: "high",
+      tier: "normal",
+    });
+  });
+
+  it("代わりのモデルに替わって訳せたら、代わりのモデルと、応答が返す合計のトークン数を残す", async () => {
+    const s = await setup();
+    const id = await onDemand(s);
+    s.replies.push({
+      declinedText: '{"segments":[{"id":"ti',
+      text: translated([
+        { id: "title", text: JA_TITLE },
+        { id: "summary", text: JA_SUMMARY },
+      ]),
+      usage: { input_tokens: 300, output_tokens: 900 },
+    });
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      model: "claude-opus-5",
+      effort: "medium",
+      tier: "normal",
+      promptVersion: PROMPT_VERSION,
+      inputTokens: 300,
+      outputTokens: 900,
+      callModel: "claude-opus-5",
+    });
+  });
+
+  it("訳し直すと品質優先の段階の条件が残り、訳し直しが失敗してもとの訳文に戻ったときは、条件を書き換えない", async () => {
+    const s = await setup({ env: { RETRANSLATION_EFFORT: "high" } });
+    const id = await translatedArticle(s);
+    const before = await translationOf(s.platform, id);
+    expect(before).toMatchObject({ model: "claude-sonnet-5-5", effort: "medium", tier: "normal" });
+
+    // やり直しても通らない失敗：もとの訳文のまま translated に戻り、条件はもとのまま
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    s.replies.push({ status: 400, errorType: "invalid_request_error" });
+    await retranslate(s, id);
+    await runQueuedTranslation(s);
+    const failed = await translationOf(s.platform, id);
+    expect(failed).toMatchObject({ status: "translated", retranslated: false });
+    expect(conditionsOf(failed)).toEqual(conditionsOf(before));
+
+    s.enqueued.length = 0;
+    s.replies.push({ ...opusReply, usage: { input_tokens: 111, output_tokens: 222 } });
+    await retranslate(s, id);
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      retranslated: true,
+      model: "claude-opus-5-5",
+      effort: "high",
+      tier: "quality",
+      promptVersion: PROMPT_VERSION,
+      inputTokens: 111,
+      outputTokens: 222,
+      callModel: "claude-opus-5-5",
+      titleCopiedFrom: null,
+      summaryCopiedFrom: null,
+      contentCopiedFrom: null,
+    });
+  });
+
+  it("バッチは、送る印を付けたときに送った条件を書き、送ったあとに設定を変えても、結果を書くときに送った条件を写す。送った条件は印と一緒に外れる", async () => {
+    // 本文のある記事は長文（Haiku・low）、本文のない記事は通常（Sonnet・medium）で、同じバッチで送る
+    const s = await setup({
+      body: "<p>Codemods change every call site.</p>",
+      extraEnglish: 1,
+      env: { TRANSLATION_LONG_THRESHOLD_CHARS: "1" },
+    });
+    const long = await articleId(s.platform, "en");
+    const normal = await articleId(s.platform, "en-0");
+    await maintain(s.platform);
+    expect(s.batches.list).toHaveLength(1);
+    expect(await translationOf(s.platform, long)).toMatchObject({
+      status: "queued",
+      batchTier: "long",
+      batchEffort: "low",
+      batchPromptVersion: PROMPT_VERSION,
+      // 配る条件は、結果を書くまで書かない
+      model: null,
+      effort: null,
+      tier: null,
+      promptVersion: null,
+    });
+    expect(await translationOf(s.platform, normal)).toMatchObject({
+      batchTier: "normal",
+      batchEffort: "medium",
+      batchPromptVersion: PROMPT_VERSION,
+    });
+
+    // 送ったあとに、段階の思考量と閾値を変える
+    const changed = withEnv(s, {
+      TRANSLATION_EFFORT: "high",
+      TRANSLATION_LONG_EFFORT: "max",
+      TRANSLATION_LONG_THRESHOLD_CHARS: "60000",
+    });
+    const batch = s.batches.list[0];
+    if (batch) batch.ended = true;
+    s.batches.usage = { input_tokens: 4321, output_tokens: 876 };
+    await maintain(changed);
+    const cleared = {
+      batchTier: null,
+      batchEffort: null,
+      batchPromptVersion: null,
+      batchKey: null,
+    };
+    expect(await translationOf(s.platform, long)).toMatchObject({
+      ...cleared,
+      status: "translated",
+      model: "claude-haiku-5-5",
+      effort: "low",
+      tier: "long",
+      promptVersion: PROMPT_VERSION,
+      inputTokens: 4321,
+      outputTokens: 876,
+      callModel: "claude-haiku-5-5",
+      titleCopiedFrom: null,
+      summaryCopiedFrom: null,
+      contentCopiedFrom: null,
+    });
+    expect(await translationOf(s.platform, normal)).toMatchObject({
+      ...cleared,
+      status: "translated",
+      model: "claude-sonnet-5-5",
+      effort: "medium",
+      tier: "normal",
+      promptVersion: PROMPT_VERSION,
+      callModel: "claude-sonnet-5-5",
+    });
+  });
+
+  it("送った条件は、待ちに戻すときも印と一緒に外れる（作るのを断られた、作れたか分からないまま 1 時間たった、expired）", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    const sent = { batchTier: "normal", batchEffort: "medium", batchPromptVersion: PROMPT_VERSION };
+    const cleared = {
+      status: "queued",
+      batchKey: null,
+      batchTier: null,
+      batchEffort: null,
+      batchPromptVersion: null,
+    };
+    /** 定期実行を動かし、送る印を付ける直前（待ちに戻したあと、送り直す前）の行を返す */
+    async function maintainAndPeek() {
+      let peeked: Awaited<ReturnType<typeof translationOf>>;
+      const hook = statementHook(/update article_translations set batch_key = \?/, async () => {
+        peeked = await translationOf(s.platform, en);
+      });
+      await maintain({ ...s.platform, db: hook.db });
+      expect(hook.fired()).toBe(true);
+      return peeked;
+    }
+
+    // 作るのを断られた（すぐ待ちに戻す）
+    s.batches.createFailure = () =>
+      Response.json(
+        { type: "error", error: { type: "authentication_error", message: "x" } },
+        { status: 401 },
+      );
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject(cleared);
+
+    // 作れたか分からない（印が残る）。1 時間たったら、送り直す前に外す
+    s.batches.createFailure = () => {
+      throw new TypeError("fetch failed");
+    };
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({ batchId: null, ...sent });
+    s.batches.createFailure = null;
+    await testDb.exec(
+      `UPDATE article_translations SET batch_marked_at = batch_marked_at - ${BATCH_MARK_TTL_MS}`,
+    );
+    expect(await maintainAndPeek()).toMatchObject(cleared);
+    expect(await translationOf(s.platform, en)).toMatchObject(sent);
+
+    // expired（待ちに戻して回数を数える）
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    batch.results = new Map([[en, { type: "expired" }]]);
+    expect(await maintainAndPeek()).toMatchObject({ ...cleared, batchAttempts: 1 });
+  });
+
+  it("訳せずに untranslated にした行（その場の翻訳の拒否、バッチの拒否）には、条件を書かない", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const id = await onDemand(s);
+    s.replies.push({ text: "", stop: "refusal" });
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      ...noConditions,
+      status: "untranslated",
+    });
+
+    const t = await setup({ extraEnglish: 1 });
+    const other = await articleId(t.platform, "en-0");
+    await maintain(t.platform);
+    const batch = t.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    batch.results = new Map([
+      [
+        other,
+        {
+          type: "succeeded",
+          message: messageJson("claude-sonnet-5-5", "", "refusal"),
+        },
+      ],
+    ]);
+    await maintain(t.platform);
+    expect(await translationOf(t.platform, other)).toMatchObject({
+      ...noConditions,
+      status: "untranslated",
+    });
   });
 });
