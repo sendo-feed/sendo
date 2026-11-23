@@ -46,19 +46,28 @@ export function findPendingArticleLanguages(
   revision: number,
   limit: number,
   after?: LanguageCursor,
+  /** 指定したら、この記事だけ */
+  articleIds?: readonly string[],
 ) {
+  const only = (column: string) =>
+    articleIds === undefined
+      ? sql``
+      : sql`and ${sql.raw(column)} in (${sql.join(
+          articleIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})`;
   return db.all<{ articleId: string; source: LanguageSource }>(sql`
     select articleId, source from (
       select a.id as articleId, case when a.content_key is null then 'metadata' else 'feed' end as source
       from articles a left join article_languages l on l.article_id = a.id
         and l.source = case when a.content_key is null then 'metadata' else 'feed' end
-      where l.pipeline_revision is null or l.pipeline_revision < ${revision}
+      where (l.pipeline_revision is null or l.pipeline_revision < ${revision}) ${only("a.id")}
       union all
       select a.id as articleId, 'page' as source
       from page_contents p join articles a on a.id = p.article_id
       left join article_languages l on l.article_id = a.id and l.source = 'page'
       where p.status = 'extracted' and p.html is not null
-        and (l.pipeline_revision is null or l.pipeline_revision < ${revision})
+        and (l.pipeline_revision is null or l.pipeline_revision < ${revision}) ${only("a.id")}
     ) where ${after ? sql`(articleId, source) > (${after.articleId}, ${after.source})` : sql`1`}
     order by articleId, source limit ${limit}
   `);

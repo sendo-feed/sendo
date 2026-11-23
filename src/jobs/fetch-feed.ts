@@ -21,6 +21,7 @@ import { findFeedIcon, ICON_CHECK_INTERVAL_MS } from "../fetcher/find-icon";
 import { htmlToText, type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
+import { enqueueArticleLanguages } from "./article-languages";
 import { runFetchDiscord } from "./fetch-discord";
 import {
   backoffInterval,
@@ -157,6 +158,11 @@ export async function runFetchFeed(
     await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
     // 新しい記事ごとに、ページから本文を抜く仕事を積む（docs/decisions/content.md の 10）。ここで落ちて積めなくても、読者が開いたときに抜く
     await enqueuePageContents(platform, insertedArticles);
+    // 新しい記事の言語の判定も積む（docs/decisions/jobs.md の 13）。積めなければ定期実行が拾う
+    await enqueueArticleLanguages(
+      platform,
+      insertedArticles.map((article) => article.id),
+    );
 
     // フィードに今載っているかは、解析できたときだけ記録する。打ち切った場合は、
     // 見えなかった記事を「外れた」と扱わない（MAX_ITEMS 件での打ち切りも含む）。

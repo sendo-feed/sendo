@@ -2,6 +2,9 @@ import { z } from "zod";
 import { MAX_FOLDER_NAME_LENGTH } from "../db/folders";
 import { MAX_URL_LENGTH } from "../opml";
 
+/** 記事を指定した言語の判定の仕事 1 つに入れる記事の数（docs/decisions/jobs.md の 4、13） */
+export const LANGUAGE_ARTICLES_PER_JOB = 10;
+
 /**
  * インポートを 1 つのジョブで処理する件数。
  *
@@ -19,9 +22,13 @@ export const jobSchema = z.discriminatedUnion("type", [
   /** 1 日 1 回の片付け（docs/decisions/retention.md の 4、5）。定期実行が積む */
   z.object({ type: z.literal("clean-up") }),
   z.object({ type: z.literal("index-article-search") }),
-  /** 未処理・古い版の言語判定を小分けに進める。定期実行と起動時に積む */
+  /**
+   * 未処理・古い版の言語判定を小分けに進める。定期実行と起動時に積む。articleIds があれば、その記事
+   * だけ（取り込んだとき、ページを抜き終えたとき。docs/decisions/jobs.md の 13）
+   */
   z.object({
     type: z.literal("detect-article-languages"),
+    articleIds: z.array(z.string().min(1)).min(1).max(LANGUAGE_ARTICLES_PER_JOB).optional(),
     after: z
       .object({
         articleId: z.string().min(1),
