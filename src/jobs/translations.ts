@@ -22,6 +22,7 @@ import {
   listBatchesToCheck,
   listBatchRows,
   listRetranslationTargets,
+  listUndecidedArticles,
   markForBatch,
   NO_BODY_HASH,
   releaseStaleBatchMarks,
@@ -69,6 +70,46 @@ export async function notifyTranslationChanged(
     return;
   }
   await notifySync(platform.syncUpdates.notify, userIds);
+}
+
+/**
+ * 指定した記事について、訳すかどうかを決めて行を作り、持つ人に知らせる（判定のあとの連鎖。
+ * docs/decisions/jobs.md の 13、translation.md の 1）。API キーがなければ何もしない
+ */
+export async function runDecideTranslations(
+  platform: Pick<Platform, "db" | "syncUpdates" | "translator">,
+  articleIds: readonly string[],
+): Promise<number> {
+  if (platform.translator === undefined) return 0;
+  const decided = await decideTranslations(platform.db, articleIds.length, articleIds);
+  await notifyTranslationChanged(
+    platform,
+    decided.filter((row) => row.delivered).map((row) => row.articleId),
+  );
+  return decided.length;
+}
+
+/**
+ * 訳すかどうかを決める仕事を、その記事について積む（判定を保存したとき、ページを抜けなかったと
+ * 記録したとき。docs/decisions/jobs.md の 13）。API キーがあり、まだ訳文の行がなく、取り込んでから
+ * 1 日以内の記事だけを 1 つの仕事にまとめる。積めなくても呼んだ側の処理は失敗にしない（5 分ごとの
+ * 定期実行が拾う）
+ */
+export async function enqueueDecideTranslations(
+  platform: Pick<Platform, "db" | "jobs" | "translator">,
+  articleIds: readonly string[],
+): Promise<void> {
+  if (platform.translator === undefined || articleIds.length === 0) return;
+  try {
+    const undecided = await listUndecidedArticles(platform.db, [...new Set(articleIds)]);
+    if (undecided.length > 0) {
+      await platform.jobs.enqueue([{ type: "decide-translations", articleIds: undecided }]);
+    }
+  } catch (error) {
+    console.warn("could not enqueue translation decisions; retrying at the next schedule", {
+      error,
+    });
+  }
 }
 
 type MaintainPlatform = Pick<

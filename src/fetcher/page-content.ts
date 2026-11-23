@@ -18,6 +18,7 @@ import {
 } from "../db/page-contents";
 import { enqueueArticleLanguages } from "../jobs/article-languages";
 import { canStoreArticles } from "../jobs/storage";
+import { enqueueDecideTranslations } from "../jobs/translations";
 import { sanitizeHtml } from "../lib/sanitize-html";
 import type { PageContentExtractor, Platform } from "../platform";
 import { FetchPageError, fetchPage } from "./fetch-page";
@@ -29,7 +30,10 @@ import { RobotsCache } from "./robots";
 /** 返す本文。html は保存したもの（サニタイズ済み）。返す前に、もう一度サニタイズする */
 export type PageContentResult = { status: "ok"; html: string } | { status: "unavailable" };
 
-type PageContentPlatform = Pick<Platform, "db" | "fetch" | "now" | "retentionConfig" | "jobs">;
+type PageContentPlatform = Pick<
+  Platform,
+  "db" | "fetch" | "now" | "retentionConfig" | "jobs" | "translator"
+>;
 
 /**
  * 同じ記事を、同じプロセスで同時に抜かないようにする（抜く仕事と、開いたときの抜き取りが重なった
@@ -121,6 +125,8 @@ async function extractAndRecord(
   const html = await extract(platform, extractor, article, ticket);
   if (html === null) {
     await recordFailedPageContent(platform.db, { articleId: article.id, now: platform.now() });
+    // ページの判定を待たずに、訳すかどうかを決める（docs/decisions/jobs.md の 13）
+    await enqueueDecideTranslations(platform, [article.id]);
     return { status: "unavailable" };
   }
   // 抜く仕事と開いたときの抜き取りが重なったら、先に書いたほうが残る。残ったほうを返す

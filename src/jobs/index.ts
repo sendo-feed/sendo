@@ -6,7 +6,7 @@ import { runCleanUp } from "./clean-up";
 import { runFetchFeed } from "./fetch-feed";
 import { runImportFeeds } from "./import-feeds";
 import type { Job } from "./job";
-import { maintainTranslations, runTranslateArticle } from "./translations";
+import { maintainTranslations, runDecideTranslations, runTranslateArticle } from "./translations";
 
 /** キューから受け取った仕事を1つ実行する。例外を投げたら、キューがやり直す */
 export async function runJob(platform: Platform, job: Job): Promise<void> {
@@ -35,6 +35,10 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
       if (Object.values(result).some((count) => count > 0)) {
         console.info("maintained translations", result);
       }
+      return;
+    }
+    case "decide-translations": {
+      await runDecideTranslations(platform, job.articleIds);
       return;
     }
     case "translate-article": {

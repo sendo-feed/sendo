@@ -12,6 +12,7 @@ import { configureStorage, readStorageUsage } from "../db/storage";
 import { escapeHtml } from "../lib/html";
 import type { Platform } from "../platform";
 import { LANGUAGE_ARTICLES_PER_JOB } from "./job";
+import { enqueueDecideTranslations } from "./translations";
 
 /** 1 つの仕事で判定する件数（docs/decisions/jobs.md の 4）。残りは次の仕事に引き継ぐ */
 export const LANGUAGE_BATCH_SIZE = 10;
@@ -21,7 +22,10 @@ export const LANGUAGE_BATCH_SIZE = 10;
  * その記事の未処理の入力元だけ。残りは同じ記事の続きの仕事に引き継ぐ。容量が足りなければ続けない
  */
 export async function detectArticleLanguages(
-  platform: Pick<Platform, "db" | "content" | "jobs" | "languageDetection" | "retentionConfig">,
+  platform: Pick<
+    Platform,
+    "db" | "content" | "jobs" | "languageDetection" | "retentionConfig" | "translator"
+  >,
   after?: LanguageCursor,
   articleIds?: readonly string[],
 ): Promise<void> {
@@ -35,6 +39,8 @@ export async function detectArticleLanguages(
     articleIds,
   );
   let capacityBlocked = false;
+  /** 判定を保存した記事（訳すかどうかを決める仕事を積む） */
+  const stored: string[] = [];
   for (const { articleId, source } of pending.slice(0, LANGUAGE_BATCH_SIZE)) {
     const current = await getArticleLanguage(platform.db, articleId, source);
     if (current && current.pipelineRevision >= detector.pipelineRevision) continue;
@@ -74,7 +80,7 @@ export async function detectArticleLanguages(
       console.warn("could not detect article language", { articleId, source, error });
       continue;
     }
-    const stored = await recordArticleLanguage(platform.db, {
+    const saved = await recordArticleLanguage(platform.db, {
       ...result,
       articleId,
       source,
@@ -82,7 +88,9 @@ export async function detectArticleLanguages(
       pipelineRevision: detector.pipelineRevision,
       status: source === "metadata" && result.status === "detected" ? "provisional" : result.status,
     });
-    if (!stored) {
+    if (saved) {
+      stored.push(articleId);
+    } else {
       const usage = await readStorageUsage(platform.db);
       if (usage.bytes + ARTICLE_LANGUAGE_BYTES > usage.limitBytes) {
         capacityBlocked = true;
@@ -90,6 +98,8 @@ export async function detectArticleLanguages(
       }
     }
   }
+  // 保存した記事について、訳すかどうかを決める仕事を積む（docs/decisions/jobs.md の 13）
+  await enqueueDecideTranslations(platform, stored);
   // 読めない本文が先頭にたまっても、カーソルを進めてほかの記事を処理する。
   // 容量不足では連続投入せず、定期実行で先頭から拾い直す。
   const last = pending[LANGUAGE_BATCH_SIZE - 1];
