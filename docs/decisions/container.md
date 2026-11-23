@@ -38,7 +38,7 @@ Sendo は、コンテナ（Node ＋ SQLite）だけで動かす（[テックス�
     - `main` に変更が入るたびに、`main` のタグと、コミットごとの `sha-<コミット>` のタグを付けて出す。版を切るようになったら、版のタグ（`1.2.3`、`1.2`）と `latest` も付ける
     - amd64 と arm64 の両方で作る。Rust のネイティブのモジュールも、それぞれの CPU 向けにビルドしてイメージに入れる
     - イメージは公開する。使う人は `docker login` せずに取ってこられる
-11. **設定は環境変数で渡す**（`PUBLIC_URL`、`READER_URL`、`ALLOWED_EMAILS`、`FETCH_INTERVAL_MINUTES`、`STORAGE_LIMIT_MIB`、`ANTHROPIC_API_KEY`、`TRANSLATION_MODEL`、`RETRANSLATION_MODEL` など）。秘密も、`.env` から環境変数として渡す。何も入れなければ、コードの既定値で動く。
+11. **設定は環境変数で渡す**（`PUBLIC_URL`、`READER_URL`、`ALLOWED_EMAILS`、`FETCH_INTERVAL_MINUTES`、`STORAGE_LIMIT_MIB`、`ANTHROPIC_API_KEY`、`TRANSLATION_MODEL`、`RETRANSLATION_MODEL`、`TRANSLATION_AUTO_BODY_CHARS` など）。秘密も、`.env` から環境変数として渡す。何も入れなければ、コードの既定値で動く。
 12. **テストは Node で動かす。Rust の処理は cargo test で確かめ、Node から呼べることは Node のテストで確かめる。** CI では、`main` への push と、Markdown 以外のファイルを変える PR で、すべてを通す。Markdown だけを変える PR では、決定の文書の検査だけを動かす。
 13. **自動で更新したい人には、上流に置いた更新のスクリプトの例を勧める。** 基本の手順は、手で `docker compose pull` するまま（10）にし、自動の更新を既定にしない。
     - 例は sendo のリポジトリに置き、README の更新の手順から案内する。使う人が、`compose.yaml` を置いたマシンで cron などから動かす。コンテナの中には更新の仕組みを入れない（Docker のソケットをコンテナに渡さない）。対象は sendo と sendo-reader を並べた構成（7）だけにし、sendo-reader のない構成では使わない
