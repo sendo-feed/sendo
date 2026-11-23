@@ -80,6 +80,26 @@ function isImgurImageUrl(href: string): boolean {
   );
 }
 
+const IMGUR_POST_PATH = /^\/(?:a\/|gallery\/)?[A-Za-z0-9]+$/;
+
+/**
+ * Imgur の公式埋め込みの中のリンクが、投稿やアルバムのページを指していれば、取りにいく URL
+ * （クエリとハッシュを除いたもの）を返す（docs/decisions/content.md の 22）。絶対の URL にしたあとで見る
+ */
+function imgurPostUrl(href: string): string | null {
+  const url = new URL(href);
+  if (
+    (url.protocol !== "https:" && url.protocol !== "http:") ||
+    url.host !== "imgur.com" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    !IMGUR_POST_PATH.test(url.pathname)
+  ) {
+    return null;
+  }
+  return `${url.protocol}//${url.host}${url.pathname}`;
+}
+
 /** X の公式の埋め込みコードの引用に付く class */
 const X_EMBED = "twitter-tweet";
 /** 投稿の ID の印（docs/decisions/content.md の 2）。sendo が付け、出力に残る */
@@ -105,8 +125,22 @@ function xPostId(href: string): string | null {
   return X_POST_PATH.exec(url.pathname)?.[1] ?? null;
 }
 
-function sanitizeToParts(html: string, baseUrl: string): Part[] {
+type SanitizeOptions = {
+  /**
+   * Imgur の投稿のページから調べた画像（投稿のページの URL → 画像の URL）。投稿のページを書いた
+   * 公式埋め込みの引用の終わりに、この画像を足す（docs/decisions/content.md の 22）
+   */
+  imgurPostImages?: ReadonlyMap<string, string>;
+};
+
+function sanitizeToParts(
+  html: string,
+  baseUrl: string,
+  options: SanitizeOptions = {},
+): { parts: Part[]; imgurPosts: string[] } {
   const parts: Part[] = [];
+  /** 投稿のページを書いた公式埋め込みの、取りにいく URL（出てきた順、重なりなし） */
+  const imgurPosts: string[] = [];
   /** 開いている（閉じタグを出していない）要素 */
   const open: string[] = [];
   /** 中身ごと落としている要素と、その入れ子の数 */
@@ -121,6 +155,8 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
   let imgur: {
     depth: number;
     image: string | null;
+    /** 投稿やアルバムのページを書いたリンク（最初の 1 つ）の、取りにいく URL */
+    post: string | null;
     hasImage: boolean;
     link: { href: string; depth: number; hasContent: boolean } | null;
   } | null = null;
@@ -157,7 +193,16 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
     }
     if (imgur && open.length === imgur.depth) {
       // 中のリンクは、ここまでに閉じている（画像は、リンクの外に置く）
-      if (imgur.image !== null && !imgur.hasImage) parts.push({ image: imgur.image, rest: "" });
+      if (!imgur.hasImage) {
+        if (imgur.image !== null) {
+          parts.push({ image: imgur.image, rest: "" });
+        } else if (imgur.post !== null) {
+          // 直リンクがなく、画像も残らない引用だけが、投稿のページを調べる対象（決定の 22）
+          if (!imgurPosts.includes(imgur.post)) imgurPosts.push(imgur.post);
+          const image = options.imgurPostImages?.get(imgur.post);
+          if (image !== undefined) parts.push({ image, rest: "" });
+        }
+      }
       imgur = null;
     }
     const quote = xPosts.at(-1);
@@ -261,6 +306,7 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       pushLink(href);
       // 当てはまるリンクがいくつもあれば、最初の 1 つを使う
       if (imgur && imgur.image === null && isImgurImageUrl(href)) imgur.image = href;
+      if (imgur && imgur.post === null) imgur.post = imgurPostUrl(href);
       if (imgur) imgur.link = { href, depth: open.length + 1, hasContent: false };
     } else {
       let extra = "";
@@ -279,7 +325,7 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       imgur === null &&
       (attributes.get("class") ?? "").split(/\s+/).includes(IMGUR_EMBED)
     ) {
-      imgur = { depth: open.length, image: null, hasImage: false, link: null };
+      imgur = { depth: open.length, image: null, post: null, hasImage: false, link: null };
     }
     // 印は出力に残るので、保存した本文をもう一度通したときは、印のある引用として調べ直す。
     // 印の値は使わず、引用の中のリンクから作り直す
@@ -293,7 +339,7 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
   }
 
   while (open.length > 0) closeTop();
-  return parts;
+  return { parts, imgurPosts };
 }
 
 function link(href: string): string {
@@ -306,10 +352,19 @@ const image = (src: string, rest: string) => `<img src="${escapeHtml(src)}"${res
  * 外部から来た HTML をサニタイズする。リンクと画像の URL は、baseUrl を基準に絶対の URL にする。
  * 画像の URL は、もとのまま（保存するときに使う）
  */
-export function sanitizeHtml(html: string, baseUrl: string): string {
-  return sanitizeToParts(html, baseUrl)
-    .map((part) => (typeof part === "string" ? part : image(part.image, part.rest)))
+export function sanitizeHtml(html: string, baseUrl: string, options?: SanitizeOptions): string {
+  return sanitizeToParts(html, baseUrl, options)
+    .parts.map((part) => (typeof part === "string" ? part : image(part.image, part.rest)))
     .join("");
+}
+
+/**
+ * サニタイズと同じ読み方で、投稿やアルバムのページを書いた Imgur の公式埋め込みを探し、取りにいく
+ * URL を出てきた順に返す（docs/decisions/content.md の 22）。見分ける手掛かりの class は、保存した
+ * 本文には残らないので、抜いた HTML（最初のサニタイズの前）に使う
+ */
+export function findImgurPosts(html: string, baseUrl: string): string[] {
+  return sanitizeToParts(html, baseUrl).imgurPosts;
 }
 
 /**
@@ -322,7 +377,7 @@ export async function sanitizeHtmlWithImages(
   toImageUrl: (url: string) => Promise<string | null>,
 ): Promise<string> {
   const parts = await Promise.all(
-    sanitizeToParts(html, baseUrl).map(async (part) => {
+    sanitizeToParts(html, baseUrl).parts.map(async (part) => {
       if (typeof part === "string") return part;
       const src = await toImageUrl(part.image);
       return src === null ? "" : image(src, part.rest);

@@ -19,11 +19,12 @@ import {
 import { enqueueArticleLanguages } from "../jobs/article-languages";
 import { canStoreArticles } from "../jobs/storage";
 import { enqueueDecideTranslations } from "../jobs/translations";
-import { sanitizeHtml } from "../lib/sanitize-html";
+import { findImgurPosts, sanitizeHtml } from "../lib/sanitize-html";
 import type { PageContentExtractor, Platform } from "../platform";
 import { FetchPageError, fetchPage } from "./fetch-page";
 import { type GatePriority, GateTicket, HostGate } from "./host-gate";
-import { resolvePageImages } from "./page-images";
+import { resolveImgurPosts } from "./imgur-posts";
+import { createPageFetchBudget, type PageFetchBudget, resolvePageImages } from "./page-images";
 import { htmlToText } from "./parse-feed";
 import { RobotsCache } from "./robots";
 
@@ -208,16 +209,34 @@ async function extract(
     console.warn("the extracted content is too large", detail);
     return null;
   }
+  // 本文の外の取得（Imgur の投稿のページ、本文の画像）は、記事のページと同じ順番に並び、
+  // robots.txt を守る（決定の 17、18、20、22）
+  const isAllowed = (target: URL, fetcher: typeof fetch, signal: AbortSignal) =>
+    robots.isAllowed(target, { fetch: fetcher, now: platform.now(), signal });
+  const run = <T>(url: string, task: () => Promise<T>) => {
+    if (!URL.canParse(url)) return task();
+    return hostGate.run(new URL(url).hostname, ticket, task);
+  };
+  // 投稿のページを書いた Imgur の公式埋め込みは、投稿のページを調べて画像を足す（決定の 22）。
+  // 見分ける手掛かりの class は抜いた HTML にしかないので、抜いた HTML をサニタイズし直して足す。
+  // 上限は、拡大画像（20）と導入の画像（21）と分け合い、ここが先に使う
+  let budget: PageFetchBudget | undefined;
+  const posts = findImgurPosts(extracted.html, page.url);
+  if (posts.length > 0) {
+    budget = createPageFetchBudget(platform.fetch);
+    const images = await resolveImgurPosts(posts, { budget, isAllowed, run });
+    if (images.size > 0) {
+      const withImages = sanitizeHtml(extracted.html, page.url, { imgurPostImages: images });
+      if (new TextEncoder().encode(withImages).byteLength <= MAX_CONTENT_BYTES) html = withImages;
+    }
+  }
   if (extractor.images) {
     const original = html;
     html = await resolvePageImages(html, page.url, extractor.images, {
       fetch: platform.fetch,
-      isAllowed: (target, fetcher, signal) =>
-        robots.isAllowed(target, { fetch: fetcher, now: platform.now(), signal }),
-      run: (url, task) => {
-        if (!URL.canParse(url)) return task();
-        return hostGate.run(new URL(url).hostname, ticket, task);
-      },
+      isAllowed,
+      run,
+      budget,
     });
     html = sanitizeHtml(html, page.url);
     if (new TextEncoder().encode(html).byteLength > MAX_CONTENT_BYTES) html = original;

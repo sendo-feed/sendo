@@ -22,36 +22,38 @@ type Resource = {
   contentType: string | null;
 };
 
-type Options = {
+/**
+ * 記事 1 件で、外へ取りにいく回数・本体の大きさ・時間の上限（docs/decisions/content.md の 20）。
+ * Imgur の投稿のページ（同じく 22）、拡大画像（20）、導入の画像（21）で 1 つを分け合う。
+ * 期限は、作った時点から数える
+ */
+export type PageFetchBudget = {
+  signal: AbortSignal;
+  /** 回数だけを数える fetch（robots.txt の取得に使う。本体は 18 の上限で別に読む） */
   fetch: typeof fetch;
-  isAllowed: (url: URL, fetcher: typeof fetch, signal: AbortSignal) => Promise<boolean>;
-  /** 記事ページと同じ HostGate に並ぶ。robots とリダイレクトもこの中で行う */
-  run: <T>(url: string, task: () => Promise<T>) => Promise<T>;
+  /** 回数と本体の大きさを数える fetch。失敗した応答や上限を超えた応答のバイトも数える */
+  resourceFetch: typeof fetch;
+  remainingBytes(): number;
+  /** 期限切れか、回数か大きさを使い切った */
+  exhausted(): boolean;
 };
 
-export async function resolvePageImages(
-  html: string,
-  url: string,
-  images: PageImageProcessor,
-  options: Options,
-): Promise<string> {
+export function createPageFetchBudget(baseFetch: typeof fetch): PageFetchBudget {
   const budget = new AbortController();
   const signal = AbortSignal.any([AbortSignal.timeout(PAGE_IMAGE_LIMITS.timeoutMs), budget.signal]);
   let remainingBytes: number = PAGE_IMAGE_LIMITS.bytes;
   let requests = 0;
-  const fetched = new Map<string, Resource | null>();
   const fetcher: typeof fetch = (input, init) => {
     signal.throwIfAborted();
     if (++requests > PAGE_IMAGE_LIMITS.requests) {
       budget.abort();
       throw new Error("image request budget exceeded");
     }
-    return options.fetch(input, {
+    return baseFetch(input, {
       ...init,
       signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
     });
   };
-  // 失敗した応答や上限を超えた応答のバイトも数える。robots.txt は別の上限で読む。
   const resourceFetch: typeof fetch = async (input, init) => {
     const response = await fetcher(input, init);
     if (!response.body) return response;
@@ -84,16 +86,44 @@ export async function resolvePageImages(
       headers: response.headers,
     });
   };
+  return {
+    signal,
+    fetch: fetcher,
+    resourceFetch,
+    remainingBytes: () => remainingBytes,
+    exhausted: () =>
+      signal.aborted || requests >= PAGE_IMAGE_LIMITS.requests || remainingBytes <= 0,
+  };
+}
+
+type Options = {
+  fetch: typeof fetch;
+  isAllowed: (url: URL, fetcher: typeof fetch, signal: AbortSignal) => Promise<boolean>;
+  /** 記事ページと同じ HostGate に並ぶ。robots とリダイレクトもこの中で行う */
+  run: <T>(url: string, task: () => Promise<T>) => Promise<T>;
+  /** 先に使った上限の残り（Imgur の投稿のページを調べたとき）。なければ、ここで作る */
+  budget?: PageFetchBudget | undefined;
+};
+
+export async function resolvePageImages(
+  html: string,
+  url: string,
+  images: PageImageProcessor,
+  options: Options,
+): Promise<string> {
+  const budget = options.budget ?? createPageFetchBudget(options.fetch);
+  const { signal } = budget;
+  const fetched = new Map<string, Resource | null>();
   async function resource(target: string): Promise<Resource | null> {
     if (fetched.has(target)) return fetched.get(target) ?? null;
-    if (remainingBytes <= 0 || signal.aborted) return null;
+    if (budget.remainingBytes() <= 0 || signal.aborted) return null;
     const result = await options.run(target, async () => {
       signal.throwIfAborted();
       const opts: FetchImageOptions = {
-        fetch: resourceFetch,
+        fetch: budget.resourceFetch,
         signal,
-        maxBytes: Math.min(remainingBytes, PAGE_IMAGE_LIMITS.resourceBytes),
-        isAllowed: (target) => options.isAllowed(target, fetcher, signal),
+        maxBytes: Math.min(budget.remainingBytes(), PAGE_IMAGE_LIMITS.resourceBytes),
+        isAllowed: (target) => options.isAllowed(target, budget.fetch, signal),
       };
       const result = await fetchImageOrPage(target, opts);
       const bytes =
@@ -111,7 +141,7 @@ export async function resolvePageImages(
   try {
     const links = (await images.links(html, url)).slice(0, PAGE_IMAGE_LIMITS.links);
     for (const link of links) {
-      if (signal.aborted || requests >= PAGE_IMAGE_LIMITS.requests || remainingBytes <= 0) break;
+      if (budget.exhausted()) break;
       try {
         const thumbnail = await resource(link.thumbnail);
         if (thumbnail?.kind !== "image" || !(await images.compare(thumbnail.bytes, null)).eligible)
@@ -139,8 +169,7 @@ export async function resolvePageImages(
   // 上の拡大と同じ上限の残りの中で取り、上で取った画像は取り直さない。
   try {
     const { lead, later } = await images.leadImages(html, url);
-    const exhausted = () =>
-      signal.aborted || requests >= PAGE_IMAGE_LIMITS.requests || remainingBytes <= 0;
+    const exhausted = budget.exhausted;
     const picture = async (target: string) => {
       try {
         const result = await resource(target);
