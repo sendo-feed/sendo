@@ -1657,7 +1657,7 @@ describe("翻訳に使うモデルを選ぶ（docs/decisions/translation.md の 
     for (let i = 0; i < 3; i++) await translateOnce(s, id);
     expect(warn).toHaveBeenCalledWith(
       "excluded a translation model after repeated invalid requests",
-      { model: "claude-sonnet-6" },
+      { model: "claude-sonnet-6", next: "claude-sonnet-5-5" },
     );
     await translateOnce(s, id);
     expect(sentModels(s)).toEqual([
@@ -1934,16 +1934,174 @@ describe("段階ごとのモデルと思考量（docs/decisions/translation.md �
           { ...modelInfo("claude-haiku-6", "2026-10-01T00:00:00Z"), capabilities: null },
           modelInfo("claude-haiku-5-5", "2026-05-01T00:00:00Z", ["low"]),
         ]),
-      env: { TRANSLATION_LONG_MODEL: "sonnet" },
     });
     await maintain(s.platform);
     const en = await articleId(s.platform, "en");
     const other = await articleId(s.platform, "en-0");
-    // 長文（low）は Sonnet 6 を選び、通常（medium）は Sonnet 5.5 を選ぶ
+    // 長文（low）は思考量の分かる Haiku 5.5 を選び、通常（medium）は Sonnet 5.5 を選ぶ
     expect(batchParams(s, 0)).toEqual({
-      [en]: { model: "claude-sonnet-6", effort: "low", fallbacks: null },
+      [en]: { model: "claude-haiku-5-5", effort: "low", fallbacks: null },
       [other]: { model: "claude-sonnet-5-5", effort: "medium", fallbacks: null },
     });
+  });
+
+  it("段階の思考量を受け付けるモデルが一覧にないときは、コードの既定で送り、エラーをログに出す", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const s = await setup({
+      models: () => modelsResponse([modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z", ["low"])]),
+    });
+    await maintain(s.platform);
+    const en = await articleId(s.platform, "en");
+    expect(batchParams(s, 0)[en]?.model).toBe("claude-sonnet-5-5");
+    expect(error).toHaveBeenCalledWith("no translation model in the list matches the tier", {
+      prefix: "claude-sonnet-",
+      effort: "medium",
+      using: "claude-sonnet-5-5",
+    });
+  });
+
+  it("バッチの結果ごとの誤りはその記事のモデルに数え、ほかの段階の誤りと合わせて 3 件で外す。ほかのモデルは外さない", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({
+      body: bodyOf(10),
+      extraEnglish: 1,
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+          modelInfo("claude-opus-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-opus-5-5", "2026-06-01T00:00:00Z"),
+        ]),
+      // 本文のある記事は長文（Sonnet）、ない記事は通常（Opus）。訳し直しも Sonnet
+      env: {
+        TRANSLATION_MODEL: "opus",
+        TRANSLATION_LONG_MODEL: "sonnet",
+        TRANSLATION_LONG_THRESHOLD_CHARS: "1",
+        RETRANSLATION_MODEL: "sonnet",
+      },
+    });
+    await maintain(s.platform);
+    const en = await articleId(s.platform, "en");
+    const other = await articleId(s.platform, "en-0");
+    expect(batchParams(s, 0)).toMatchObject({
+      [en]: { model: "claude-sonnet-6" },
+      [other]: { model: "claude-opus-6" },
+    });
+    // 通常の段階（Opus 6）で訳しておく
+    await request(s, other);
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, other)).toMatchObject({ status: "translated" });
+    // 品質優先の段階で、Sonnet 6 に 2 件
+    const invalid: Reply = { status: 400, errorType: "invalid_request_error" };
+    for (let i = 0; i < 2; i++) {
+      s.enqueued.length = 0;
+      await retranslate(s, other);
+      s.replies.push(invalid);
+      await runQueuedTranslation(s);
+    }
+    expect(warn).not.toHaveBeenCalledWith(
+      "excluded a translation model after repeated invalid requests",
+      expect.anything(),
+    );
+    // 長文の記事が要求の形の誤りで返ると、Sonnet 6 に 3 件目。通常の段階の Opus 6 は外れない
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    batch.results = new Map([
+      [
+        en,
+        {
+          type: "errored",
+          error: { type: "error", error: { type: "invalid_request_error", message: "x" } },
+        },
+      ],
+    ]);
+    await maintain(s.platform);
+    expect(warn).toHaveBeenCalledWith(
+      "excluded a translation model after repeated invalid requests",
+      { model: "claude-sonnet-6", next: "claude-sonnet-5-5" },
+    );
+    // モデルを外す判断に数えたので、回数には数えず、同じ手入れで次に新しいモデルで送り直す
+    expect((await translationOf(s.platform, en))?.batchAttempts).toBe(0);
+    expect(batchParams(s, 1)[en]?.model).toBe("claude-sonnet-5-5");
+    s.enqueued.length = 0;
+    await retranslate(s, other);
+    await runQueuedTranslation(s);
+    expect(sentCalls(s).map((c) => c.model)).toEqual([
+      "claude-opus-6",
+      "claude-sonnet-6",
+      "claude-sonnet-6",
+      "claude-sonnet-5-5",
+    ]);
+  });
+
+  it("固定のモデルへの要求の形の誤りは、外す判断に数えず、同じモデルを系列で選ぶほかの段階からも外さない", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({
+      body: bodyOf(10),
+      extraEnglish: 1,
+      models: () =>
+        modelsResponse([
+          modelInfo("claude-sonnet-6", "2026-09-01T00:00:00Z"),
+          modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+        ]),
+      env: {
+        TRANSLATION_MODEL: "claude-sonnet-6",
+        TRANSLATION_LONG_MODEL: "sonnet",
+        TRANSLATION_LONG_THRESHOLD_CHARS: "1",
+      },
+    });
+    await maintain(s.platform);
+    const en = await articleId(s.platform, "en");
+    const other = await articleId(s.platform, "en-0");
+    expect(batchParams(s, 0)[en]?.model).toBe("claude-sonnet-6");
+    const invalid: Reply = { status: 400, errorType: "invalid_request_error" };
+    for (let i = 0; i < 3; i++) {
+      s.replies.push(invalid);
+      await request(s, other);
+      await runQueuedTranslation(s);
+      s.enqueued.length = 0;
+    }
+    expect(warn).not.toHaveBeenCalledWith(
+      "excluded a translation model after repeated invalid requests",
+      expect.anything(),
+    );
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    batch.results = new Map([[en, { type: "expired" }]]);
+    await maintain(s.platform);
+    expect(batchParams(s, 1)[en]?.model).toBe("claude-sonnet-6");
+  });
+
+  it("一覧を取れずに既定のモデルで送る間の要求の形の誤りは、外す判断に数えず、一覧が取れたら既定のモデルも選べる", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({
+      models: () =>
+        Response.json(
+          { type: "error", error: { type: "api_error", message: "x" } },
+          { status: 500 },
+        ),
+    });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    const invalid: Reply = { status: 400, errorType: "invalid_request_error" };
+    for (let i = 0; i < 3; i++) {
+      s.replies.push(invalid);
+      await request(s, id);
+      await runQueuedTranslation(s);
+      s.enqueued.length = 0;
+    }
+    // 1 時間たって一覧が取れると、既定と同じモデルがいちばん新しい
+    s.models.reply = () =>
+      modelsResponse([
+        modelInfo("claude-sonnet-5-5", "2026-06-01T00:00:00Z"),
+        modelInfo("claude-sonnet-5", "2026-01-01T00:00:00Z"),
+      ]);
+    s.clock.ms += 60 * 60 * 1000;
+    await request(s, id);
+    await runQueuedTranslation(s);
+    expect(sentCalls(s).map((c) => c.model)).toEqual(Array(4).fill("claude-sonnet-5-5"));
   });
 
   it("モデルを外す判断はモデルごとで、ある段階で外したモデルは、同じ系列を選ぶほかの段階でも使わない", async () => {
@@ -1970,7 +2128,7 @@ describe("段階ごとのモデルと思考量（docs/decisions/translation.md �
     }
     expect(warn).toHaveBeenCalledWith(
       "excluded a translation model after repeated invalid requests",
-      { model: "claude-sonnet-6" },
+      { model: "claude-sonnet-6", next: "claude-sonnet-5-5" },
     );
     await request(s, id);
     await runQueuedTranslation(s);

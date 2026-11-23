@@ -240,9 +240,15 @@ export function createClaudeTranslator(
     async createBatch(requests) {
       const sent = new Map<string, { model: string; selector: ModelSelector }>();
       const params = [];
+      // 段階のモデルは、バッチごとに 1 回だけ決める（途中で一覧を取り直しても、同じ段階で混ぜない）
+      const chosen = new Map<BatchTier, string>();
       for (const request of requests) {
         const tier = tiers[request.tier];
-        const model = await tier.selector.current();
+        let model = chosen.get(request.tier);
+        if (model === undefined) {
+          model = await tier.selector.current();
+          chosen.set(request.tier, model);
+        }
         sent.set(request.id, { model, selector: tier.selector });
         params.push({
           custom_id: request.id,

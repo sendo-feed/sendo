@@ -155,15 +155,11 @@ export function createModelSelector(input: {
   const { health } = input;
   const pinned = input.pinned;
   if (pinned !== undefined) {
-    // 固定のモデルはこの段階では外さない（要求の形の誤りは記事の中身によるものとみなす）。モデルごとの
-    // 結果には数え、ほかの段階が同じモデルを一覧から選んでいれば、その段階では外れる
+    // 固定のモデルは外さない。要求の形の誤りは記事の中身によるものとみなし、外す判断にも数えない
     return {
       current: async () => pinned,
       succeeded: (model) => health.succeeded(model),
-      invalidRequest(model) {
-        recordInvalid(health, model);
-        return false;
-      },
+      invalidRequest: () => false,
       otherOutcome: (model) => health.otherOutcome(model),
     };
   }
@@ -184,6 +180,15 @@ export function createModelSelector(input: {
           .filter((model) => model.efforts.includes(input.effort))
           .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1))
           .map((model) => model.id);
+        if (candidates.length === 0) {
+          // 段階の思考量を受け付けるモデルがない（設定の誤りか、一覧の capabilities がない）。前に選んだ
+          // もの（なければコードの既定）を使い続ける
+          console.error("no translation model in the list matches the tier", {
+            prefix: input.prefix,
+            effort: input.effort,
+            using: chosen,
+          });
+        }
       }
       // ほかの段階で外したモデルも避ける。候補がすべて外れていれば、前に選んだものを使い続ける
       const next = candidates.find((id) => !health.excluded.has(id));
@@ -194,20 +199,20 @@ export function createModelSelector(input: {
     otherOutcome: (model) => health.otherOutcome(model),
     invalidRequest(model) {
       // 一度でも訳せたモデルは、記事の中身による誤りとみなして外さない。一覧から選んだモデルだけを
-      // 外す（既定のモデルは外さない）。この段階に次に新しいものがなければ、外さずに使い続ける
-      // （モデルごとの結果には数える。外れても、この段階では候補がないので使い続ける）
+      // 外す（既定のモデルは外さない）。この段階に次に新しいものがなければ、外さずに使い続ける。
+      // 数えるのは、この段階で外せる誤りだけ（数えない誤りは記事の中身によるもので、モデルのせいに
+      // しない）。数えた誤りは、同じモデルを選ぶほかの段階の分と合わせて数える
       const next = candidates.find((id) => id !== model && !health.excluded.has(id));
-      const counted =
-        !health.hasSucceeded(model) && candidates.includes(model) && next !== undefined;
-      recordInvalid(health, model);
-      return counted;
+      if (health.hasSucceeded(model) || !candidates.includes(model) || next === undefined) {
+        return false;
+      }
+      if (health.invalidRequest(model)) {
+        console.warn("excluded a translation model after repeated invalid requests", {
+          model,
+          next,
+        });
+      }
+      return true;
     },
   };
-}
-
-/** 要求の形の誤りをモデルごとに数え、外したらログに出す */
-function recordInvalid(health: ModelHealth, model: string): void {
-  if (health.invalidRequest(model)) {
-    console.warn("excluded a translation model after repeated invalid requests", { model });
-  }
 }
