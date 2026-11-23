@@ -163,7 +163,7 @@ const SyncTranslationSchema = z
     }),
     retranslated: z.boolean().openapi({
       description:
-        "Opus で訳し直したか（docs/decisions/translation.md の 6）。訳し直せるのは、translated で、これが false の記事だけ",
+        "品質優先の段階で訳し直したか（docs/decisions/translation.md の 6）。訳し直せるのは、translated で、これが false の記事だけ",
     }),
     failure: SyncTranslationFailureSchema.nullable().openapi({
       description:

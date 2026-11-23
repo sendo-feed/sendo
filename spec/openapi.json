@@ -1107,7 +1107,7 @@
           },
           "retranslated": {
             "type": "boolean",
-            "description": "Opus で訳し直したか（docs/decisions/translation.md の 6）。訳し直せるのは、translated で、これが false の記事だけ"
+            "description": "品質優先の段階で訳し直したか（docs/decisions/translation.md の 6）。訳し直せるのは、translated で、これが false の記事だけ"
           },
           "failure": {
             "$ref": "#/components/schemas/SyncArticleTranslationFailure"
