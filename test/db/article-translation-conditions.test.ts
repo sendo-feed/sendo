@@ -5,8 +5,8 @@ import { MIGRATIONS_DIR } from "../db";
 
 /*
  * 訳したときの条件を足すマイグレーション（migrations/0058、0059、docs/decisions/translation.md の 18）。
- * この決まりより前に訳した行は思考量を low にし、ほかの条件は空のままにする。条件の文字の列も、記事の
- * 保管容量に数える（retention.md の 2）。
+ * この決まりより前に訳した行は思考量を low にし、ほかの条件は空のままにする。条件の列は 1 行の見積もり
+ * （512 バイト）の中に含め、使用量には足さない（retention.md の 2）。
  */
 describe("訳したときの条件を足すマイグレーション", () => {
   /** 条件を足す前まで当て、残りのマイグレーションを返す */
@@ -34,7 +34,7 @@ describe("訳したときの条件を足すマイグレーション", () => {
       ).rows[0]?.seq,
     );
 
-  it("前に訳した行は思考量が low になり、ほかの条件は空のまま。訳していない行は変えず、受信箱の番号も進めない。容量は思考量の分だけ増え、行を消すと足した分も引く", async () => {
+  it("前に訳した行は思考量が low になり、ほかの条件は空のまま。訳していない行は変えず、受信箱の番号も使用量も変えない。行を消すと、足した分だけ引く", async () => {
     const client = createClient({ url: ":memory:" });
     try {
       const rest = await migrateBefore(client);
@@ -101,8 +101,8 @@ describe("訳したときの条件を足すマイグレーション", () => {
       // 配らない条件だけが変わったので、受信箱の番号は進めない
       for (const id of ids) expect(await seqOf(client, id)).toBe(seqs[id]);
 
-      // 思考量（low）の分だけ増え、行を消すと、足した分も合わせて元に戻る
-      expect(await usage(client)).toBe(before + 3);
+      // 思考量は 1 行の見積もりの中なので、使用量は変えない。行を消すと、足した分だけ引いて元に戻る
+      expect(await usage(client)).toBe(before);
       await client.execute("DELETE FROM article_translations");
       expect(await usage(client)).toBe(empty);
     } finally {
@@ -110,7 +110,7 @@ describe("訳したときの条件を足すマイグレーション", () => {
     }
   });
 
-  it("条件の列だけが変わっても受信箱の番号は進めず、条件の文字は容量に数える", async () => {
+  it("条件の列だけが変わっても受信箱の番号は進めず、使用量も変えない（1 行の見積もりの中）", async () => {
     const client = createClient({ url: ":memory:" });
     try {
       const rest = await migrateBefore(client);
@@ -142,7 +142,7 @@ describe("訳したときの条件を足すマイグレーション", () => {
       expect(await usage(client)).toBe(before);
       expect(await seqOf(client, "a")).toBe(seq);
 
-      // 訳したときの条件だけを書いても番号は進めず、文字の列のバイト数だけ容量が増える
+      // 訳したときの条件だけを書いても、番号は進めず、使用量も変えない
       await client.execute(
         `UPDATE article_translations SET effort = 'medium', tier = 'normal', prompt_version = 1,
           input_tokens = 10, output_tokens = 20, call_model = 'claude-sonnet-5-5',
@@ -150,11 +150,9 @@ describe("訳したときの条件を足すマイグレーション", () => {
         WHERE article_id = 'a'`,
       );
       expect(await seqOf(client, "a")).toBe(seq);
-      expect(await usage(client)).toBe(
-        before + "medium".length + "normal".length + "claude-sonnet-5-5".length + 1 + 2 + 3,
-      );
+      expect(await usage(client)).toBe(before);
 
-      // 容量の上限を超える条件は書かない
+      // 使用量が上限ちょうどでも、条件の列は書ける（容量のトリガーは見ない）
       await client.execute("UPDATE storage_usage SET limit_bytes = bytes WHERE id = 1");
       await client.execute(
         "UPDATE article_translations SET call_model = 'claude-sonnet-5-5-longer' WHERE article_id = 'a'",
@@ -162,7 +160,8 @@ describe("訳したときの条件を足すマイグレーション", () => {
       const row = (
         await client.execute("SELECT call_model FROM article_translations WHERE article_id = 'a'")
       ).rows[0];
-      expect(row?.call_model).toBe("claude-sonnet-5-5");
+      expect(row?.call_model).toBe("claude-sonnet-5-5-longer");
+      expect(await usage(client)).toBe(before);
 
       // 配る項目（訳したタイトル）が変われば、番号を進める
       await client.execute("UPDATE storage_usage SET limit_bytes = bytes + 1000 WHERE id = 1");

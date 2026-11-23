@@ -28,24 +28,6 @@ export async function configureStorage(db: Database, maxBytes: number): Promise<
     where id = 1 and limit_bytes != ${maxBytes}`);
 }
 
-/**
- * 訳文の行のうち、文字のバイト数で容量に数える列（訳文と一緒に書く文字。容量のトリガーと合わせる。
- * migrations/0059、docs/decisions/retention.md の 2、translation.md の 12、18）。ほかの列は 1 行の
- * 見積もり（512 バイト）の中に含める
- */
-const TRANSLATION_TEXT_COLUMNS = [
-  "title",
-  "summary",
-  "model",
-  "content",
-  "effort",
-  "tier",
-  "call_model",
-  "title_copied_from",
-  "summary_copied_from",
-  "content_copied_from",
-];
-
 // フィードに載っている記事と、誰かがスターを付けた記事は候補にしない。
 const evictable = sql`(
   a.in_current_feed = 0 or not exists (
@@ -77,18 +59,14 @@ export async function readEvictionCandidates(
     fields.map((field) => sql`coalesce(length(cast(a.${sql.identifier(field)} as blob)), 0)`),
     sql` + `,
   );
-  const translationText = sql.join(
-    TRANSLATION_TEXT_COLUMNS.map(
-      (field) => sql`coalesce(length(cast(t.${sql.identifier(field)} as blob)), 0)`,
-    ),
-    sql` + `,
-  );
   const rows = await db.all<{ id: string; bytes: number }>(sql`select a.id,
     2048 + ${metadata} + a.reserved_inbox_bytes + a.reserved_inbox_bytes
     + coalesce((select bytes + article_bytes + 256 from content_sizes where key = a.content_key), 0)
     + coalesce((select length(cast(html as blob)) + 256 from page_contents where article_id = a.id), 0)
     + (select count(*) * 512 from article_languages where article_id = a.id)
-    + coalesce((select 512 + ${translationText}
+    + coalesce((select 512 + coalesce(length(cast(t.title as blob)), 0)
+      + coalesce(length(cast(t.summary as blob)), 0) + coalesce(length(cast(t.model as blob)), 0)
+      + coalesce(length(cast(t.content as blob)), 0)
       from article_translations t where t.article_id = a.id), 0)
     + coalesce((select bytes from article_search_documents where article_id = a.id), 0)
     + (select count(*) * 512 from user_articles u where u.article_id = a.id)

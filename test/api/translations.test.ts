@@ -1014,15 +1014,14 @@ describe("置き場と容量（docs/decisions/translation.md の 12）", () => {
     await runQueuedTranslation(s);
     const after = (await readStorageUsage(s.platform.db)).bytes;
     const bytes = (text: string) => new TextEncoder().encode(text).length;
-    // 訳したときの条件の文字（思考量、段階、呼び出しのモデル）も数える（決定の 18）
-    expect(after - decided).toBe(
-      bytes(JA_TITLE) +
-        bytes(JA_SUMMARY) +
-        bytes("claude-sonnet-5-5") +
-        bytes("medium") +
-        bytes("normal") +
-        bytes("claude-sonnet-5-5"),
-    );
+    // 訳したときの条件の列（思考量、段階、呼び出しのモデルなど。決定の 18）は、1 行の見積もり（512）の
+    // 中に含めるので、使用量に足さない
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      effort: "medium",
+      tier: "normal",
+      callModel: "claude-sonnet-5-5",
+    });
+    expect(after - decided).toBe(bytes(JA_TITLE) + bytes(JA_SUMMARY) + bytes("claude-sonnet-5-5"));
 
     await s.platform.db.delete(articles).where(eq(articles.id, id)).run();
     expect(await translationOf(s.platform, id)).toBeUndefined();
@@ -1572,15 +1571,10 @@ describe("本文を訳す（docs/decisions/translation.md の 3、10、13）", (
     const row = await translationOf(s.platform, id);
     const bytes = (text: string | null | undefined) => new TextEncoder().encode(text ?? "").length;
     expect(row?.content).not.toBeNull();
-    // 訳したときの条件の文字（思考量、段階、呼び出しのモデル）も数える（決定の 18）
+    // 訳したときの条件の列（決定の 18）は、1 行の見積もり（512）の中に含める
+    expect(row).toMatchObject({ effort: "medium", tier: "normal" });
     const translatedBytes =
-      bytes(row?.title) +
-      bytes(row?.summary) +
-      bytes(row?.model) +
-      bytes(row?.content) +
-      bytes(row?.effort) +
-      bytes(row?.tier) +
-      bytes(row?.callModel);
+      bytes(row?.title) + bytes(row?.summary) + bytes(row?.model) + bytes(row?.content);
     const after = (await readStorageUsage(s.platform.db)).bytes;
     expect(after - decided).toBe(translatedBytes);
 

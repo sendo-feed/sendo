@@ -8,10 +8,9 @@ import { DB_NOW_MS } from "./clock";
 import { type ArticleTranslation, articleTranslations, userArticles } from "./schema";
 
 /**
- * 訳文の行の見積もり（行と主キー索引）。容量のトリガーと合わせる。訳した文字（タイトル、要約、本文）
- * と、訳文と一緒に書く文字の列（モデル、思考量、段階、呼び出しのモデル、写した元。決定の 18）は、
- * トリガーが文字のバイト数で足す。ほかの列（状態、数の列、バッチの印と送った条件、訳せなかった理由
- * など）は、この中に含める（docs/decisions/retention.md の 2）
+ * 訳文の行の見積もり（行と主キー索引）。容量のトリガーと合わせる。訳したときの条件の列（思考量、段階、
+ * プロンプトの版、トークン数、呼び出しのモデル、写した元。決定の 18）と、バッチで送った条件は、この
+ * 1 行の見積もりの中に含める（docs/decisions/retention.md の 2）
  */
 export const ARTICLE_TRANSLATION_BYTES = 512;
 
@@ -630,6 +629,16 @@ export async function listRetranslationTargets(
 }
 
 /**
+ * 訳し直しを広げるときに、写した部分に書く写した元（決定の 18）。写す元（s）がその部分を写した行なら、
+ * その写した元（訳し直した記事）、そうでなければ写す元。写す先（t）自身に戻るとき（写す先の訳を、ほかの
+ * 行を通して写し戻した）は、文字は変わらないので、写す先の写した元のまま
+ */
+const spreadOrigin = (column: string) => {
+  const origin = sql`coalesce(s.${sql.raw(column)}, s.article_id)`;
+  return sql`case when ${origin} = t.article_id then t.${sql.raw(column)} else ${origin} end`;
+};
+
+/**
  * 1 つの行に、同じ元記事の訳し直した訳を写す（決定の 16）。写す元（同じ正規化した URL で本文の指紋が
  * 同じ、訳し直した行。原文の要約が同じもの、次に新しく訳したものを先に）と写す先（translated で
  * 訳し直しの印がない）を、この文の中で確かめる。タイトルと本文を写し、原文の要約が同じなら要約も
@@ -653,12 +662,12 @@ export async function copyRetranslation(db: Database, articleId: string): Promis
         content_source = case when s.content is null then t.content_source
           else coalesce(t.content_source, s.content_source) end,
         title_copied_from = case when ${titleCopyable("s", "sa", sql`ta.title`)}
-          then coalesce(s.title_copied_from, s.article_id) else t.title_copied_from end,
+          then ${spreadOrigin("title_copied_from")} else t.title_copied_from end,
         summary_copied_from = case when sa.summary = ta.summary and s.summary is not null
-          and s.summary is not sa.summary then coalesce(s.summary_copied_from, s.article_id)
+          and s.summary is not sa.summary then ${spreadOrigin("summary_copied_from")}
           else t.summary_copied_from end,
         content_copied_from = case when s.content is null then t.content_copied_from
-          else coalesce(s.content_copied_from, s.article_id) end,
+          else ${spreadOrigin("content_copied_from")} end,
         model = s.model, effort = s.effort, tier = s.tier, prompt_version = s.prompt_version,
         input_tokens = 0, output_tokens = 0, call_model = null,
         translated_at = s.translated_at, retranslated = 1
