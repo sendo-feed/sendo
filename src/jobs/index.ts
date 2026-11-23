@@ -16,7 +16,7 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
       return;
     }
     case "detect-article-languages": {
-      await detectArticleLanguages(platform, job.after);
+      await detectArticleLanguages(platform, job.after, job.articleIds);
       return;
     }
     case "fetch-feed": {

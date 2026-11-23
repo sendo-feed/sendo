@@ -16,6 +16,7 @@ import {
   recordExtractedPageContent,
   recordFailedPageContent,
 } from "../db/page-contents";
+import { enqueueArticleLanguages } from "../jobs/article-languages";
 import { canStoreArticles } from "../jobs/storage";
 import { sanitizeHtml } from "../lib/sanitize-html";
 import type { PageContentExtractor, Platform } from "../platform";
@@ -28,7 +29,7 @@ import { RobotsCache } from "./robots";
 /** 返す本文。html は保存したもの（サニタイズ済み）。返す前に、もう一度サニタイズする */
 export type PageContentResult = { status: "ok"; html: string } | { status: "unavailable" };
 
-type PageContentPlatform = Pick<Platform, "db" | "fetch" | "now" | "retentionConfig">;
+type PageContentPlatform = Pick<Platform, "db" | "fetch" | "now" | "retentionConfig" | "jobs">;
 
 /**
  * 同じ記事を、同じプロセスで同時に抜かないようにする（抜く仕事と、開いたときの抜き取りが重なった
@@ -128,7 +129,10 @@ async function extractAndRecord(
     html,
     now: platform.now(),
   });
-  return stored === null ? { status: "unavailable" } : { status: "ok", html: stored };
+  if (stored === null) return { status: "unavailable" };
+  // 抜いた本文の言語の判定を積む（docs/decisions/jobs.md の 13）。積めなければ定期実行が拾う
+  await enqueueArticleLanguages(platform, [article.id]);
+  return { status: "ok", html: stored };
 }
 
 /**

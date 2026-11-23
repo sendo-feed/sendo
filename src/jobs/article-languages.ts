@@ -11,13 +11,19 @@ import { articles } from "../db/schema";
 import { configureStorage, readStorageUsage } from "../db/storage";
 import { escapeHtml } from "../lib/html";
 import type { Platform } from "../platform";
+import { LANGUAGE_ARTICLES_PER_JOB } from "./job";
 
 /** 1 つの仕事で判定する件数（docs/decisions/jobs.md の 4）。残りは次の仕事に引き継ぐ */
 export const LANGUAGE_BATCH_SIZE = 10;
 
+/**
+ * 記事の言語を判定して保存する（docs/decisions/article-language.md の 5）。articleIds を渡したら、
+ * その記事の未処理の入力元だけ。残りは同じ記事の続きの仕事に引き継ぐ。容量が足りなければ続けない
+ */
 export async function detectArticleLanguages(
   platform: Pick<Platform, "db" | "content" | "jobs" | "languageDetection" | "retentionConfig">,
   after?: LanguageCursor,
+  articleIds?: readonly string[],
 ): Promise<void> {
   const detector = platform.languageDetection;
   await configureStorage(platform.db, platform.retentionConfig.maxBytes);
@@ -26,6 +32,7 @@ export async function detectArticleLanguages(
     detector.pipelineRevision,
     LANGUAGE_BATCH_SIZE + 1,
     after,
+    articleIds,
   );
   let capacityBlocked = false;
   for (const { articleId, source } of pending.slice(0, LANGUAGE_BATCH_SIZE)) {
@@ -87,6 +94,38 @@ export async function detectArticleLanguages(
   // 容量不足では連続投入せず、定期実行で先頭から拾い直す。
   const last = pending[LANGUAGE_BATCH_SIZE - 1];
   if (!capacityBlocked && last && pending.length > LANGUAGE_BATCH_SIZE) {
-    await platform.jobs.enqueue([{ type: "detect-article-languages", after: last }]);
+    await platform.jobs.enqueue([
+      {
+        type: "detect-article-languages",
+        after: last,
+        ...(articleIds !== undefined && { articleIds: [...articleIds] }),
+      },
+    ]);
+  }
+}
+
+/**
+ * 記事の言語の判定を、その記事について積む（取り込んだとき、ページを抜き終えたとき。
+ * docs/decisions/jobs.md の 13）。LANGUAGE_ARTICLES_PER_JOB 件ずつの仕事に分ける。積めなくても
+ * 呼んだ側の処理は失敗にしない（10 分ごとの定期実行が拾う）
+ */
+export async function enqueueArticleLanguages(
+  platform: Pick<Platform, "jobs">,
+  articleIds: readonly string[],
+): Promise<void> {
+  const jobs = [];
+  for (let i = 0; i < articleIds.length; i += LANGUAGE_ARTICLES_PER_JOB) {
+    jobs.push({
+      type: "detect-article-languages" as const,
+      articleIds: articleIds.slice(i, i + LANGUAGE_ARTICLES_PER_JOB),
+    });
+  }
+  if (jobs.length === 0) return;
+  try {
+    await platform.jobs.enqueue(jobs);
+  } catch (error) {
+    console.warn("could not enqueue article language detection; retrying at the next schedule", {
+      error,
+    });
   }
 }
