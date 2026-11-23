@@ -530,7 +530,8 @@ export const articleTranslations = sqliteTable(
      * 訳したときの条件（docs/decisions/translation.md の 18）。訳文の代表の部分（本文、本文がなければ
      * タイトル、それもなければ要約）を作ったものの、思考量・段階・プロンプトの版。送って訳したなら
      * その呼び出しの条件、同じ元記事から写したなら写した元の行の条件。モデルは model。訳文を書く文で
-     * 一緒に書き、訳せなかったときは書き換えない。18 より前に訳した行は、思考量が low でほかは null
+     * 一緒に書き、訳せなかったときは書き換えない。18 より前に訳した行は、思考量が low でほかは null。
+     * モデルと思考量は差分同期で配り、GET でも返す。段階とプロンプトの版は配らない（同じく 14、18）
      */
     effort: text("effort", { enum: ["low", "medium", "high", "xhigh", "max"] }),
     tier: text("tier", { enum: ["normal", "long", "quality"] }),

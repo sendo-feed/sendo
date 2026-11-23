@@ -32,6 +32,23 @@ const relayImageUrl = (what: string) =>
 
 export const FeedIconUrlSchema = relayImageUrl("フィードのアイコン");
 
+/** 訳したモデルの説明（docs/decisions/translation.md の 18） */
+export const TRANSLATION_MODEL_DESCRIPTION =
+  "訳したモデル（Claude のモデルの ID。claude-sonnet-5-5 など）。応答が返したモデルで、拒否されて代わりのモデルに替わったときは代わりのモデル。同じ元記事から写した訳文は、写した元の訳文のモデル（docs/decisions/translation.md の 18）";
+
+/**
+ * 訳したときの思考量（docs/decisions/translation.md の 9、18）。Sendo の版で値が増えても読み手が
+ * 壊れないよう、enum にせず文字列で返し、値は説明に書く。note は、応答ごとに null になる場合を足す
+ */
+export const translationEffortSchema = (note?: string) =>
+  z
+    .string()
+    .nullable()
+    .openapi({
+      description: `訳したときの思考量（Claude API の effort。low ／ medium ／ high ／ xhigh ／ max）。Sendo の版によって値が増えることがあるので、読む側は知らない値もそのまま扱う。モデルと同じく、同じ元記事から写した訳文は写した元の訳文のもの（docs/decisions/translation.md の 18）。思考量を残していない訳文（思考量を残す前に送ったバッチの結果など）は null${note === undefined ? "" : `。${note}`}`,
+      example: "medium",
+    });
+
 /** 設定の値。JSON の値なら何でもよく、sendo は中身を解釈しない（docs/decisions/settings.md の 2） */
 export const SettingValueSchema = z.unknown().openapi({
   description: "JSON の値（オブジェクト、配列、文字列、数、真偽、null）。Sendo は中身を解釈しない",

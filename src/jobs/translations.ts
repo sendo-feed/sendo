@@ -671,7 +671,7 @@ async function translateArticle(
   }
   const bodyHash = await bodyFingerprint(body);
   // その場の翻訳は、同じ元記事から写せる部分を呼ばずに写す（決定の 16。待たない）。訳し直しは
-  // 写さない（Opus で訳し直す）
+  // 写さない（品質優先の段階で訳し直す）
   let copies =
     retranslation || article === undefined
       ? 0
