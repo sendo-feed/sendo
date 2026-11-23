@@ -12,7 +12,7 @@ export const PAGE_IMAGE_LIMITS = {
   requests: 36,
   bytes: 25 * 1024 * 1024,
   resourceBytes: 5 * 1024 * 1024,
-  timeoutMs: 15_000,
+  timeoutMs: 45_000,
 } as const;
 
 type Resource = {
