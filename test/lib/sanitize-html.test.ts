@@ -144,10 +144,34 @@ describe("sanitizeHtml", () => {
   });
 
   it("深さの上限のところのリンクの中の埋め込みでも、入れ子のリンクを作らず、2 回通しても変わらない", () => {
-    const deep = `${"<div>".repeat(98)}<a href="https://example.com/page">前<iframe src="https://v.example/x"></iframe>後</a>`;
-    const once = clean(deep);
-    expect(once).not.toMatch(/<a [^>]*>[^<]*<a /);
-    expect(clean(once)).toBe(once);
+    // リンクが 99 段目と、上限ちょうどの 100 段目
+    for (const divs of [98, 99]) {
+      const deep = `${"<div>".repeat(divs)}<a href="https://example.com/page">前<iframe src="https://v.example/x"></iframe>後</a>`;
+      const once = clean(deep);
+      expect(once, String(divs)).not.toMatch(/<a [^>]*>[^<]*<a /);
+      expect(clean(once), String(divs)).toBe(once);
+    }
+  });
+
+  it("引用をリンクが包み、その中に埋め込みがあるときは、引用ごとリンクを閉じてから替える", () => {
+    const A = 'rel="noopener noreferrer nofollow"';
+    const page = `<a href="https://example.com/page" ${A}>`;
+    // X の引用：替えたリンクは引用の外に出るので、引用の中のリンクとして数えず、印は付かない
+    const x = clean(
+      '<a href="https://example.com/page"><blockquote class="twitter-tweet">文<iframe src="https://x.com/u/status/1"></iframe></blockquote></a>',
+    );
+    expect(x).toBe(
+      `${page}<blockquote>文</blockquote></a><a href="https://x.com/u/status/1" ${A}>https://x.com/u/status/1</a>`,
+    );
+    expect(clean(x)).toBe(x);
+    // Imgur の公式埋め込みの引用も同じ
+    const imgur = clean(
+      '<a href="https://example.com/page"><blockquote class="imgur-embed-pub"><iframe src="https://v.example/x"></iframe></blockquote></a>',
+    );
+    expect(imgur).toBe(
+      `${page}<blockquote></blockquote></a><a href="https://v.example/x" ${A}>https://v.example/x</a>`,
+    );
+    expect(clean(imgur)).toBe(imgur);
   });
 
   it("閉じていないタグを閉じ、開いていない閉じタグを落とす", () => {
