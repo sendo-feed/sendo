@@ -1852,14 +1852,15 @@ describe("訳し方の決まり（docs/decisions/translation.md の 19）", () =
       "irony and implied meaning by what they mean",
       // 最初に出たところ、人名、概念の名前
       "Never in the title",
+      "appears only in the summary or the title gets no reading or meaning",
       "including well-known names",
-      "(well-known names too)",
+      "(well-known names too;",
       "in their common Japanese form, or in katakana",
       "no honorifics such as さん for people or job titles",
       "Jensen Huang（ジェンスン・フアン）",
       "Diligence（責任を持つこと）",
       "Do not do this for technical terms",
-      "use the original word after that",
+      "including the title and the summary, write the original word without the meaning",
       "Keep the meaning to a short phrase, not a sentence",
       "Keep company names, product names and code identifiers",
       // 日本語の断片、印の前後、括弧の置き場所
@@ -1867,8 +1868,8 @@ describe("訳し方の決まり（docs/decisions/translation.md の 19）", () =
       "Do not put spaces between Japanese characters and a marker",
       "Keep spaces between Latin words as in the original",
       "⟦1⟧Marcus Borg⟦/1⟧（マーカス・ボルグ）",
-      "outermost pair that wraps only the name",
-      "Only when no pair wraps just the name",
+      "outermost pair that wraps only the name or word",
+      "Only when no pair wraps just the name or word",
     ]) {
       expect(SYSTEM_PROMPT).toContain(rule);
     }
