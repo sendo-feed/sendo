@@ -212,10 +212,17 @@ export class TranslatorError extends Error {
   }
 }
 
-/** バッチで訳してもらう 1 件（docs/decisions/translation.md の 4）。id は記事の ID */
+/** バッチで送る記事の段階（docs/decisions/translation.md の 9。送る本文が閾値以上なら長文） */
+export type BatchTier = "normal" | "long";
+
+/**
+ * バッチで訳してもらう 1 件（docs/decisions/translation.md の 4）。id は記事の ID。tier の段階の
+ * モデルと思考量で送る
+ */
 export interface BatchTranslationRequest {
   id: string;
   segments: readonly TranslationSegment[];
+  tier: BatchTier;
 }
 
 /**
@@ -244,7 +251,12 @@ export type BatchTranslationStatus =
 /** 記事を日本語に訳す（Claude API。docs/decisions/translation.md） */
 export interface Translator {
   /**
-   * その場で訳す（通常の Messages API）。retranslation なら、訳し直しのモデル（Opus）で訳す
+   * バッチで送る記事の段階。送る本文（写す本文と、タイトル・要約は数えない。本文を送らなければ 0）の
+   * Unicode の文字数が、設定の閾値以上なら長文（docs/decisions/translation.md の 9）
+   */
+  batchTier(sentBodyChars: number): BatchTier;
+  /**
+   * その場で訳す（通常の Messages API）。通常の段階で訳し、retranslation なら品質優先の段階で訳す
    * （docs/decisions/translation.md の 6、9）。呼び出しが失敗したら TranslatorError を投げる
    */
   translate(

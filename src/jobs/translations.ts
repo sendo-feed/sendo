@@ -36,6 +36,7 @@ import {
 import { sanitizeHtml } from "../lib/sanitize-html";
 import { notifySync } from "../lib/sync-notify";
 import {
+  type BatchTranslationRequest,
   type BatchTranslationResult,
   type Platform,
   type TranslationSegment,
@@ -209,7 +210,7 @@ async function sendBatch(platform: MaintainPlatform, translator: Translator): Pr
   const key = crypto.randomUUID();
   const ids = await markForBatch(db, key);
   if (ids.length === 0) return 0;
-  const requests: { id: string; segments: TranslationSegment[] }[] = [];
+  const requests: BatchTranslationRequest[] = [];
   const empty: string[] = [];
   const copied: string[] = [];
   let bodyBytes = 0;
@@ -254,7 +255,9 @@ async function sendBatch(platform: MaintainPlatform, translator: Translator): Pr
     if (body !== null && (copies & COPY_BODY) === 0) {
       bodyBytes += new TextEncoder().encode(body.html).length;
     }
-    requests.push({ id, segments });
+    // 送る本文の文字数で段階を決める（写す本文と、本文を送らない記事は 0。決定の 9）
+    const sentBodyChars = body !== null && (copies & COPY_BODY) === 0 ? body.segments.length : 0;
+    requests.push({ id, segments, tier: translator.batchTier(sentBodyChars) });
   }
   await notifyTranslationChanged(platform, copied);
   // 訳すものがない記事は、訳せないものとして待ちから外す
