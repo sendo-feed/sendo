@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  findImgurPosts,
   hasMarkupBeyondText,
   sanitizeHtml,
   sanitizeHtmlWithImages,
@@ -840,5 +841,101 @@ describe("hasMarkupBeyondText", () => {
     expect(hasMarkupBeyondText('<p><img src="https://img.example.com/a.png"></p>')).toBe(true);
     expect(hasMarkupBeyondText("<pre>x</pre>")).toBe(true);
     expect(hasMarkupBeyondText("<p>&lt;img src=x&gt;</p>")).toBe(false);
+  });
+});
+
+describe("Imgur の投稿のページを書いた公式埋め込み（findImgurPosts と、調べた画像を足すサニタイズ）", () => {
+  const A = 'rel="noopener noreferrer nofollow"';
+  const embed = (inner: string) =>
+    `<blockquote class="imgur-embed-pub" lang="en" data-id="abc123">${inner}</blockquote>`;
+  const posts = (html: string, base = BASE) => findImgurPosts(html, base);
+
+  it("投稿・アルバム・ギャラリーのページを、絶対の URL にしたあとで、クエリとハッシュを除いて返す", () => {
+    expect(
+      posts(
+        embed('<a href="//imgur.com/abc123"></a>') +
+          embed('<a href="https://imgur.com/a/Alb1?x=1#y">アルバム</a>') +
+          embed('<a href="https://imgur.com/gallery/Gal2"></a>'),
+      ),
+    ).toEqual([
+      "https://imgur.com/abc123",
+      "https://imgur.com/a/Alb1",
+      "https://imgur.com/gallery/Gal2",
+    ]);
+    // 記事が http なら http（スキームは書き換えない）
+    expect(posts(embed('<a href="//imgur.com/abc123"></a>'), "http://blog.example.com/1")).toEqual([
+      "http://imgur.com/abc123",
+    ]);
+  });
+
+  it("同じ URL は 1 つにまとめる。引用ごとに最初の 1 つ", () => {
+    expect(
+      posts(
+        embed('<a href="//imgur.com/one1"></a><a href="//imgur.com/two2"></a>') +
+          embed('<a href="https://imgur.com/one1?ref=x"></a>'),
+      ),
+    ).toEqual(["https://imgur.com/one1"]);
+  });
+
+  it("対象にならないもの", () => {
+    for (const html of [
+      // 直リンクの画像を足す引用（投稿のリンクが先にあっても）
+      embed('<a href="//imgur.com/abc123"></a><a href="https://i.imgur.com/abc123.jpeg">写真</a>'),
+      // サニタイズのあとに残る画像がある引用
+      embed('<a href="//imgur.com/abc123"></a><img src="/a.png">'),
+      // 公式埋め込みでない引用
+      '<blockquote><a href="//imgur.com/abc123"></a></blockquote>',
+      // 形の合わないリンク
+      embed('<a href="https://imgur.com/t/funny/abc123"></a>'),
+      embed('<a href="https://imgur.com/gallery/title-abc123"></a>'),
+      embed('<a href="https://imgur.com/abc123/"></a>'),
+      embed('<a href="https://imgur.com/"></a>'),
+      embed('<a href="https://www.imgur.com/abc123"></a>'),
+      embed('<a href="https://m.imgur.com/abc123"></a>'),
+      embed('<a href="https://imgur.com:8443/abc123"></a>'),
+      embed('<a href="https://user@imgur.com/abc123"></a>'),
+      embed('<a href="mailto:a@imgur.com"></a>'),
+    ]) {
+      expect(posts(html), html).toEqual([]);
+    }
+    // サニタイズで落ちる画像（計測用）だけなら対象
+    expect(
+      posts(
+        embed(
+          '<a href="//imgur.com/abc123"></a><img src="https://pixel.example.com/t.gif" width="1" height="1">',
+        ),
+      ),
+    ).toEqual(["https://imgur.com/abc123"]);
+  });
+
+  it("調べた画像を、引用の終わり（リンクの外）に 1 枚足す。調べた画像のない引用は変えない", () => {
+    const html =
+      embed('<p><a href="//imgur.com/abc123"></a></p>') + embed('<a href="//imgur.com/none9"></a>');
+    const images = new Map([["https://imgur.com/abc123", "https://i.imgur.com/abc123.jpeg?fb"]]);
+    expect(sanitizeHtml(html, BASE, { imgurPostImages: images })).toBe(
+      `<blockquote><p><a href="https://imgur.com/abc123" ${A}>https://imgur.com/abc123</a></p>` +
+        '<img src="https://i.imgur.com/abc123.jpeg?fb"></blockquote>' +
+        `<blockquote><a href="https://imgur.com/none9" ${A}>https://imgur.com/none9</a></blockquote>`,
+    );
+  });
+
+  it("同じ投稿の引用がいくつあっても、それぞれに足す。もう一度通しても増えない", () => {
+    const html =
+      embed('<a href="//imgur.com/abc123"></a>') + embed('<a href="//imgur.com/abc123?x"></a>');
+    const images = new Map([["https://imgur.com/abc123", "https://i.imgur.com/abc123.jpeg"]]);
+    const once = sanitizeHtml(html, BASE, { imgurPostImages: images });
+    expect(once.match(/<img src="https:\/\/i\.imgur\.com\/abc123\.jpeg">/g)).toHaveLength(2);
+    expect(clean(once)).toBe(once);
+    expect(findImgurPosts(once, BASE)).toEqual([]);
+  });
+
+  it("直リンクの引用と、画像の残る引用には、調べた画像があっても足さない", () => {
+    const images = new Map([["https://imgur.com/abc123", "https://i.imgur.com/other.jpeg"]]);
+    const direct = embed(
+      '<a href="//imgur.com/abc123"></a><a href="https://i.imgur.com/abc123.jpeg">写真</a>',
+    );
+    expect(sanitizeHtml(direct, BASE, { imgurPostImages: images })).toBe(clean(direct));
+    const withImage = embed('<a href="//imgur.com/abc123"></a><img src="/a.png">');
+    expect(sanitizeHtml(withImage, BASE, { imgurPostImages: images })).toBe(clean(withImage));
   });
 });
