@@ -519,15 +519,27 @@ describe("sanitizeHtml の Imgur の公式埋め込みの、文字も画像も�
     );
   });
 
-  it("リンクの中で埋め込みを替えたリンクは、中身として数え、URL を足さない", () => {
-    for (const inner of [
-      '<iframe src="https://v.example.com/x"></iframe>',
-      '<video><source src="https://v.example.com/x.mp4"></video>',
-    ]) {
+  it("リンクの中で埋め込みをリンクに替えるときは、先に Imgur のリンクを閉じて URL を出す", () => {
+    for (const [inner, src] of [
+      ['<iframe src="https://v.example.com/x"></iframe>', "https://v.example.com/x"],
+      ['<video><source src="https://v.example.com/x.mp4"></video>', "https://v.example.com/x.mp4"],
+    ] as const) {
       const once = clean(embed(`<a href="//imgur.com/abc123">${inner}</a>`));
-      expect(once, inner).not.toContain("https://imgur.com/abc123</a>");
-      expect(once, inner).not.toMatch(/<\/a>https:\/\/imgur\.com/);
+      expect(once, inner).toBe(
+        `<blockquote><a href="https://imgur.com/abc123" ${A}>https://imgur.com/abc123</a>` +
+          `<a href="${src}" ${A}>${src}</a></blockquote>`,
+      );
+      expect(clean(once), inner).toBe(once);
     }
+    // 文字のあるリンクも、替えたリンクの前で閉じる（URL は出さない）
+    const once = clean(
+      embed('<a href="//imgur.com/abc123">写真<iframe src="https://v.example.com/x"></iframe></a>'),
+    );
+    expect(once).toBe(
+      `<blockquote><a href="https://imgur.com/abc123" ${A}>写真</a>` +
+        `<a href="https://v.example.com/x" ${A}>https://v.example.com/x</a></blockquote>`,
+    );
+    expect(clean(once)).toBe(once);
   });
 });
 

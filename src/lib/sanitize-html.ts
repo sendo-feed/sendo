@@ -138,9 +138,10 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
    * 知りたいのは ID がちょうど 1 つかどうかなので、引用ごとに 2 つまで集める
    */
   const pushLink = (href: string) => {
+    // Imgur のリンクの中で埋め込みをリンクに替えるときは、先に Imgur のリンクを閉じる（URL の
+    // 文字もここで出す）。入れ子のリンクは、もう一度通すと外側が空のリンクに分かれるため
+    if (imgur?.link) closeUntil("a");
     parts.push(link(href));
-    // 開いている Imgur のリンクの中に出るリンク（埋め込みを替えたもの）は、行き先の文字を持つ
-    if (imgur?.link) imgur.link.hasContent = true;
     if (xPosts.length === 0 || open.length >= MAX_DEPTH) return;
     const id = xPostId(href);
     if (id === null) return;
