@@ -19,6 +19,7 @@ import {
   createClaudeTranslator,
   DEFAULT_FAMILY_MODELS,
   PROMPT_VERSION,
+  SYSTEM_PROMPT,
 } from "../../src/translation/claude";
 import { splitBody } from "../../src/translation/segments";
 import { testDb } from "../db";
@@ -1832,6 +1833,63 @@ describe("翻訳に使うモデルを選ぶ（docs/decisions/translation.md の 
       expect(new Set(models).size).toBe(1);
       expect(models).toHaveLength(4);
     }
+  });
+});
+
+describe("訳し方の決まり（docs/decisions/translation.md の 19）", () => {
+  it("システムプロンプトに訳し方の決まりを書き、版は 2", () => {
+    expect(PROMPT_VERSION).toBe(2);
+    for (const rule of [
+      // 断片の ID と、1 つの記事であること
+      '"title" is the article title, "summary" is its summary',
+      "All segments in one request belong to one article",
+      // 文体、足さないもの、意味で訳すもの
+      "だ・である調",
+      "no honorifics such as さん",
+      "irony and implied meaning by what they mean",
+      // 最初に出たところ、人名、概念の名前
+      "Never in the title",
+      "including well-known names",
+      "Jensen Huang（ジェンスン・フアン）",
+      "Diligence（責任を持つこと）",
+      "Do not do this for technical terms",
+      // 日本語の断片、印の前後、括弧の置き場所
+      "do not apply these rules to it",
+      "Do not put spaces between Japanese characters and a marker",
+      "⟦1⟧Marcus Borg⟦/1⟧（マーカス・ボルグ）",
+    ]) {
+      expect(SYSTEM_PROMPT).toContain(rule);
+    }
+  });
+
+  it("バッチと訳し直し（その場の翻訳と同じ呼び出し）で同じシステムプロンプトを送り、訳した行に版が残る", async () => {
+    const s = await setup({ extraEnglish: 1 });
+    await maintain(s.platform);
+    const batched = await articleId(s.platform, "en-0");
+    const batch = s.batches.list[0];
+    expect(batch?.requests.map((r) => (r.params as { system: string }).system)).toEqual([
+      SYSTEM_PROMPT,
+      SYSTEM_PROMPT,
+    ]);
+    if (batch) batch.ended = true;
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, batched)).toMatchObject({
+      status: "translated",
+      promptVersion: 2,
+    });
+
+    const id = await articleId(s.platform, "en");
+    await retranslate(s, id);
+    s.replies.push(opusReply);
+    await runQueuedTranslation(s);
+    expect(s.claude.map((c) => (JSON.parse(c.body) as { system: string }).system)).toEqual([
+      SYSTEM_PROMPT,
+    ]);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      retranslated: true,
+      tier: "quality",
+      promptVersion: 2,
+    });
   });
 });
 
