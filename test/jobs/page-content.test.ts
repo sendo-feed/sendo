@@ -222,6 +222,35 @@ describe("取り込んだときに抜く", () => {
     ).toHaveLength(1);
   });
 
+  it("Imgur の公式埋め込みの、文字のない投稿のページのリンクは、本物の抜く処理を通しても URL を文字にして置く", async () => {
+    const embed =
+      '<blockquote class="imgur-embed-pub" lang="en" data-id="abc123" data-context="false">' +
+      '<p><a href="//imgur.com/abc123"></a></p></blockquote>';
+    const paragraphs = Array.from({ length: 6 }, () => `<p>${ARTICLE_TEXT}</p>`).join("");
+    const t = await setUp({
+      pageHtml: `<html><head><title>記事</title></head><body><article>${paragraphs}${embed}<p>${ARTICLE_TEXT}</p></article></body></html>`,
+    });
+    const platform = {
+      ...t.platform,
+      pageContent: createPageContentExtractor(loadNativeModule(NATIVE_MODULE)),
+    };
+    await runJob(platform, { type: "extract-page", articleId: t.article.id });
+
+    const row = await getPageContent(platform.db, t.article.id);
+    expect(row?.status).toBe("extracted");
+    const text =
+      '<a href="https://imgur.com/abc123" rel="noopener noreferrer nofollow">https://imgur.com/abc123</a>';
+    expect(row?.html).toContain(text);
+    expect(row?.html?.split(text)).toHaveLength(2);
+
+    const res = await requestApp(platform, `/api/v1/articles/${t.article.id}/content?source=page`, {
+      token: t.user.token,
+    });
+    const body = (await res.json()) as { html: string };
+    expect(body.html).toContain(text);
+    expect(t.pageFetches()).toBe(1);
+  });
+
   it("X の公式の埋め込みコードの引用は、本物の抜く処理を通しても、投稿の ID の印を付けて置き、返す", async () => {
     // 抜く処理（Rust）が引用の class を残すので、保存する前の最初のサニタイズで見分けられる。
     // そのあとのサニタイズは、印のある引用として調べ直す
