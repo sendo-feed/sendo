@@ -11,6 +11,7 @@ import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { PageContentExtractor, Platform } from "../../src/platform";
 import { createPageContentExtractor, loadNativeModule } from "../../src/platform/node/native";
 import { NATIVE_MODULE } from "../db";
+import { JPEG } from "../fixtures/images";
 import { createTestPlatform, createUser, fakeFetch, requestApp, subscribeFeed } from "../helpers";
 
 /*
@@ -271,6 +272,102 @@ describe("取り込んだときに抜く", () => {
 });
 
 describe("画像を拡大したあとの本文", () => {
+  it.each([
+    { latency: 0, enlarged: 9, lastFetchAt: 26_000, abortsBody: false },
+    { latency: 750, enlarged: 8, lastFetchAt: 43_750, abortsBody: false },
+    { latency: 950, enlarged: 7, lastFetchAt: 44_850, abortsBody: true },
+  ])(
+    "同じホストへの取得が $latency ms かかるとき、期限までの $enlarged 枚を拡大する",
+    async ({ latency, enlarged, lastFetchAt, abortsBody }) => {
+      const origin = `https://${crypto.randomUUID()}.example.com`;
+      const images = Array.from({ length: 9 }, (_, index) => ({
+        thumbnail: `${origin}/thumb-${index}.jpg`,
+        target: `${origin}/view-${index}.html`,
+        full: `${origin}/full-${index}.jpg`,
+      }));
+      const tags = (image: (typeof images)[number], src: string) =>
+        `<a href="${image.target}" rel="noopener noreferrer nofollow"><img src="${src}"></a>`;
+      const t = await setUp({
+        extracted: `<p>${ARTICLE_TEXT}</p>${images.map((image) => tags(image, image.thumbnail)).join("")}`,
+      });
+      t.page.extractor.images = {
+        links: async () => images,
+        candidates: async ({ url }) =>
+          images.filter((image) => image.target === url).map(({ full }) => full),
+        compare: async (_thumbnail, full) => ({ eligible: true, matches: full !== null }),
+        replace: async (html, link, full) => html.replace(link.thumbnail, full),
+        leadImages: async () => ({ lead: [], later: [] }),
+        samePicture: async () => false,
+        removeImage: async (html) => html,
+      };
+      const firstImageFetch = Promise.withResolvers<number>();
+      const fetched: { url: string; startedAt: number }[] = [];
+      const readAbortedAt: number[] = [];
+      const fetchPage = t.platform.fetch;
+      t.platform.fetch = async (input, init) => {
+        const url = String(input);
+        if (!url.startsWith(`${origin}/`)) return fetchPage(input, init);
+        if (url === `${origin}/robots.txt`) return new Response(null, { status: 404 });
+
+        const startedAt = Date.now();
+        fetched.push({ url, startedAt });
+        firstImageFetch.resolve(startedAt);
+        const isHtml = url.endsWith(".html");
+        const bytes = isHtml ? new TextEncoder().encode("<img>") : JPEG;
+        const headers = { "content-type": isHtml ? "text/html" : "image/jpeg" };
+        if (latency === 0) return new Response(bytes, { headers });
+
+        const signal = init?.signal;
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const timer = setTimeout(() => {
+              signal?.removeEventListener("abort", abort);
+              controller.enqueue(bytes);
+              controller.close();
+            }, latency);
+            function abort() {
+              clearTimeout(timer);
+              readAbortedAt.push(Date.now());
+              controller.error(signal?.reason);
+            }
+            signal?.addEventListener("abort", abort, { once: true });
+          },
+        });
+        return new Response(stream, { headers });
+      };
+
+      vi.useFakeTimers();
+      // Node の AbortSignal.timeout は内部のタイマーを使うため、HostGate と同じ時計に合わせる。
+      const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), ms);
+        return controller.signal;
+      });
+      try {
+        const job = runJob(t.platform, { type: "extract-page", articleId: t.article.id });
+        const startedAt = await firstImageFetch.promise;
+        await vi.advanceTimersByTimeAsync(45_000 + 1_000);
+        await job;
+
+        expect(fetched.at(-1)?.startedAt).toBe(startedAt + lastFetchAt);
+        expect(readAbortedAt).toEqual(abortsBody ? [startedAt + 45_000] : []);
+        expect(fetched.filter(({ url }) => url.includes("/full-")).map(({ url }) => url)).toEqual(
+          images.slice(0, enlarged + Number(abortsBody)).map(({ full }) => full),
+        );
+        const row = await getPageContent(t.platform.db, t.article.id);
+        expect(row).toMatchObject({
+          status: "extracted",
+          html: `<p>${ARTICLE_TEXT}</p>${images
+            .map((image, index) => tags(image, index < enlarged ? image.full : image.thumbnail))
+            .join("")}`,
+        });
+      } finally {
+        timeout.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("長い画像 URL で上限を超えても、元の画像を残して本文を保存する", async () => {
     const original = `<p>${ARTICLE_TEXT}</p><a href="https://photos.example/view"><img src="https://photos.example/thumb.png"></a>`;
     const t = await setUp({ extracted: original });

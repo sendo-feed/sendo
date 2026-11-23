@@ -603,6 +603,23 @@ describe("購読を変える", () => {
     expect(await rejected.json()).toMatchObject({ numResults: 0 });
   });
 
+  it("quickadd で取得先が 502 を返したら、時間をおいて試せると error で返す", async () => {
+    const user = await createUser();
+    const { fetch } = fakeFetch(() => new Response("bad gateway", { status: 502 }));
+    const { platform } = createTestPlatform({ fetch });
+    const send = reader(platform, user.token);
+
+    const res = await send("/reader/api/0/subscription/quickadd", {
+      form: [["quickadd", "https://hnrss.org/newest?q=Claude"]],
+    });
+
+    expect(await res.json()).toMatchObject({
+      numResults: 0,
+      error:
+        "unexpected status 502; the feed server may be temporarily unavailable, try again later",
+    });
+  });
+
   it("subscription/edit でフォルダに入れる（なければ作る）・外す・購読をやめる・購読し直す", async () => {
     const { send, feed } = await setup();
     const folderOf = async () =>
