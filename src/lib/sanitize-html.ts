@@ -174,9 +174,9 @@ function sanitizeToParts(
    * 知りたいのは ID がちょうど 1 つかどうかなので、引用ごとに 2 つまで集める
    */
   const pushLink = (href: string) => {
-    // Imgur のリンクの中で埋め込みをリンクに替えるときは、先に Imgur のリンクを閉じる（URL の
-    // 文字もここで出す）。入れ子のリンクは、もう一度通すと外側が空のリンクに分かれるため
-    if (imgur?.link) closeUntil("a");
+    // リンクの中で埋め込みをリンクに替えるときは、先に開いているリンクを閉じる（Imgur のリンクなら
+    // URL の文字もここで出す）。入れ子のリンクは、もう一度通すと外側のリンクが分かれ、結果が変わるため
+    closeUntil("a");
     parts.push(link(href));
     if (xPosts.length === 0 || open.length >= MAX_DEPTH) return;
     const id = xPostId(href);

@@ -109,6 +109,47 @@ describe("sanitizeHtml", () => {
     );
   });
 
+  it("リンクの中の埋め込みは、先にリンクを閉じてから替え、入れ子のリンクを作らない", () => {
+    const A = 'rel="noopener noreferrer nofollow"';
+    const page = `<a href="https://example.com/page" ${A}>`;
+    const v = (src: string) => `<a href="${src}" ${A}>${src}</a>`;
+    const cases: [input: string, expected: string][] = [
+      [
+        '<a href="https://example.com/page">動画を見る<iframe src="https://v.example/x"></iframe>続き</a>',
+        `${page}動画を見る</a>${v("https://v.example/x")}続き`,
+      ],
+      [
+        '<a href="https://example.com/page"><video><source src="https://v.example/x.mp4"></video></a>',
+        `${page}</a>${v("https://v.example/x.mp4")}`,
+      ],
+      [
+        '<a href="https://example.com/page">前<embed src="https://v.example/e.swf">後</a>',
+        `${page}前</a>${v("https://v.example/e.swf")}後`,
+      ],
+      [
+        '<a href="https://example.com/page">前<audio src="https://v.example/a.mp3"></audio>後</a>',
+        `${page}前</a>${v("https://v.example/a.mp3")}後`,
+      ],
+      // リンクの中の要素も、リンクと一緒に閉じる
+      [
+        '<p><a href="https://example.com/page"><strong>強<iframe src="https://v.example/x"></iframe>調</strong></a></p>',
+        `<p>${page}<strong>強</strong></a>${v("https://v.example/x")}調</p>`,
+      ],
+    ];
+    for (const [input, expected] of cases) {
+      const once = clean(input);
+      expect(once, input).toBe(expected);
+      expect(clean(once), input).toBe(once);
+    }
+  });
+
+  it("深さの上限のところのリンクの中の埋め込みでも、入れ子のリンクを作らず、2 回通しても変わらない", () => {
+    const deep = `${"<div>".repeat(98)}<a href="https://example.com/page">前<iframe src="https://v.example/x"></iframe>後</a>`;
+    const once = clean(deep);
+    expect(once).not.toMatch(/<a [^>]*>[^<]*<a /);
+    expect(clean(once)).toBe(once);
+  });
+
   it("閉じていないタグを閉じ、開いていない閉じタグを落とす", () => {
     expect(clean("<p>a<strong>b")).toBe("<p>a<strong>b</strong></p>");
     expect(clean("a</p></div>b")).toBe("ab");
