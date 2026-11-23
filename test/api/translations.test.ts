@@ -1958,9 +1958,14 @@ describe("段階ごとのモデルと思考量（docs/decisions/translation.md �
       effort: "medium",
       using: "claude-sonnet-5-5",
     });
+    // 同じ一覧を使う間は、出し直さない
+    const logged = error.mock.calls.length;
+    await request(s, en);
+    await runQueuedTranslation(s);
+    expect(error).toHaveBeenCalledTimes(logged);
   });
 
-  it("バッチの結果ごとの誤りはその記事のモデルに数え、ほかの段階の誤りと合わせて 3 件で外す。ほかのモデルは外さない", async () => {
+  it("バッチの結果ごとの誤りはその記事のモデルに数え、ほかの段階の誤りと合わせて 3 件で外す", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const s = await setup({
       body: bodyOf(10),
