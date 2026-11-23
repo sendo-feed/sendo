@@ -146,9 +146,26 @@ async function fetchOrFail(
     if (result.status !== "ok") throw new DiscoverError("fetch_failed", "unexpected 304");
     return result;
   } catch (error) {
-    if (error instanceof FetchFeedError) throw new DiscoverError("fetch_failed", error.message);
+    if (error instanceof FetchFeedError) {
+      throw new DiscoverError("fetch_failed", describeFetchFailure(error));
+    }
     throw error;
   }
+}
+
+/**
+ * 取得の失敗を、購読を頼んだ人（MCP ではエージェント）に返す文にする。取得先の一時的な失敗
+ * （5xx、429、時間切れ）なら、時間をおけば試せることを添える。添えないと、Sendo の側で
+ * 受け付けない URL だと受け取られ、やり直されない
+ */
+function describeFetchFailure(error: FetchFeedError): string {
+  const temporary =
+    error.code === "timeout" ||
+    error.code === "rate_limited" ||
+    (error.status !== undefined && error.status >= 500 && error.status <= 599);
+  return temporary
+    ? `${error.message}; the feed server may be temporarily unavailable, try again later`
+    : error.message;
 }
 
 /**

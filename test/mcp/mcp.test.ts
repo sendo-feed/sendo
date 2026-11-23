@@ -592,6 +592,28 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     ]);
   });
 
+  it("subscribe で取得先が 502 を返したら、時間をおいて試せるとツールのエラーで返す", async () => {
+    const { token } = await setup(["read", "write"]);
+    const { fetch } = fakeFetch(() => new Response("bad gateway", { status: 502 }));
+    const { platform } = createTestPlatform({ fetch });
+    const { client } = await connect(platform, token);
+
+    const res = await client.callTool({
+      name: "subscribe",
+      arguments: { url: "https://hnrss.org/newest?q=Claude" },
+    });
+
+    expect(res).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "cannot subscribe: unexpected status 502; the feed server may be temporarily unavailable, try again later",
+        },
+      ],
+    });
+  });
+
   it("write の範囲で、既読・スター・購読・購読をやめるを使え、REST API にも届く", async () => {
     const { user, token, feed, a1, a2 } = await setup(["read", "write"]);
     const rss =

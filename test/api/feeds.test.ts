@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { insertArticles } from "../../src/db/articles";
 import { deliverNewArticles } from "../../src/db/inbox";
 import { testDb } from "../db";
@@ -156,6 +156,110 @@ describe("POST /api/v1/feeds", () => {
 
     expect(res.status).toBe(422);
     expect(await res.json()).toMatchObject({ error: { code: "fetch_failed" } });
+  });
+
+  describe("取得先が一時的なエラーを返したら、時間をおいて試せると返す", () => {
+    const TEMPORARY = "try again later";
+    const url = "https://hnrss.org/newest?q=Claude";
+
+    const errorOf = async (res: Response) =>
+      ((await res.json()) as { error: { code: string; message: string } }).error;
+
+    it("502 で失敗したあと、取得先が戻れば同じ URL で購読できる", async () => {
+      let status = 502;
+      const { fetch, calls } = fakeFetch(() =>
+        status === 200
+          ? new Response(RSS, { headers: { "content-type": "application/rss+xml" } })
+          : new Response("<html><head><title>502 Bad Gateway</title></head></html>", {
+              status,
+              headers: { "content-type": "text/html" },
+            }),
+      );
+      const { platform, enqueued } = createTestPlatform({ fetch });
+
+      const failed = await subscribe(platform, { url });
+
+      expect(failed.status).toBe(422);
+      const error = await errorOf(failed);
+      expect(error.code).toBe("fetch_failed");
+      expect(error.message).toContain("502");
+      expect(error.message).toContain(TEMPORARY);
+      // 検索条件はそのまま取りにいく
+      expect(calls.map((c) => c.url)).toEqual([url]);
+      // 失敗した URL のフィードの行は残らない
+      expect(
+        await testDb.prepare("SELECT count(*) AS n FROM feeds WHERE url = ?").bind(url).first(),
+      ).toEqual({ n: 0 });
+      expect(enqueued).toEqual([]);
+
+      status = 200;
+      const retried = await subscribe(platform, { url });
+
+      expect(retried.status).toBe(201);
+      expect(((await retried.json()) as { feed: FeedJson }).feed).toMatchObject({ url });
+    });
+
+    it.each([500, 503, 599, 429])("%i も一時的なエラーとして返す", async (status) => {
+      const { fetch } = fakeFetch(() => new Response("error", { status }));
+      const { platform } = createTestPlatform({ fetch });
+
+      const res = await subscribe(platform, { url });
+
+      expect(res.status).toBe(422);
+      const error = await errorOf(res);
+      expect(error.code).toBe("fetch_failed");
+      expect(error.message).toContain(String(status));
+      expect(error.message).toContain(TEMPORARY);
+    });
+
+    it("時間切れも一時的なエラーとして返す", async () => {
+      // 15 秒を待たないよう、取得の打ち切りだけを短くする
+      const timeout = AbortSignal.timeout.bind(AbortSignal);
+      vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => timeout(Math.min(ms, 20)));
+      const { fetch } = fakeFetch(
+        (_url, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+          }),
+      );
+      const { platform } = createTestPlatform({ fetch });
+
+      try {
+        const res = await subscribe(platform, { url });
+
+        expect(res.status).toBe(422);
+        const error = await errorOf(res);
+        expect(error.code).toBe("fetch_failed");
+        expect(error.message).toContain("timed out");
+        expect(error.message).toContain(TEMPORARY);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it.each([404, 410, 499])("%i は、時間をおいて試せるとは返さない", async (status) => {
+      const { fetch } = fakeFetch(() => new Response("error", { status }));
+      const { platform } = createTestPlatform({ fetch });
+
+      const res = await subscribe(platform, { url });
+
+      expect(res.status).toBe(422);
+      const error = await errorOf(res);
+      expect(error.code).toBe("fetch_failed");
+      expect(error.message).toBe(`unexpected status ${status}`);
+    });
+
+    it("フィードが見つからないときは、時間をおいて試せるとは返さない", async () => {
+      const { fetch } = fakeFetch(() => new Response("<html><head></head></html>"));
+      const { platform } = createTestPlatform({ fetch });
+
+      const res = await subscribe(platform, { url });
+
+      expect(res.status).toBe(422);
+      const error = await errorOf(res);
+      expect(error.code).toBe("feed_not_found");
+      expect(error.message).not.toContain(TEMPORARY);
+    });
   });
 
   it("ページの <link> が内部のホストを指していても、取得しない", async () => {
