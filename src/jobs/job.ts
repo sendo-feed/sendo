@@ -42,6 +42,14 @@ export const jobSchema = z.discriminatedUnion("type", [
    */
   z.object({ type: z.literal("maintain-translations") }),
   /**
+   * 指定した記事について、訳すかどうかを決める（判定を保存したとき、ページを抜けなかったと記録した
+   * とき。docs/decisions/jobs.md の 13）
+   */
+  z.object({
+    type: z.literal("decide-translations"),
+    articleIds: z.array(z.string().min(1)).min(1).max(LANGUAGE_ARTICLES_PER_JOB),
+  }),
+  /**
    * その場の翻訳と訳し直し（docs/decisions/translation.md の 5、6）。startedAt は行の始めた時刻
    * （ミリ秒）。retranslation なら訳し直し（Opus で訳し、訳し直しの印を付ける）
    */

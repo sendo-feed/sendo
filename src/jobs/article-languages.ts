@@ -12,6 +12,7 @@ import { configureStorage, readStorageUsage } from "../db/storage";
 import { escapeHtml } from "../lib/html";
 import type { Platform } from "../platform";
 import { LANGUAGE_ARTICLES_PER_JOB } from "./job";
+import { enqueueDecideTranslations } from "./translations";
 
 /** 1 つの仕事で判定する件数（docs/decisions/jobs.md の 4）。残りは次の仕事に引き継ぐ */
 export const LANGUAGE_BATCH_SIZE = 10;
@@ -21,7 +22,10 @@ export const LANGUAGE_BATCH_SIZE = 10;
  * その記事の未処理の入力元だけ。残りは同じ記事の続きの仕事に引き継ぐ。容量が足りなければ続けない
  */
 export async function detectArticleLanguages(
-  platform: Pick<Platform, "db" | "content" | "jobs" | "languageDetection" | "retentionConfig">,
+  platform: Pick<
+    Platform,
+    "db" | "content" | "jobs" | "languageDetection" | "retentionConfig" | "translator"
+  >,
   after?: LanguageCursor,
   articleIds?: readonly string[],
 ): Promise<void> {
@@ -35,60 +39,71 @@ export async function detectArticleLanguages(
     articleIds,
   );
   let capacityBlocked = false;
-  for (const { articleId, source } of pending.slice(0, LANGUAGE_BATCH_SIZE)) {
-    const current = await getArticleLanguage(platform.db, articleId, source);
-    if (current && current.pipelineRevision >= detector.pipelineRevision) continue;
-    let html: string | null;
-    if (source === "page") {
-      const page = await getPageContent(platform.db, articleId);
-      html = page?.status === "extracted" ? page.html : null;
-    } else {
-      const article = await platform.db
-        .select({
-          title: articles.title,
-          summary: articles.summary,
-          contentKey: articles.contentKey,
-        })
-        .from(articles)
-        .where(eq(articles.id, articleId))
-        .get();
-      if (!article) continue;
-      if (source === "feed") {
-        try {
-          html =
-            article.contentKey === null ? null : await platform.content.get(article.contentKey);
-        } catch (error) {
-          console.warn("could not read article language input", { articleId, source, error });
-          continue;
-        }
+  /** 判定を保存した記事（訳すかどうかを決める仕事を積む） */
+  const stored: string[] = [];
+  try {
+    for (const { articleId, source } of pending.slice(0, LANGUAGE_BATCH_SIZE)) {
+      const current = await getArticleLanguage(platform.db, articleId, source);
+      if (current && current.pipelineRevision >= detector.pipelineRevision) continue;
+      let html: string | null;
+      if (source === "page") {
+        const page = await getPageContent(platform.db, articleId);
+        html = page?.status === "extracted" ? page.html : null;
       } else {
-        html = `<p>${escapeHtml(article.title ?? "")} ${escapeHtml(article.summary ?? "")}</p>`;
+        const article = await platform.db
+          .select({
+            title: articles.title,
+            summary: articles.summary,
+            contentKey: articles.contentKey,
+          })
+          .from(articles)
+          .where(eq(articles.id, articleId))
+          .get();
+        if (!article) continue;
+        if (source === "feed") {
+          try {
+            html =
+              article.contentKey === null ? null : await platform.content.get(article.contentKey);
+          } catch (error) {
+            console.warn("could not read article language input", { articleId, source, error });
+            continue;
+          }
+        } else {
+          html = `<p>${escapeHtml(article.title ?? "")} ${escapeHtml(article.summary ?? "")}</p>`;
+        }
+      }
+      // 本文の置き場が一時的に読めない場合、空の入力として判定済みにしない。
+      if (html === null) continue;
+      let result: Awaited<ReturnType<typeof detector.detect>>;
+      try {
+        result = await detector.detect(html);
+      } catch (error) {
+        console.warn("could not detect article language", { articleId, source, error });
+        continue;
+      }
+      const saved = await recordArticleLanguage(platform.db, {
+        ...result,
+        articleId,
+        source,
+        detector: detector.detector,
+        pipelineRevision: detector.pipelineRevision,
+        status:
+          source === "metadata" && result.status === "detected" ? "provisional" : result.status,
+      });
+      if (saved) {
+        stored.push(articleId);
+      } else {
+        const usage = await readStorageUsage(platform.db);
+        if (usage.bytes + ARTICLE_LANGUAGE_BYTES > usage.limitBytes) {
+          capacityBlocked = true;
+          break;
+        }
       }
     }
-    // 本文の置き場が一時的に読めない場合、空の入力として判定済みにしない。
-    if (html === null) continue;
-    let result: Awaited<ReturnType<typeof detector.detect>>;
-    try {
-      result = await detector.detect(html);
-    } catch (error) {
-      console.warn("could not detect article language", { articleId, source, error });
-      continue;
-    }
-    const stored = await recordArticleLanguage(platform.db, {
-      ...result,
-      articleId,
-      source,
-      detector: detector.detector,
-      pipelineRevision: detector.pipelineRevision,
-      status: source === "metadata" && result.status === "detected" ? "provisional" : result.status,
-    });
-    if (!stored) {
-      const usage = await readStorageUsage(platform.db);
-      if (usage.bytes + ARTICLE_LANGUAGE_BYTES > usage.limitBytes) {
-        capacityBlocked = true;
-        break;
-      }
-    }
+  } finally {
+    // 保存した記事について、訳すかどうかを決める仕事を積む（docs/decisions/jobs.md の 13）。途中で
+    // 落ちても、それまでに保存した記事の分は積む（やり直しでは、保存した記事を拾わないため）
+    await enqueueDecideTranslations(platform, stored);
   }
   // 読めない本文が先頭にたまっても、カーソルを進めてほかの記事を処理する。
   // 容量不足では連続投入せず、定期実行で先頭から拾い直す。

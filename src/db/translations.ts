@@ -147,8 +147,9 @@ const languageFrom = (source: string) => sql`(select l.language from article_lan
 /**
  * 訳すかどうかを決めて、行を作る（docs/decisions/translation.md の 1、2）。
  *
- * 決めるのは、言語の判定がページの本文まで済んだ記事か、取り込んでから 1 時間たって判定が 1 つでも
- * ある記事。Discord の投稿、取り込んでから 1 日たった記事、誰の受信箱にもない記事、行のある記事は
+ * 決めるのは、言語の判定がフィードの本文（なければタイトル・要約）とページの本文の両方で済んだ記事
+ * （ページを抜けなかった記事と URL のない記事は、フィードの本文かタイトル・要約の判定のあと）か、
+ * 取り込んでから 1 時間たって判定が 1 つでもある記事。Discord の投稿、取り込んでから 1 日たった記事、誰の受信箱にもない記事、行のある記事は
  * 決めない。行を作る文の中で、まだ行がないことを確かめる（重なった仕事が作り直さない）
  *
  * @returns 行を作った記事。差分同期で配る（skipped でない）ものかどうかも返す
@@ -156,11 +157,16 @@ const languageFrom = (source: string) => sql`(select l.language from article_lan
 export async function decideTranslations(
   db: Database,
   limit = DECIDE_BATCH_SIZE,
+  /** 指定したら、この記事だけを決める（判定のあとの連鎖。docs/decisions/jobs.md の 13） */
+  articleIds?: readonly string[],
 ): Promise<{ articleId: string; delivered: boolean }[]> {
-  // ページの判定が済んだ：ページの本文が抜けていて、その判定がある。抜けなかった、または URL のない
+  // 判定が済んだ：フィードの本文（なければタイトル・要約）とページの本文の両方の判定がある。連鎖で
+  // 判定の順が入れ替わっても、ページの判定だけで決めない。ページを抜けなかった、または URL のない
   // 記事は、フィードかタイトル・要約の判定がある
   const ready = sql`(
-    exists (select 1 from article_languages l where l.article_id = a.id and l.source = 'page')
+    (exists (select 1 from article_languages l where l.article_id = a.id and l.source = 'page')
+      and exists (select 1 from article_languages l where l.article_id = a.id
+        and l.source in ('feed', 'metadata')))
     or (
       (a.url is null or exists (
         select 1 from page_contents p where p.article_id = a.id
@@ -185,6 +191,14 @@ export async function decideTranslations(
         and not exists (select 1 from article_translations t where t.article_id = a.id)
         and exists (select 1 from user_articles u where u.article_id = a.id)
         and ${ready}
+        ${
+          articleIds === undefined
+            ? sql``
+            : sql`and a.id in (${sql.join(
+                articleIds.map((id) => sql`${id}`),
+                sql`, `,
+              )})`
+        }
       order by a.created_at, a.id
       limit ${limit}
     ) c
@@ -233,6 +247,28 @@ export async function listArticleUrls(
     );
   }
   return rows;
+}
+
+/**
+ * まだ訳すかどうかを決めていない（訳文の行がない）、取り込んでから 1 日以内の記事（決める仕事を積む
+ * 先。docs/decisions/jobs.md の 13）
+ */
+export async function listUndecidedArticles(
+  db: Database,
+  articleIds: readonly string[],
+): Promise<string[]> {
+  if (articleIds.length === 0) return [];
+  const rows = await db.all<{ id: string }>(
+    sql`select a.id from articles a
+      where a.id in (${sql.join(
+        articleIds.map((id) => sql`${id}`),
+        sql`, `,
+      )})
+        and a.created_at > ${DB_NOW_MS} - ${DECIDE_WINDOW_MS}
+        and not exists (select 1 from article_translations t where t.article_id = a.id)
+      order by a.id`,
+  );
+  return rows.map((row) => row.id);
 }
 
 /**
