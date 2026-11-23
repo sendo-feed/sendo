@@ -10,7 +10,7 @@
  */
 import { decodeHTML } from "entities";
 import { parseAttributes, tokenizeHtml } from "../lib/html";
-import { fetchPage } from "./fetch-page";
+import { FetchPageError, fetchPage } from "./fetch-page";
 import type { PageFetchBudget } from "./page-images";
 
 /** 記事 1 件で取る投稿のページの数 */
@@ -103,8 +103,11 @@ export async function resolveImgurPosts(
       });
       const image = imgurImageFromPage(new TextDecoder().decode(page.bytes));
       if (image !== null) images.set(post, image);
-    } catch {
-      // robots 不許可、404、時間切れ、上限切れなどでも、本文はリンクのまま残す
+    } catch (error) {
+      // robots 不許可、404、時間切れ、上限切れなどでも、本文はリンクのまま残す。理由はログにだけ出す
+      if (error instanceof FetchPageError) {
+        console.warn("could not fetch the Imgur post page", { code: error.code });
+      }
     }
   }
   return images;

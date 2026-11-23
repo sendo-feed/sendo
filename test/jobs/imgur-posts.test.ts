@@ -5,7 +5,7 @@ import { getPageContent } from "../../src/db/page-contents";
 import { articles } from "../../src/db/schema";
 import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
-import { sanitizeHtml } from "../../src/lib/sanitize-html";
+import { findImgurPosts, sanitizeHtml } from "../../src/lib/sanitize-html";
 import type { PageContentExtractor, Platform } from "../../src/platform";
 import { createPageContentExtractor, loadNativeModule } from "../../src/platform/node/native";
 import { NATIVE_MODULE } from "../db";
@@ -88,6 +88,10 @@ const POSTS: Record<string, (signal: AbortSignal | undefined) => Response | Prom
     }),
 };
 
+function redirect(path: string) {
+  return new Response(null, { status: 301, headers: { location: `https://imgur.com${path}` } });
+}
+
 function html(body: string) {
   return new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
@@ -148,6 +152,7 @@ async function setUp(options: {
     platform,
     user,
     article,
+    link,
     /** imgur.com の投稿のページへの取得（robots.txt を除く） */
     postFetches: () =>
       fetched.calls
@@ -243,6 +248,9 @@ describe("Imgur の投稿のページを書いた公式埋め込み（ページ�
     expect(body).toMatch(relay("https://i.imgur.com/Cover2.png?fb"));
     expect(body).toMatch(relay("https://i.imgur.com/Vid3h.jpg"));
     expect(body.match(/<img /g)).toHaveLength(3);
+    // 保存した本文には手掛かりの class が残らないので、通し直しても画像は増えず、調べる投稿もない
+    expect(sanitizeHtml(row?.html ?? "", t.link)).toBe(row?.html);
+    expect(findImgurPosts(row?.html ?? "", t.link)).toEqual([]);
   });
 
   it("http の記事のスキームのない書き方は、http のまま取りにいき、https へのリダイレクトをたどる", async () => {
@@ -328,6 +336,48 @@ describe("Imgur の投稿のページを書いた公式埋め込み（ページ�
     expect(row?.html).toContain('<img src="https://i.imgur.com/Img1.jpeg?fb"></blockquote>');
     expect(row?.html).toContain(`<img src="${photos}/full.jpg">`);
     expect(row?.html).not.toContain("thumb.jpg");
+  });
+
+  it("投稿のページで回数の上限（36 回）を使い切ったら、本文の画像（20）は取りにいかない", async () => {
+    // どの投稿も、2 回のリダイレクトのあとでページを返す（1 件で 3 回の取得）。12 件で 36 回
+    for (let i = 1; i <= 12; i++) {
+      POSTS[`/Hop${i}`] ??= () => redirect(`/hop1/Hop${i}`);
+      POSTS[`/hop1/Hop${i}`] ??= () => redirect(`/hop2/Hop${i}`);
+      POSTS[`/hop2/Hop${i}`] ??= () => html(imagePage(`Hop${i}`));
+    }
+    const photos = `https://${crypto.randomUUID()}.example.com`;
+    const extractor = createPageContentExtractor(loadNativeModule(NATIVE_MODULE));
+    extractor.images = {
+      links: async () => [{ thumbnail: `${photos}/thumb.jpg`, target: `${photos}/full.jpg` }],
+      candidates: async () => [],
+      compare: async () => ({ eligible: true, matches: true }),
+      replace: async (html, link, full) => html.replace(link.thumbnail, full),
+      leadImages: async () => ({ lead: [], later: [] }),
+      samePicture: async () => false,
+      removeImage: async (html) => html,
+    };
+    const t = await setUp({
+      extractor,
+      pageHtml: articlePage([
+        ...Array.from({ length: 12 }, (_, i) => embed(`//imgur.com/Hop${i + 1}`)),
+        `<p><a href="${photos}/full.jpg"><img src="${photos}/thumb.jpg"></a></p>`,
+      ]),
+      respond: (url) => {
+        if (url.origin !== photos) return undefined;
+        if (url.pathname === "/robots.txt") return new Response(null, { status: 404 });
+        return new Response(JPEG, { headers: { "content-type": "image/jpeg" } });
+      },
+    });
+    await extractWithClock(t.platform, t.article.id);
+
+    // 期限（45 秒）には届かず、回数で止まる
+    expect(t.postFetches().filter((url) => url.includes("/hop2/")).length).toBeGreaterThanOrEqual(
+      11,
+    );
+    expect(t.calls.some(({ url }) => url.startsWith(photos))).toBe(false);
+    const row = await getPageContent(t.platform.db, t.article.id);
+    expect(row?.status).toBe("extracted");
+    expect(row?.html).toContain(`${photos}/thumb.jpg`);
   });
 
   it("上限は本文の画像（20・21）と分け合う。期限を過ぎたら、残りの投稿も本文の画像も取りにいかない", async () => {
