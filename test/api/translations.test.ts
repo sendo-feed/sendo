@@ -1075,6 +1075,8 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
       translatedAt: string | null;
       retranslated: boolean;
       failure: { kind: string; category: string | null; stage: string } | null;
+      model: string | null;
+      effort: string | null;
     } | null;
   };
 
@@ -1127,8 +1129,15 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
         translatedAt: null,
         retranslated: false,
         failure: null,
+        model: null,
+        effort: null,
       });
-      expect(translationIn(body, und)).toMatchObject({ language: "und", status: "untranslated" });
+      expect(translationIn(body, und)).toMatchObject({
+        language: "und",
+        status: "untranslated",
+        model: null,
+        effort: null,
+      });
       // skipped は配らないので、番号も進まない
       expect(body.articles.map((a) => a.id)).not.toContain(ja);
     }
@@ -1157,7 +1166,12 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
     const b1 = await sync(s.platform, other.token, b0.cursor);
     for (const body of [a1, b1]) {
       expect(body.articles.map((a) => a.id)).toEqual([en]);
-      expect(translationIn(body, en)).toMatchObject({ status: "translating", title: null });
+      expect(translationIn(body, en)).toMatchObject({
+        status: "translating",
+        title: null,
+        model: null,
+        effort: null,
+      });
     }
 
     s.notified.length = 0;
@@ -1177,12 +1191,19 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
         translatedAt: row?.translatedAt?.toISOString(),
         retranslated: false,
         failure: null,
+        model: "claude-sonnet-5-5",
+        effort: "medium",
       });
     }
 
     // 最初の同期では、訳し済みの記事に訳文が付く
     const fresh = await sync(s.platform, other.token);
-    expect(translationIn(fresh, en)).toMatchObject({ status: "translated", title: JA_TITLE });
+    expect(translationIn(fresh, en)).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      model: "claude-sonnet-5-5",
+      effort: "medium",
+    });
   });
 
   it("やり直しを数えただけでは番号が進まず、知らせない。やり直しを使い切って戻ると届き、知らされる", async () => {
@@ -1209,7 +1230,12 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
     await runJob(s.platform, job);
     expect(s.notified).toEqual([TEST_USER.id]);
     const a2 = await sync(s.platform, undefined, a1.cursor);
-    expect(translationIn(a2, en)).toMatchObject({ status: "untranslated", title: null });
+    expect(translationIn(a2, en)).toMatchObject({
+      status: "untranslated",
+      title: null,
+      model: null,
+      effort: null,
+    });
   });
 
   it("訳し直すと、記事を持つ全員に、最中はもとの訳文が、終わると新しい訳文と訳し直しの印が届き、知らされる", async () => {
@@ -1234,6 +1260,9 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
         translatedAt: before?.translatedAt?.toISOString(),
         retranslated: false,
         failure: null,
+        // 訳し直しの最中は、もとの訳文の条件
+        model: "claude-sonnet-5-5",
+        effort: "medium",
       });
     }
 
@@ -1255,12 +1284,16 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
         translatedAt: row?.translatedAt?.toISOString(),
         retranslated: true,
         failure: null,
+        model: "claude-opus-5-5",
+        effort: "medium",
       });
     }
     // 最初の同期でも印が付く
     expect(translationIn(await sync(s.platform, other.token), en)).toMatchObject({
       retranslated: true,
       failure: null,
+      model: "claude-opus-5-5",
+      effort: "medium",
     });
   });
 
@@ -1275,6 +1308,62 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
     const a1 = await sync(s.platform, undefined, a0.cursor);
     expect(a1.articles.map((a) => a.id)).toEqual([en]);
     expect(translationIn(a1, en)).toMatchObject({ retranslated: true });
+  });
+
+  it("モデルか思考量だけが変わっても番号が進んで届き、配らない条件だけが変わっても進まない（トリガーの条件）", async () => {
+    const s = await setup();
+    const en = await translatedArticle(s);
+    const a0 = await sync(s.platform);
+    // 条件は本番では訳した時刻と一緒に変わる。それぞれだけで振るかを、直接の書き込みで確かめる
+    await testDb.exec(
+      `UPDATE article_translations SET model = 'claude-sonnet-6' WHERE article_id = '${en}'`,
+    );
+    const a1 = await sync(s.platform, undefined, a0.cursor);
+    expect(a1.articles.map((a) => a.id)).toEqual([en]);
+    expect(translationIn(a1, en)).toMatchObject({ model: "claude-sonnet-6", effort: "medium" });
+
+    await testDb.exec(`UPDATE article_translations SET effort = 'max' WHERE article_id = '${en}'`);
+    const a2 = await sync(s.platform, undefined, a1.cursor);
+    expect(a2.articles.map((a) => a.id)).toEqual([en]);
+    expect(translationIn(a2, en)).toMatchObject({ model: "claude-sonnet-6", effort: "max" });
+
+    // 段階、プロンプトの版、トークン数、呼び出しのモデル、写した元、バッチで送った条件
+    for (const set of [
+      "tier = 'quality'",
+      "prompt_version = 99",
+      "input_tokens = 1, output_tokens = 2",
+      "call_model = 'claude-haiku-5-5'",
+      "title_copied_from = 'x', summary_copied_from = 'y', content_copied_from = 'z'",
+      "batch_tier = 'long', batch_effort = 'low', batch_prompt_version = 99",
+    ]) {
+      await testDb.exec(`UPDATE article_translations SET ${set} WHERE article_id = '${en}'`);
+    }
+    expect((await sync(s.platform, undefined, a2.cursor)).articles).toEqual([]);
+  });
+
+  it("思考量を残す前に送ったバッチの訳文は、思考量が null で、モデルは載る（差分同期と GET）", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    // 送った条件を書く前の版が送ったバッチ（送った条件の列が空）
+    await testDb.exec(
+      "UPDATE article_translations SET batch_tier = NULL, batch_effort = NULL, batch_prompt_version = NULL",
+    );
+    const a0 = await sync(s.platform);
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    await maintain(s.platform);
+
+    const a1 = await sync(s.platform, undefined, a0.cursor);
+    expect(translationIn(a1, en)).toMatchObject({
+      status: "translated",
+      model: "claude-sonnet-5-5",
+      effort: null,
+    });
+    const got = await requestApp(s.platform, `/api/v1/articles/${en}/translation`);
+    expect(got.status).toBe(200);
+    expect(await got.json()).toMatchObject({ model: "claude-sonnet-5-5", effort: null });
   });
 
   it("止まった translating を戻すと、届き、知らされる", async () => {
@@ -4633,11 +4722,14 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
     });
   });
 
-  it("要約だけを送って写した行（その場の翻訳）も、条件は写した元の行のもの、トークン数と呼び出しのモデルは要約を送った呼び出しのもの（決定の 18）", async () => {
+  it("要約だけを送って写した行（その場の翻訳）も、条件は写した元の行のもの、トークン数と呼び出しのモデルは要約を送った呼び出しのもの。GET と差分同期には写した元のモデルと思考量が載る（決定の 18）", async () => {
     const s = await setup({ feeds, env: { TRANSLATION_LONG_THRESHOLD_CHARS: "1" } });
     s.batches.transform = mark;
     const first = await translatedFirst(s);
     const second = await requestOnDemand(s, "/lobsters.xml");
+    const before = (await (await requestApp(s.platform, "/api/v1/sync")).json()) as {
+      cursor: string;
+    };
     s.replies.push({ transform: mark, usage: { input_tokens: 21, output_tokens: 43 } });
     await runQueuedTranslation(s);
     expect(claudeSegments(s)).toEqual([["summary"]]);
@@ -4653,6 +4745,18 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       titleCopiedFrom: first,
       summaryCopiedFrom: null,
       contentCopiedFrom: first,
+    });
+
+    // 呼び出しのモデル（Sonnet）ではなく、代表の部分（本文）を写した元の条件を返す
+    const got = await requestApp(s.platform, `/api/v1/articles/${second}/translation`);
+    expect(await got.json()).toMatchObject({ model: "claude-haiku-5-5", effort: "low" });
+    const synced = (await (
+      await requestApp(s.platform, `/api/v1/sync?cursor=${encodeURIComponent(before.cursor)}`)
+    ).json()) as { articles: { id: string; translation?: Record<string, unknown> | null }[] };
+    expect(synced.articles.find((a) => a.id === second)?.translation).toMatchObject({
+      status: "translated",
+      model: "claude-haiku-5-5",
+      effort: "low",
     });
   });
 
@@ -5214,7 +5318,7 @@ describe("訳したときの条件（docs/decisions/translation.md の 9、18）
     }),
   });
 
-  it("その場の翻訳は、応答のモデル、通常の段階の思考量・段階、プロンプトの版、トークン数と呼び出しのモデルを残し、写した元は空。GET と差分同期には載せない", async () => {
+  it("その場の翻訳は、応答のモデル、通常の段階の思考量・段階、プロンプトの版、トークン数と呼び出しのモデルを残し、写した元は空。GET と差分同期にはモデルと思考量だけを載せる", async () => {
     const s = await setup();
     const id = await onDemand(s);
     s.replies.push({
@@ -5235,21 +5339,28 @@ describe("訳したときの条件（docs/decisions/translation.md の 9、18）
       callModel: "claude-sonnet-5-5",
     });
 
-    // 段階、プロンプトの版、トークン数、写した元は返さず、配らない
+    // モデルと思考量は返し、段階、プロンプトの版、トークン数、写した元は返さず、配らない
     const got = await requestApp(s.platform, `/api/v1/articles/${id}/translation`);
-    expect(Object.keys((await got.json()) as object).sort()).toEqual([
+    const body = (await got.json()) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual([
       "content",
       "contentSource",
+      "effort",
       "model",
       "summary",
       "title",
       "translatedAt",
     ]);
+    expect(body).toMatchObject({ model: "claude-sonnet-5-5", effort: "medium" });
     const synced = (await (await requestApp(s.platform, "/api/v1/sync")).json()) as {
       articles: { id: string; translation?: Record<string, unknown> | null }[];
     };
     const translation = synced.articles.find((a) => a.id === id)?.translation;
-    expect(translation).toMatchObject({ status: "translated" });
+    expect(translation).toMatchObject({
+      status: "translated",
+      model: "claude-sonnet-5-5",
+      effort: "medium",
+    });
     for (const key of [
       "tier",
       "promptVersion",

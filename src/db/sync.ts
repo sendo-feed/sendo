@@ -120,6 +120,12 @@ export type SyncTranslation = {
    * では、行に残っていても付けない（untranslated のときだけ意味を持つ）
    */
   failure: TranslationFailure | null;
+  /**
+   * 訳したときのモデルと思考量（docs/decisions/translation.md の 18）。訳文のある行（訳した時刻のある行。
+   * 訳し直しの最中も、もとの訳文の条件）だけ。訳文のない行と、思考量を残していない行は null
+   */
+  model: string | null;
+  effort: string | null;
 };
 
 const t = articleTranslations;
@@ -135,6 +141,8 @@ const translationColumns = {
   translationFailureKind: t.failureKind,
   translationFailureCategory: t.failureCategory,
   translationFailureStage: t.failureStage,
+  translationModel: t.model,
+  translationEffort: t.effort,
 };
 
 /** 配る翻訳だけを結ぶ条件（skipped の行は付けない） */
@@ -151,9 +159,13 @@ function toSyncTranslation(row: {
   translationFailureKind: TranslationFailure["kind"] | null;
   translationFailureCategory: string | null;
   translationFailureStage: TranslationFailure["stage"] | null;
+  translationModel: string | null;
+  translationEffort: string | null;
 }): SyncTranslation | null {
   const status = row.translationStatus;
   if (status === null || status === "skipped" || row.translationLanguage === null) return null;
+  // 条件は訳文のある行だけで意味を持つ（訳文のない行に残っていても付けない）
+  const translated = row.translationTranslatedAt !== null;
   return {
     language: row.translationLanguage,
     status,
@@ -171,6 +183,8 @@ function toSyncTranslation(row: {
             stage: row.translationFailureStage,
           }
         : null,
+    model: translated ? row.translationModel : null,
+    effort: translated ? row.translationEffort : null,
   };
 }
 
@@ -404,6 +418,8 @@ export async function readChanges(
         translationFailureKind,
         translationFailureCategory,
         translationFailureStage,
+        translationModel,
+        translationEffort,
         ...article
       }) => ({
         seq,
@@ -421,6 +437,8 @@ export async function readChanges(
             translationFailureKind,
             translationFailureCategory,
             translationFailureStage,
+            translationModel,
+            translationEffort,
           }),
         },
       }),
