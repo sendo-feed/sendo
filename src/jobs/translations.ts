@@ -43,6 +43,7 @@ import {
   TranslatorError,
 } from "../platform";
 import { type BodySegments, splitBody } from "../translation/segments";
+import { LANGUAGE_ARTICLES_PER_JOB } from "./job";
 
 /** 本文から送る文の合計の上限（Unicode の文字。docs/decisions/translation.md の 3） */
 export const MAX_TRANSLATED_BODY_CHARS = 60_000;
@@ -102,9 +103,15 @@ export async function enqueueDecideTranslations(
   if (platform.translator === undefined || articleIds.length === 0) return;
   try {
     const undecided = await listUndecidedArticles(platform.db, [...new Set(articleIds)]);
-    if (undecided.length > 0) {
-      await platform.jobs.enqueue([{ type: "decide-translations", articleIds: undecided }]);
+    // 1 つの仕事に入れる記事の数には上限がある（jobs.md の 4）。多ければ分けて積む
+    const jobs = [];
+    for (let i = 0; i < undecided.length; i += LANGUAGE_ARTICLES_PER_JOB) {
+      jobs.push({
+        type: "decide-translations" as const,
+        articleIds: undecided.slice(i, i + LANGUAGE_ARTICLES_PER_JOB),
+      });
     }
+    if (jobs.length > 0) await platform.jobs.enqueue(jobs);
   } catch (error) {
     console.warn("could not enqueue translation decisions; retrying at the next schedule", {
       error,

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { articles, articleTranslations } from "../../src/db/schema";
 import { runJob } from "../../src/jobs";
-import type { Job } from "../../src/jobs/job";
+import { type Job, jobSchema } from "../../src/jobs/job";
 import type { LanguageDetectionResult, PageContentExtractor, Platform } from "../../src/platform";
 import { createClaudeTranslator } from "../../src/translation/claude";
 import { testDb } from "../db";
@@ -254,6 +254,25 @@ describe("積む記事と条件", () => {
     };
     await runJob(revised, { type: "detect-article-languages" });
     expect(decideJobs(t.enqueued)).toEqual([]);
+  });
+
+  it("判定の仕事 1 つがちょうど 10 件を保存したら、決める仕事を 1 つ積み、仕事の形（10 件まで）に収まる", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const t = await setUp({ count: 10, page: null });
+    await t.run("extract-page");
+    t.enqueued.splice(
+      0,
+      t.enqueued.length,
+      ...t.enqueued.filter((j) => j.type !== "decide-translations"),
+    );
+    await t.run("detect-article-languages");
+    const jobs = decideJobs(t.enqueued);
+    expect(jobs).toHaveLength(1);
+    expect(jobSchema.parse(jobs[0])).toEqual({ type: "decide-translations", articleIds: t.ids });
+    await t.run("decide-translations");
+    for (const id of t.ids) {
+      expect(await translationOf(t.platform, id)).toMatchObject({ status: "queued" });
+    }
   });
 
   it("API キーのない sendo では、決める仕事を積まない", async () => {
