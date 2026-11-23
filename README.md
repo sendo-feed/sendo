@@ -71,8 +71,9 @@ docker compose pull && docker compose up -d
 | `PUBLIC_URL`、`READER_URL` | なし | 外から呼ぶときのオリジンと、sendo-reader のオリジン。[OAuth でつなぐ](#oauth-でつなぐ) |
 | `ALLOWED_EMAILS`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` | なし | ブラウザのログイン。[ブラウザでログインする](#ブラウザでログインするgoogle) |
 | `DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN` | なし | Discord の購読。[Discord のチャンネルを購読する](#discord-のチャンネルを購読する) |
-| `ANTHROPIC_API_KEY` | なし | Claude API のキー。入れると、そのあとに取り込んだ日本語以外の記事（Discord の投稿を除く）を、Claude API で日本語に訳す。空なら翻訳は動かず、記事を外へ送らない（[決定](docs/decisions/translation.md)） |
-| `TRANSLATION_MODEL` | なし（最新の Sonnet） | 訳すモデルを固定するときのモデルの ID。空なら、Models API で最新の Sonnet を選ぶ（1 日 1 回選び直す） |
+| `ANTHROPIC_API_KEY` | なし | Claude API のキー。入れると、日本語以外の記事を Claude API で日本語に訳す。空なら翻訳は動かず、記事を外へ送らない。[記事を日本語に訳す](#記事を日本語に訳すclaude-api) |
+| `TRANSLATION_MODEL` | なし（最新の Sonnet） | 自動の翻訳とその場の翻訳のモデルを固定するときのモデルの ID。空なら、Models API で最新の Sonnet を選ぶ（1 日 1 回選び直す） |
+| `RETRANSLATION_MODEL` | なし（最新の Opus） | 訳し直しのモデルを固定するときのモデルの ID。空なら、Models API で最新の Opus を選ぶ（1 日 1 回選び直す） |
 
 ### 取得の間隔
 
@@ -86,7 +87,7 @@ docker compose pull && docker compose up -d
 
 `STORAGE_LIMIT_MIB` に MiB（1,048,576 バイト）の整数を設定します。最小は 16 MiB、既定は 10240 MiB（10 GiB）です。例えば、20 GiB にするなら `.env` に `STORAGE_LIMIT_MIB=20480` と書き、コンテナを作り直します。従来の `ARTICLE_RETENTION_DAYS` は使いません。誤った容量設定はエラーにし、小さい既定値への差し戻しによる削除を防ぎます。
 
-容量は、記事の文字列、フィード本文、抽出本文に、DB の行と索引の見積もりを足した値です。DB ファイルの大きさを直接制限するものではありません。WAL、バックアップ、認証や設定などは別なので、配置先の空きを十分に残してください。削除した SQLite の領域は、後の書き込みで再利用されます。
+容量は、記事の文字列、フィード本文、抽出本文、訳文に、DB の行と索引の見積もりを足した値です。DB ファイルの大きさを直接制限するものではありません。WAL、バックアップ、認証や設定などは別なので、配置先の空きを十分に残してください。削除した SQLite の領域は、後の書き込みで再利用されます。
 
 移行時は、既存の本文を少しずつ集計します。集計が終わるまで既存記事は読めますが、容量による削除と新しい記事・本文の取り込みは待ちます。容量が足りなくなった場合も、既存記事は読めます。管理者向けログに `storage_limit_reached` を出し、空きができれば取り込みを再開します。記事の削除前のアーカイブは行いません。
 
@@ -187,6 +188,23 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 4. ブラウザで Sendo にログインし、`POST /api/v1/integrations/discord/connect` の `authorizationUrl` を開いて Discord アカウントを接続します。`POST /api/v1/integrations/discord/subscriptions` にチャンネル URL を渡すと、直近の投稿を最大 20 件取り込み、そのあとは新着を取得します。接続と購読の API は [OpenAPI](spec/openapi.json) にあります。
 
 購読の解除、Discord 連携の解除、取得時に Discord 側の閲覧権限がなくなったことを検出した場合は、取り込んだ記事をスター付きも含めて削除します。
+
+### 記事を日本語に訳す（Claude API）
+
+`.env` に `ANTHROPIC_API_KEY`（[Claude Platform](https://platform.claude.com/) の API キー）を入れると、日本語以外の記事を Claude API で日本語に訳します（[決定](docs/decisions/translation.md)）。訳す先は日本語だけです。キーがなければ翻訳は動かず、記事を外へ送りません。
+
+- **訳す記事**：取り込んでから 1 日のうちに、言語の判定で主言語が日本語でないと分かった記事を、自動で訳します。判定したが主言語が分からなかった記事は、自動では訳さず、求めたときだけ訳します。Discord の投稿と、1 日のうちに訳すかどうかを決められなかった記事（キーを入れる前に取り込んだ古い記事、1 日たっても判定のない記事）は、求めても訳しません
+- **訳すもの**：タイトル、要約、本文。本文は、ページの本文が抜けていればそれ、なければフィードの本文です。本文が長すぎる記事は、タイトルと要約だけを訳します
+- **自動の翻訳**：5 分おきの定期実行が、Message Batches API でまとめて送ります（料金は通常の呼び出しの半分ですが、結果が返るまで最大 24 時間かかります）。使うのは、その時点で最新の Sonnet です（`TRANSLATION_MODEL` で固定できます）
+- **その場の翻訳**：自動の翻訳を待っている記事と、訳せなかった記事は、sendo-reader の Translate（`POST /api/v1/articles/{id}/translation`）で、待たずに訳してもらえます。訳し終えたら差分同期で届きます。開いただけでは訳しません
+- **訳し直し**：訳した記事は、sendo-reader の Retranslate with Opus で、1 つの記事につき 1 回だけ、最新の Opus（`RETRANSLATION_MODEL` で固定できます）に訳し直してもらえます。訳し直した訳文で、全員分の訳文を置き換えます
+- **使い回し**：訳文は記事ごとに 1 つで、購読している全員で使い回します。同じ元記事（計測用のパラメーターなどを除いた URL が同じ）が届いたら、フィードが同じか違うかによらず、訳を写して、同じ原文をなるべく重ねて送りません
+- **訳せなかった記事**：Claude の安全策で拒否されることがあります。訳せなかった理由（拒否か、そのほかの失敗か）は sendo-reader の記事の画面に出ます
+- **読む場所**：訳文は sendo-reader に配ります（差分同期と `GET /api/v1/articles/{id}/translation`）。MCP、Google Reader API、REST の記事一覧では返しません
+
+Anthropic に送るのは、訳す文（タイトル、要約、本文の文字）だけです。記事とリンクの URL、画像、本文の中のコード（`pre` ／ `code`）、フィードの名前、読む人のこと（ユーザー、受信箱）は送りません。記事の中身は訳す対象のデータとして渡し、その中の指示には従わせません。
+
+訳すと Claude API の料金がかかります。Sendo には費用の上限がないので、Claude Platform の利用上限で決めてください。訳文は保存容量（[古い記事の片付け](#古い記事の片付け)）に含みます。キーを外すと新しく訳さなくなりますが、それまでの訳文は残ります。
 
 ### リーダーアプリで読む（Google Reader API）
 
