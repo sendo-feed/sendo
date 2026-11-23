@@ -509,6 +509,26 @@ describe("sanitizeHtml の Imgur の公式埋め込みの、文字も画像も�
     const once = clean(embed('<a href="//imgur.com/abc123"></a>'));
     expect(clean(once)).toBe(once);
   });
+
+  it("入れ子の引用の中のリンクと、mailto のリンクにも出す", () => {
+    expect(clean(embed('<blockquote><a href="//imgur.com/abc123"></a></blockquote>'))).toBe(
+      `<blockquote><blockquote><a href="https://imgur.com/abc123" ${A}>https://imgur.com/abc123</a></blockquote></blockquote>`,
+    );
+    expect(clean(embed('<a href="mailto:a@example.com"></a>'))).toContain(
+      ">mailto:a@example.com</a>",
+    );
+  });
+
+  it("リンクの中で埋め込みを替えたリンクは、中身として数え、URL を足さない", () => {
+    for (const inner of [
+      '<iframe src="https://v.example.com/x"></iframe>',
+      '<video><source src="https://v.example.com/x.mp4"></video>',
+    ]) {
+      const once = clean(embed(`<a href="//imgur.com/abc123">${inner}</a>`));
+      expect(once, inner).not.toContain("https://imgur.com/abc123</a>");
+      expect(once, inner).not.toMatch(/<\/a>https:\/\/imgur\.com/);
+    }
+  });
 });
 
 describe("sanitizeHtml の X の公式の埋め込みコード", () => {

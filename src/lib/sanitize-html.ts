@@ -139,6 +139,8 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
    */
   const pushLink = (href: string) => {
     parts.push(link(href));
+    // 開いている Imgur のリンクの中に出るリンク（埋め込みを替えたもの）は、行き先の文字を持つ
+    if (imgur?.link) imgur.link.hasContent = true;
     if (xPosts.length === 0 || open.length >= MAX_DEPTH) return;
     const id = xPostId(href);
     if (id === null) return;
