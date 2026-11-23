@@ -39,6 +39,7 @@ import {
   userArticles,
 } from "./schema";
 import { readSettingHorizon } from "./settings";
+import type { TranslationFailure } from "./translations";
 
 /*
  * 差分同期（docs/decisions/sync.md）。人ごとの表（フォルダ、購読、受信箱、クライアントの設定）から、カーソルより後に変わった行を返す。
@@ -114,6 +115,11 @@ export type SyncTranslation = {
   translatedAt: Date | null;
   /** 訳し直したか（docs/decisions/translation.md の 6） */
   retranslated: boolean;
+  /**
+   * 訳せなかった理由（docs/decisions/translation.md の 17）。untranslated で理由のある行だけ。ほかの状態
+   * では、行に残っていても付けない（untranslated のときだけ意味を持つ）
+   */
+  failure: TranslationFailure | null;
 };
 
 const t = articleTranslations;
@@ -126,6 +132,9 @@ const translationColumns = {
   translationSummary: t.summary,
   translationTranslatedAt: t.translatedAt,
   translationRetranslated: t.retranslated,
+  translationFailureKind: t.failureKind,
+  translationFailureCategory: t.failureCategory,
+  translationFailureStage: t.failureStage,
 };
 
 /** 配る翻訳だけを結ぶ条件（skipped の行は付けない） */
@@ -139,6 +148,9 @@ function toSyncTranslation(row: {
   translationSummary: string | null;
   translationTranslatedAt: Date | null;
   translationRetranslated: boolean | null;
+  translationFailureKind: TranslationFailure["kind"] | null;
+  translationFailureCategory: string | null;
+  translationFailureStage: TranslationFailure["stage"] | null;
 }): SyncTranslation | null {
   const status = row.translationStatus;
   if (status === null || status === "skipped" || row.translationLanguage === null) return null;
@@ -149,6 +161,16 @@ function toSyncTranslation(row: {
     summary: row.translationSummary,
     translatedAt: row.translationTranslatedAt,
     retranslated: row.translationRetranslated === true,
+    failure:
+      status === "untranslated" &&
+      row.translationFailureKind !== null &&
+      row.translationFailureStage !== null
+        ? {
+            kind: row.translationFailureKind,
+            category: row.translationFailureCategory,
+            stage: row.translationFailureStage,
+          }
+        : null,
   };
 }
 
@@ -379,6 +401,9 @@ export async function readChanges(
         translationSummary,
         translationTranslatedAt,
         translationRetranslated,
+        translationFailureKind,
+        translationFailureCategory,
+        translationFailureStage,
         ...article
       }) => ({
         seq,
@@ -393,6 +418,9 @@ export async function readChanges(
             translationSummary,
             translationTranslatedAt,
             translationRetranslated,
+            translationFailureKind,
+            translationFailureCategory,
+            translationFailureStage,
           }),
         },
       }),

@@ -393,6 +393,20 @@
       "when": 1795372517954,
       "tag": "0055_article-translation-retranslated-source",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "6",
+      "when": 1795398071915,
+      "tag": "0056_article-translation-failure",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "6",
+      "when": 1795398072841,
+      "tag": "0057_article-translation-failure-sync",
+      "breakpoints": true
     }
   ]
 }

@@ -1098,6 +1098,9 @@
           "retranslated": {
             "type": "boolean",
             "description": "Opus で訳し直したか（docs/decisions/translation.md の 6）。訳し直せるのは、translated で、これが false の記事だけ"
+          },
+          "failure": {
+            "$ref": "#/components/schemas/SyncArticleTranslationFailure"
           }
         },
         "required": [
@@ -1106,9 +1109,47 @@
           "title",
           "summary",
           "translatedAt",
-          "retranslated"
+          "retranslated",
+          "failure"
         ],
         "description": "Sendo の翻訳（docs/decisions/translation.md の 14）。訳さない記事（日本語の記事、Discord の投稿）と、訳すかどうかを決めていない記事（決める前の記事、取り込んでから 1 日のうちに決まらなかった記事、翻訳を使わない Sendo の記事）は null。翻訳が変わると、記事が差分としてもう一度届く"
+      },
+      "SyncArticleTranslationFailure": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "refused",
+              "failed"
+            ],
+            "description": "refused は Claude が訳すことを拒否した（stop_reason が refusal）、failed はそのほかの失敗（上限で切れた・読めない応答、回数切れ、容量、送るものがなかった、止まった翻訳を戻した など）"
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "拒否の種類（拒否の応答の stop_details.category。cyber、bio など）。拒否でないときと、拒否の応答に種類がないときは null"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "batch",
+              "on_demand"
+            ],
+            "description": "どこで訳せなかったか。batch は自動のまとめた翻訳、on_demand は求めたその場の翻訳"
+          }
+        },
+        "required": [
+          "kind",
+          "category",
+          "stage"
+        ],
+        "description": "訳せなかった理由（docs/decisions/translation.md の 17）。訳そうとして untranslated にした記事だけに付く。untranslated でない記事、言語が判定できなかった記事、訳すものがなく送らなかった記事、理由を残す前に untranslated になった記事は null"
       },
       "SyncRemovedArticle": {
         "type": "object",

@@ -329,7 +329,7 @@ async function checkBatch(
   if (status.status === "in_progress") return 0;
   if (status.status === "gone") {
     // もう見られない（結果の期限が過ぎた）。どの記事も訳せなかったものとして数える（決定の 8）
-    const changed = await failBatchArticles(db, batchId, { count: true, giveUp: false });
+    const changed = await failBatchArticles(db, batchId, { count: true, refused: null });
     await notifyTranslationChanged(platform, changed);
     return 0;
   }
@@ -375,22 +375,25 @@ async function checkBatch(
  * 待てば通る誤り（一時的な種類）と、モデルを外す判断に数えた要求の形の誤り（決定の 9）は数えない。
  * ほか（上限で切れた・読めない応答、ほかの誤り、expired、canceled）は数える
  */
-function batchFailure(result: BatchTranslationResult): { count: boolean; giveUp: boolean } {
+function batchFailure(result: BatchTranslationResult): {
+  count: boolean;
+  refused: { category: string | null } | null;
+} {
   switch (result.status) {
     case "refused":
-      return { count: false, giveUp: true };
+      return { count: false, refused: { category: result.category } };
     case "errored":
       // 要求の形の誤りは、モデルを外す判断に数えたときだけ数えない（一度訳せたモデルでの誤りは、
       // 記事の中身によるものとして数える）
       if (result.errorType === "invalid_request_error") {
-        return { count: !result.countedForModel, giveUp: false };
+        return { count: !result.countedForModel, refused: null };
       }
       return {
         count: result.errorType === null || !UNCOUNTED_BATCH_ERRORS.has(result.errorType),
-        giveUp: false,
+        refused: null,
       };
     default:
-      return { count: true, giveUp: false };
+      return { count: true, refused: null };
   }
 }
 
@@ -710,7 +713,15 @@ async function translateArticle(
   }
   if (result.status !== "translated") {
     console.warn("translation was not usable", { articleId, status: result.status });
-    return failTranslating(db, articleId, startedAt);
+    // 拒否なら、その拒否の種類を理由に残す（docs/decisions/translation.md の 17）
+    return failTranslating(
+      db,
+      articleId,
+      startedAt,
+      result.status === "refused"
+        ? { kind: "refused", category: result.category, stage: "on_demand" }
+        : undefined,
+    );
   }
   // 返ってこなかった断片は、原文のまま残す（docs/decisions/translation.md の 10）
   const translated = new Map(result.segments.map((s) => [s.id, s.text]));

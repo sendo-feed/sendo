@@ -343,6 +343,32 @@ export async function startRetranslating(
  */
 const STATUS_WITHOUT_RESULT = sql`case when translated_at is null then 'untranslated' else 'translated' end`;
 
+/** 訳せなかった理由（docs/decisions/translation.md の 17） */
+export interface TranslationFailure {
+  /** 拒否された（refused）か、そのほかの失敗（failed）か */
+  kind: "refused" | "failed";
+  /** 拒否の種類（拒否の応答の stop_details.category）。なければ null */
+  category: string | null;
+  /** バッチか、その場の翻訳か */
+  stage: "batch" | "on_demand";
+}
+
+/** そのほかの失敗の理由 */
+export const failedReason = (stage: TranslationFailure["stage"]): TranslationFailure => ({
+  kind: "failed",
+  category: null,
+  stage,
+});
+
+/** 理由を消す（translated にする文で使う。決定の 17） */
+const CLEAR_FAILURE = sql`failure_kind = null, failure_category = null, failure_stage = null`;
+
+/** when のときだけ理由を書き、そうでなければ今の理由のまま（決定の 17） */
+const setFailureWhen = (when: SQL, failure: TranslationFailure) =>
+  sql`failure_kind = case when ${when} then ${failure.kind} else failure_kind end,
+    failure_category = case when ${when} then ${failure.category} else failure_category end,
+    failure_stage = case when ${when} then ${failure.stage} else failure_stage end`;
+
 /** その場の翻訳の行が、始めたときのままか（ほかの書き込みや、止まったものとして戻されていないか） */
 const stillTranslating = (articleId: string, startedAt: Date) =>
   sql`article_id = ${articleId} and status = 'translating' and started_at = ${startedAt.getTime()}`;
@@ -393,7 +419,8 @@ export async function finishTranslating(
     sql`update article_translations set status = 'translated', title = ${c.title},
         summary = ${c.summary}, content = ${c.content}, content_source = ${c.contentSource},
         model = ${input.model}, translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0,
-        retranslated = ${retranslated}, body_hash = ${input.bodyHash}, ${CLEAR_BATCH}
+        retranslated = ${retranslated}, body_hash = ${input.bodyHash}, ${CLEAR_BATCH},
+        ${CLEAR_FAILURE}
       where ${stillTranslating(input.articleId, input.startedAt)}
       returning article_id as articleId`,
   );
@@ -429,7 +456,8 @@ export async function finishCopiedTranslating(
         model = coalesce(${columnOf("model", c.bodySrc)}, ${columnOf("model", titleSourceId)},
           ${columnOf("model", summarySourceId)}),
         retranslated = ${c.retranslated}, body_hash = ${input.bodyHash},
-        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH}
+        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH},
+        ${CLEAR_FAILURE}
       where ${stillTranslating(input.articleId, input.startedAt)}
         ${need(COPY_TITLE, titleSourceId)} ${need(COPY_SUMMARY, summarySourceId)}
         ${need(COPY_BODY, c.bodySrc)}
@@ -526,23 +554,28 @@ export async function copyRetranslation(db: Database, articleId: string): Promis
 
 /**
  * その場の翻訳を、訳せなかったものとして戻す。訳し直しなら、もとの訳文のまま translated に戻す
- * （印は付けない）。始めた時刻が同じ行だけ
+ * （印も理由も付けない）。untranslated にするときは、理由を書く（決定の 17）。始めた時刻が同じ行だけ
  */
 export async function failTranslating(
   db: Database,
   articleId: string,
   startedAt: Date,
+  failure: TranslationFailure = failedReason("on_demand"),
 ): Promise<boolean> {
   const row = await getRow<{ articleId: string }>(
     db,
-    sql`update article_translations set status = ${STATUS_WITHOUT_RESULT}, started_at = null, attempts = 0
+    sql`update article_translations set status = ${STATUS_WITHOUT_RESULT}, started_at = null, attempts = 0,
+        ${setFailureWhen(sql`translated_at is null`, failure)}
       where ${stillTranslating(articleId, startedAt)}
       returning article_id as articleId`,
   );
   return row !== undefined;
 }
 
-/** 始めたその場の翻訳を取り消し、始める前の状態に戻す（仕事を積めなかったとき）。始めた時刻が同じ行だけ */
+/**
+ * 始めたその場の翻訳を取り消し、始める前の状態に戻す（仕事を積めなかったとき）。訳せなかった理由は、
+ * もとのまま（決定の 17）。始めた時刻が同じ行だけ
+ */
 export async function cancelTranslating(
   db: Database,
   articleId: string,
@@ -555,7 +588,7 @@ export async function cancelTranslating(
 
 /**
  * やり直せる失敗を 1 回数える。上限に達したら、同じ文で訳せなかったものとして戻す（訳し直しなら、
- * もとの訳文のまま translated）
+ * もとの訳文のまま translated。untranslated にするときは、そのほかの失敗の理由を書く。決定の 17）
  *
  * @returns まだやり直すなら "retry"、戻したなら "failed"、行が変わっていたら "gone"
  */
@@ -569,7 +602,11 @@ export async function countTranslateFailure(
     sql`update article_translations set
         attempts = attempts + 1,
         status = case when attempts + 1 >= ${MAX_TRANSLATE_ATTEMPTS} then ${STATUS_WITHOUT_RESULT} else status end,
-        started_at = case when attempts + 1 >= ${MAX_TRANSLATE_ATTEMPTS} then null else started_at end
+        started_at = case when attempts + 1 >= ${MAX_TRANSLATE_ATTEMPTS} then null else started_at end,
+        ${setFailureWhen(
+          sql`attempts + 1 >= ${MAX_TRANSLATE_ATTEMPTS} and translated_at is null`,
+          failedReason("on_demand"),
+        )}
       where ${stillTranslating(articleId, startedAt)}
       returning status`,
   );
@@ -579,14 +616,15 @@ export async function countTranslateFailure(
 
 /**
  * 止まった translating を戻す（docs/decisions/translation.md の 7）。訳文があれば translated、
- * なければ untranslated にする
+ * なければ untranslated にし、その場の翻訳での、そのほかの失敗の理由を書く（同じく 17）
  *
  * @returns 戻した記事
  */
 export async function revertStaleTranslating(db: Database): Promise<string[]> {
   const rows = await db.all<{ articleId: string }>(sql`
     update article_translations set
-      status = ${STATUS_WITHOUT_RESULT}, started_at = null, attempts = 0
+      status = ${STATUS_WITHOUT_RESULT}, started_at = null, attempts = 0,
+      ${setFailureWhen(sql`translated_at is null`, failedReason("on_demand"))}
     where status = 'translating' and started_at < ${DB_NOW_MS} - ${STALE_TRANSLATING_MS}
     returning article_id as articleId
   `);
@@ -689,7 +727,8 @@ export async function finishCopiedBatchArticle(
         model = coalesce(${columnOf("model", c.bodySrc)}, ${columnOf("model", titleSourceId)},
           ${columnOf("model", summarySourceId)}),
         retranslated = ${c.retranslated}, body_hash = ${input.bodyHash},
-        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH}
+        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH},
+        ${CLEAR_FAILURE}
       where article_id = ${input.articleId} and batch_key = ${input.key} and batch_id is null
         and status = 'queued' and translated_at is null
         ${need(COPY_TITLE, titleSourceId)} ${need(COPY_SUMMARY, summarySourceId)}
@@ -791,7 +830,8 @@ export async function finishBatchTranslation(
     sql`update article_translations set status = 'translated', title = ${c.title},
         summary = ${c.summary}, content = ${c.content}, content_source = ${c.contentSource},
         model = ${input.model}, retranslated = ${c.retranslated}, body_hash = ${input.bodyHash},
-        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH}
+        translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH},
+        ${CLEAR_FAILURE}
       where article_id = ${input.articleId} and batch_id = ${input.batchId}
         and translated_at is null and status in ('queued', 'untranslated', 'translating')
       returning article_id as articleId`,
@@ -836,8 +876,9 @@ export async function skipEmptyBatchArticles(
 
 /**
  * バッチで訳せなかった記事の印を外し、count なら回数を 1 つ数える（docs/decisions/translation.md の
- * 4、8）。行が queued なら、giveUp（拒否）か、回数が上限に達したら untranslated にし、そうでなければ
- * 待ちに戻す。queued でない行（その場の翻訳の最中など）は、状態を変えない。印がそのバッチの行だけ
+ * 4、8）。行が queued なら、拒否（refused）か、回数が上限に達したら untranslated にして理由を書き
+ * （拒否ならその種類、回数切れならそのほかの失敗。決定の 17）、そうでなければ待ちに戻す。queued でない行
+ * （その場の翻訳の最中、すでに untranslated など）は、状態も理由も変えない。印がそのバッチの行だけ
  * （同じ文で確かめる）。articleId がなければ、そのバッチの印を持つ行すべて
  *
  * @returns untranslated にした記事
@@ -845,17 +886,26 @@ export async function skipEmptyBatchArticles(
 export async function failBatchArticles(
   db: Database,
   batchId: string,
-  input: { articleId?: string; count: boolean; giveUp: boolean },
+  input: {
+    articleId?: string;
+    count: boolean;
+    /** 拒否された（その回で諦める）。その拒否の種類で理由を書く。拒否でなければ null */
+    refused: { category: string | null } | null;
+  },
 ): Promise<string[]> {
   const increment = input.count ? 1 : 0;
+  const failure: TranslationFailure =
+    input.refused === null
+      ? failedReason("batch")
+      : { kind: "refused", category: input.refused.category, stage: "batch" };
+  // 右辺はすべて書く前の値を見る（SQLite の UPDATE）
+  const toUntranslated = sql`status = 'queued'
+    and (${input.refused === null ? 0 : 1} = 1 or batch_attempts + ${increment} >= ${MAX_BATCH_ATTEMPTS})`;
   const rows = await db.all<{ articleId: string; status: string }>(sql`
     update article_translations set ${CLEAR_BATCH},
       batch_attempts = batch_attempts + ${increment},
-      status = case
-        when status = 'queued'
-          and (${input.giveUp ? 1 : 0} = 1 or batch_attempts + ${increment} >= ${MAX_BATCH_ATTEMPTS})
-          then 'untranslated'
-        else status end
+      status = case when ${toUntranslated} then 'untranslated' else status end,
+      ${setFailureWhen(toUntranslated, failure)}
     where batch_id = ${batchId}
       ${input.articleId === undefined ? sql`` : sql`and article_id = ${input.articleId}`}
     returning article_id as articleId, status

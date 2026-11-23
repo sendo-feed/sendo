@@ -271,7 +271,10 @@ function readResult(
   message: Anthropic.Beta.BetaMessage,
   sent?: readonly TranslationSegment[],
 ): TranslationResult {
-  if (message.stop_reason === "refusal") return { status: "refused" };
+  if (message.stop_reason === "refusal") {
+    // 拒否の種類だけを受け取る。説明（explanation）は残さない（docs/decisions/translation.md の 17）
+    return { status: "refused", category: message.stop_details?.category ?? null };
+  }
   if (message.stop_reason !== "end_turn") return { status: "invalid" };
   // 出力の途中で拒否されて代わりのモデルに替わると、断ったモデルの途中の出力のあとに fallback の
   // 塊が入り、代わりのモデルの出力が続く。読むのは、最後の fallback の塊より後ろだけ
