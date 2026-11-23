@@ -22,8 +22,10 @@ import {
   FeedRelocationCandidateSchema,
   FeedStatusSchema,
   SettingValueSchema,
+  TRANSLATION_MODEL_DESCRIPTION,
   toArticleResponse,
   toFeedHealthResponse,
+  translationEffortSchema,
 } from "./schemas";
 
 /*
@@ -167,6 +169,16 @@ const SyncTranslationSchema = z
       description:
         "訳せなかった理由（docs/decisions/translation.md の 17）。訳そうとして untranslated にした記事だけに付く。untranslated でない記事、言語が判定できなかった記事、訳すものがなく送らなかった記事、理由を残す前に untranslated になった記事は null",
     }),
+    model: z
+      .string()
+      .nullable()
+      .openapi({
+        description: `${TRANSLATION_MODEL_DESCRIPTION}。訳文のない記事（translatedAt が null）は null。訳し直しの最中（translating）は、もとの訳文のモデル`,
+        example: "claude-sonnet-5-5",
+      }),
+    effort: translationEffortSchema(
+      "訳文のない記事（translatedAt が null）も null。訳し直しの最中（translating）は、もとの訳文の思考量",
+    ),
   })
   .openapi("SyncArticleTranslation");
 

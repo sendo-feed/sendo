@@ -110,7 +110,7 @@ describe("訳したときの条件を足すマイグレーション", () => {
     }
   });
 
-  it("条件の列だけが変わっても受信箱の番号は進めず、使用量も変えない（1 行の見積もりの中）", async () => {
+  it("配らない条件の列だけが変わっても受信箱の番号は進めず、使用量も変えない（1 行の見積もりの中）", async () => {
     const client = createClient({ url: ":memory:" });
     try {
       const rest = await migrateBefore(client);
@@ -142,9 +142,10 @@ describe("訳したときの条件を足すマイグレーション", () => {
       expect(await usage(client)).toBe(before);
       expect(await seqOf(client, "a")).toBe(seq);
 
-      // 訳したときの条件だけを書いても、番号は進めず、使用量も変えない
+      // 配らない訳したときの条件だけを書いても、番号は進めず、使用量も変えない（配るモデルと思考量は
+      // test/db/article-translation-sync.test.ts で確かめる）
       await client.execute(
-        `UPDATE article_translations SET effort = 'medium', tier = 'normal', prompt_version = 1,
+        `UPDATE article_translations SET tier = 'normal', prompt_version = 1,
           input_tokens = 10, output_tokens = 20, call_model = 'claude-sonnet-5-5',
           title_copied_from = 'b', summary_copied_from = 'cc', content_copied_from = 'ddd'
         WHERE article_id = 'a'`,

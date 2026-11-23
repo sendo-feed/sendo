@@ -599,7 +599,16 @@
           },
           "model": {
             "type": "string",
-            "description": "訳したモデル"
+            "description": "訳したモデル（Claude のモデルの ID。claude-sonnet-5-5 など）。応答が返したモデルで、拒否されて代わりのモデルに替わったときは代わりのモデル。同じ元記事から写した訳文は、写した元の訳文のモデル（docs/decisions/translation.md の 18）",
+            "example": "claude-sonnet-5-5"
+          },
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "訳したときの思考量（Claude API の effort。low ／ medium ／ high ／ xhigh ／ max）。Sendo の版によって値が増えることがあるので、読む側は知らない値もそのまま扱う。モデルと同じく、同じ元記事から写した訳文は写した元の訳文のもの（docs/decisions/translation.md の 18）。思考量を残していない訳文（思考量を残す前に送ったバッチの結果など）は null",
+            "example": "medium"
           },
           "translatedAt": {
             "type": "string",
@@ -613,6 +622,7 @@
           "content",
           "contentSource",
           "model",
+          "effort",
           "translatedAt"
         ]
       },
@@ -1101,6 +1111,22 @@
           },
           "failure": {
             "$ref": "#/components/schemas/SyncArticleTranslationFailure"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "訳したモデル（Claude のモデルの ID。claude-sonnet-5-5 など）。応答が返したモデルで、拒否されて代わりのモデルに替わったときは代わりのモデル。同じ元記事から写した訳文は、写した元の訳文のモデル（docs/decisions/translation.md の 18）。訳文のない記事（translatedAt が null）は null。訳し直しの最中（translating）は、もとの訳文のモデル",
+            "example": "claude-sonnet-5-5"
+          },
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "訳したときの思考量（Claude API の effort。low ／ medium ／ high ／ xhigh ／ max）。Sendo の版によって値が増えることがあるので、読む側は知らない値もそのまま扱う。モデルと同じく、同じ元記事から写した訳文は写した元の訳文のもの（docs/decisions/translation.md の 18）。思考量を残していない訳文（思考量を残す前に送ったバッチの結果など）は null。訳文のない記事（translatedAt が null）も null。訳し直しの最中（translating）は、もとの訳文の思考量",
+            "example": "medium"
           }
         },
         "required": [
@@ -1110,7 +1136,9 @@
           "summary",
           "translatedAt",
           "retranslated",
-          "failure"
+          "failure",
+          "model",
+          "effort"
         ],
         "description": "Sendo の翻訳（docs/decisions/translation.md の 14）。訳さない記事（日本語の記事、Discord の投稿）と、訳すかどうかを決めていない記事（決める前の記事、取り込んでから 1 日のうちに決まらなかった記事、翻訳を使わない Sendo の記事）は null。翻訳が変わると、記事が差分としてもう一度届く"
       },
