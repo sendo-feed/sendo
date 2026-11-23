@@ -210,6 +210,56 @@ describe("ページを抜き終えたとき", () => {
 });
 
 describe("重なりと容量", () => {
+  it("記事を指定した仕事は、続きも含めて、指定していない判定待ちの記事を判定しない", async () => {
+    const t = await setUp(11);
+    const [first, second] = detectionJobs(t.enqueued);
+    if (!first || !second) throw new Error("no jobs");
+    t.enqueued.length = 0;
+    let job: Job | undefined = first;
+    while (job) {
+      await runJob(t.platform, job);
+      job = detectionJobs(t.enqueued).shift();
+      if (job) t.enqueued.splice(t.enqueued.indexOf(job), 1);
+    }
+    for (const id of first.articleIds ?? []) {
+      expect(await getArticleLanguage(t.platform.db, id, "feed")).toBeDefined();
+    }
+    for (const id of second.articleIds ?? []) {
+      expect(await getArticleLanguage(t.platform.db, id, "feed")).toBeUndefined();
+    }
+  });
+
+  it("判定している途中に定期実行の仕事が同じ記事を判定して保存しても、行は 1 つで、続きの判定も止まらない", async () => {
+    const t = await setUp(2);
+    const job = detectionJobs(t.enqueued)[0];
+    if (!job) throw new Error("no job");
+    t.enqueued.length = 0;
+    let overlapped = false;
+    t.languageDetection.detect.mockImplementation(async () => {
+      if (!overlapped) {
+        overlapped = true;
+        // 最初の記事を判定している間に、定期実行の仕事が 2 件とも判定して保存する
+        await runJob(t.platform, { type: "detect-article-languages" });
+      }
+      return detected;
+    });
+
+    await runJob(t.platform, job);
+    expect(t.languageDetection.detect).toHaveBeenCalledTimes(3);
+    for (const id of t.ids) {
+      expect(await getArticleLanguage(t.platform.db, id, "feed")).toMatchObject({
+        language: "en",
+        status: "detected",
+      });
+    }
+    const count = await testDb
+      .prepare(
+        `SELECT count(*) AS count FROM article_languages WHERE article_id IN ('${t.ids.join("','")}')`,
+      )
+      .first("count");
+    expect(count).toBe(2);
+  });
+
   it("同じ記事の判定の仕事と定期実行の仕事を両方動かしても、判定の行は入力元ごとに 1 つで、結果は変わらない", async () => {
     const t = await setUp(2);
     await runJob(t.platform, { type: "detect-article-languages" });
