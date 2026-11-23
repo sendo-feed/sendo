@@ -72,8 +72,13 @@ docker compose pull && docker compose up -d
 | `ALLOWED_EMAILS`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` | なし | ブラウザのログイン。[ブラウザでログインする](#ブラウザでログインするgoogle) |
 | `DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN` | なし | Discord の購読。[Discord のチャンネルを購読する](#discord-のチャンネルを購読する) |
 | `ANTHROPIC_API_KEY` | なし | Claude API のキー。入れると、日本語以外の記事を Claude API で日本語に訳す。空なら翻訳は動かず、記事を外へ送らない。[記事を日本語に訳す](#記事を日本語に訳すclaude-api) |
-| `TRANSLATION_MODEL` | なし（最新の Sonnet） | 自動の翻訳とその場の翻訳のモデルを固定するときのモデルの ID。空なら、Models API で最新の Sonnet を選ぶ（1 日 1 回選び直す） |
-| `RETRANSLATION_MODEL` | なし（最新の Opus） | 訳し直しのモデルを固定するときのモデルの ID。空なら、Models API で最新の Opus を選ぶ（1 日 1 回選び直す） |
+| `TRANSLATION_MODEL` | `sonnet` | 通常の段階（その場の翻訳と、送る本文が閾値より短い自動の翻訳）のモデル。系列の名前（`sonnet` ／ `haiku` ／ `opus`。Models API でその系列の最新を選び、1 日 1 回選び直す）か、`claude-` で始まるモデルの ID（固定する）。[モデルと思考量](#モデルと思考量) |
+| `TRANSLATION_EFFORT` | `medium` | 通常の段階の思考量（`low` ／ `medium` ／ `high` ／ `xhigh` ／ `max`） |
+| `TRANSLATION_LONG_MODEL` | `haiku` | 長文の段階（送る本文が閾値以上の自動の翻訳）のモデル。書き方は `TRANSLATION_MODEL` と同じ |
+| `TRANSLATION_LONG_EFFORT` | `low` | 長文の段階の思考量 |
+| `TRANSLATION_LONG_THRESHOLD_CHARS` | `3000` | 長文とみなす、送る本文の文字数（1〜60000。これ以上が長文） |
+| `RETRANSLATION_MODEL` | `opus` | 品質優先の段階（訳し直し）のモデル。書き方は `TRANSLATION_MODEL` と同じ |
+| `RETRANSLATION_EFFORT` | `medium` | 品質優先の段階の思考量 |
 
 ### 取得の間隔
 
@@ -195,12 +200,28 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 
 - **訳す記事**：取り込んでから 1 日のうちに、言語の判定で主言語が日本語でないと分かった記事を、自動で訳します。判定したが主言語が分からなかった記事は、自動では訳さず、求めたときだけ訳します。Discord の投稿と、1 日のうちに訳すかどうかを決められなかった記事（キーを入れる前に取り込んだ古い記事、1 日たっても判定のない記事）は、求めても訳しません
 - **訳すもの**：タイトル、要約、本文。本文は、ページの本文が抜けていればそれ、なければフィードの本文です。本文が長すぎる記事は、タイトルと要約だけを訳します
-- **自動の翻訳**：5 分おきの定期実行が、Message Batches API でまとめて送ります（料金は通常の呼び出しの半分ですが、結果が返るまで最大 24 時間かかります）。使うのは、その時点で最新の Sonnet です（`TRANSLATION_MODEL` で固定できます）
-- **その場の翻訳**：自動の翻訳を待っている記事と、訳せなかった記事は、sendo-reader の Translate（`POST /api/v1/articles/{id}/translation`）で、待たずに訳してもらえます。訳し終えたら差分同期で届きます。開いただけでは訳しません
-- **訳し直し**：訳した記事は、sendo-reader の Retranslate with Opus で、1 つの記事につき 1 回だけ、最新の Opus（`RETRANSLATION_MODEL` で固定できます）に訳し直してもらえます。訳し直した訳文で、全員分の訳文を置き換えます
+- **自動の翻訳**：5 分おきの定期実行が、Message Batches API でまとめて送ります（料金は通常の呼び出しの半分ですが、結果が返るまで最大 24 時間かかります）。送る本文が長い記事（既定で 3,000 文字以上）は長文の段階（既定は最新の Haiku）、ほかは通常の段階（既定は最新の Sonnet）で訳します
+- **その場の翻訳**：自動の翻訳を待っている記事と、訳せなかった記事は、sendo-reader の Translate（`POST /api/v1/articles/{id}/translation`）で、待たずに訳してもらえます。長い記事でも通常の段階で訳します。訳し終えたら差分同期で届きます。開いただけでは訳しません
+- **訳し直し**：訳した記事は、sendo-reader の Retranslate で、1 つの記事につき 1 回だけ、品質優先の段階（既定は最新の Opus）で訳し直してもらえます。訳し直した訳文で、全員分の訳文を置き換えます
 - **使い回し**：訳文は記事ごとに 1 つで、購読している全員で使い回します。同じ元記事（計測用のパラメーターなどを除いた URL が同じ）が届いたら、フィードが同じか違うかによらず、訳を写して、同じ原文をなるべく重ねて送りません
 - **訳せなかった記事**：Claude の安全策で拒否されることがあります。訳せなかった理由（拒否か、そのほかの失敗か）は sendo-reader の記事の画面に出ます
 - **読む場所**：訳文は sendo-reader に配ります（差分同期と `GET /api/v1/articles/{id}/translation`）。MCP、Google Reader API、REST の記事一覧では返しません
+
+#### モデルと思考量
+
+訳すモデルと思考量（`effort`）は、段階ごとに環境変数で変えられます（[決定](docs/decisions/translation.md)の 9）。思考量の既定は、通常と品質優先が `medium`、長文が `low` です。
+
+| 段階 | 使うとき | モデルの既定 | 環境変数 |
+|---|---|---|---|
+| 通常 | その場の翻訳と、送る本文が閾値より短い自動の翻訳 | 最新の Sonnet | `TRANSLATION_MODEL` ／ `TRANSLATION_EFFORT` |
+| 長文 | 送る本文が閾値（既定 3,000 文字）以上の自動の翻訳 | 最新の Haiku | `TRANSLATION_LONG_MODEL` ／ `TRANSLATION_LONG_EFFORT` ／ `TRANSLATION_LONG_THRESHOLD_CHARS` |
+| 品質優先 | 訳し直し | 最新の Opus | `RETRANSLATION_MODEL` ／ `RETRANSLATION_EFFORT` |
+
+- モデルは系列の名前（`sonnet` ／ `haiku` ／ `opus`）で書くと、その段階の思考量を受け付ける最新のものを Models API で選びます（1 日 1 回選び直す）。`claude-` で始まるモデルの ID で書くと、そのモデルに固定します。知らない系列の名前、知らない思考量、範囲の外の閾値は、エラーをログに出して、その項目だけ既定で動きます
+- 送る本文の文字数には、タイトルと要約、同じ元記事から写す本文を数えません
+- Haiku には、拒否されたときの代わりのモデルがありません。その場の翻訳や訳し直しを Haiku にすると、拒否された記事はその回で訳せなかったものになります
+
+**前の版から上げるとき**：`TRANSLATION_MODEL` は、通常の段階だけに効くようになりました。モデルの ID を書いていても、送る本文が閾値以上の自動の翻訳は、長文の段階（既定は最新の Haiku）で訳します。すべてを同じモデルで訳すには、`TRANSLATION_LONG_MODEL` にも同じモデルを書いてください。思考量は、前の版ではいつも `low` でした。
 
 Anthropic に送るのは、訳す文（タイトル、要約、本文の文字）だけです。記事とリンクの URL、画像、本文の中のコード（`pre` ／ `code`）、フィードの名前、読む人のこと（ユーザー、受信箱）は送りません。記事の中身は訳す対象のデータとして渡し、その中の指示には従わせません。
 
