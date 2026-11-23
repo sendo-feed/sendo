@@ -38,8 +38,10 @@ import { notifySync } from "../lib/sync-notify";
 import {
   type BatchTranslationRequest,
   type BatchTranslationResult,
+  type OnDemandTier,
   type Platform,
   type TranslationSegment,
+  type TranslationUsage,
   type Translator,
   TranslatorError,
 } from "../platform";
@@ -246,18 +248,22 @@ async function sendBatch(platform: MaintainPlatform, translator: Translator): Pr
       else await unmarkBatch(db, key, [id]);
       continue;
     }
-    // 結果を組み立てるときに、同じ本文で分け直し、送った断片と同じかを照らす。写す部分も覚えておく
+    // 送る本文の文字数で段階を決める（写す本文と、本文を送らない記事は 0。決定の 9）
+    const sentBodyChars = body !== null && (copies & COPY_BODY) === 0 ? body.segments.length : 0;
+    const tier = translator.batchTier(sentBodyChars);
+    // 結果を組み立てるときに、同じ本文で分け直し、送った断片と同じかを照らす。写す部分と、送った条件
+    // （結果を書くときに訳したときの条件に写す。決定の 9、18）も覚えておく
     await setBatchBody(db, id, key, {
       source: body?.source ?? null,
       hash: body === null ? null : await segmentsHash(body.segments.segments),
       copies,
+      tier,
+      ...translator.conditions(tier),
     });
     if (body !== null && (copies & COPY_BODY) === 0) {
       bodyBytes += new TextEncoder().encode(body.html).length;
     }
-    // 送る本文の文字数で段階を決める（写す本文と、本文を送らない記事は 0。決定の 9）
-    const sentBodyChars = body !== null && (copies & COPY_BODY) === 0 ? body.segments.length : 0;
-    requests.push({ id, segments, tier: translator.batchTier(sentBodyChars) });
+    requests.push({ id, segments, tier });
   }
   await notifyTranslationChanged(platform, copied);
   // 訳すものがない記事は、訳せないものとして待ちから外す
@@ -416,7 +422,7 @@ async function writeBatchResult(
   platform: MaintainPlatform,
   batchId: string,
   row: { contentSource: "feed" | "page" | null; bodyHash: string | null; copies: number },
-  result: { id: string; segments: TranslationSegment[]; model: string },
+  result: { id: string; segments: TranslationSegment[]; model: string; usage: TranslationUsage },
 ): Promise<"written" | "keep" | "requeue"> {
   const { db } = platform;
   const article = await readArticle(platform, result.id);
@@ -449,6 +455,7 @@ async function writeBatchResult(
     summary: article.summary == null ? null : (translated.get("summary") ?? article.summary),
     content: body === null || (copies & COPY_BODY) !== 0 ? null : assembleBody(body, translated),
     model: result.model,
+    usage: result.usage,
     copies,
     originalTitle: article.title,
     originalSummary: article.summary,
@@ -698,9 +705,11 @@ async function translateArticle(
     return failTranslating(db, articleId, startedAt);
   }
 
+  // 訳し直しは品質優先、その場の翻訳は長くても通常の段階（決定の 9）
+  const tier: OnDemandTier = retranslation ? "quality" : "normal";
   let result: Awaited<ReturnType<typeof translator.translate>>;
   try {
-    result = await translator.translate(segments, { retranslation });
+    result = await translator.translate(segments, { tier });
   } catch (error) {
     if (error instanceof TranslatorError && !error.retryable) {
       console.warn("translation request was rejected", { articleId, error: error.message });
@@ -742,6 +751,10 @@ async function translateArticle(
     summary: article?.summary == null ? null : (translated.get("summary") ?? article.summary),
     content,
     model: result.model,
+    // 訳したときの条件（決定の 18）。条件は呼んだ段階のもの、トークン数は応答のもの
+    tier,
+    ...translator.conditions(tier),
+    usage: result.usage,
     retranslation,
     bodyHash,
     copies,

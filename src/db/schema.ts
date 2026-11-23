@@ -526,6 +526,36 @@ export const articleTranslations = sqliteTable(
     failureCategory: text("failure_category"),
     /** どこで訳せなかったか（バッチか、その場の翻訳か。同じく 17） */
     failureStage: text("failure_stage", { enum: ["batch", "on_demand"] }),
+    /**
+     * 訳したときの条件（docs/decisions/translation.md の 18）。訳文の代表の部分（本文、本文がなければ
+     * タイトル、それもなければ要約）を作ったものの、思考量・段階・プロンプトの版。送って訳したなら
+     * その呼び出しの条件、同じ元記事から写したなら写した元の行の条件。モデルは model。訳文を書く文で
+     * 一緒に書き、訳せなかったときは書き換えない。18 より前に訳した行は、思考量が low でほかは null
+     */
+    effort: text("effort", { enum: ["low", "medium", "high", "xhigh", "max"] }),
+    tier: text("tier", { enum: ["normal", "long", "quality"] }),
+    promptVersion: integer("prompt_version"),
+    /**
+     * 訳文を書いた呼び出しの入力・出力のトークン数と、その呼び出しのモデル（同じく 18）。送らずにすべて
+     * 写した行と、訳し直しを広げた行は 0 で、呼び出しのモデルは null
+     */
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    callModel: text("call_model"),
+    /**
+     * タイトル・要約・本文のそれぞれを、同じ元記事から写したときの、写した元の記事の ID（同じく 16、
+     * 18）。送って訳した部分は null。写した元の記事が消えても残す（外部キーにしない）
+     */
+    titleCopiedFrom: text("title_copied_from"),
+    summaryCopiedFrom: text("summary_copied_from"),
+    contentCopiedFrom: text("content_copied_from"),
+    /**
+     * バッチで送った条件（段階・思考量・プロンプトの版。同じく 9）。送る印を付けるときに書き、結果を
+     * 書く文で上の条件に写す。送る印と一緒に外す。差分同期では配らない
+     */
+    batchTier: text("batch_tier", { enum: ["normal", "long"] }),
+    batchEffort: text("batch_effort", { enum: ["low", "medium", "high", "xhigh", "max"] }),
+    batchPromptVersion: integer("batch_prompt_version"),
   },
   (t) => [
     index("article_translations_translating_idx")

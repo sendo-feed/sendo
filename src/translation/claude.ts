@@ -5,11 +5,14 @@ import {
   type BatchTranslationResult,
   type TranslationResult,
   type TranslationSegment,
+  type TranslationTier,
+  type TranslationUsage,
   type Translator,
   TranslatorError,
 } from "../platform";
 import type {
   TranslationConfig,
+  TranslationEffort,
   TranslationModelFamily,
   TranslationTierConfig,
 } from "../platform/config";
@@ -62,6 +65,12 @@ const API_BASE_URL = "https://api.anthropic.com";
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
 /**
+ * プロンプトの版（docs/decisions/translation.md の 18）。システムプロンプト（SYSTEM_PROMPT）と送る形
+ * （10 の断片と印、structured outputs の形）を変えるたびに上げ、訳文の行に残す
+ */
+export const PROMPT_VERSION = 1;
+
+/**
  * 記事の中身は指示ではない（同じく 11）。訳す対象のデータとして渡し、その中の指示には従わせない
  */
 const SYSTEM_PROMPT = `You translate parts of a web article into natural Japanese.
@@ -97,7 +106,7 @@ const OutputSchema = z.object({
 /** 段階のモデルの選び方と思考量 */
 interface Tier {
   selector: ModelSelector;
-  effort: string;
+  effort: TranslationEffort;
 }
 
 function createTier(
@@ -204,10 +213,14 @@ export function createClaudeTranslator(
       return sentBodyChars >= input.longThresholdChars ? "long" : "normal";
     },
 
+    conditions(tier: TranslationTier) {
+      return { effort: tiers[tier].effort, promptVersion: PROMPT_VERSION };
+    },
+
     async translate(segments, options) {
-      // 訳し直し（決定の 6）は品質優先の段階、その場の翻訳は長くても通常の段階（決定の 9）。送り方と
-      // 失敗の扱いは同じ
-      const tier = options?.retranslation ? tiers.quality : tiers.normal;
+      // 訳し直し（決定の 6）は品質優先の段階、その場の翻訳は長くても通常の段階（決定の 9）。段階は
+      // 呼ぶ側が決める。送り方と失敗の扱いは同じ
+      const tier = tiers[options.tier];
       const { selector } = tier;
       const model = await selector.current();
       // 代わりのモデルは、代わりのモデルのあるモデルでだけ指定する（決定の 9）。ないモデルで拒否されたら、
@@ -369,7 +382,22 @@ function readResult(
     seen.add(segment.id);
     segments.push({ id: segment.id, text: segment.text });
   }
-  return { status: "translated", segments, model };
+  return { status: "translated", segments, model, usage: usageOf(message.usage) };
+}
+
+/**
+ * 応答の入力と出力のトークン数（docs/decisions/translation.md の 18）。代わりのモデルに替わったときも、
+ * 応答の usage は呼び出し全体の合計。入力は、キャッシュに書いた・読んだ分も足す
+ */
+function usageOf(usage: Anthropic.Beta.BetaUsage | null | undefined): TranslationUsage {
+  // 応答は usage を必ず返すが、ないときも訳文は書く（トークン数は 0 として残す）
+  return {
+    inputTokens:
+      (usage?.input_tokens ?? 0) +
+      (usage?.cache_creation_input_tokens ?? 0) +
+      (usage?.cache_read_input_tokens ?? 0),
+    outputTokens: usage?.output_tokens ?? 0,
+  };
 }
 
 /**
