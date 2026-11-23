@@ -389,13 +389,14 @@ function readResult(
  * 応答の入力と出力のトークン数（docs/decisions/translation.md の 18）。代わりのモデルに替わったときも、
  * 応答の usage は呼び出し全体の合計。入力は、キャッシュに書いた・読んだ分も足す
  */
-function usageOf(usage: Anthropic.Beta.BetaUsage): TranslationUsage {
+function usageOf(usage: Anthropic.Beta.BetaUsage | null | undefined): TranslationUsage {
+  // 応答は usage を必ず返すが、ないときも訳文は書く（トークン数は 0 として残す）
   return {
     inputTokens:
-      usage.input_tokens +
-      (usage.cache_creation_input_tokens ?? 0) +
-      (usage.cache_read_input_tokens ?? 0),
-    outputTokens: usage.output_tokens,
+      (usage?.input_tokens ?? 0) +
+      (usage?.cache_creation_input_tokens ?? 0) +
+      (usage?.cache_read_input_tokens ?? 0),
+    outputTokens: usage?.output_tokens ?? 0,
   };
 }
 
