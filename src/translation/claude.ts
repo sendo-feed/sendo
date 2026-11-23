@@ -82,17 +82,17 @@ Translate every segment's text into Japanese and return {"segments": [{"id", "te
 
 How to write:
 - Use the plain style (だ・である調) in every segment, including quoted speech, so the article reads in one consistent voice.
-- Do not add anything that is not in the original: no honorifics such as さん for people or titles, no explanations or notes (except the readings and meanings in parentheses described below), and no interpretation that makes a vague phrase more specific than the original.
+- Do not add anything that is not in the original: no honorifics such as さん for people or job titles, no explanations or notes (except the readings and meanings in parentheses described below), and no interpretation that makes a vague phrase more specific than the original.
 - Translate idioms, irony and implied meaning by what they mean, not word for word. If a literal translation would state something false (for example, sarcasm), translate the intended meaning.
-- "The first appearance" below means the first place in this request where the word appears: in the body segments in document order if there are body segments, otherwise in the summary. Never in the title.
-- Keep people's names written in the Latin alphabet in their original spelling, including well-known names. At the first appearance only, add the katakana reading in parentheses right after the name, for example "Jensen Huang（ジェンスン・フアン）". Write names in other scripts in their common Japanese form, or in katakana if there is none.
+- "The first appearance" below means the first place in this request where the name or word appears, looking only at the body segments in document order when the request has body segments, and only at the summary when it has none. Never in the title.
+- Keep people's names written in the Latin alphabet in their original spelling, including well-known names. At the first appearance only, add the katakana reading in parentheses right after the name (well-known names too), for example "Jensen Huang（ジェンスン・フアン）". Write names in other scripts in their common Japanese form, or in katakana if there is none.
 - When an ordinary word is used as the name of a specific concept and a Japanese translation would make it indistinguishable from the ordinary meaning (an item of a framework, a term the article defines, and so on), write the original word followed by a short meaning in parentheses at the first appearance, for example "Diligence（責任を持つこと）", and use the original word after that. Keep the meaning to a short phrase, not a sentence. Do not do this for technical terms such as feature names (for example, prompt caching).
 - Keep company names, product names and code identifiers as they are when there is no common Japanese form.
 - If a text is already Japanese, return it unchanged and do not apply these rules to it.
 
 Texts may contain numbered markers that stand for links, emphasis, images, line breaks and inline code: a pair ⟦n⟧…⟦/n⟧ wraps the words it applies to, and ⟦n/⟧ stands alone. Keep every marker exactly once with the same number. Move a pair so that it wraps the Japanese words that correspond to the original words, keep pairs nested the same way, and never add, drop or renumber markers.
 - Do not put spaces between Japanese characters and a marker. Keep spaces between Latin words as in the original.
-- When a pair (or the outermost of nested pairs) wraps only a name, put the reading or meaning in parentheses after the closing marker, for example "⟦1⟧Marcus Borg⟦/1⟧（マーカス・ボルグ）", so the link covers only the name. When a pair wraps a wider phrase, put the parentheses right after the name, inside the pair.`;
+- When a pair wraps only the name, put the reading or meaning in parentheses after the closing marker of the outermost pair that wraps only the name, for example "⟦1⟧Marcus Borg⟦/1⟧（マーカス・ボルグ）", so the link covers only the name. Only when no pair wraps just the name and a pair wraps a wider phrase, put the parentheses right after the name, inside that pair.`;
 
 /** 出力の形（structured outputs）。版によらず通るよう、ほかの指定（thinking など）は付けない */
 const OUTPUT_SCHEMA = {
