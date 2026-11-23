@@ -9,6 +9,7 @@ import { sanitizeHtml } from "../../src/lib/sanitize-html";
 import type { PageContentExtractor, Platform } from "../../src/platform";
 import { createPageContentExtractor, loadNativeModule } from "../../src/platform/node/native";
 import { NATIVE_MODULE } from "../db";
+import { JPEG } from "../fixtures/images";
 import { createTestPlatform, createUser, fakeFetch, requestApp, subscribeFeed } from "../helpers";
 
 /*
@@ -291,6 +292,44 @@ describe("Imgur の投稿のページを書いた公式埋め込み（ページ�
     expect(row?.html).toContain(`<a href="https://imgur.com/N13" ${A}>https://imgur.com/N13</a>`);
   });
 
+  it("投稿のページを調べたあと、残りの上限で本文の画像（20）も拡大する", async () => {
+    const photos = `https://${crypto.randomUUID()}.example.com`;
+    const extractor = createPageContentExtractor(loadNativeModule(NATIVE_MODULE));
+    extractor.images = {
+      links: async () => [{ thumbnail: `${photos}/thumb.jpg`, target: `${photos}/full.jpg` }],
+      candidates: async () => [],
+      compare: async () => ({ eligible: true, matches: true }),
+      replace: async (html, link, full) => html.replace(link.thumbnail, full),
+      leadImages: async () => ({ lead: [], later: [] }),
+      samePicture: async () => false,
+      removeImage: async (html) => html,
+    };
+    const t = await setUp({
+      extractor,
+      pageHtml: articlePage([
+        embed("//imgur.com/Img1"),
+        `<p><a href="${photos}/full.jpg"><img src="${photos}/thumb.jpg"></a></p>`,
+      ]),
+      respond: (url) => {
+        if (url.origin !== photos) return undefined;
+        if (url.pathname === "/robots.txt") return new Response(null, { status: 404 });
+        return new Response(JPEG, { headers: { "content-type": "image/jpeg" } });
+      },
+    });
+    await extractWithClock(t.platform, t.article.id);
+
+    expect(t.postFetches()).toEqual(["https://imgur.com/Img1"]);
+    expect(t.calls.map(({ url }) => url).filter((url) => url.startsWith(photos))).toEqual([
+      `${photos}/robots.txt`,
+      `${photos}/thumb.jpg`,
+      `${photos}/full.jpg`,
+    ]);
+    const row = await getPageContent(t.platform.db, t.article.id);
+    expect(row?.html).toContain('<img src="https://i.imgur.com/Img1.jpeg?fb"></blockquote>');
+    expect(row?.html).toContain(`<img src="${photos}/full.jpg">`);
+    expect(row?.html).not.toContain("thumb.jpg");
+  });
+
   it("上限は本文の画像（20・21）と分け合う。期限を過ぎたら、残りの投稿も本文の画像も取りにいかない", async () => {
     // どの投稿のページも、応答に 8 秒かかる
     for (let i = 1; i <= 12; i++) {
@@ -345,23 +384,36 @@ describe("Imgur の投稿のページを調べない場合", () => {
     expect(t.postFetches()).toEqual([]);
   });
 
-  it("画像を足すと 256KB を超える本文では、足す前の本文を保存する", async () => {
-    const id = `Long${"x".repeat(300)}`;
+  it.each([
+    { over: 0, added: true },
+    { over: 1, added: false },
+  ])("画像を足した本文が上限を $over バイト超えるなら、足す: $added", async ({ over, added }) => {
+    const id = `Long${over}${"x".repeat(300)}`;
     POSTS[`/${id}`] ??= () => html(imagePage(id));
-    const base = `<p>${ARTICLE_TEXT}</p>${embed(`//imgur.com/${id}`)}<p></p>`;
-    const size = (html: string) =>
-      new TextEncoder().encode(sanitizeHtml(html, "https://blog.example.com/")).byteLength;
-    // 足す前は上限の 100 バイト手前、足すと超える
-    const filler = "あ".repeat(Math.floor((MAX_CONTENT_BYTES - 100 - size(base)) / 3));
-    const extracted = base.replace("<p></p>", `<p>${filler}</p>`);
+    const post = `https://imgur.com/${id}`;
+    const images = new Map([[post, `https://i.imgur.com/${id}.jpeg?fb`]]);
+    const extractedWith = (n: number) =>
+      `<p>${ARTICLE_TEXT}</p>${embed(`//imgur.com/${id}`)}<p>${"a".repeat(n)}</p>`;
+    const size = (extracted: string, withImages: boolean) =>
+      new TextEncoder().encode(
+        sanitizeHtml(
+          extracted,
+          "https://blog.example.com/",
+          withImages ? { imgurPostImages: images } : {},
+        ),
+      ).byteLength;
+    // 足したあとの本文が、ちょうど上限（＋ over バイト）になるように埋める
+    const extracted = extractedWith(MAX_CONTENT_BYTES + over - size(extractedWith(0), true));
+    expect(size(extracted, true)).toBe(MAX_CONTENT_BYTES + over);
+    expect(size(extracted, false)).toBeLessThanOrEqual(MAX_CONTENT_BYTES);
     const t = await setUp({ extractor: fakeExtractor(extracted) });
     await extractWithClock(t.platform, t.article.id);
 
-    expect(t.postFetches()).toEqual([`https://imgur.com/${id}`]);
+    expect(t.postFetches()).toEqual([post]);
     const row = await getPageContent(t.platform.db, t.article.id);
     expect(row?.status).toBe("extracted");
-    expect(row?.html).not.toContain("<img");
-    expect(row?.html).toContain(`>https://imgur.com/${id}</a>`);
+    expect(row?.html?.includes(`<img src="https://i.imgur.com/${id}.jpeg?fb">`)).toBe(added);
+    expect(row?.html).toContain(`>${post}</a>`);
   });
 
   it("フィードの本文では、取りにいかない（URL の文字だけ）", async () => {
