@@ -372,6 +372,27 @@ describe("本文を配る", () => {
     expect(body.html).not.toContain("script");
   });
 
+  it("Imgur の公式埋め込みの、文字のない投稿のページのリンクは、URL を文字にして置き、そのまま返す", async () => {
+    const embed =
+      '<blockquote class="imgur-embed-pub" lang="en" data-id="abc123" data-context="false">' +
+      '<p><a href="//imgur.com/abc123"></a></p></blockquote>' +
+      '<script async src="//s.imgur.com/min/embed.js" charset="utf-8"></script>';
+    const t = await setUp(() => rss(item("imgur-post", encoded(`<p>${LONG}</p>${embed}`))));
+    await runFetchFeed(t.platform, t.feed.id);
+    const { token } = t.user;
+    const article = await t.byGuid("imgur-post");
+
+    const res = await requestApp(t.platform, `/api/v1/articles/${article.id}/content`, { token });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { html: string };
+    // 投稿のページは取りにいかず（フィードの本文）、行き先の URL を文字として出す
+    expect(body.html).toContain(
+      '<blockquote><p><a href="https://imgur.com/abc123" rel="noopener noreferrer nofollow">' +
+        "https://imgur.com/abc123</a></p></blockquote>",
+    );
+    expect(body.html).not.toContain("<img");
+  });
+
   it("X の公式の埋め込みコードの引用は、投稿の ID の印を付けて置き、返すときにも残す", async () => {
     const embed =
       '<blockquote class="twitter-tweet" data-lang="ja"><p lang="ja" dir="ltr">投稿の文</p>' +

@@ -418,6 +418,131 @@ describe("sanitizeHtml の Imgur の公式埋め込み", () => {
   });
 });
 
+describe("sanitizeHtml の Imgur の公式埋め込みの、文字も画像もないリンク", () => {
+  const A = 'rel="noopener noreferrer nofollow"';
+  const embed = (inner: string) =>
+    `<blockquote class="imgur-embed-pub" lang="ja" data-id="abc123" data-context="false">${inner}</blockquote>`;
+
+  it("リンクの文字として、絶対の URL にした行き先を出す。href はそのまま", () => {
+    expect(clean(embed('<p><a href="//imgur.com/abc123"></a></p>'))).toBe(
+      `<blockquote><p><a href="https://imgur.com/abc123" ${A}>https://imgur.com/abc123</a></p></blockquote>`,
+    );
+    // 記事が http なら、スキームのない書き方は http になる
+    expect(
+      sanitizeHtml(embed('<a href="//imgur.com/a/xyz"></a>'), "http://blog.example.com/1"),
+    ).toBe(
+      `<blockquote><a href="http://imgur.com/a/xyz" ${A}>http://imgur.com/a/xyz</a></blockquote>`,
+    );
+  });
+
+  it("文字は、文字参照を戻してから、エスケープし直して出す", () => {
+    expect(clean(embed('<a href="https://imgur.com/abc?a=1&amp;b=&lt;2&gt;"></a>'))).toBe(
+      '<blockquote><a href="https://imgur.com/abc?a=1&amp;b=%3C2%3E" rel="noopener noreferrer nofollow">' +
+        "https://imgur.com/abc?a=1&amp;b=%3C2%3E</a></blockquote>",
+    );
+  });
+
+  it("空白だけのリンクも、文字のないリンクとして扱う", () => {
+    for (const inner of [" ", "\n\t", "&nbsp;", "<span> </span>"]) {
+      // 空白は残し、そのあとに URL を出す
+      expect(clean(embed(`<a href="//imgur.com/abc123">${inner}</a>`)), inner).toMatch(
+        /nofollow">\s*https:\/\/imgur\.com\/abc123<\/a>/,
+      );
+    }
+  });
+
+  it("文字のあるリンクは変えない", () => {
+    for (const inner of ["View post on imgur.com", "<strong>写真</strong>", " x "]) {
+      const html = clean(embed(`<a href="//imgur.com/abc123">${inner}</a>`));
+      expect(html, inner).not.toContain(">https://imgur.com/abc123</a>");
+    }
+  });
+
+  it("リンクの中に画像が残れば変えない。落ちる画像だけなら URL を出す", () => {
+    expect(clean(embed('<a href="//imgur.com/abc123"><img src="/a.png"></a>'))).toBe(
+      `<blockquote><a href="https://imgur.com/abc123" ${A}><img src="https://blog.example.com/a.png"></a></blockquote>`,
+    );
+    const dropped =
+      '<img src="https://pixel.example.com/t.gif" width="1" height="1"><img src="data:x">';
+    expect(clean(embed(`<a href="//imgur.com/abc123">${dropped}</a>`))).toBe(
+      `<blockquote><a href="https://imgur.com/abc123" ${A}>https://imgur.com/abc123</a></blockquote>`,
+    );
+    // 中身ごと落ちる要素の文字は数えない
+    expect(clean(embed('<a href="//imgur.com/abc123"><svg><text>x</text></svg></a>'))).toContain(
+      ">https://imgur.com/abc123</a>",
+    );
+  });
+
+  it("閉じていないリンクや、次のリンクで閉じるリンクでも、それぞれに URL を出す", () => {
+    expect(clean(embed('<a href="//imgur.com/one"><a href="//imgur.com/two">'))).toBe(
+      `<blockquote><a href="https://imgur.com/one" ${A}>https://imgur.com/one</a>` +
+        `<a href="https://imgur.com/two" ${A}>https://imgur.com/two</a></blockquote>`,
+    );
+  });
+
+  it("直リンクの形は、今と同じ結果になる（文字のない直リンクには、URL と画像の両方が出る）", () => {
+    expect(
+      clean(embed('<a href="https://i.imgur.com/abc123.jpeg">View post on imgur.com</a>')),
+    ).toBe(
+      `<blockquote><a href="https://i.imgur.com/abc123.jpeg" ${A}>View post on imgur.com</a>` +
+        '<img src="https://i.imgur.com/abc123.jpeg"></blockquote>',
+    );
+    expect(clean(embed('<a href="https://i.imgur.com/abc123.jpeg"></a>'))).toBe(
+      `<blockquote><a href="https://i.imgur.com/abc123.jpeg" ${A}>https://i.imgur.com/abc123.jpeg</a>` +
+        '<img src="https://i.imgur.com/abc123.jpeg"></blockquote>',
+    );
+  });
+
+  it("公式埋め込みでない引用や、引用の外の、文字のないリンクは変えない", () => {
+    expect(clean('<blockquote><a href="//imgur.com/abc123"></a></blockquote>')).toBe(
+      `<blockquote><a href="https://imgur.com/abc123" ${A}></a></blockquote>`,
+    );
+    expect(
+      clean(`<a href="//imgur.com/x"></a>${embed("<p>文</p>")}<a href="//imgur.com/y"></a>`),
+    ).toBe(
+      `<a href="https://imgur.com/x" ${A}></a><blockquote><p>文</p></blockquote>` +
+        `<a href="https://imgur.com/y" ${A}></a>`,
+    );
+  });
+
+  it("もう一度通しても、文字は二重にならない", () => {
+    const once = clean(embed('<a href="//imgur.com/abc123"></a>'));
+    expect(clean(once)).toBe(once);
+  });
+
+  it("入れ子の引用の中のリンクと、mailto のリンクにも出す", () => {
+    expect(clean(embed('<blockquote><a href="//imgur.com/abc123"></a></blockquote>'))).toBe(
+      `<blockquote><blockquote><a href="https://imgur.com/abc123" ${A}>https://imgur.com/abc123</a></blockquote></blockquote>`,
+    );
+    expect(clean(embed('<a href="mailto:a@example.com"></a>'))).toContain(
+      ">mailto:a@example.com</a>",
+    );
+  });
+
+  it("リンクの中で埋め込みをリンクに替えるときは、先に Imgur のリンクを閉じて URL を出す", () => {
+    for (const [inner, src] of [
+      ['<iframe src="https://v.example.com/x"></iframe>', "https://v.example.com/x"],
+      ['<video><source src="https://v.example.com/x.mp4"></video>', "https://v.example.com/x.mp4"],
+    ] as const) {
+      const once = clean(embed(`<a href="//imgur.com/abc123">${inner}</a>`));
+      expect(once, inner).toBe(
+        `<blockquote><a href="https://imgur.com/abc123" ${A}>https://imgur.com/abc123</a>` +
+          `<a href="${src}" ${A}>${src}</a></blockquote>`,
+      );
+      expect(clean(once), inner).toBe(once);
+    }
+    // 文字のあるリンクも、替えたリンクの前で閉じる（URL は出さない）
+    const once = clean(
+      embed('<a href="//imgur.com/abc123">写真<iframe src="https://v.example.com/x"></iframe></a>'),
+    );
+    expect(once).toBe(
+      `<blockquote><a href="https://imgur.com/abc123" ${A}>写真</a>` +
+        `<a href="https://v.example.com/x" ${A}>https://v.example.com/x</a></blockquote>`,
+    );
+    expect(clean(once)).toBe(once);
+  });
+});
+
 describe("sanitizeHtml の X の公式の埋め込みコード", () => {
   const A = 'rel="noopener noreferrer nofollow"';
   const ID = "1234567890123456789";

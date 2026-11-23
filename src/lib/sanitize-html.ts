@@ -113,9 +113,17 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
   let dropping: { name: string; depth: number; wantsLink: boolean } | null = null;
   /**
    * 開いている Imgur の公式埋め込みの引用。depth は、その引用を開いたあとの open の長さ。
-   * 画像の直リンクが見つかれば image に持ち、引用の中に画像が残れば hasImage を立てる
+   * 画像の直リンクが見つかれば image に持ち、引用の中に画像が残れば hasImage を立てる。
+   * link は、引用の中で開いているリンク（depth は、リンクを開いたあとの open の長さ）。
+   * 文字（空白を除く）か画像が出れば hasContent を立て、どちらもなければ閉じるときに URL を
+   * 文字として出す
    */
-  let imgur: { depth: number; image: string | null; hasImage: boolean } | null = null;
+  let imgur: {
+    depth: number;
+    image: string | null;
+    hasImage: boolean;
+    link: { href: string; depth: number; hasContent: boolean } | null;
+  } | null = null;
   /**
    * 開いている X の引用（外側から順）。depth は、その引用を開いたあとの open の長さ、tag は
    * 開きタグの parts の位置。ids には、引用の中に出した投稿のリンクの ID を集める（入れ子の
@@ -130,6 +138,9 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
    * 知りたいのは ID がちょうど 1 つかどうかなので、引用ごとに 2 つまで集める
    */
   const pushLink = (href: string) => {
+    // Imgur のリンクの中で埋め込みをリンクに替えるときは、先に Imgur のリンクを閉じる（URL の
+    // 文字もここで出す）。入れ子のリンクは、もう一度通すと外側が空のリンクに分かれるため
+    if (imgur?.link) closeUntil("a");
     parts.push(link(href));
     if (xPosts.length === 0 || open.length >= MAX_DEPTH) return;
     const id = xPostId(href);
@@ -139,6 +150,11 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
 
   /** いちばん内側の要素を閉じる。Imgur の公式埋め込みの引用なら、閉じる前に画像を足す */
   const closeTop = () => {
+    if (imgur?.link && open.length === imgur.link.depth) {
+      // 文字も画像もないリンクは、行き先が分かるように URL を文字にする
+      if (!imgur.link.hasContent) parts.push(escapeHtml(imgur.link.href));
+      imgur.link = null;
+    }
     if (imgur && open.length === imgur.depth) {
       // 中のリンクは、ここまでに閉じている（画像は、リンクの外に置く）
       if (imgur.image !== null && !imgur.hasImage) parts.push({ image: imgur.image, rest: "" });
@@ -180,7 +196,9 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
 
     if (token.type === "text") {
       // 文字参照を戻してから、エスケープし直す（「&lt;script&gt;」は文字のまま残る）
-      parts.push(escapeHtml(decodeHTML(token.text)));
+      const text = decodeHTML(token.text);
+      parts.push(escapeHtml(text));
+      if (imgur?.link && /\S/.test(text)) imgur.link.hasContent = true;
       continue;
     }
 
@@ -224,6 +242,7 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       }
       parts.push({ image: src, rest });
       if (imgur) imgur.hasImage = true;
+      if (imgur?.link) imgur.link.hasContent = true;
       continue;
     }
 
@@ -242,6 +261,7 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       pushLink(href);
       // 当てはまるリンクがいくつもあれば、最初の 1 つを使う
       if (imgur && imgur.image === null && isImgurImageUrl(href)) imgur.image = href;
+      if (imgur) imgur.link = { href, depth: open.length + 1, hasContent: false };
     } else {
       let extra = "";
       const numeric =
@@ -259,7 +279,7 @@ function sanitizeToParts(html: string, baseUrl: string): Part[] {
       imgur === null &&
       (attributes.get("class") ?? "").split(/\s+/).includes(IMGUR_EMBED)
     ) {
-      imgur = { depth: open.length, image: null, hasImage: false };
+      imgur = { depth: open.length, image: null, hasImage: false, link: null };
     }
     // 印は出力に残るので、保存した本文をもう一度通したときは、印のある引用として調べ直す。
     // 印の値は使わず、引用の中のリンクから作り直す
