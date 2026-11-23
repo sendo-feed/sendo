@@ -72,4 +72,70 @@ describe("訳文を差分同期で配るマイグレーション", () => {
       client.close();
     }
   });
+
+  it("訳せなかった理由の列は足すだけで、前からある untranslated の行は空のまま。理由が変わると番号を振る", async () => {
+    const client = createClient({ url: ":memory:" });
+    try {
+      await client.execute("PRAGMA foreign_keys = ON");
+      const migrations = readMigrationFiles({ migrationsFolder: MIGRATIONS_DIR });
+      const index = migrations.findIndex((m) =>
+        m.sql.some((s) => s.includes("ADD `failure_kind`")),
+      );
+      expect(index).toBeGreaterThan(0);
+      for (const migration of migrations.slice(0, index)) {
+        for (const statement of migration.sql) await client.execute(statement);
+      }
+      await client.execute(
+        "INSERT INTO users (id, email, created_at) VALUES ('u', 'u@example.com', 0)",
+      );
+      await client.execute(
+        "INSERT INTO feeds (id, url, created_at, next_fetch_at) VALUES ('f', 'https://example.com/feed', 0, 0)",
+      );
+      await client.execute(
+        "INSERT INTO articles (id, feed_id, guid, item_id, published_at, created_at) VALUES ('a', 'f', 'a', 1, 0, 0)",
+      );
+      await client.execute(
+        "INSERT INTO user_articles (user_id, article_id, feed_id, published_at, created_at, seq, read_seq) VALUES ('u', 'a', 'f', 0, 0, 1, 1)",
+      );
+      await client.execute(
+        "INSERT INTO article_translations (article_id, status, language, decided_at) VALUES ('a', 'untranslated', 'en', 0)",
+      );
+      const seqBefore = Number(
+        (await client.execute("SELECT seq FROM user_articles WHERE article_id = 'a'")).rows[0]?.seq,
+      );
+
+      for (const migration of migrations.slice(index)) {
+        for (const statement of migration.sql) await client.execute(statement);
+      }
+      const row = (
+        await client.execute(
+          "SELECT failure_kind, failure_category, failure_stage FROM article_translations WHERE article_id = 'a'",
+        )
+      ).rows[0];
+      expect(row).toMatchObject({
+        failure_kind: null,
+        failure_category: null,
+        failure_stage: null,
+      });
+      const seq = async () =>
+        Number(
+          (await client.execute("SELECT seq FROM user_articles WHERE article_id = 'a'")).rows[0]
+            ?.seq,
+        );
+      // 列を足すだけでは番号を振らない
+      expect(await seq()).toBe(seqBefore);
+      // 状態が同じでも、理由だけが変わったら番号を振る
+      await client.execute(
+        "UPDATE article_translations SET failure_kind = 'refused', failure_category = 'cyber', failure_stage = 'batch' WHERE article_id = 'a'",
+      );
+      const afterSet = await seq();
+      expect(afterSet).toBeGreaterThan(seqBefore);
+      await client.execute(
+        "UPDATE article_translations SET failure_category = 'bio' WHERE article_id = 'a'",
+      );
+      expect(await seq()).toBeGreaterThan(afterSet);
+    } finally {
+      client.close();
+    }
+  });
 });

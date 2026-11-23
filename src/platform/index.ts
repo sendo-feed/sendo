@@ -186,8 +186,11 @@ export interface TranslationSegment {
 export type TranslationResult =
   /** 訳せた。返ってこなかった断片は入らない */
   | { status: "translated"; segments: TranslationSegment[]; model: string }
-  /** 拒否された（代わりのモデルでも訳せなかった） */
-  | { status: "refused" }
+  /**
+   * 拒否された（代わりのモデルでも訳せなかった）。category は拒否の応答の stop_details.category
+   * （cyber など。なければ null。docs/decisions/translation.md の 17）
+   */
+  | { status: "refused"; category: string | null }
   /** 上限で切れた、または形の読めない応答 */
   | { status: "invalid" };
 

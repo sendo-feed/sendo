@@ -516,6 +516,16 @@ export const articleTranslations = sqliteTable(
      * 同じく 16）。送る印と一緒に付け、一緒に外す
      */
     batchCopies: integer("batch_copies").notNull().default(0),
+    /**
+     * 訳せなかった理由（docs/decisions/translation.md の 17）。訳そうとして untranslated にしたときに
+     * 書き、translated にしたときに消す。untranslated のときだけ意味を持つ。拒否された（refused）か、
+     * そのほかの失敗（failed）か
+     */
+    failureKind: text("failure_kind", { enum: ["refused", "failed"] }),
+    /** 拒否の種類（拒否の応答の stop_details.category。なければ null。同じく 17） */
+    failureCategory: text("failure_category"),
+    /** どこで訳せなかったか（バッチか、その場の翻訳か。同じく 17） */
+    failureStage: text("failure_stage", { enum: ["batch", "on_demand"] }),
   },
   (t) => [
     index("article_translations_translating_idx")

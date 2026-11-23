@@ -82,6 +82,8 @@ type Reply = {
   declinedText?: string;
   /** 流れを閉じない（打ち切りを確かめる） */
   hang?: boolean;
+  /** 拒否の応答の stop_details（docs/decisions/translation.md の 17） */
+  stopDetails?: { type: "refusal"; category: string | null; explanation: string | null };
   /** 送った断片から訳を作る（undefined を返した断片は、返さない） */
   transform?: (segment: { id: string; text: string }) => string | undefined;
 };
@@ -168,7 +170,11 @@ function claudeResponse(
       "message_delta",
       {
         type: "message_delta",
-        delta: { stop_reason: reply.stop ?? "end_turn", stop_sequence: null },
+        delta: {
+          stop_reason: reply.stop ?? "end_turn",
+          stop_sequence: null,
+          ...(reply.stopDetails !== undefined && { stop_details: reply.stopDetails }),
+        },
         usage: { output_tokens: 10 },
       },
     ],
@@ -220,7 +226,12 @@ interface FakeBatch {
 }
 
 /** Messages API の応答（ストリーミングでない形。バッチの結果に入る） */
-const messageJson = (model: string, text: string, stop = "end_turn") => ({
+const messageJson = (
+  model: string,
+  text: string,
+  stop = "end_turn",
+  stopDetails: Reply["stopDetails"] | null = null,
+) => ({
   id: "msg_batch",
   type: "message",
   role: "assistant",
@@ -228,6 +239,7 @@ const messageJson = (model: string, text: string, stop = "end_turn") => ({
   content: [{ type: "text", text }],
   stop_reason: stop,
   stop_sequence: null,
+  stop_details: stopDetails,
   usage: { input_tokens: 10, output_tokens: 10 },
 });
 
@@ -1018,6 +1030,7 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
       summary: string | null;
       translatedAt: string | null;
       retranslated: boolean;
+      failure: { kind: string; category: string | null; stage: string } | null;
     } | null;
   };
 
@@ -1069,6 +1082,7 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
         summary: null,
         translatedAt: null,
         retranslated: false,
+        failure: null,
       });
       expect(translationIn(body, und)).toMatchObject({ language: "und", status: "untranslated" });
       // skipped は配らないので、番号も進まない
@@ -1118,6 +1132,7 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
         summary: JA_SUMMARY,
         translatedAt: row?.translatedAt?.toISOString(),
         retranslated: false,
+        failure: null,
       });
     }
 
@@ -1174,6 +1189,7 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
         summary: JA_SUMMARY,
         translatedAt: before?.translatedAt?.toISOString(),
         retranslated: false,
+        failure: null,
       });
     }
 
@@ -1194,11 +1210,13 @@ describe("差分同期で配る（docs/decisions/sync.md の 10、translation.md
         summary: OPUS_SUMMARY,
         translatedAt: row?.translatedAt?.toISOString(),
         retranslated: true,
+        failure: null,
       });
     }
     // 最初の同期でも印が付く
     expect(translationIn(await sync(s.platform, other.token), en)).toMatchObject({
       retranslated: true,
+      failure: null,
     });
   });
 
@@ -3624,6 +3642,43 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
     });
   });
 
+  it("その場で拒否されて理由のある記事も、同じ元記事の訳が写って translated になると、理由が消える（決定の 17）", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup({ feeds });
+    s.batches.transform = mark;
+    const first = await deliver(s, "/hn.xml");
+    await maintain(s.platform);
+    const third = await requestOnDemand(s, "/mirror.xml");
+    s.replies.push({
+      text: "",
+      stop: "refusal",
+      stopDetails: { type: "refusal", category: "cyber", explanation: null },
+    });
+    await runQueuedTranslation(s);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "untranslated",
+      failureKind: "refused",
+      failureCategory: "cyber",
+    });
+    const batch = s.batches.list.find((b) => b.requests.some((r) => r.custom_id === first));
+    if (!batch) throw new Error("the first article was not sent");
+    batch.ended = true;
+    await maintain(s.platform);
+
+    s.enqueued.length = 0;
+    s.claude.length = 0;
+    expect((await request(s, third)).response.status).toBe(202);
+    await runQueuedTranslation(s);
+    expect(s.claude).toHaveLength(0);
+    expect(await translationOf(s.platform, third)).toMatchObject({
+      status: "translated",
+      title: "訳:GnuPG Security Advisory for GPGME",
+      failureKind: null,
+      failureCategory: null,
+      failureStage: null,
+    });
+  });
+
   it("同じ元記事の行がバッチの中にあっても、その場の翻訳は待たずに送る", async () => {
     const s = await setup({ feeds });
     const first = await deliver(s, "/hn.xml");
@@ -3999,5 +4054,382 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
       title: opusRow?.title,
       retranslated: true,
     });
+  });
+});
+
+describe("訳せなかった理由（docs/decisions/translation.md の 17）", () => {
+  /** 実際の拒否の応答の stop_details の形（記事 007f6c3e-… の Translate で返ったもの） */
+  const cyber = {
+    type: "refusal" as const,
+    category: "cyber",
+    explanation:
+      "This request was flagged as potentially related to cyber harm. Learn more: https://support.claude.com/",
+  };
+  const refusedBy = (stopDetails: Reply["stopDetails"]): Reply => ({
+    text: "",
+    stop: "refusal",
+    ...(stopDetails !== undefined && { stopDetails }),
+  });
+  const reasonOf = async (s: Setup, id: string) => {
+    const row = await translationOf(s.platform, id);
+    return {
+      status: row?.status,
+      kind: row?.failureKind ?? null,
+      category: row?.failureCategory ?? null,
+      stage: row?.failureStage ?? null,
+    };
+  };
+  const reason = (
+    status: string,
+    kind: "refused" | "failed" | null,
+    category: string | null,
+    stage: "batch" | "on_demand" | null,
+  ) => ({ status, kind, category, stage });
+  const noReason = (status: string) => reason(status, null, null, null);
+
+  /** 訳すかどうかを決め（バッチには送らない）、英語の記事のその場の翻訳を受け付ける */
+  async function onDemand(s: Setup): Promise<string> {
+    await decideTranslations(s.platform.db);
+    const id = await articleId(s.platform, "en");
+    s.enqueued.length = 0;
+    expect((await request(s, id)).response.status).toBe(202);
+    return id;
+  }
+
+  type SyncedTranslation = {
+    status: string;
+    failure: { kind: string; category: string | null; stage: string } | null;
+  } | null;
+  /** 差分同期を 1 回呼び、その記事に届いた翻訳（届かなければ undefined）と次のカーソルを返す */
+  async function synced(s: Setup, id: string, cursor?: string) {
+    const query = cursor === undefined ? "" : `?cursor=${encodeURIComponent(cursor)}`;
+    const response = await requestApp(s.platform, `/api/v1/sync${query}`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      cursor: string;
+      articles: { id: string; translation?: SyncedTranslation }[];
+    };
+    return {
+      cursor: body.cursor,
+      translation: body.articles.find((a) => a.id === id)?.translation,
+    };
+  }
+
+  /** そのバッチを終えて、記事ごとの結果を決める */
+  function endBatch(s: Setup, index: number, results: Record<string, unknown>) {
+    const batch = s.batches.list[index];
+    if (!batch) throw new Error(`no batch ${index}`);
+    batch.ended = true;
+    batch.results = new Map(Object.entries(results));
+  }
+  const refusedInBatch = (stopDetails: Reply["stopDetails"] | null) => ({
+    type: "succeeded",
+    message: messageJson("claude-sonnet-5-5", "", "refusal", stopDetails),
+  });
+
+  it("バッチで拒否された記事は、拒否・種類・バッチの理由で untranslated になり、差分同期で届いて知らされる。説明は残さない", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    const { cursor } = await synced(s, en);
+    s.notified.length = 0;
+    endBatch(s, 0, { [en]: refusedInBatch(cyber) });
+    await maintain(s.platform);
+    expect(await reasonOf(s, en)).toEqual(reason("untranslated", "refused", "cyber", "batch"));
+    expect(JSON.stringify(await translationOf(s.platform, en))).not.toContain("support.claude.com");
+    expect(s.notified).toContain(TEST_USER.id);
+    const after = await synced(s, en, cursor);
+    expect(after.translation).toMatchObject({
+      status: "untranslated",
+      failure: { kind: "refused", category: "cyber", stage: "batch" },
+    });
+    expect(JSON.stringify(after.translation)).not.toContain("explanation");
+  });
+
+  it("stop_details のない拒否は、種類が空で残る", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    endBatch(s, 0, { [en]: refusedInBatch(null) });
+    await maintain(s.platform);
+    expect(await reasonOf(s, en)).toEqual(reason("untranslated", "refused", null, "batch"));
+  });
+
+  it("バッチで 3 回目も訳せなかった記事は、そのほかの失敗・バッチで残る。2 回目までは理由を書かない", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    for (let i = 0; i < 3; i++) {
+      if (i > 0) expect(await reasonOf(s, en)).toEqual(noReason("queued"));
+      endBatch(s, i, { [en]: { type: "expired" } });
+      await maintain(s.platform);
+    }
+    expect(await reasonOf(s, en)).toEqual(reason("untranslated", "failed", null, "batch"));
+  });
+
+  it("訳すものがなく送らずに untranslated にした記事と、言語が判定できなかった記事には、理由を付けない", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    const und = await articleId(s.platform, "und");
+    // タイトルも要約も本文もない記事（作るのに手間がかかるので、記事の行を直接書き換える）
+    await s.platform.db
+      .update(articles)
+      .set({ title: null, summary: null, contentKey: null })
+      .where(eq(articles.id, en))
+      .run();
+    await maintain(s.platform);
+    expect(s.batches.list).toHaveLength(0);
+    expect(await reasonOf(s, en)).toEqual(noReason("untranslated"));
+    expect(await reasonOf(s, und)).toEqual(noReason("untranslated"));
+    expect((await synced(s, und)).translation).toMatchObject({
+      status: "untranslated",
+      failure: null,
+    });
+  });
+
+  it("その場の翻訳で、代わりのモデルも拒否したら、その応答の拒否の種類で、拒否・その場の翻訳の理由が残る", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const id = await onDemand(s);
+    s.replies.push({ ...refusedBy(cyber), declinedText: '{"segments":[' });
+    await runQueuedTranslation(s);
+    expect(await reasonOf(s, id)).toEqual(reason("untranslated", "refused", "cyber", "on_demand"));
+  });
+
+  it.each([
+    ["上限で切れた応答", { text: '{"segments":[', stop: "max_tokens" }],
+    ["要求の形の誤り（400）", { status: 400, errorType: "invalid_request_error" }],
+  ] satisfies [string, Reply][])(
+    "その場の翻訳で、%s は、そのほかの失敗・その場の翻訳で残る",
+    async (_name, reply) => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const s = await setup();
+      const id = await onDemand(s);
+      s.replies.push(reply);
+      await runQueuedTranslation(s);
+      expect(await reasonOf(s, id)).toEqual(reason("untranslated", "failed", null, "on_demand"));
+    },
+  );
+
+  it("その場の翻訳で、やり直せる失敗の 3 回目は、そのほかの失敗・その場の翻訳で残る。やり直す間は書かない", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const id = await onDemand(s);
+    const overloaded: Reply = { status: 529, errorType: "overloaded_error" };
+    s.replies.push(overloaded, overloaded, overloaded);
+    await expect(runQueuedTranslation(s)).rejects.toThrow();
+    await expect(runQueuedTranslation(s)).rejects.toThrow();
+    expect(await reasonOf(s, id)).toEqual(noReason("translating"));
+    await runQueuedTranslation(s);
+    expect(await reasonOf(s, id)).toEqual(reason("untranslated", "failed", null, "on_demand"));
+  });
+
+  it("その場の翻訳で、送るものがない・容量が足りない・キーを外した記事は、そのほかの失敗・その場の翻訳で残る", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const job = (s: Setup) => {
+      const found = s.enqueued.find((j) => j.type === "translate-article");
+      if (!found) throw new Error("no job");
+      return found;
+    };
+    // 送るもの（タイトル、要約、本文）がない
+    {
+      const s = await setup();
+      const id = await onDemand(s);
+      await s.platform.db
+        .update(articles)
+        .set({ title: null, summary: null, contentKey: null })
+        .where(eq(articles.id, id))
+        .run();
+      await runJob(s.platform, job(s));
+      expect(s.claude).toHaveLength(0);
+      expect(await reasonOf(s, id)).toEqual(reason("untranslated", "failed", null, "on_demand"));
+    }
+    // 容量が足りない（上限ちょうど。理由を書くことは容量で止まらない）
+    {
+      await testDb.exec("DELETE FROM feeds");
+      const s = await setup();
+      const id = await onDemand(s);
+      const usage = await readStorageUsage(s.platform.db);
+      await runJob({ ...s.platform, retentionConfig: { maxBytes: usage.bytes } }, job(s));
+      expect(s.claude).toHaveLength(0);
+      expect(await reasonOf(s, id)).toEqual(reason("untranslated", "failed", null, "on_demand"));
+    }
+    // キーを外した
+    {
+      await testDb.exec("DELETE FROM feeds");
+      const s = await setup();
+      const id = await onDemand(s);
+      const { translator: _removed, ...withoutKey } = s.platform;
+      await runJob(withoutKey, job(s));
+      expect(await reasonOf(s, id)).toEqual(reason("untranslated", "failed", null, "on_demand"));
+    }
+  });
+
+  it("容量が上限ちょうどでも、バッチの拒否で untranslated に移り、理由が残る", async () => {
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    endBatch(s, 0, { [en]: refusedInBatch(cyber) });
+    const usage = await readStorageUsage(s.platform.db);
+    await maintain({ ...s.platform, retentionConfig: { maxBytes: usage.bytes } });
+    expect(await reasonOf(s, en)).toEqual(reason("untranslated", "refused", "cyber", "batch"));
+  });
+
+  it("止まった translating を訳文のないまま戻すと、そのほかの失敗・その場の翻訳で残る", async () => {
+    const s = await setup();
+    const id = await onDemand(s);
+    await s.platform.db
+      .update(articleTranslations)
+      .set({ startedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+      .where(eq(articleTranslations.articleId, id))
+      .run();
+    await maintain(s.platform);
+    expect(await reasonOf(s, id)).toEqual(reason("untranslated", "failed", null, "on_demand"));
+  });
+
+  it("理由のある記事のその場の翻訳を受け付けても、translating の間は理由が残り（配らない）、訳せたら消えて届く", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const id = await onDemand(s);
+    s.replies.push(refusedBy(cyber));
+    await runQueuedTranslation(s);
+    const { cursor } = await synced(s, id);
+
+    s.enqueued.length = 0;
+    expect((await request(s, id)).response.status).toBe(202);
+    expect(await reasonOf(s, id)).toEqual(reason("translating", "refused", "cyber", "on_demand"));
+    const during = await synced(s, id, cursor);
+    expect(during.translation).toMatchObject({ status: "translating", failure: null });
+
+    await runQueuedTranslation(s);
+    expect(await reasonOf(s, id)).toEqual(noReason("translated"));
+    expect((await synced(s, id, during.cursor)).translation).toMatchObject({
+      status: "translated",
+      failure: null,
+    });
+  });
+
+  it("理由のある記事をもう一度その場で訳して、また訳せなければ、新しい理由で書き換わる", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const id = await onDemand(s);
+    s.replies.push(refusedBy(cyber));
+    await runQueuedTranslation(s);
+
+    s.enqueued.length = 0;
+    expect((await request(s, id)).response.status).toBe(202);
+    s.replies.push({ status: 400, errorType: "invalid_request_error" });
+    await runQueuedTranslation(s);
+    expect(await reasonOf(s, id)).toEqual(reason("untranslated", "failed", null, "on_demand"));
+  });
+
+  it("理由のある記事のその場の翻訳を、仕事を積めずに取り消したら、もとの理由のまま untranslated に戻る", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const id = await onDemand(s);
+    s.replies.push(refusedBy(cyber));
+    await runQueuedTranslation(s);
+    const platform: Platform = {
+      ...s.platform,
+      jobs: {
+        async enqueue() {
+          throw new Error("queue is busy");
+        },
+      },
+    };
+    const response = await requestApp(platform, `/api/v1/articles/${id}/translation`, {
+      method: "POST",
+    });
+    expect(response.status).toBe(500);
+    expect(await reasonOf(s, id)).toEqual(reason("untranslated", "refused", "cyber", "on_demand"));
+    expect((await synced(s, id)).translation).toMatchObject({
+      status: "untranslated",
+      failure: { kind: "refused", category: "cyber", stage: "on_demand" },
+    });
+  });
+
+  it("その場の翻訳で拒否された記事に、あとからバッチの拒否・回数切れが届いても、理由は書き換わらない", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    // バッチで 2 回訳せず、3 回目のバッチを送ったところ
+    for (let i = 0; i < 2; i++) {
+      endBatch(s, i, { [en]: { type: "expired" } });
+      await maintain(s.platform);
+    }
+    expect(s.batches.list).toHaveLength(3);
+    s.enqueued.length = 0;
+    expect((await request(s, en)).response.status).toBe(202);
+    s.replies.push(refusedBy({ type: "refusal", category: "bio", explanation: null }));
+    await runQueuedTranslation(s);
+    const onDemandReason = reason("untranslated", "refused", "bio", "on_demand");
+    expect(await reasonOf(s, en)).toEqual(onDemandReason);
+
+    // 回数切れ（3 回目）
+    endBatch(s, 2, { [en]: { type: "expired" } });
+    await maintain(s.platform);
+    expect(await translationOf(s.platform, en)).toMatchObject({ batchAttempts: 3 });
+    expect(await reasonOf(s, en)).toEqual(onDemandReason);
+  });
+
+  it("その場の翻訳で拒否された記事に、あとからバッチの拒否が届いても、理由は書き換わらない", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    s.enqueued.length = 0;
+    expect((await request(s, en)).response.status).toBe(202);
+    s.replies.push(refusedBy(undefined));
+    await runQueuedTranslation(s);
+    endBatch(s, 0, { [en]: refusedInBatch(cyber) });
+    await maintain(s.platform);
+    expect(await reasonOf(s, en)).toEqual(reason("untranslated", "refused", null, "on_demand"));
+  });
+
+  it("その場で訳せなかった記事に、送ってあったバッチの訳文が届くと、translated になって理由が消える", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const en = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    s.enqueued.length = 0;
+    expect((await request(s, en)).response.status).toBe(202);
+    s.replies.push(refusedBy(cyber));
+    await runQueuedTranslation(s);
+    const { cursor } = await synced(s, en);
+    endBatch(s, 0, {});
+    await maintain(s.platform);
+    expect(await reasonOf(s, en)).toEqual(noReason("translated"));
+    expect((await synced(s, en, cursor)).translation).toMatchObject({
+      status: "translated",
+      failure: null,
+    });
+  });
+
+  it("止まった訳し直しを戻して translated に戻った記事には、理由を付けない", async () => {
+    const s = await setup();
+    const id = await onDemand(s);
+    await runQueuedTranslation(s);
+    s.enqueued.length = 0;
+    expect((await retranslate(s, id)).response.status).toBe(202);
+    await s.platform.db
+      .update(articleTranslations)
+      .set({ startedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+      .where(eq(articleTranslations.articleId, id))
+      .run();
+    await maintain(s.platform);
+    expect(await reasonOf(s, id)).toEqual(noReason("translated"));
+  });
+
+  it("訳し直しが失敗して translated に戻った記事には、理由を付けない", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await setup();
+    const id = await onDemand(s);
+    await runQueuedTranslation(s);
+    s.enqueued.length = 0;
+    expect((await retranslate(s, id)).response.status).toBe(202);
+    s.replies.push(refusedBy(cyber));
+    await runQueuedTranslation(s);
+    expect(await reasonOf(s, id)).toEqual(noReason("translated"));
   });
 });
