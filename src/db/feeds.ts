@@ -180,6 +180,7 @@ export async function recordFetchSuccess(
       lastFetchedAt: input.now,
       lastSuccessfulFetchAt: input.now,
       nextFetchAt: input.nextFetchAt,
+      discordRetryAt: null,
       fetchIntervalMs: input.fetchIntervalMs,
       errorCount: 0,
       lastError: null,
@@ -277,6 +278,7 @@ export async function recordFetchFailure(
   input: {
     now: Date;
     nextFetchAt: Date;
+    discordRetryAt: Date | null;
     errorCount: number;
     error: string;
     errorCode: FeedErrorCode;
@@ -291,6 +293,7 @@ export async function recordFetchFailure(
     .set({
       lastFetchedAt: input.now,
       nextFetchAt: input.nextFetchAt,
+      discordRetryAt: input.discordRetryAt,
       errorCount: input.errorCount,
       lastError: input.error,
       lastErrorCode: input.errorCode,

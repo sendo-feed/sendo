@@ -231,20 +231,31 @@ export async function runFetchFeed(
     // Retry-After は、応答を受けた時刻から数える（docs/decisions/jobs.md の 8）
     const retryAfter =
       error instanceof FetchFeedError ? retryAfterWait(error.retryAfterMs, minIntervalMs) : 0;
-    const retryAt = platform.now().getTime() + retryAfter;
+    const failedAt = platform.now().getTime();
+    const retryAt = failedAt + retryAfter;
+    const discordRetryAt =
+      feed.discordCursor !== null &&
+      error instanceof FetchFeedError &&
+      error.status === 429 &&
+      error.retryAfterMs !== undefined
+        ? new Date(failedAt + Math.max(1000, error.retryAfterMs))
+        : undefined;
     const message = `${error.name}: ${error.message}`;
     const page = error instanceof FetchFeedError ? error.notFoundPage : fetchedPage;
     const relocationCandidate = page
       ? await findFeedRelocation(page, feed.url, platform.fetch)
       : undefined;
-    await recordFailedAttempt(db, feed, {
+    const retryDiscord = await recordFailedAttempt(db, feed, {
       startedAt,
       minIntervalMs,
       retryAt,
+      discordRetryAt:
+        discordRetryAt && Number.isFinite(discordRetryAt.getTime()) ? discordRetryAt : null,
       message,
       errorCode,
       relocationCandidate,
     });
+    if (retryDiscord) await platform.jobs.enqueue([{ type: "fetch-discord", feedId: feed.id }]);
     return { status: "failed", error: message };
   }
 }
@@ -256,11 +267,12 @@ async function recordFailedAttempt(
     startedAt: Date;
     minIntervalMs: number;
     retryAt: number;
+    discordRetryAt: Date | null;
     message: string;
     errorCode: FeedErrorCode;
     relocationCandidate: Feed["relocationCandidate"] | undefined;
   },
-): Promise<void> {
+): Promise<boolean> {
   const { startedAt, minIntervalMs, retryAt, message, errorCode, relocationCandidate } = input;
   const rateLimited = errorCode === "rate_limited";
   const discord = feed.discordCursor !== null;
@@ -289,9 +301,13 @@ async function recordFailedAttempt(
     const backoff = fetchStalled
       ? Math.max(STALLED_FETCH_INTERVAL_MS, minIntervalMs)
       : backoffInterval({ intervalMs, errorCount: Math.max(errorCount, 1), minMs: minIntervalMs });
+    const discordRetryAt = fetchStalled ? null : input.discordRetryAt;
     const recorded = await recordFetchFailure(db, latest, {
       now: startedAt,
-      nextFetchAt: new Date(Math.max(startedAt.getTime() + backoff, retryAt)),
+      nextFetchAt: discordRetryAt
+        ? latest.nextFetchAt
+        : new Date(Math.max(startedAt.getTime() + backoff, retryAt)),
+      discordRetryAt,
       errorCount,
       error: message,
       errorCode,
@@ -300,9 +316,10 @@ async function recordFailedAttempt(
       relocationCandidate,
     });
     // Discord の失敗は、取得を始めたときのカーソルと記録が変わっていない場合だけ残す。
-    if (recorded || discord) return;
+    if (recorded || discord) return recorded && discordRetryAt !== null;
     latest = await getFeed(db, feed.id);
   }
+  return false;
 }
 
 /**

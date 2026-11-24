@@ -50,6 +50,7 @@ const POLL_INTERVAL_MS = 5 * 1000;
 
 /** 1 つの文で積む仕事の数 */
 const ENQUEUE_CHUNK_SIZE = 100;
+const discordDueAt = sql`coalesce(${feeds.discordRetryAt}, ${feeds.nextFetchAt})`;
 
 export type JobRunner = (job: Job) => Promise<void>;
 
@@ -111,7 +112,7 @@ export function createSqliteJobQueue(
           eq(feeds.id, jobQueue.discordFeedId),
           isNotNull(feeds.discordConnectionId),
           isNotNull(feeds.lastErrorCode),
-          gt(feeds.nextFetchAt, at),
+          gt(discordDueAt, at.getTime()),
         ),
       );
     // 再試行中の仕事は先に終える。失敗後の待機は、新着で予約した仕事にも効く。
@@ -256,11 +257,11 @@ export function createSqliteJobQueue(
         inner join ${discordConnections} on ${feeds.discordConnectionId} = ${discordConnections.id}
         inner join ${subscriptions} on ${subscriptions.feedId} = ${feeds.id}
           and ${subscriptions.userId} = ${discordConnections.userId}
-        where ${subscriptions.deletedAt} is null and ${feeds.nextFetchAt} <= ${at.getTime()}
+        where ${subscriptions.deletedAt} is null and ${discordDueAt} <= ${at.getTime()}
           and not exists (
             select 1 from ${jobQueue} where ${jobQueue.discordFeedId} = ${feeds.id}
           )
-        order by ${feeds.nextFetchAt}, ${feeds.id}
+        order by ${discordDueAt}, ${feeds.id}
         limit ${limit}
         on conflict do nothing
         returning id

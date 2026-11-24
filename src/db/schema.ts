@@ -256,6 +256,8 @@ export const feeds = sqliteTable(
     lastSuccessfulFetchAt: integer("last_successful_fetch_at", { mode: "timestamp_ms" }),
     /** この時刻を過ぎたら、定期実行で取得のキューに積む（購読している人がいるときだけ） */
     nextFetchAt: integer("next_fetch_at", { mode: "timestamp_ms" }).notNull(),
+    /** 通常の取得予定と別に覚える Discord REST の再開期限（仕事の流し方の 8） */
+    discordRetryAt: integer("discord_retry_at", { mode: "timestamp_ms" }),
     /**
      * 取得の間隔（ミリ秒。docs/decisions/jobs.md の 7、11）。取得に成功するたびに、記事の出るペースか
      * 時刻の癖（枠）から決め直した、次の取得までの長さ。null なら、まだ決めていない（設定の間隔を使う）。書くのは取得の記録の UPDATE の中だけ

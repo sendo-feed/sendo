@@ -4,7 +4,7 @@ import { readMigrationFiles } from "drizzle-orm/migrator";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { connectDiscord, disconnectDiscord, insertDiscordArticles } from "../../src/db/discord";
 import { findFeedByUrl, getFeed } from "../../src/db/feeds";
-import { articles, contentNotes, feeds, pageContents, users } from "../../src/db/schema";
+import { articles, contentNotes, feeds, jobQueue, pageContents, users } from "../../src/db/schema";
 import { createSession } from "../../src/db/sessions";
 import { readStorageUsage } from "../../src/db/storage";
 import { subscribeMany } from "../../src/db/subscriptions";
@@ -13,7 +13,7 @@ import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import { enqueueDueFeeds } from "../../src/jobs/schedule";
 import type { Platform } from "../../src/platform";
 import { startDiscordIngestion } from "../../src/platform/node/discord-ingestion";
-import { createSqliteJobQueue } from "../../src/platform/node/job-queue";
+import { createSqliteJobQueue, LEASE_MS } from "../../src/platform/node/job-queue";
 import { MIGRATIONS_DIR, openTestDatabase } from "../db";
 import { fakeDiscordGateway } from "../fixtures/discord-gateway";
 import { PNG } from "../fixtures/images";
@@ -657,7 +657,7 @@ describe("Discord の購読", () => {
     const feed = await platform.db.query.feeds.findFirst({
       where: (f, { eq }) => eq(f.id, feedId),
     });
-    expect(feed?.nextFetchAt.getTime()).toBeGreaterThanOrEqual(FIXED_NOW.getTime() + 3600500);
+    expect(feed?.discordRetryAt?.getTime()).toBe(FIXED_NOW.getTime() + 3600500);
     expect(feed).toMatchObject({
       lastErrorCode: "rate_limited",
       errorCount: 0,
@@ -992,10 +992,117 @@ describe("Discord の取得ジョブ", () => {
     );
   });
 
-  it.each([429, 503])("%s の待機中は前倒しせず、期限以降に権限を確認する", async (status) => {
+  it.each([
+    { header: "2", delay: 2_000, missingJob: false },
+    { header: "2", delay: 2_000, missingJob: true },
+    { header: "0", delay: 1_000, missingJob: false },
+  ])(
+    "Discord 429 の待機を再起動後に拾う（Retry-After: $header、後続の仕事なし: $missingJob）",
+    async ({ header, delay, missingJob }) => {
+      const t = await subscribeWithQueue();
+      expect(await t.runDue()).toBe(1);
+      const clock = FIXED_NOW.getTime();
+      const normalAt = (await getFeed(t.platform.db, t.feedId))?.nextFetchAt;
+      const retryAt = clock + delay;
+      expect(normalAt?.getTime()).toBeGreaterThan(retryAt);
+      const posted = messageIdAt(clock + 1);
+      t.remote.setMessageIds([MESSAGE_ID, posted]);
+      t.remote.setMessageStatus(429, undefined, header);
+      await t.requestFetch();
+      expect(await t.runDue()).toBe(1);
+      expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
+        nextFetchAt: normalAt,
+        discordRetryAt: new Date(retryAt),
+        lastErrorCode: "rate_limited",
+      });
+      if (missingJob) {
+        // 期限を記録した直後に停止して、後続ジョブが積まれなかった状態。
+        await t.platform.db.delete(jobQueue).where(eq(jobQueue.discordFeedId, t.feedId)).run();
+      }
+      const restarted = createSqliteJobQueue(t.platform.db, { now: t.now });
+      t.platform.jobs = restarted;
+      const run = () => restarted.runDue((job) => runJob(t.platform, job));
+      t.remote.setMessageStatus(200);
+      t.advanceTo(retryAt - 1);
+      expect(await enqueueDueFeeds(t.platform)).toBe(0);
+      expect(await run()).toBe(0);
+      expect(t.messageCalls()).toBe(2);
+
+      t.advanceTo(retryAt);
+      expect(await enqueueDueFeeds(t.platform)).toBe(missingJob ? 1 : 0);
+      expect(await run()).toBe(1);
+      expect(await t.stored()).toContainEqual({ guid: posted });
+      expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
+        discordRetryAt: null,
+        lastErrorCode: null,
+      });
+    },
+  );
+
+  it.each([2, 1200])("429 の記録直後に止まった仕事は借りと %s 秒の待機を守る", async (wait) => {
     const t = await subscribeWithQueue();
     expect(await t.runDue()).toBe(1);
-    t.remote.setMessageStatus(status, undefined, "3600");
+    const clock = FIXED_NOW.getTime();
+    const recorded = Promise.withResolvers<void>();
+    const stopped = Promise.withResolvers<void>();
+    const previousQueue = t.platform.jobs;
+    t.platform.jobs = {
+      ...previousQueue,
+      async enqueue(jobs) {
+        if (!jobs.some((job) => job.type === "fetch-discord")) return previousQueue.enqueue(jobs);
+        recorded.resolve();
+        await stopped.promise;
+      },
+    };
+    t.remote.setMessageStatus(429, undefined, String(wait));
+    await t.requestFetch();
+    const inFlight = t.runDue();
+    try {
+      await Promise.race([
+        recorded.promise,
+        inFlight.then(() => {
+          throw new Error("follow-up was not reached");
+        }),
+      ]);
+      const restarted = createSqliteJobQueue(t.platform.db, { now: t.now });
+      t.platform.jobs = restarted;
+      const run = () => restarted.runDue((job) => runJob(t.platform, job));
+      t.remote.setMessageStatus(200);
+      const readyAt = clock + Math.max(wait * 1_000, LEASE_MS);
+      t.advanceTo(readyAt - 1);
+      expect(await run()).toBe(0);
+      t.advanceTo(readyAt);
+      expect(await run()).toBe(1);
+      expect(await t.stored()).toEqual([{ guid: MESSAGE_ID }]);
+      expect((await getFeed(t.platform.db, t.feedId))?.discordRetryAt).toBeNull();
+    } finally {
+      stopped.resolve();
+      await inFlight;
+    }
+  });
+
+  it("429 の待機中に接続を解除すると、待機を消して記事を配らない", async () => {
+    const t = await subscribeWithQueue();
+    t.remote.setMessageStatus(429, undefined, "60");
+    expect(await t.runDue()).toBe(1);
+    expect((await getFeed(t.platform.db, t.feedId))?.discordRetryAt).not.toBeNull();
+    expect((await t.request(BASE, { method: "DELETE" })).ok).toBe(true);
+    expect(await getFeed(t.platform.db, t.feedId)).toMatchObject({
+      discordConnectionId: null,
+      discordRetryAt: null,
+    });
+    expect(await t.runDue()).toBe(1);
+    expect(t.messageCalls()).toBe(1);
+    expect(await t.stored()).toEqual([]);
+  });
+
+  it.each([
+    [429, ""],
+    [503, "3600"],
+  ])("待機を分けない %s は、定期時刻以降に権限を確認する", async (status, wait) => {
+    const t = await subscribeWithQueue();
+    expect(await t.runDue()).toBe(1);
+    t.remote.setMessageStatus(status, undefined, wait);
     // 直前の成功と同じ開始時刻でも、失敗と待機時刻を記録する。
     await t.requestFetch();
     expect(await t.runDue()).toBe(1);
