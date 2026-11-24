@@ -84,7 +84,7 @@ docker compose pull && docker compose up -d
 
 フィードを定期取得する間隔の下限（分）は、`FETCH_INTERVAL_MINUTES` に入れます。10 以上の整数で、既定は 30 です。10 分より短くはできません（[決定](docs/decisions/jobs.md)）。取得の時期が来たフィードは、5 分おきの定期実行が仕事に積みます。
 
-定期取得の間隔は、フィードごとに、直近 7 日の記事の出るペースから決まります（記事の平均の間隔の 3 分の 1）。記事の多いフィードは設定の間隔で、静かなフィードは最長で 1 日おきに取得します。記事の出る時刻に癖（毎日 7 時、3 時間おき、平日の 12 時など）があれば、直近 28 日の記事の公開時刻から見つけて、その時刻の直後に取りにいきます（RSS と Discord の両方）。429 ／ 503 の応答に `Retry-After` が付いていれば、その時刻（1 日まで）より前には取りにいきません。長く取得に失敗したフィードや HTTP 410 が返ったフィードは、週 1 回確認します。
+定期取得の間隔は、フィードごとに、直近 7 日の記事の出るペースから決まります（記事の平均の間隔の 3 分の 1）。記事の多いフィードは設定の間隔で、静かなフィードは最長で 1 日おきに取得します。記事の出る時刻に癖（毎日 7 時、3 時間おき、平日の 12 時など）があれば、直近 28 日の記事の公開時刻から見つけて、その時刻の直後に取りにいきます（RSS と Discord の両方）。公開フィードの 429 と、公開フィード・Discord の 503 は `Retry-After` を待機に反映します。停止状態でない Discord の購読で待機時刻が分かる 429 は、その待機を定期時刻と分けます（[仕事の流し方](docs/decisions/jobs.md)）。長く取得に失敗したフィードや HTTP 410 が返ったフィードは、週 1 回確認します。
 
 ### 古い記事の片付け
 
@@ -192,7 +192,7 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 3. `GET /api/v1/integrations/discord` が返す `inviteUrl` をサーバーの管理者が開いて Bot を追加します。Bot に購読するチャンネルの「チャンネルを見る」と「メッセージ履歴を読む」を許可します。
 4. ブラウザで Sendo にログインし、`POST /api/v1/integrations/discord/connect` の `authorizationUrl` を開いて Discord アカウントを接続します。`POST /api/v1/integrations/discord/subscriptions` にチャンネル URL を渡すと、直近の投稿を最大 20 件取り込み、そのあとは新着を取得します。接続と購読の API は [OpenAPI](spec/openapi.json) にあります。
 
-Sendo は設定済みの Bot で Discord Gateway（`wss://gateway.discord.gg`）に接続し、新着が届くと取得を早めます。再接続には Discord の Gateway ホスト（`gateway-*.discord.gg`）も使います。Gateway に接続できない間も定期取得は続きます。
+Sendo は設定済みの Bot で Discord Gateway（`wss://gateway.discord.gg`）に接続し、新着が届くと取得を早めます。再接続には Discord の Gateway ホスト（`gateway-*.discord.gg`）も使います。Gateway に接続できない間も定期取得は続きます。回収が重なったときは同じ権限情報の問い合わせをまとめます。停止状態でない購読が 429 を受けて待機時刻が分かるときは、その期限以降に取得を再開します。
 
 購読の解除、Discord 連携の解除、取得時に Discord 側の閲覧権限がなくなったことを検出した場合は、取り込んだ記事をスター付きも含めて削除します。
 
