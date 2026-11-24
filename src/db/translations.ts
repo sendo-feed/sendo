@@ -938,6 +938,9 @@ export function listBatchRows(
     contentSource: "feed" | "page" | null;
     bodyHash: string | null;
     copies: number;
+    tier: BatchTier | null;
+    effort: TranslationEffort | null;
+    promptVersion: number | null;
   }[]
 > {
   return db
@@ -946,6 +949,9 @@ export function listBatchRows(
       contentSource: articleTranslations.batchContentSource,
       bodyHash: articleTranslations.batchBodyHash,
       copies: articleTranslations.batchCopies,
+      tier: articleTranslations.batchTier,
+      effort: articleTranslations.batchEffort,
+      promptVersion: articleTranslations.batchPromptVersion,
     })
     .from(articleTranslations)
     .where(eq(articleTranslations.batchId, batchId))
