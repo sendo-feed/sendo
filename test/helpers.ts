@@ -118,6 +118,9 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
     db,
     articleSearch: createSqliteArticleSearch(db),
     jobs: {
+      async enqueueDueDiscordFetches() {
+        return 0;
+      },
       async enqueue(jobs) {
         enqueued.push(...jobs);
       },

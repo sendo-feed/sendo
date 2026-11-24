@@ -870,12 +870,18 @@ export const jobQueue = sqliteTable(
     id: text("id").primaryKey(),
     /** 仕事（src/jobs/job.ts の Job）の JSON。取り出したあとで確かめる */
     job: text("job").notNull(),
+    /** Discord の取得だけが持つ、直列に動かす単位 */
+    discordFeedId: text("discord_feed_id"),
     /** 取り出した回数 */
     attempts: integer("attempts").notNull().default(0),
     /** この時刻を過ぎたら取り出してよい */
     runAt: integer("run_at", { mode: "timestamp_ms" }).notNull(),
   },
-  (table) => [index("job_queue_run_at_idx").on(table.runAt)],
+  (table) => [
+    index("job_queue_run_at_idx").on(table.runAt),
+    // Discord の購読ごとに未着手の仕事 1 つと、着手済みの仕事 1 つを持てる。
+    uniqueIndex("job_queue_discord_slot_idx").on(table.discordFeedId, sql`(${table.attempts} > 0)`),
+  ],
 );
 
 export type User = typeof users.$inferSelect;

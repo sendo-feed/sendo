@@ -1,16 +1,19 @@
 import { createClient } from "@libsql/client";
 import { eq } from "drizzle-orm";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { connectDiscord, disconnectDiscord, insertDiscordArticles } from "../../src/db/discord";
 import { findFeedByUrl, getFeed } from "../../src/db/feeds";
-import { articles, contentNotes, feeds, pageContents } from "../../src/db/schema";
+import { articles, contentNotes, feeds, pageContents, users } from "../../src/db/schema";
 import { createSession } from "../../src/db/sessions";
 import { readStorageUsage } from "../../src/db/storage";
 import { subscribeMany } from "../../src/db/subscriptions";
+import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
+import { enqueueDueFeeds } from "../../src/jobs/schedule";
 import type { Platform } from "../../src/platform";
-import { MIGRATIONS_DIR } from "../db";
+import { createSqliteJobQueue } from "../../src/platform/node/job-queue";
+import { MIGRATIONS_DIR, openTestDatabase } from "../db";
 import { PNG } from "../fixtures/images";
 import { createTestPlatform, createUser, fakeFetch, requestApp, statementHook } from "../helpers";
 
@@ -36,6 +39,7 @@ function discordFetch() {
   let canRead = true;
   let beforeMessages: (() => Promise<void>) | undefined;
   let messageStatus = 200;
+  let retryAfter = "3600.5";
   let errorCode: number | undefined;
   let messageIds = [MESSAGE_ID];
   let systemIds: string[] = [];
@@ -96,7 +100,7 @@ function discordFetch() {
       if (messageStatus !== 200) {
         return Response.json(
           { code: errorCode },
-          { status: messageStatus, headers: { "retry-after": "3600.5" } },
+          { status: messageStatus, headers: { "retry-after": retryAfter } },
         );
       }
       // Discord と同じく、after があればその直後から、なければ新しいほうから limit 件を返す。
@@ -148,8 +152,9 @@ function discordFetch() {
     },
     /** discord.com のサイトに届いた要求のパス */
     siteCalls,
-    setMessageStatus: (status: number, code?: number) => {
+    setMessageStatus: (status: number, code?: number, wait = "3600.5") => {
       messageStatus = status;
+      retryAfter = wait;
       errorCode = code;
     },
     beforeMessages: (fn: () => Promise<void>) => {
@@ -260,8 +265,8 @@ describe("Discord の購読", () => {
     const otherFeed = await subscribe(await browser(platform, other.id));
     expect(otherFeed).not.toBe(feedId);
     expect(enqueued).toEqual([
-      { type: "fetch-feed", feedId },
-      { type: "fetch-feed", feedId: otherFeed },
+      { type: "fetch-discord", feedId },
+      { type: "fetch-discord", feedId: otherFeed },
     ]);
 
     expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
@@ -643,6 +648,121 @@ describe("Discord の購読", () => {
     remote.setMessageStatus(403, 50001);
     expect(await runFetchFeed(platform, feedId)).toMatchObject({ status: "missing" });
     expect(await (await request(BASE)).json()).toMatchObject({ subscriptions: [] });
+  });
+});
+
+describe("Discord の取得ジョブ", () => {
+  async function subscribeWithQueue() {
+    const database = await openTestDatabase();
+    onTestFinished(() => database.cleanup());
+    let clock = FIXED_NOW.getTime();
+    const now = () => new Date(clock);
+    const advanceTo = (at: number) => {
+      clock = at;
+    };
+    const jobs = createSqliteJobQueue(database.db, { now });
+    const remote = discordFetch();
+    remote.setGuildIcon("a".repeat(32));
+    const { platform } = createTestPlatform({
+      db: database.db,
+      discord: CONFIG,
+      fetch: remote.fetch,
+      jobs,
+      now,
+    });
+    const userId = crypto.randomUUID();
+    await database.db
+      .insert(users)
+      .values({ id: userId, email: "discord-queue@example.com", createdAt: now() })
+      .run();
+    await connectDiscord(database.db, userId, DISCORD_USER);
+    const feedId = await subscribe(await browser(platform, userId));
+    const requestFetch = () => jobs.enqueue([{ type: "fetch-discord", feedId }]);
+    const runDue = () => jobs.runDue((job) => runJob(platform, job));
+    const messageCalls = () =>
+      remote.calls.filter(({ url }) => new URL(url).pathname.endsWith("/messages")).length;
+    const stored = () =>
+      database.db.select({ guid: articles.guid }).from(articles).orderBy(articles.guid);
+    return { advanceTo, now, platform, remote, feedId, requestFetch, runDue, messageCalls, stored };
+  }
+
+  it("初回と定期の取得を重ねず、取得中の新着をまとめてページを最後まで追う", async () => {
+    const t = await subscribeWithQueue();
+    expect(await enqueueDueFeeds(t.platform)).toBe(0);
+    expect(await t.runDue()).toBe(1);
+    expect(await t.runDue()).toBe(0);
+
+    let entered = () => {};
+    let release = () => {};
+    const enteredMessages = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const responseReady = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    t.remote.beforeMessages(async () => {
+      entered();
+      await responseReady;
+    });
+    t.advanceTo(FIXED_NOW.getTime() + 1);
+    await t.requestFetch();
+    const inFlight = t.runDue();
+    try {
+      await enteredMessages;
+      const ids = Array.from({ length: 31 }, (_, index) =>
+        messageIdAt(FIXED_NOW.getTime() + index + 1),
+      );
+      t.remote.setMessageIds([MESSAGE_ID, ...ids]);
+      await Promise.all([t.requestFetch(), t.requestFetch(), t.requestFetch()]);
+      expect(await t.runDue()).toBe(0);
+    } finally {
+      release();
+      await inFlight;
+    }
+    t.advanceTo(FIXED_NOW.getTime() + 50);
+    expect(await t.runDue()).toBe(1);
+    expect(await t.runDue()).toBe(0);
+    expect(await t.stored()).toHaveLength(32);
+    expect(t.messageCalls()).toBe(3);
+  });
+
+  it("開始時刻が同じ取得でも、カーソルを記録して 3 ページ目まで取り込む", async () => {
+    const t = await subscribeWithQueue();
+    expect(await t.runDue()).toBe(1);
+    const clock = FIXED_NOW.getTime();
+    const ids = Array.from({ length: 61 }, (_, index) => messageIdAt(clock + index + 1));
+    t.remote.setMessageIds([MESSAGE_ID, ...ids]);
+    t.advanceTo(clock + 100);
+    await t.requestFetch();
+
+    expect(await t.runDue()).toBe(1);
+    expect(await t.runDue()).toBe(1);
+    expect(await t.runDue()).toBe(1);
+    expect(await t.runDue()).toBe(0);
+    expect(await t.stored()).toEqual([MESSAGE_ID, ...ids].map((guid) => ({ guid })));
+    expect((await getFeed(t.platform.db, t.feedId))?.discordCursor).toBe(ids.at(-1));
+  });
+
+  it.each([429, 503])("%s の待機中は前倒しせず、期限以降に権限を確認する", async (status) => {
+    const t = await subscribeWithQueue();
+    expect(await t.runDue()).toBe(1);
+    t.remote.setMessageStatus(status, undefined, "3600");
+    // 直前の成功と同じ開始時刻でも、失敗と待機時刻を記録する。
+    await t.requestFetch();
+    expect(await t.runDue()).toBe(1);
+    const next = (await getFeed(t.platform.db, t.feedId))?.nextFetchAt.getTime();
+    expect(next).toBeGreaterThan(t.now().getTime());
+    if (next === undefined) throw new Error("Discord feed disappeared");
+    t.advanceTo(next - 1);
+    await t.requestFetch();
+    expect(await t.runDue()).toBe(0);
+    expect(t.messageCalls()).toBe(2);
+    t.remote.deny();
+    t.advanceTo(next);
+    expect(await t.runDue()).toBe(1);
+    expect(t.messageCalls()).toBe(2);
+    expect(await t.stored()).toEqual([]);
+    expect((await getFeed(t.platform.db, t.feedId))?.discordConnectionId).toBeNull();
   });
 });
 

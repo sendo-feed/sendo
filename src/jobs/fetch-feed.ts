@@ -50,6 +50,7 @@ export type FetchFeedOutcome =
   | { status: "fetched"; inserted: number }
   | { status: "not-modified" }
   | { status: "failed"; error: string }
+  | { status: "deferred" }
   | { status: "missing" }
   | { status: "storage-full" };
 
@@ -75,12 +76,19 @@ export async function runFetchFeed(
     | "syncUpdates"
   >,
   feedId: string,
+  jobType?: "fetch-feed" | "fetch-discord",
 ): Promise<FetchFeedOutcome> {
   const { db } = platform;
   const minIntervalMs = platform.fetchConfig.intervalMs;
   const feed = await getFeed(db, feedId);
   if (!feed || (feed.discordCursor !== null && feed.discordConnectionId === null))
     return { status: "missing" };
+  if (jobType === "fetch-discord" && feed.discordCursor === null) return { status: "missing" };
+  // 更新前にキューへ積まれた Discord の取得も、今の直列化を通す。
+  if (jobType === "fetch-feed" && feed.discordCursor !== null) {
+    await platform.jobs.enqueue([{ type: "fetch-discord", feedId }]);
+    return { status: "deferred" };
+  }
 
   const startedAt = platform.now();
   await measureExistingContents(platform);
@@ -255,12 +263,13 @@ async function recordFailedAttempt(
 ): Promise<void> {
   const { startedAt, minIntervalMs, retryAt, message, errorCode, relocationCandidate } = input;
   const rateLimited = errorCode === "rate_limited";
+  const discord = feed.discordCursor !== null;
   let latest: Feed | undefined = feed;
   for (
     let retries = 0;
     latest &&
     latest.discordConnectionId === feed.discordConnectionId &&
-    (latest.lastFetchedAt === null || latest.lastFetchedAt < startedAt);
+    (discord || latest.lastFetchedAt === null || latest.lastFetchedAt < startedAt);
     retries++
   ) {
     // 先行した取得が書き込んだ場合は、その結果から間隔と状態を計算し直す。
@@ -290,7 +299,8 @@ async function recordFailedAttempt(
       fetchStalled,
       relocationCandidate,
     });
-    if (recorded) return;
+    // Discord の失敗は、取得を始めたときのカーソルと記録が変わっていない場合だけ残す。
+    if (recorded || discord) return;
     latest = await getFeed(db, feed.id);
   }
 }

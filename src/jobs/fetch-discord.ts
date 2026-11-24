@@ -152,16 +152,16 @@ export async function runFetchDiscord(
     await platform.jobs.enqueue([{ type: "clean-up" }]);
   }
 
+  const hasMore = mayHaveOlder || (!first && messages.length === DISCORD_PAGE_SIZE);
   const minMs = platform.fetchConfig.intervalMs;
-  const interval =
-    mayHaveOlder || (!first && messages.length === DISCORD_PAGE_SIZE)
-      ? minMs
-      : await nextFetchInterval(db, {
-          feedId: feed.id,
-          now: startedAt,
-          minMs,
-          feedCreatedAt: feed.createdAt,
-        });
+  const interval = hasMore
+    ? minMs
+    : await nextFetchInterval(db, {
+        feedId: feed.id,
+        now: startedAt,
+        minMs,
+        feedCreatedAt: feed.createdAt,
+      });
   const recorded = await recordFetchSuccess(db, feed.id, {
     now: startedAt,
     nextFetchAt: new Date(startedAt.getTime() + interval),
@@ -173,8 +173,16 @@ export async function runFetchDiscord(
     // ここでは変えない（docs/decisions/discord.md の 7）。アイコンが変わると、購読の変更番号は
     // トリガーが進める（docs/decisions/images.md の 8）
     iconUrl: channel.iconUrl ?? undefined,
-    discord: { cursor, connectionId: discordConnectionId },
+    discord: {
+      cursor,
+      connectionId: discordConnectionId,
+      previousCursor: discordCursor,
+      previousFetchedAt: feed.lastFetchedAt,
+    },
   });
+  if (recorded && hasMore) {
+    await platform.jobs.enqueue([{ type: "fetch-discord", feedId: feed.id }]);
+  }
   if (recorded && channel.iconUrl === null) {
     await refreshDiscordSiteIcon(platform, {
       feedId: feed.id,

@@ -43,6 +43,29 @@ describe("仕事の表", () => {
     expect(await rows()).toEqual([]);
   });
 
+  it("同じプロセスで Discord の取得が長引いても、並行して取り出さない", async () => {
+    const discord: Job = { type: "fetch-discord", feedId: "channel-1" };
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: Job[] = [];
+    queue.start(async (job) => {
+      seen.push(job);
+      if (seen.length === 1) await blocked;
+    });
+    try {
+      await queue.enqueue([discord]);
+      await vi.waitFor(() => expect(seen).toEqual([discord]));
+      advance(LEASE_MS);
+      await queue.enqueue([discord, discord, CLEAN_UP]);
+      await vi.waitFor(() => expect(seen).toEqual([discord, CLEAN_UP]));
+    } finally {
+      release();
+    }
+    await vi.waitFor(() => expect(seen).toEqual([discord, CLEAN_UP, discord]));
+  });
+
   it("失敗した仕事は、少し間を置いてやり直す。上限まで失敗したら諦める", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const failing = vi.fn(async () => {
