@@ -346,7 +346,7 @@ async function request<T>(
       const retryHeader = res.headers.get("retry-after")?.trim() ?? null;
       // Discord のレート制限は、秒数に小数が入る場合がある。
       const retryAfter =
-        res.status === 429 && retryHeader && /^\d{1,15}\.\d+$/.test(retryHeader)
+        res.status === 429 && retryHeader && /^\d{1,15}(?:\.\d+)?$/.test(retryHeader)
           ? Math.ceil(Number(retryHeader) * 1000)
           : parseRetryAfter(retryHeader, { date: res.headers.get("date"), now: new Date() });
       const discordCode =

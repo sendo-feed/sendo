@@ -442,6 +442,20 @@
       "when": 1795496611416,
       "tag": "0062_discord-feed-url-index",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "6",
+      "when": 1795520165038,
+      "tag": "0063_discord-retry-at",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "6",
+      "when": 1795520564329,
+      "tag": "0064_clear-discord-retry-on-detach",
+      "breakpoints": true
     }
   ]
 }
