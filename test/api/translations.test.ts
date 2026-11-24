@@ -591,6 +591,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function bodySegmentLogs(calls: unknown[][]): unknown[] {
+  return calls
+    .filter(([message]) => message === "saved article translation body segment counts")
+    .map(([, json]) => JSON.parse(String(json)));
+}
+
 describe("保存された訳文の本文断片のログ", () => {
   const body = [
     "<p>Codemods use <code>secret()</code> first.<br>Then continue.</p>",
@@ -607,8 +613,6 @@ describe("保存された訳文の本文断片のログ", () => {
     if (id === "b3" || id === "title" || id === "summary") return undefined;
     return `訳:${text}`;
   };
-  const message = "saved article translation body segment counts";
-
   it.each(["batch", "on_demand", "retranslation"] as const)(
     "%s は保存後に欠落 ID と印の不一致を別々に数える",
     async (path) => {
@@ -644,26 +648,24 @@ describe("保存された訳文の本文断片のログ", () => {
       expect(row?.content).toContain(">the guide</a> first.");
       expect(row?.content).toContain("<p>This segment will be missing.</p>");
       expect(row?.content).toContain("<p>訳:This segment is translated.</p>");
-      expect(info.mock.calls.filter(([name]) => name === message)).toEqual([
-        [
-          message,
-          {
-            articleId: id,
-            path,
-            model:
-              path === "batch"
-                ? "claude-haiku-5-5"
-                : path === "on_demand"
-                  ? "claude-sonnet-5-5"
-                  : "claude-opus-5-5",
-            tier: path === "batch" ? "long" : path === "on_demand" ? "normal" : "quality",
-            effort: path === "batch" ? "low" : path === "on_demand" ? "medium" : "high",
-            promptVersion: PROMPT_VERSION,
-            sentBodySegments: 4,
-            missingBodySegments: 1,
-            invalidMarkerBodySegments: 2,
-          },
-        ],
+      expect(bodySegmentLogs(info.mock.calls)).toEqual([
+        {
+          articleId: id,
+          path,
+          model:
+            path === "batch"
+              ? "claude-haiku-5-5"
+              : path === "on_demand"
+                ? "claude-sonnet-5-5"
+                : "claude-opus-5-5",
+          tier: path === "batch" ? "long" : path === "on_demand" ? "normal" : "quality",
+          effort: path === "batch" ? "low" : path === "on_demand" ? "medium" : "high",
+          promptVersion: PROMPT_VERSION,
+          bodyStored: true,
+          sentBodySegments: 4,
+          missingBodySegments: 1,
+          invalidMarkerBodySegments: 2,
+        },
       ]);
     },
   );
@@ -683,23 +685,46 @@ describe("保存された訳文の本文断片のログ", () => {
       status: "queued",
       batchId: batch.id,
     });
-    expect(info).not.toHaveBeenCalledWith(message, expect.anything());
+    expect(bodySegmentLogs(info.mock.calls)).toEqual([]);
     await maintain(s.platform);
     await maintain(s.platform);
     expect(await translationOf(s.platform, id)).toMatchObject({
       status: "translated",
       batchId: null,
     });
-    expect(info.mock.calls.filter(([name]) => name === message)).toEqual([
-      [
-        message,
-        expect.objectContaining({
-          articleId: id,
-          sentBodySegments: 1,
-          missingBodySegments: 0,
-          invalidMarkerBodySegments: 0,
-        }),
-      ],
+    expect(bodySegmentLogs(info.mock.calls)).toEqual([
+      expect.objectContaining({
+        articleId: id,
+        bodyStored: true,
+        sentBodySegments: 1,
+        missingBodySegments: 0,
+        invalidMarkerBodySegments: 0,
+      }),
+    ]);
+  });
+
+  it("バッチで送った本文を再読込できない場合は送信数を不明とする", async () => {
+    const s = await setup({ body: "<p>Codemods are useful.</p>" });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    expect(await translationOf(s.platform, id)).toMatchObject({ batchContentSource: "feed" });
+    batch.ended = true;
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    await maintain({ ...s.platform, content: { ...s.platform.content, get: async () => null } });
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      content: null,
+    });
+    expect(bodySegmentLogs(info.mock.calls)).toEqual([
+      expect.objectContaining({
+        articleId: id,
+        bodyStored: false,
+        sentBodySegments: null,
+        missingBodySegments: null,
+        invalidMarkerBodySegments: null,
+      }),
     ]);
   });
 });
@@ -1670,14 +1695,25 @@ describe("本文を訳す（docs/decisions/translation.md の 3、10、13）", (
   });
 
   it("送る本文の文字が 60,001 なら本文を訳さず、タイトルと要約だけを訳す", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const over = await setup({ body: `<p>${longText(60_001)}</p>` });
     const overId = await translate(over);
     expect(sentSegments(over).map((segment) => segment.id)).toEqual(["title", "summary"]);
     const got = await getTranslation(over, overId);
     expect(got).toMatchObject({ title: JA_TITLE, content: null, contentSource: null });
+    expect(bodySegmentLogs(info.mock.calls)).toEqual([
+      expect.objectContaining({
+        articleId: overId,
+        bodyStored: false,
+        sentBodySegments: 0,
+        missingBodySegments: 0,
+        invalidMarkerBodySegments: 0,
+      }),
+    ]);
   });
 
   it("訳した本文をサニタイズして 256KB を超えたら、本文を置かずタイトルと要約だけを置く", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const s = await setup({ body: "<p>Short codemods body</p>" });
     const id = await translate(s, {
       transform: (segment) => (segment.id.startsWith("b") ? "あ".repeat(90_000) : prefix(segment)),
@@ -1687,6 +1723,15 @@ describe("本文を訳す（docs/decisions/translation.md の 3、10、13）", (
       content: null,
       contentSource: null,
     });
+    expect(bodySegmentLogs(info.mock.calls)).toEqual([
+      expect.objectContaining({
+        articleId: id,
+        bodyStored: false,
+        sentBodySegments: 1,
+        missingBodySegments: 0,
+        invalidMarkerBodySegments: 0,
+      }),
+    ]);
   });
 
   it("訳した本文がサニタイズしたあとでちょうど 256KB なら置き、1 バイト多ければ置かない", async () => {
@@ -3894,7 +3939,9 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
     expect(sentSegments(batch, second)).toEqual(["summary"]);
     if (batch) batch.ended = true;
     s.notified.length = 0;
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
     await maintain(s.platform);
+    expect(bodySegmentLogs(info.mock.calls)).toEqual([]);
 
     const secondRow = await translationOf(s.platform, second);
     expect(secondRow).toMatchObject({
@@ -4326,7 +4373,9 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
     const firstRow = await translationOf(s.platform, first);
     const second = await requestOnDemand(s, "/lobsters.xml");
     s.replies.push({ transform: mark });
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
     await runQueuedTranslation(s);
+    expect(bodySegmentLogs(info.mock.calls)).toEqual([]);
     expect(claudeSegments(s)).toEqual([["summary"]]);
     expect(await translationOf(s.platform, second)).toMatchObject({
       status: "translated",

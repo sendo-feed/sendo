@@ -477,6 +477,7 @@ async function writeBatchResult(
           tier: row.tier,
           effort: row.effort,
           promptVersion: row.promptVersion,
+          bodyStored: assembly?.content != null,
         },
         assembly?.counts ?? (row.contentSource === null ? NO_BODY_SEGMENTS : null),
       );
@@ -599,7 +600,7 @@ async function bodyToTranslate(
 }
 
 /**
- * 訳から本文を組み立て、もう一度サニタイズする（決定の 10）。上限を超えたら null（本文を置かない）
+ * 訳から本文を組み立て、もう一度サニタイズする（決定の 10）。上限を超えたら本文は置かず、件数を返す
  */
 function assembleBody(body: Body, translated: ReadonlyMap<string, string>) {
   const assembled = body.segments.assemble(translated);
@@ -621,15 +622,19 @@ function logBodyTranslation(
     tier: TranslationTier | null;
     effort: TranslationEffort | null;
     promptVersion: number | null;
+    bodyStored: boolean;
   },
   counts: BodySegmentCounts | null,
 ): void {
-  console.info("saved article translation body segment counts", {
-    ...detail,
-    sentBodySegments: counts?.sent ?? null,
-    missingBodySegments: counts?.missing ?? null,
-    invalidMarkerBodySegments: counts?.invalidMarkers ?? null,
-  });
+  console.info(
+    "saved article translation body segment counts",
+    JSON.stringify({
+      ...detail,
+      sentBodySegments: counts?.sent ?? null,
+      missingBodySegments: counts?.missing ?? null,
+      invalidMarkerBodySegments: counts?.invalidMarkers ?? null,
+    }),
+  );
 }
 
 /** 訳す断片（タイトルと要約）。空のものと、同じ元記事から写すもの（決定の 16）は送らない */
@@ -815,6 +820,7 @@ async function translateArticle(
           model: result.model,
           tier,
           ...conditions,
+          bodyStored: content !== null,
         },
         assembly?.counts ?? NO_BODY_SEGMENTS,
       );
