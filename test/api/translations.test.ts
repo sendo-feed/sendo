@@ -911,6 +911,7 @@ describe("失敗と、止まった翻訳（docs/decisions/translation.md の 7�
     const platform: Platform = {
       ...s.platform,
       jobs: {
+        ...s.platform.jobs,
         async enqueue() {
           throw new Error("queue is busy");
         },
@@ -936,6 +937,7 @@ describe("失敗と、止まった翻訳（docs/decisions/translation.md の 7�
     const platform: Platform = {
       ...s.platform,
       jobs: {
+        ...s.platform.jobs,
         async enqueue() {
           throw new Error("queue is busy");
         },
@@ -3323,6 +3325,7 @@ describe("Opus で訳し直す（docs/decisions/translation.md の 6、9、13）
     const platform: Platform = {
       ...s.platform,
       jobs: {
+        ...s.platform.jobs,
         async enqueue() {
           throw new Error("queue is busy");
         },
@@ -5166,6 +5169,7 @@ describe("訳せなかった理由（docs/decisions/translation.md の 17）", (
     const platform: Platform = {
       ...s.platform,
       jobs: {
+        ...s.platform.jobs,
         async enqueue() {
           throw new Error("queue is busy");
         },

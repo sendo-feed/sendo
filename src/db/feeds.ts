@@ -115,7 +115,7 @@ export async function leaseDueFeeds(
   const due = await db
     .select({ id: feeds.id })
     .from(feeds)
-    .where(and(lte(feeds.nextFetchAt, input.now), subscribed))
+    .where(and(isNull(feeds.discordCursor), lte(feeds.nextFetchAt, input.now), subscribed))
     .orderBy(asc(feeds.nextFetchAt))
     .limit(input.limit)
     .all();

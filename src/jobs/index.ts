@@ -19,8 +19,9 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
       await detectArticleLanguages(platform, job.after, job.articleIds);
       return;
     }
-    case "fetch-feed": {
-      const outcome = await runFetchFeed(platform, job.feedId);
+    case "fetch-feed":
+    case "fetch-discord": {
+      const outcome = await runFetchFeed(platform, job.feedId, job.type);
       if (outcome.status === "failed") {
         console.warn("feed fetch failed", { feedId: job.feedId, error: outcome.error });
       }

@@ -87,10 +87,12 @@ async function setUp(
     languageDetection,
     pageContent,
     syncUpdates: recording.syncUpdates,
-    ...(options.enqueue !== undefined && { jobs: { enqueue: options.enqueue } }),
   });
   const platform: Platform = {
     ...created.platform,
+    ...(options.enqueue !== undefined && {
+      jobs: { ...created.platform.jobs, enqueue: options.enqueue },
+    }),
     ...(options.translator !== false && {
       translator: createClaudeTranslator({
         ...(readTranslationConfig({ ANTHROPIC_API_KEY: "sk-test-secret" }) as TranslationConfig),

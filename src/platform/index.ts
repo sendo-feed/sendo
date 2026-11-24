@@ -16,6 +16,7 @@ import type { TranslationEffort } from "./config";
 /** 重い処理を、API の応答と切り離して後で実行する */
 export interface JobQueue {
   enqueue(jobs: readonly Job[]): Promise<void>;
+  enqueueDueDiscordFetches(now: Date, limit: number): Promise<number>;
 }
 
 /** 提供元に登録した、OAuth のクライアント */

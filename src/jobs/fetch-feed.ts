@@ -50,6 +50,7 @@ export type FetchFeedOutcome =
   | { status: "fetched"; inserted: number }
   | { status: "not-modified" }
   | { status: "failed"; error: string }
+  | { status: "deferred" }
   | { status: "missing" }
   | { status: "storage-full" };
 
@@ -75,12 +76,19 @@ export async function runFetchFeed(
     | "syncUpdates"
   >,
   feedId: string,
+  jobType?: "fetch-feed" | "fetch-discord",
 ): Promise<FetchFeedOutcome> {
   const { db } = platform;
   const minIntervalMs = platform.fetchConfig.intervalMs;
   const feed = await getFeed(db, feedId);
   if (!feed || (feed.discordCursor !== null && feed.discordConnectionId === null))
     return { status: "missing" };
+  if (jobType === "fetch-discord" && feed.discordCursor === null) return { status: "missing" };
+  // 更新前にキューへ積まれた Discord の取得も、今の直列化を通す。
+  if (jobType === "fetch-feed" && feed.discordCursor !== null) {
+    await platform.jobs.enqueue([{ type: "fetch-discord", feedId }]);
+    return { status: "deferred" };
+  }
 
   const startedAt = platform.now();
   await measureExistingContents(platform);

@@ -152,16 +152,16 @@ export async function runFetchDiscord(
     await platform.jobs.enqueue([{ type: "clean-up" }]);
   }
 
+  const hasMore = mayHaveOlder || (!first && messages.length === DISCORD_PAGE_SIZE);
   const minMs = platform.fetchConfig.intervalMs;
-  const interval =
-    mayHaveOlder || (!first && messages.length === DISCORD_PAGE_SIZE)
-      ? minMs
-      : await nextFetchInterval(db, {
-          feedId: feed.id,
-          now: startedAt,
-          minMs,
-          feedCreatedAt: feed.createdAt,
-        });
+  const interval = hasMore
+    ? minMs
+    : await nextFetchInterval(db, {
+        feedId: feed.id,
+        now: startedAt,
+        minMs,
+        feedCreatedAt: feed.createdAt,
+      });
   const recorded = await recordFetchSuccess(db, feed.id, {
     now: startedAt,
     nextFetchAt: new Date(startedAt.getTime() + interval),
@@ -175,6 +175,9 @@ export async function runFetchDiscord(
     iconUrl: channel.iconUrl ?? undefined,
     discord: { cursor, connectionId: discordConnectionId },
   });
+  if (recorded && hasMore) {
+    await platform.jobs.enqueue([{ type: "fetch-discord", feedId: feed.id }]);
+  }
   if (recorded && channel.iconUrl === null) {
     await refreshDiscordSiteIcon(platform, {
       feedId: feed.id,
