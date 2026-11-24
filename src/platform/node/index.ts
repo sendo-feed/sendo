@@ -14,6 +14,7 @@ import {
   readTranslationConfig,
 } from "../config";
 import { createSqliteArticleSearch } from "../sqlite/article-search";
+import { createDiscordBotFetch } from "./discord-rest";
 import { createFileObjectStore } from "./file-store";
 import type { SqliteJobQueue } from "./job-queue";
 import { createSafeFetch } from "./safe-fetch";
@@ -54,7 +55,9 @@ export function createNodePlatform(input: {
   const translation = readTranslationConfig(settings);
   const now = () => new Date();
   return {
-    ...(discord && { discord }),
+    ...(discord && {
+      discord: { ...discord, botFetch: createDiscordBotFetch(fetch, discord.botToken) },
+    }),
     ...(translation && { translator: createClaudeTranslator({ ...translation, fetch, now }) }),
     pageContent: input.pageContent,
     languageDetection: input.languageDetection,

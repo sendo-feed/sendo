@@ -13,6 +13,7 @@ import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import { enqueueDueFeeds } from "../../src/jobs/schedule";
 import type { Platform } from "../../src/platform";
 import { startDiscordIngestion } from "../../src/platform/node/discord-ingestion";
+import { createDiscordBotFetch } from "../../src/platform/node/discord-rest";
 import { createSqliteJobQueue, LEASE_MS } from "../../src/platform/node/job-queue";
 import { MIGRATIONS_DIR, openTestDatabase } from "../db";
 import { fakeDiscordGateway } from "../fixtures/discord-gateway";
@@ -866,6 +867,38 @@ describe("Discord の取得ジョブ", () => {
     expect(await t.runDue()).toBe(0);
     expect(await t.stored()).toEqual([MESSAGE_ID, ...ids].map((guid) => ({ guid })));
     expect((await getFeed(t.platform.db, t.feedId))?.discordCursor).toBe(ids.at(-1));
+  });
+
+  it("REST の枠が空くまで外に送らず、保留した新着を期限後に取り込む", async () => {
+    const t = await subscribeWithQueue();
+    let sendLimit = true;
+    const upstream: typeof fetch = async (input, init) => {
+      const response = await t.remote.fetch(input, init);
+      if (!sendLimit || new URL(String(input)).pathname !== "/api/v10/guilds/201") return response;
+      sendLimit = false;
+      const headers = new Headers(response.headers);
+      headers.set("x-ratelimit-remaining", "0");
+      headers.set("x-ratelimit-reset-after", "2");
+      return new Response(response.body, { status: response.status, headers });
+    };
+    t.platform.discord = {
+      ...CONFIG,
+      botFetch: createDiscordBotFetch(upstream, CONFIG.botToken, () => t.now().getTime()),
+    };
+    expect(await t.runDue()).toBe(1);
+    const next = messageIdAt(t.now().getTime() + 1);
+    t.remote.setMessageIds([MESSAGE_ID, next]);
+    await t.requestFetch();
+    expect(await t.runDue()).toBe(1);
+    expect(t.messageCalls()).toBe(1);
+    const due = t.now().getTime() + 2_000;
+    expect((await getFeed(t.platform.db, t.feedId))?.discordRetryAt?.getTime()).toBe(due);
+    t.advanceTo(due - 1);
+    expect(await t.runDue()).toBe(0);
+    t.advanceTo(due);
+    expect(await t.runDue()).toBe(1);
+    expect(t.messageCalls()).toBe(2);
+    expect(await t.stored()).toContainEqual({ guid: next });
   });
 
   it("Gateway の新着と再接続を起点に受信箱と差分同期に配る", async () => {
