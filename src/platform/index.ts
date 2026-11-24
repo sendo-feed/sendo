@@ -29,6 +29,8 @@ export interface OAuthClient {
 export interface DiscordConfig extends OAuthClient {
   botToken: string;
   redirectUri: string;
+  /** Bot の読み取りを枠に合わせて送る。通信の期限も送り始めるときに決める。 */
+  botFetch?: typeof fetch;
 }
 
 /**
