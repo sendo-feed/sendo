@@ -29,10 +29,11 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/app.ts`：HTTP のルーティング。実行環境の入出力には直接触らず、`Platform` で受け取る
 - `crates/`：重い処理（Rust。docs/decisions/tech-stack.md の 5）。処理の本体の crate（`extract/` など。`#![forbid(unsafe_code)]`）と、Node から呼ぶための結び（`node/`。napi-rs）を分ける。外への取得と DB には触らず、TypeScript の側からバイト列を受け取って結果を返す。重い処理は `AsyncTask` でスレッドプールに出す
 - `src/platform/`：緩衝層。実行環境の入出力（DB、ファイル、外への取得、Rust のネイティブのモジュール、タイマー）をまとめる。インターフェースは `src/platform/index.ts`、実装と入口（`main.ts`）は `src/platform/node/` に置く（docs/decisions/tech-stack.md の 3、docs/decisions/container.md）。アプリはインターフェース越しに使い、テストでは差し替える。設定の読み方は `config.ts`
-  - Rust の処理（`pageContent`、`languageDetection`）は `Platform` の必須の項目。読み込めなければ起動しない（docs/decisions/container.md の 2）。機能の有無を返す API は持たない。新しい機能に対応する前の Sendo と組み合わさる間は、クライアントが呼んで失敗したら使わない形で扱う（同じく 3）
+  - Rust の処理（`pageContent`、`languageDetection`）は `Platform` の必須の項目。読み込めなければ起動しない（docs/decisions/container.md の 2）
   - Rust のネイティブのモジュールを読み込むのは `src/platform/node/native.ts` だけ
 - 機能のディレクトリ（`api/`、`fetcher/`、`jobs/` など）は `docs/tech-deck.md` の「6. ディレクトリ構成」に従う
 - `src/api/`：REST API。入力は zod のスキーマで検証し、OpenAPI の定義も同じスキーマから作る
+  - 翻訳や Discord のように設定で有無が分かれる機能は、その機能の API で伝える。機能の有無をまとめて返す API は持たない。新しい機能に対応する前の Sendo と組み合わさる間は、クライアントが呼んで失敗したら使わない形で扱う（docs/decisions/container.md の 3）
   - 認証は `auth.ts` のミドルウェア（アクセストークンか、ブラウザのセッションのクッキー）。クッキーで認証した、状態を変えるリクエストは、同じオリジンのページからだけ受ける（CSRF 対策）
   - 認証の要らない入口（ログインなど）は、`index.ts` で認証のミドルウェアより先に登録する
   - 状態を変えるリクエストが成功したら、`notify-changes.ts` のミドルウェアが、その利用者の通知の接続に知らせる（docs/decisions/sync.md の 9。Google Reader API も同じ）。ハンドラーで知らせなくてよい。ミドルウェアを通らない MCP のツールとジョブで人ごとのデータを変えるときは、`lib/sync-notify.ts` の `notifySync` で知らせる。`db/` の書き込みの中では知らせない（取得のジョブが受信箱に配る `deliverNewArticles` だけは、配った先を知るので、受け取った `notify` で知らせる）
