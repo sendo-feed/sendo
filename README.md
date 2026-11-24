@@ -52,6 +52,10 @@ Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS �
 
 リーダーアプリのサーバー（[リーダーアプリで読む](#リーダーアプリで読むgoogle-reader-api)）も、MCP の URL（`https://reader.example.com/mcp`）も、sendo-reader のオリジンにします。
 
+記事の中で X の公式ウィジェットを表示するには、隔離フレーム用のホスト名をもう 1 つ用意し、手前のプロキシで同じ sendo-reader のコンテナに向けます。その HTTPS オリジンを `.env` の `X_EMBED_ORIGIN` に書きます。詳しくは [sendo-reader の「記事の中の X の投稿（任意）」](https://github.com/sendo-feed/sendo-reader/blob/main/README.md#記事の中の-x-の投稿任意)を参照してください。
+
+すでに設置した `compose.yaml` を使う場合は、[最新版の compose.yaml](compose.yaml) の `reader.environment` にある `X_EMBED_ORIGIN` の指定を手元のファイルに取り込んでから、`docker compose up -d` を実行します。
+
 画面を使わず、リーダーアプリや MCP だけで使うときは、`compose.yaml` の `reader` を消して Sendo のポートを出し（`compose.yaml` のコメント）、`PUBLIC_URL` を Sendo のオリジンにします。`READER_URL` は空にします（OAuth は使えず、MCP 用のトークンでつなぎます）。
 
 上流の更新は、次で取り込みます。Sendo と sendo-reader が一緒に新しくなります。マイグレーションは、起動するときに当たります。
