@@ -192,6 +192,8 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 3. `GET /api/v1/integrations/discord` が返す `inviteUrl` をサーバーの管理者が開いて Bot を追加します。Bot に購読するチャンネルの「チャンネルを見る」と「メッセージ履歴を読む」を許可します。
 4. ブラウザで Sendo にログインし、`POST /api/v1/integrations/discord/connect` の `authorizationUrl` を開いて Discord アカウントを接続します。`POST /api/v1/integrations/discord/subscriptions` にチャンネル URL を渡すと、直近の投稿を最大 20 件取り込み、そのあとは新着を取得します。接続と購読の API は [OpenAPI](spec/openapi.json) にあります。
 
+Sendo は設定済みの Bot で Discord Gateway（`wss://gateway.discord.gg`）に接続し、新着が届くと取得を早めます。再接続には Discord の Gateway ホスト（`gateway-*.discord.gg`）も使います。Gateway に接続できない間も定期取得は続きます。
+
 購読の解除、Discord 連携の解除、取得時に Discord 側の閲覧権限がなくなったことを検出した場合は、取り込んだ記事をスター付きも含めて削除します。
 
 ### 記事を日本語に訳す（Claude API）

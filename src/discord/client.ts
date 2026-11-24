@@ -130,6 +130,27 @@ export async function identifyDiscordUser(
   return user.id;
 }
 
+/** セッションを作る前に、再起動をまたいで Discord が持つ Bot ごとの残り回数を確認する。 */
+export async function getDiscordGatewayInfo(fetch: typeof globalThis.fetch, config: DiscordConfig) {
+  const info = await request(
+    fetch,
+    "/gateway/bot",
+    z.object({
+      url: z.string(),
+      session_start_limit: z.object({
+        remaining: z.int().nonnegative(),
+        reset_after: z.int().nonnegative(),
+      }),
+    }),
+    { headers: { authorization: `Bot ${config.botToken}` } },
+  );
+  return {
+    url: info.url,
+    remaining: info.session_start_limit.remaining,
+    resetAfterMs: info.session_start_limit.reset_after,
+  };
+}
+
 /** 本人と Bot の両方が読める、通常のテキストチャンネルかアナウンスチャンネルだけを扱う */
 export async function getReadableChannel(
   fetch: typeof globalThis.fetch,

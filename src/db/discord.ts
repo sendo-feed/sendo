@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import { type Database, getRow } from ".";
 import { randomItemId } from "./articles";
 import { DB_NOW_MS } from "./clock";
@@ -39,6 +39,30 @@ export async function listDiscordSubscriptions(db: Database, userId: string) {
       ),
     )
     .orderBy(feeds.title, feeds.id)
+    .all();
+}
+
+/** 有効な Discord の購読だけを、小分けに取得ジョブへ渡す。 */
+export async function listDiscordFetchTargets(
+  db: Database,
+  input: { url: string | undefined; after: string | undefined; limit: number },
+) {
+  return db
+    .select({ feedId: feeds.id })
+    .from(feeds)
+    .innerJoin(discordConnections, eq(feeds.discordConnectionId, discordConnections.id))
+    .innerJoin(subscriptions, eq(subscriptions.feedId, feeds.id))
+    .where(
+      and(
+        isNotNull(feeds.discordConnectionId),
+        eq(subscriptions.userId, discordConnections.userId),
+        isNull(subscriptions.deletedAt),
+        input.url === undefined ? undefined : eq(feeds.url, input.url),
+        input.after === undefined ? undefined : gt(feeds.id, input.after),
+      ),
+    )
+    .orderBy(asc(feeds.id))
+    .limit(input.limit)
     .all();
 }
 

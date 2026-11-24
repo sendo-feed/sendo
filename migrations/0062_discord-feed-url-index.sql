@@ -1,0 +1,1 @@
+CREATE INDEX `feeds_discord_url_idx` ON `feeds` (`url`,`id`) WHERE "feeds"."discord_connection_id" is not null;
