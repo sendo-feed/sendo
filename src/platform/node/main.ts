@@ -17,6 +17,7 @@ import { runJob } from "../../jobs";
 import { enqueueLanguageDetection, runScheduled } from "../../jobs/schedule";
 import { parseOrigin } from "..";
 import { openDatabase } from "./database";
+import { startDiscordIngestion } from "./discord-ingestion";
 import { createNodePlatform, dataDirectory, type NodeEnv, withPublicOrigin } from "./index";
 import { createSqliteJobQueue } from "./job-queue";
 import { createLanguageDetector, createPageContentExtractor, loadNativeModule } from "./native";
@@ -102,6 +103,7 @@ async function runServer(env: NodeEnv): Promise<void> {
   const app = createApp(platform);
 
   jobs.start((job) => runJob(platform, job));
+  const discord = startDiscordIngestion(platform);
   await enqueueLanguageDetection(platform);
   const scheduler = startScheduler((scheduledTime) => runScheduled(platform, scheduledTime));
   const hostname = env.HOST?.trim() || "0.0.0.0";
@@ -131,7 +133,7 @@ async function runServer(env: NodeEnv): Promise<void> {
     const closed = new Promise<void>((resolve) => server.close(() => resolve()));
     const notificationsClosed = sync.stop();
     server.closeIdleConnections();
-    await Promise.all([closed, notificationsClosed]);
+    await Promise.all([closed, notificationsClosed, discord?.stop()]);
     await scheduler.stop();
     await jobs.stop();
     database.close();

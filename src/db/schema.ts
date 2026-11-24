@@ -293,6 +293,7 @@ export const feeds = sqliteTable(
     index("feeds_next_fetch_at_idx").on(t.nextFetchAt),
     uniqueIndex("feeds_public_url_idx").on(t.url).where(sql`${t.discordCursor} is null`),
     uniqueIndex("feeds_discord_connection_url_idx").on(t.discordConnectionId, t.url),
+    index("feeds_discord_url_idx").on(t.url, t.id).where(sql`${t.discordConnectionId} is not null`),
   ],
 );
 
