@@ -747,6 +747,23 @@ describe("Discord の取得ジョブ", () => {
     expect(t.messageCalls()).toBe(3);
   });
 
+  it("開始時刻が同じ取得でも、カーソルを記録して 3 ページ目まで取り込む", async () => {
+    const t = await subscribeWithQueue();
+    expect(await t.runDue()).toBe(1);
+    const clock = FIXED_NOW.getTime();
+    const ids = Array.from({ length: 61 }, (_, index) => messageIdAt(clock + index + 1));
+    t.remote.setMessageIds([MESSAGE_ID, ...ids]);
+    t.advanceTo(clock + 100);
+    await t.requestFetch();
+
+    expect(await t.runDue()).toBe(1);
+    expect(await t.runDue()).toBe(1);
+    expect(await t.runDue()).toBe(1);
+    expect(await t.runDue()).toBe(0);
+    expect(await t.stored()).toEqual([MESSAGE_ID, ...ids].map((guid) => ({ guid })));
+    expect((await getFeed(t.platform.db, t.feedId))?.discordCursor).toBe(ids.at(-1));
+  });
+
   it("Gateway の新着と再接続を起点に受信箱と差分同期に配る", async () => {
     const t = await subscribeWithQueue();
     expect(await t.runDue()).toBe(1);
@@ -873,7 +890,10 @@ describe("Discord の取得ジョブ", () => {
 
   it.each([429, 503])("%s の待機中は前倒しせず、期限以降に権限を確認する", async (status) => {
     const t = await subscribeWithQueue();
+    expect(await t.runDue()).toBe(1);
     t.remote.setMessageStatus(status, undefined, "3600");
+    // 直前の成功と同じ開始時刻でも、失敗と待機時刻を記録する。
+    await t.requestFetch();
     expect(await t.runDue()).toBe(1);
     const next = (await getFeed(t.platform.db, t.feedId))?.nextFetchAt.getTime();
     expect(next).toBeGreaterThan(t.now().getTime());
@@ -881,11 +901,11 @@ describe("Discord の取得ジョブ", () => {
     t.advanceTo(next - 1);
     await t.requestFetch();
     expect(await t.runDue()).toBe(0);
-    expect(t.messageCalls()).toBe(1);
+    expect(t.messageCalls()).toBe(2);
     t.remote.deny();
     t.advanceTo(next);
     expect(await t.runDue()).toBe(1);
-    expect(t.messageCalls()).toBe(1);
+    expect(t.messageCalls()).toBe(2);
     expect(await t.stored()).toEqual([]);
     expect((await getFeed(t.platform.db, t.feedId))?.discordConnectionId).toBeNull();
   });
