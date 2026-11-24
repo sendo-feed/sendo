@@ -41,11 +41,13 @@ import {
   type OnDemandTier,
   type Platform,
   type TranslationSegment,
+  type TranslationTier,
   type TranslationUsage,
   type Translator,
   TranslatorError,
 } from "../platform";
-import { type BodySegments, splitBody } from "../translation/segments";
+import type { TranslationEffort } from "../platform/config";
+import { type BodySegmentCounts, type BodySegments, splitBody } from "../translation/segments";
 import { LANGUAGE_ARTICLES_PER_JOB } from "./job";
 
 /** 本文から送る文の合計の上限（Unicode の文字。docs/decisions/translation.md の 3） */
@@ -421,7 +423,7 @@ const UNCOUNTED_BATCH_ERRORS = new Set([
 async function writeBatchResult(
   platform: MaintainPlatform,
   batchId: string,
-  row: { contentSource: "feed" | "page" | null; bodyHash: string | null; copies: number },
+  row: Awaited<ReturnType<typeof listBatchRows>>[number],
   result: { id: string; segments: TranslationSegment[]; model: string; usage: TranslationUsage },
 ): Promise<"written" | "keep" | "requeue"> {
   const { db } = platform;
@@ -448,12 +450,14 @@ async function writeBatchResult(
   const translated = new Map(
     result.segments.filter((s) => sent.has(s.id)).map((s) => [s.id, s.text]),
   );
+  const assembly =
+    body === null || (copies & COPY_BODY) !== 0 ? null : assembleBody(body, translated);
   const ok = await finishBatchTranslation(db, {
     articleId: result.id,
     batchId,
     title: article.title == null ? null : (translated.get("title") ?? article.title),
     summary: article.summary == null ? null : (translated.get("summary") ?? article.summary),
-    content: body === null || (copies & COPY_BODY) !== 0 ? null : assembleBody(body, translated),
+    content: assembly?.content ?? null,
     model: result.model,
     usage: result.usage,
     copies,
@@ -462,7 +466,24 @@ async function writeBatchResult(
     bodySource: body?.source ?? null,
     bodyHash: await bodyFingerprint(body),
   });
-  if (ok) return "written";
+  if (ok) {
+    if ((copies & COPY_BODY) === 0) {
+      // 送った本文を復元できなかった場合は、本文を送らなかった場合（0 件）と分ける。
+      logBodyTranslation(
+        {
+          articleId: result.id,
+          path: "batch",
+          model: result.model,
+          tier: row.tier,
+          effort: row.effort,
+          promptVersion: row.promptVersion,
+          bodyStored: assembly?.content != null,
+        },
+        assembly?.counts ?? (row.contentSource === null ? NO_BODY_SEGMENTS : null),
+      );
+    }
+    return "written";
+  }
   // 行がまだそのバッチの印を持ち訳文がないなら、容量のトリガーが書かなかった。次に書き直す
   const current = await getTranslation(db, result.id);
   return current?.batchId === batchId && current.translatedAt === null ? "keep" : "requeue";
@@ -579,15 +600,41 @@ async function bodyToTranslate(
 }
 
 /**
- * 訳から本文を組み立て、もう一度サニタイズする（決定の 10）。上限を超えたら null（本文を置かない）
+ * 訳から本文を組み立て、もう一度サニタイズする（決定の 10）。上限を超えたら本文は置かず、件数を返す
  */
-function assembleBody(
-  body: Body,
-  translated: ReadonlyMap<string, string>,
-): { html: string; source: "feed" | "page" } | null {
-  const html = sanitizeHtml(body.segments.assemble(translated), "about:blank");
-  if (new TextEncoder().encode(html).length > MAX_TRANSLATED_BODY_BYTES) return null;
-  return { html, source: body.source };
+function assembleBody(body: Body, translated: ReadonlyMap<string, string>) {
+  const assembled = body.segments.assemble(translated);
+  const html = sanitizeHtml(assembled.html, "about:blank");
+  const content =
+    new TextEncoder().encode(html).length > MAX_TRANSLATED_BODY_BYTES
+      ? null
+      : { html, source: body.source };
+  return { content, counts: assembled.counts };
+}
+
+const NO_BODY_SEGMENTS: BodySegmentCounts = { sent: 0, missing: 0, invalidMarkers: 0 };
+
+function logBodyTranslation(
+  detail: {
+    articleId: string;
+    path: "batch" | "on_demand" | "retranslation";
+    model: string;
+    tier: TranslationTier | null;
+    effort: TranslationEffort | null;
+    promptVersion: number | null;
+    bodyStored: boolean;
+  },
+  counts: BodySegmentCounts | null,
+): void {
+  console.info(
+    "saved article translation body segment counts",
+    JSON.stringify({
+      ...detail,
+      sentBodySegments: counts?.sent ?? null,
+      missingBodySegments: counts?.missing ?? null,
+      invalidMarkerBodySegments: counts?.invalidMarkers ?? null,
+    }),
+  );
 }
 
 /** 訳す断片（タイトルと要約）。空のものと、同じ元記事から写すもの（決定の 16）は送らない */
@@ -737,13 +784,15 @@ async function translateArticle(
   }
   // 返ってこなかった断片は、原文のまま残す（docs/decisions/translation.md の 10）
   const translated = new Map(result.segments.map((s) => [s.id, s.text]));
-  const content =
+  const assembly =
     body === null || (copies & COPY_BODY) !== 0 ? null : assembleBody(body, translated);
+  const content = assembly?.content ?? null;
   if (keepBody && content === null) {
     // 組み立てた本文が上限を超えた。呼び直さずに失敗にする（決定の 6、8）
     console.warn("retranslation cannot keep the translated body", { articleId });
     return failTranslating(db, articleId, startedAt);
   }
+  const conditions = translator.conditions(tier);
   const written = await finishTranslating(db, {
     articleId,
     startedAt,
@@ -753,7 +802,7 @@ async function translateArticle(
     model: result.model,
     // 訳したときの条件（決定の 18）。条件は呼んだ段階のもの、トークン数は応答のもの
     tier,
-    ...translator.conditions(tier),
+    ...conditions,
     usage: result.usage,
     retranslation,
     bodyHash,
@@ -762,7 +811,22 @@ async function translateArticle(
     originalSummary: article?.summary ?? null,
     bodySource: body?.source ?? null,
   });
-  if (written) return true;
+  if (written) {
+    if ((copies & COPY_BODY) === 0) {
+      logBodyTranslation(
+        {
+          articleId,
+          path: retranslation ? "retranslation" : "on_demand",
+          model: result.model,
+          tier,
+          ...conditions,
+          bodyStored: content !== null,
+        },
+        assembly?.counts ?? NO_BODY_SEGMENTS,
+      );
+    }
+    return true;
+  }
   // 行がまだ同じなら、容量のトリガーが書かなかった。呼び直さずに戻す（決定の 12）
   return failTranslating(db, articleId, startedAt);
 }
