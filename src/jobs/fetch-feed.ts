@@ -263,12 +263,13 @@ async function recordFailedAttempt(
 ): Promise<void> {
   const { startedAt, minIntervalMs, retryAt, message, errorCode, relocationCandidate } = input;
   const rateLimited = errorCode === "rate_limited";
+  const discord = feed.discordCursor !== null;
   let latest: Feed | undefined = feed;
   for (
     let retries = 0;
     latest &&
     latest.discordConnectionId === feed.discordConnectionId &&
-    (latest.lastFetchedAt === null || latest.lastFetchedAt < startedAt);
+    (discord || latest.lastFetchedAt === null || latest.lastFetchedAt < startedAt);
     retries++
   ) {
     // 先行した取得が書き込んだ場合は、その結果から間隔と状態を計算し直す。
@@ -298,7 +299,8 @@ async function recordFailedAttempt(
       fetchStalled,
       relocationCandidate,
     });
-    if (recorded) return;
+    // Discord の失敗は、取得を始めたときのカーソルと記録が変わっていない場合だけ残す。
+    if (recorded || discord) return;
     latest = await getFeed(db, feed.id);
   }
 }

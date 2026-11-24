@@ -132,7 +132,7 @@ export async function leaseDueFeeds(
   return ids.filter((id) => leasedIds.has(id));
 }
 
-type FetchTarget = Pick<Feed, "id" | "lastFetchedAt" | "discordConnectionId">;
+type FetchTarget = Pick<Feed, "id" | "lastFetchedAt" | "discordConnectionId" | "discordCursor">;
 
 function fetchedBefore(now: Date) {
   return or(isNull(feeds.lastFetchedAt), lt(feeds.lastFetchedAt, now));
@@ -148,7 +148,12 @@ export async function recordFetchSuccess(
     fetchIntervalMs: number;
     etag?: string | null;
     lastModified?: string | null;
-    discord?: { cursor: string; connectionId: string };
+    discord?: {
+      cursor: string;
+      connectionId: string;
+      previousCursor: string;
+      previousFetchedAt: Date | null;
+    };
     /**
      * Discord のサーバーのアイコン（docs/decisions/discord.md の 7）。undefined なら変えない。
      * iconCheckedAt（discord.com を探した時刻）は進めない
@@ -159,6 +164,14 @@ export async function recordFetchSuccess(
   },
 ): Promise<Pick<Feed, "id" | "siteUrl" | "iconUrl" | "iconCheckedAt"> | undefined> {
   const sameConnection = input.discord && eq(feeds.discordConnectionId, input.discord.connectionId);
+  // 直列に動く Discord の取得では、時計の順序ではなく、読み取った取得位置と記録を確かめる。
+  const current = input.discord
+    ? and(
+        sameConnection,
+        eq(feeds.discordCursor, input.discord.previousCursor),
+        sql`${feeds.lastFetchedAt} IS ${input.discord.previousFetchedAt?.getTime() ?? null}`,
+      )
+    : fetchedBefore(input.now);
   const recorded = await db
     .update(feeds)
     .set({
@@ -184,7 +197,7 @@ export async function recordFetchSuccess(
       ...(input.siteUrl !== undefined && { siteUrl: input.siteUrl }),
       ...(input.iconUrl !== undefined && { iconUrl: input.iconUrl }),
     })
-    .where(and(eq(feeds.id, id), fetchedBefore(input.now), sameConnection))
+    .where(and(eq(feeds.id, id), current))
     .returning({
       id: feeds.id,
       siteUrl: feeds.siteUrl,
@@ -291,7 +304,9 @@ export async function recordFetchFailure(
     .where(
       and(
         eq(feeds.id, feed.id),
-        fetchedBefore(input.now),
+        feed.discordCursor === null
+          ? fetchedBefore(input.now)
+          : eq(feeds.discordCursor, feed.discordCursor),
         sql`${feeds.discordConnectionId} IS ${feed.discordConnectionId}`,
         sql`${feeds.lastFetchedAt} IS ${previous}`,
       ),

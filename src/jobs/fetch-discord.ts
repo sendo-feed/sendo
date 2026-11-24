@@ -173,7 +173,12 @@ export async function runFetchDiscord(
     // ここでは変えない（docs/decisions/discord.md の 7）。アイコンが変わると、購読の変更番号は
     // トリガーが進める（docs/decisions/images.md の 8）
     iconUrl: channel.iconUrl ?? undefined,
-    discord: { cursor, connectionId: discordConnectionId },
+    discord: {
+      cursor,
+      connectionId: discordConnectionId,
+      previousCursor: discordCursor,
+      previousFetchedAt: feed.lastFetchedAt,
+    },
   });
   if (recorded && hasMore) {
     await platform.jobs.enqueue([{ type: "fetch-discord", feedId: feed.id }]);
