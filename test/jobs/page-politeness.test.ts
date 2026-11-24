@@ -28,6 +28,14 @@ const extractor: PageContentExtractor = {
 
 const html = () => new Response(PAGE_HTML, { headers: { "content-type": "text/html" } });
 
+function interruptedBody() {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(new Error("private response body error"));
+    },
+  });
+}
+
 /**
  * 同じホストに記事を count 件置いたフィードを購読して取り込む。robots.txt とページの応答を差し替え、
  * 取りにいった URL と、記事のホストへ同時に取りにいった数の最大を記録する
@@ -166,10 +174,13 @@ describe("robots.txt（決定の 18）", () => {
 
     expect(await getPageContent(t.platform.db, t.articleId)).toMatchObject({ status: "failed" });
     expect(t.calls().filter((url) => url.includes("/posts/"))).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(
-      "could not fetch the article page",
-      expect.objectContaining({ code: "robots_disallowed" }),
-    );
+    expect(warn).toHaveBeenCalledWith("could not fetch the article page", {
+      articleId: t.articleId,
+      code: "robots_disallowed",
+      stage: "robots",
+      redirects: 0,
+      reason: "rule",
+    });
 
     // API は理由を出さずに 404（page_content_unavailable）を返し、取りにいき直さない
     const res = await requestApp(
@@ -182,6 +193,70 @@ describe("robots.txt（決定の 18）", () => {
     expect(body.error.code).toBe("page_content_unavailable");
     expect(body.error.message).not.toContain("robots");
   });
+
+  it("robots の接続失敗は、記事 ID と制御した理由を残して取得を止める", async () => {
+    const t = await setUpSite({
+      robots: () => {
+        throw new TypeError("https://user:private@example.org/robots.txt?secret=value");
+      },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await requestApp(
+      t.platform,
+      `/api/v1/articles/${t.articleId}/content?source=page`,
+      { token: t.user.token },
+    );
+    expect(res.status).toBe(404);
+    expect(await getPageContent(t.platform.db, t.articleId)).toMatchObject({ status: "failed" });
+    expect(t.calls().filter((url) => url.includes("/posts/"))).toEqual([]);
+    expect(warn.mock.calls).toEqual([
+      [
+        "could not fetch robots.txt; treating as disallowed",
+        { origin: `https://${t.host}`, reason: "network" },
+      ],
+      [
+        "could not fetch the article page",
+        {
+          articleId: t.articleId,
+          code: "robots_unreachable",
+          stage: "robots",
+          redirects: 0,
+          reason: "network",
+        },
+      ],
+    ]);
+  });
+
+  it.each([false, true])(
+    "記事の 403 はステータスとチャレンジの有無を残す（本文中断: %s）",
+    async (interrupted) => {
+      const t = await setUpSite({
+        robots: () => new Response("User-agent: *\nAllow: /\n"),
+        page: () =>
+          new Response(interrupted ? interruptedBody() : "private response body", {
+            status: 403,
+            headers: { "cf-mitigated": "challenge", "x-private": "private response header" },
+          }),
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await runJob(t.platform, { type: "extract-page", articleId: t.articleId });
+      expect(await getPageContent(t.platform.db, t.articleId)).toMatchObject({ status: "failed" });
+      expect(t.calls()).toContain(`https://${t.host}/posts/0`);
+      expect(warn.mock.calls).toEqual([
+        [
+          "could not fetch the article page",
+          {
+            articleId: t.articleId,
+            code: "http_status",
+            stage: "article_http",
+            redirects: 0,
+            httpStatus: 403,
+            challenge: true,
+          },
+        ],
+      ]);
+    },
+  );
 
   it("開いたときの抜き取りでも守る", async () => {
     const t = await setUpSite({ robots: () => new Response("User-agent: *\nDisallow: /\n") });
@@ -206,31 +281,45 @@ describe("robots.txt（決定の 18）", () => {
     },
   );
 
-  it("robots.txt がなければ（4xx）、取りにいく", async () => {
-    const t = await setUpSite({ robots: () => new Response("", { status: 403 }) });
+  it.each([403, 404])("robots.txt が %i なら、抽出に進む", async (status) => {
+    const t = await setUpSite({ robots: () => new Response("", { status }) });
     await runJob(t.platform, { type: "extract-page", articleId: t.articleId });
     expect(await getPageContent(t.platform.db, t.articleId)).toMatchObject({ status: "extracted" });
   });
 
-  it("リダイレクトの行き先も、行き先のサイトの robots.txt で確かめる", async () => {
-    const target = `https://${crypto.randomUUID()}.example.org`;
-    const t = await setUpSite({
-      // 記事のサイトは許し、行き先のサイトは Sendo を断る
-      robots: (url) =>
-        url.origin === target
-          ? new Response("User-agent: *\nAllow: /\n\nUser-agent: sendo\nDisallow: /article\n")
-          : new Response("", { status: 404 }),
-      page: (url) =>
-        !url.pathname.startsWith("/posts/")
-          ? html()
-          : new Response(null, { status: 301, headers: { location: `${target}/article` } }),
-    });
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    await runJob(t.platform, { type: "extract-page", articleId: t.articleId });
-    expect(await getPageContent(t.platform.db, t.articleId)).toMatchObject({ status: "failed" });
-    expect(t.calls()).toContain(`${target}/robots.txt`);
-    expect(t.calls()).not.toContain(`${target}/article`);
-  });
+  it.each(["robots_disallowed", "robots_unreachable"] as const)(
+    "リダイレクト先で起きた %s が分かる",
+    async (code) => {
+      const target = `https://${crypto.randomUUID()}.example.org`;
+      const t = await setUpSite({
+        // 記事のサイトは許し、行き先のサイトは Sendo を断る
+        robots: (url) => {
+          if (url.origin !== target) return new Response("", { status: 404 });
+          if (code === "robots_unreachable")
+            return new Response(interruptedBody(), { status: 429 });
+          return new Response("User-agent: *\nAllow: /\n\nUser-agent: sendo\nDisallow: /article\n");
+        },
+        page: (url) =>
+          !url.pathname.startsWith("/posts/")
+            ? html()
+            : new Response(null, { status: 301, headers: { location: `${target}/article` } }),
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await runJob(t.platform, { type: "extract-page", articleId: t.articleId });
+      expect(await getPageContent(t.platform.db, t.articleId)).toMatchObject({ status: "failed" });
+      expect(t.calls()).toContain(`${target}/robots.txt`);
+      expect(t.calls()).not.toContain(`${target}/article`);
+      expect(warn).toHaveBeenCalledWith("could not fetch the article page", {
+        articleId: t.articleId,
+        code,
+        stage: "robots",
+        redirects: 1,
+        ...(code === "robots_unreachable"
+          ? { reason: "http_status", httpStatus: 429 }
+          : { reason: "rule" }),
+      });
+    },
+  );
 
   it("フィードの取得では、robots.txt を見ない", async () => {
     const t = await setUpSite({ robots: () => new Response("User-agent: *\nDisallow: /\n") });

@@ -154,8 +154,8 @@ function politeFetchPage(
   const fetchIt = () =>
     fetchPage(url, {
       fetch: platform.fetch,
-      isAllowed: (target) =>
-        robots.isAllowed(target, { fetch: platform.fetch, now: platform.now() }),
+      isAllowed: async (target) =>
+        (await robots.denial(target, { fetch: platform.fetch, now: platform.now() })) ?? true,
     });
   // URL として読めなければ、順番を待たずに fetchPage に断らせる（blocked_url）
   const host = URL.canParse(url) ? new URL(url).hostname : null;
@@ -175,7 +175,11 @@ async function extract(
     page = await politeFetchPage(platform, article.url, ticket);
   } catch (error) {
     if (error instanceof FetchPageError) {
-      console.warn("could not fetch the article page", { ...detail, code: error.code });
+      console.warn("could not fetch the article page", {
+        ...detail,
+        code: error.code,
+        ...error.detail,
+      });
       return null;
     }
     throw error;
