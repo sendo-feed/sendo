@@ -46,6 +46,9 @@ const Channel = z.object({
     )
     .optional(),
 });
+const readChannel = permissionReader(Channel);
+const readGuild = permissionReader(Guild);
+const readMember = permissionReader(Member);
 const Message = z.object({
   id: Snowflake,
   channel_id: Snowflake,
@@ -161,10 +164,10 @@ export async function getReadableChannel(
   const { guildId, channelId } = address;
   const bot = { headers: { authorization: `Bot ${config.botToken}` } };
   const [channel, guild, user, botMember] = await Promise.all([
-    request(fetch, `/channels/${channelId}`, Channel, bot),
-    request(fetch, `/guilds/${guildId}`, Guild, bot),
-    request(fetch, `/guilds/${guildId}/members/${userId}`, Member, bot),
-    request(fetch, `/guilds/${guildId}/members/${config.clientId}`, Member, bot),
+    readChannel(fetch, `/channels/${channelId}`, bot),
+    readGuild(fetch, `/guilds/${guildId}`, bot),
+    readMember(fetch, `/guilds/${guildId}/members/${userId}`, bot),
+    readMember(fetch, `/guilds/${guildId}/members/${config.clientId}`, bot),
   ]).catch((error: unknown) => {
     if (isDiscordAccessDenied(error)) return [null, null, null, null] as const;
     throw error;
@@ -183,6 +186,29 @@ export async function getReadableChannel(
   )
     return null;
   return { name: channel.name, iconUrl: discordGuildIconUrl(guildId, guild.icon) };
+}
+
+/** 応答が確定したあとに始まる権限確認は、改めて Discord に問い合わせる。 */
+function permissionReader<T>(schema: z.ZodType<T>) {
+  const pendingByFetch = new WeakMap<typeof globalThis.fetch, Map<string, Promise<T>>>();
+  return (
+    fetch: typeof globalThis.fetch,
+    path: string,
+    bot: { headers: { authorization: string } },
+  ): Promise<T> => {
+    let pending = pendingByFetch.get(fetch);
+    if (!pending) {
+      pending = new Map();
+      pendingByFetch.set(fetch, pending);
+    }
+    const key = JSON.stringify([bot.headers.authorization, path]);
+    const existing = pending.get(key);
+    if (existing) return existing;
+    const requests = pending;
+    const reading = request(fetch, path, schema, bot).finally(() => requests.delete(key));
+    requests.set(key, reading);
+    return reading;
+  };
 }
 
 /** サーバーにアイコンがないときに、Discord のアイコンを探すサイト（docs/decisions/discord.md の 7） */

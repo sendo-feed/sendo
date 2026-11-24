@@ -40,6 +40,8 @@ const HOUR = 60 * 60 * 1000;
 function discordFetch() {
   let canRead = true;
   let beforeMessages: (() => Promise<void>) | undefined;
+  let beforeGuildRead: (() => Promise<Response | undefined>) | undefined;
+  let beforeChannelRead: (() => Promise<void>) | undefined;
   let messageStatus = 200;
   let retryAfter = "3600.5";
   let errorCode: number | undefined;
@@ -47,6 +49,7 @@ function discordFetch() {
   let systemIds: string[] = [];
   let bodies = new Map<string, Record<string, unknown>>();
   let guildIcon: unknown = null;
+  let deniedMember = DISCORD_USER;
   // discord.com のサイト（API の外）。サーバーにアイコンがないときに、Discord のアイコンを探す先
   // （docs/decisions/discord.md の 7）。既定では何もない
   let site: (path: string) => Response | Promise<Response> = () =>
@@ -83,6 +86,8 @@ function discordFetch() {
       });
     }
     if (path === "/api/v10/guilds/201") {
+      const override = await beforeGuildRead?.();
+      if (override) return override;
       return Response.json({
         owner_id: "104",
         icon: guildIcon,
@@ -90,6 +95,7 @@ function discordFetch() {
       });
     }
     if (path === "/api/v10/channels/301" || path === "/api/v10/channels/302") {
+      await beforeChannelRead?.();
       return Response.json({
         id: path.endsWith("301") ? "301" : "302",
         guild_id: "201",
@@ -97,10 +103,12 @@ function discordFetch() {
         name: "releases",
         permission_overwrites: canRead
           ? []
-          : [{ id: DISCORD_USER, type: 1, deny: READ, allow: "0" }],
+          : [{ id: deniedMember, type: 1, deny: READ, allow: "0" }],
       });
     }
     if (path.startsWith("/api/v10/guilds/201/members/")) {
+      const override = await beforeGuildRead?.();
+      if (override) return override;
       return Response.json({ roles: [] });
     }
     if (path === "/api/v10/channels/301/messages" || path === "/api/v10/channels/302/messages") {
@@ -138,8 +146,9 @@ function discordFetch() {
   });
   return {
     ...result,
-    deny: () => {
+    deny: (member = DISCORD_USER) => {
       canRead = false;
+      deniedMember = member;
     },
     setMessageIds: (ids: string[]) => {
       messageIds = ids;
@@ -168,6 +177,12 @@ function discordFetch() {
     },
     beforeMessages: (fn: () => Promise<void>) => {
       beforeMessages = fn;
+    },
+    beforeGuildRead: (fn: () => Promise<Response | undefined>) => {
+      beforeGuildRead = fn;
+    },
+    beforeChannelRead: (fn: () => Promise<void>) => {
+      beforeChannelRead = fn;
     },
   };
 }
@@ -706,6 +721,95 @@ describe("Discord の取得ジョブ", () => {
       stored,
     };
   }
+
+  it.each([200, 503])(
+    "並行取得で同じ権限照会を共有し、HTTP %s のあとも次回は照会し直す",
+    async (status) => {
+      const t = await subscribeWithQueue();
+      const other = await subscribe(t.request, "https://discord.com/channels/201/302");
+      const calls = (path: string) =>
+        t.remote.calls.filter(({ url }) => new URL(url).pathname === `/api/v10${path}`).length;
+      t.remote.calls.length = 0;
+      const guild = Promise.withResolvers<void>();
+      t.remote.beforeGuildRead(async () => {
+        await guild.promise;
+        return status === 503 ? new Response(null, { status }) : undefined;
+      });
+      const running = t.runDue();
+      try {
+        await vi.waitFor(() => expect(calls("/channels/302")).toBe(1));
+        expect(calls("/channels/301")).toBe(1);
+        expect(calls("/guilds/201")).toBe(1);
+      } finally {
+        guild.resolve();
+        expect(await running).toBe(2);
+      }
+      for (const path of [`/guilds/201/members/${DISCORD_USER}`, "/guilds/201/members/101"]) {
+        expect(calls(path)).toBe(1);
+      }
+      expect(t.messageCalls()).toBe(status === 200 ? 2 : 0);
+      if (status === 200) expect(await t.stored()).toHaveLength(2);
+
+      const feed = await getFeed(t.platform.db, t.feedId);
+      if (!feed) throw new Error("missing feed");
+      t.advanceTo(feed.nextFetchAt.getTime());
+      t.remote.beforeGuildRead(async () => undefined);
+      t.remote.deny();
+      await t.requestFetch();
+      expect(await t.runDue()).toBe(1);
+      expect(calls("/guilds/201")).toBe(2);
+      expect((await getFeed(t.platform.db, t.feedId))?.discordConnectionId).toBeNull();
+      expect((await getFeed(t.platform.db, other))?.discordConnectionId).not.toBeNull();
+    },
+  );
+
+  it("同じチャンネルの照会を共有しても、別の利用者の権限と配布を混ぜない", async () => {
+    const t = await subscribeWithQueue();
+    const anotherUser = crypto.randomUUID();
+    await t.platform.db
+      .insert(users)
+      .values({ id: anotherUser, email: "another-discord-queue@example.com", createdAt: t.now() })
+      .run();
+    await connectDiscord(t.platform.db, anotherUser, SECOND_DISCORD_USER);
+    const otherRequest = await browser(t.platform, anotherUser);
+    const other = await subscribe(otherRequest);
+    t.remote.deny(SECOND_DISCORD_USER);
+    t.remote.calls.length = 0;
+    const sharedPermission = Promise.withResolvers<void>();
+    t.remote.beforeChannelRead(() => sharedPermission.promise);
+    t.remote.beforeGuildRead(async () => {
+      await sharedPermission.promise;
+      return undefined;
+    });
+    const calls = (path: string) =>
+      t.remote.calls.filter(({ url }) => new URL(url).pathname === `/api/v10${path}`).length;
+    const running = t.runDue();
+    try {
+      await vi.waitFor(() => {
+        expect(calls(`/guilds/201/members/${SECOND_DISCORD_USER}`)).toBe(1);
+        expect(calls(`/guilds/201/members/${DISCORD_USER}`)).toBe(1);
+      });
+      for (const path of [
+        "/channels/301",
+        "/guilds/201",
+        "/guilds/201/members/101",
+        `/guilds/201/members/${DISCORD_USER}`,
+      ]) {
+        expect(calls(path)).toBe(1);
+      }
+    } finally {
+      sharedPermission.resolve();
+      expect(await running).toBe(2);
+    }
+    expect((await getFeed(t.platform.db, other))?.discordConnectionId).toBeNull();
+    expect((await getFeed(t.platform.db, t.feedId))?.discordConnectionId).not.toBeNull();
+    expect(t.messageCalls()).toBe(1);
+    expect(await t.stored()).toEqual([{ guid: MESSAGE_ID }]);
+    expect(await (await t.request("/api/v1/sync")).json()).toMatchObject({
+      articles: [{ url: `${CHANNEL}/${MESSAGE_ID}` }],
+    });
+    expect(await (await otherRequest("/api/v1/sync")).json()).toMatchObject({ articles: [] });
+  });
 
   it("初回と定期の取得を重ねず、取得中の新着をまとめてページを最後まで追う", async () => {
     const t = await subscribeWithQueue();
