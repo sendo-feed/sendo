@@ -99,7 +99,8 @@ export async function fetchPage(url: string, options: FetchPageOptions): Promise
         continue;
       }
       if (res.status !== 200) {
-        await res.body?.cancel();
+        // 応答の途中で切れても、受け取った HTTP ステータスを残す。
+        await res.body?.cancel().catch(() => {});
         throw httpError(res, redirects, `unexpected status ${res.status}`);
       }
 

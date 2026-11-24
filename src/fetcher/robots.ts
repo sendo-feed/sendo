@@ -280,10 +280,12 @@ export async function fetchRobotsTxt(
           text = text.slice(0, Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r"), 0));
         return { status: "fetched", rules: parseRobotsTxt(text) };
       }
-      await res.body?.cancel();
       if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+        await res.body?.cancel();
         return { status: "unavailable" };
       }
+      // 本文の破棄に失敗しても、この応答では取得を許可しない。
+      await res.body?.cancel().catch(() => {});
       return { status: "unreachable", reason: "http_status", httpStatus: res.status };
     }
   } catch (error) {
