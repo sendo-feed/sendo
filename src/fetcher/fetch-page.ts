@@ -1,5 +1,6 @@
 import { readLimited, TooLargeError } from "../lib/read-limited";
 import { USER_AGENT } from "./fetch-feed";
+import type { RobotsDenial } from "./robots";
 import { toFetchableUrl, UrlNotAllowedError } from "./url-guard";
 
 /*
@@ -20,7 +21,7 @@ export type FetchPageOptions = {
   /**
    * URL を取りにいってよいか（robots.txt）。取りにいく前に、URL ごとに呼ぶ。なければ確かめない
    */
-  isAllowed?: (url: URL) => Promise<boolean>;
+  isAllowed?: (url: URL) => Promise<boolean | RobotsDenial>;
 };
 
 export type FetchedPage = {
@@ -33,7 +34,7 @@ export type FetchedPage = {
 
 export type FetchPageErrorCode =
   | "blocked_url"
-  | "robots_disallowed"
+  | RobotsDenial["code"]
   | "http_status"
   | "not_html"
   | "too_large"
@@ -41,12 +42,17 @@ export type FetchPageErrorCode =
   | "timeout"
   | "network";
 
+type FetchPageErrorDetail =
+  | { stage: "robots"; redirects: number; reason?: RobotsDenial["reason"]; httpStatus?: number }
+  | { stage: "article_http"; redirects: number; httpStatus: number; challenge: boolean };
+
 /** ページを取得できなかった */
 export class FetchPageError extends Error {
   override readonly name = "FetchPageError";
   constructor(
     readonly code: FetchPageErrorCode,
     message: string,
+    readonly detail?: FetchPageErrorDetail,
   ) {
     super(message);
   }
@@ -75,17 +81,17 @@ export async function fetchPage(url: string, options: FetchPageOptions): Promise
   };
 
   let current = guard(url);
-  await checkRobots(current, options);
+  await checkRobots(current, options, 0);
   const signal = AbortSignal.timeout(timeoutMs);
   try {
     for (let redirects = 0; ; redirects++) {
-      if (redirects > 0) await checkRobots(current, options);
+      if (redirects > 0) await checkRobots(current, options, redirects);
       const res = await options.fetch(current, { headers, redirect: "manual", signal });
 
       if ([301, 302, 303, 307, 308].includes(res.status)) {
         await res.body?.cancel();
         const location = res.headers.get("location");
-        if (!location) throw new FetchPageError("http_status", "redirect without location");
+        if (!location) throw httpError(res, redirects, "redirect without location");
         if (redirects >= maxRedirects) {
           throw new FetchPageError("too_many_redirects", `more than ${maxRedirects} redirects`);
         }
@@ -94,7 +100,7 @@ export async function fetchPage(url: string, options: FetchPageOptions): Promise
       }
       if (res.status !== 200) {
         await res.body?.cancel();
-        throw new FetchPageError("http_status", `unexpected status ${res.status}`);
+        throw httpError(res, redirects, `unexpected status ${res.status}`);
       }
 
       const contentType = res.headers.get("content-type");
@@ -115,10 +121,30 @@ export async function fetchPage(url: string, options: FetchPageOptions): Promise
   }
 }
 
-async function checkRobots(url: URL, options: FetchPageOptions): Promise<void> {
-  if (options.isAllowed && !(await options.isAllowed(url))) {
-    throw new FetchPageError("robots_disallowed", "disallowed by robots.txt");
+function httpError(res: Response, redirects: number, message: string): FetchPageError {
+  return new FetchPageError("http_status", message, {
+    stage: "article_http",
+    redirects,
+    httpStatus: res.status,
+    challenge: res.headers.get("cf-mitigated") === "challenge",
+  });
+}
+
+async function checkRobots(url: URL, options: FetchPageOptions, redirects: number): Promise<void> {
+  const decision = await options.isAllowed?.(url);
+  if (decision === undefined || decision === true) return;
+  if (decision === false) {
+    throw new FetchPageError("robots_disallowed", "disallowed by robots.txt", {
+      stage: "robots",
+      redirects,
+    });
   }
+  const { code, ...detail } = decision;
+  throw new FetchPageError(code, "denied by robots.txt check", {
+    stage: "robots",
+    redirects,
+    ...detail,
+  });
 }
 
 function guard(url: string | URL): URL {

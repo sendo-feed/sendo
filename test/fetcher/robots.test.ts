@@ -338,7 +338,7 @@ describe("fetchRobotsTxt", () => {
     );
     expect(await fetchRobotsTxt("https://example.com", { fetch, timeoutMs: 10 })).toMatchObject({
       status: "unreachable",
-      reason: expect.stringContaining("timed out"),
+      reason: "timeout",
     });
   });
 
