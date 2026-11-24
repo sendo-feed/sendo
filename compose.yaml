@@ -4,6 +4,8 @@
 #   docker compose up -d                 動かす
 #   docker compose pull && docker compose up -d   上流の更新を取り込む
 #
+# .env は sendo に渡す。X_EMBED_ORIGIN は reader にも渡す（空なら X の投稿は引用で出る）。
+#
 # 外に出すのは reader（sendo-reader）だけ。reader が画面を返し、Sendo のパス（/api、/mcp、OAuth、
 # Google Reader API など）を、この compose の中の sendo に中継する。外からは reader のオリジン 1 つに
 # 見えるので、.env の PUBLIC_URL と READER_URL には、どちらもそのオリジンを入れる。
@@ -28,6 +30,8 @@ services:
   reader:
     image: ghcr.io/sendo-feed/sendo-reader:main
     restart: unless-stopped
+    environment:
+      X_EMBED_ORIGIN: ${X_EMBED_ORIGIN:-}
     # sendo が動き出してから（ヘルスチェックが通ってから）始める
     depends_on:
       sendo:
