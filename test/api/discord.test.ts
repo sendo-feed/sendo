@@ -809,6 +809,39 @@ describe("Discord の取得ジョブ", () => {
     expect(t.messageCalls()).toBe(5);
   }, 10_000);
 
+  it("再送された投稿を、キュー投入に 3 回失敗しても DB の復旧後に取り込む", async () => {
+    const t = await subscribeWithQueue();
+    expect(await t.runDue()).toBe(1);
+    const fake = fakeDiscordGateway();
+    const ingestion = startDiscordIngestion(t.platform, fake.connect);
+    if (!ingestion) throw new Error("Discord Gateway was not started");
+    onTestFinished(() => ingestion.stop());
+    const first = await vi.waitFor(() => fake.socket());
+    first.hello();
+    first.ready();
+    const clock = FIXED_NOW.getTime();
+    t.advanceTo(clock + 100);
+    await vi.waitFor(async () => expect(await t.runDue()).toBe(1));
+
+    first.receive(7, null);
+    const resumed = await vi.waitFor(() => fake.socket(1), { timeout: 2_500 });
+    resumed.hello();
+    expect(resumed.sent[0]).toMatchObject({ op: 6, d: { seq: 1 } });
+    const posted = messageIdAt(clock + 101);
+    t.remote.setMessageIds([MESSAGE_ID, posted]);
+    t.advanceTo(clock + 200);
+    const enqueue = vi.spyOn(t.platform.jobs, "enqueue");
+    onTestFinished(() => enqueue.mockRestore());
+    const error = new Error("queue is busy");
+    enqueue.mockRejectedValueOnce(error).mockRejectedValueOnce(error).mockRejectedValueOnce(error);
+    resumed.receive(0, { guild_id: "201", channel_id: "301" }, { s: 2, t: "MESSAGE_CREATE" });
+    resumed.receive(0, null, { s: 3, t: "RESUMED" });
+
+    await vi.waitFor(async () => expect(await t.runDue()).toBe(1), { timeout: 8_000 });
+    expect(enqueue).toHaveBeenCalledTimes(4);
+    expect(await t.stored()).toContainEqual({ guid: posted });
+  }, 12_000);
+
   it("Gateway の新着は購読中の該当チャンネルだけを起こす", async () => {
     const t = await subscribeWithQueue();
     const other = await subscribe(t.request, "https://discord.com/channels/201/302");

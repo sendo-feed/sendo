@@ -6,7 +6,7 @@ import { startDiscordGateway } from "./discord-gateway";
 
 const FETCH_TARGETS_PER_BATCH = 90;
 const ENQUEUE_RETRY_DELAY_MS = 1_000;
-const MAX_ENQUEUE_RETRIES = 2;
+const MAX_ENQUEUE_RETRY_DELAY_MS = 30_000;
 
 /** Gateway の知らせを、通常の Discord 取得ジョブに渡す。 */
 export function startDiscordIngestion(
@@ -16,11 +16,11 @@ export function startDiscordIngestion(
   const { discord, fetch } = platform;
   if (!discord) return;
   const controller = new AbortController();
-  const pending = new Set<Promise<void>>();
+  const pending = new Map<string | undefined, { task: Promise<void>; requestAgain(): void }>();
 
   async function queueTargets(url?: string) {
     let after: string | undefined;
-    let retries = 0;
+    let retryDelay = ENQUEUE_RETRY_DELAY_MS;
     while (!controller.signal.aborted) {
       try {
         const targets = await listDiscordFetchTargets(platform.db, {
@@ -34,22 +34,43 @@ export function startDiscordIngestion(
         );
         if (targets.length < FETCH_TARGETS_PER_BATCH) return;
         after = targets.at(-1)?.feedId;
-        retries = 0;
-      } catch (error) {
+        retryDelay = ENQUEUE_RETRY_DELAY_MS;
+      } catch {
         if (controller.signal.aborted) return;
-        if (retries === MAX_ENQUEUE_RETRIES) throw error;
-        retries++;
-        // Gateway の取得位置は進んでいるので、同じ範囲のキュー投入を先にやり直す。
-        await delay(ENQUEUE_RETRY_DELAY_MS, undefined, { signal: controller.signal }).catch(
-          () => undefined,
-        );
+        if (retryDelay === ENQUEUE_RETRY_DELAY_MS) {
+          console.warn("Could not queue Discord fetch; retrying");
+        }
+        // Gateway から同じ投稿が再送されるとは限らないので、成功するまで同じ範囲を持つ。
+        await delay(retryDelay, undefined, { signal: controller.signal }).catch(() => undefined);
+        retryDelay = Math.min(retryDelay * 2, MAX_ENQUEUE_RETRY_DELAY_MS);
       }
     }
   }
 
   function dispatch(url?: string) {
-    const task = queueTargets(url).finally(() => pending.delete(task));
-    pending.add(task);
+    const active = pending.get(url);
+    if (active) {
+      active.requestAgain();
+      return Promise.resolve();
+    }
+    let again = false;
+    async function run() {
+      try {
+        do {
+          again = false;
+          await queueTargets(url);
+        } while (again && !controller.signal.aborted);
+      } finally {
+        pending.delete(url);
+      }
+    }
+    const task = run();
+    pending.set(url, {
+      task,
+      requestAgain() {
+        again = true;
+      },
+    });
     return task;
   }
 
@@ -64,7 +85,7 @@ export function startDiscordIngestion(
     async stop() {
       controller.abort();
       gateway.stop();
-      await Promise.allSettled(pending);
+      await Promise.allSettled(Array.from(pending.values(), ({ task }) => task));
     },
   };
 }
