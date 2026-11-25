@@ -10,7 +10,7 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
-import type { Database } from ".";
+import { type Database, getRow } from ".";
 import { chunked } from "./chunk";
 import {
   discordConnections,
@@ -22,6 +22,7 @@ import {
   userArticles,
 } from "./schema";
 import { nextSeq } from "./seq";
+import { activeWorkspaceId } from "./workspaces";
 
 /** 購読と、そのフィード（共有）と、入っているフォルダの名前 */
 export type SubscriptionWithFeed = Subscription & { feed: Feed; folderName: string | null };
@@ -98,6 +99,33 @@ export async function subscribeMany(
   return created;
 }
 
+/** 所属先がまだ有効な場合だけ購読を作る。有効な購読がある場合は、既存の所属を維持する。 */
+export async function subscribeInWorkspace(
+  db: Database,
+  input: {
+    userId: string;
+    feedId: string;
+    folderId: string | null;
+    workspaceId: string;
+    now: Date;
+  },
+): Promise<boolean> {
+  const destination = activeWorkspaceId(input.userId, input.workspaceId);
+  const created = await getRow<{ id: string }>(
+    db,
+    sql`
+    insert into ${subscriptions} (id, user_id, feed_id, folder_id, workspace_id, created_at, seq)
+    select ${crypto.randomUUID()}, ${input.userId}, ${input.feedId},
+      ${activeFolderId(input.userId, input.folderId)}, ${input.workspaceId},
+      ${input.now.getTime()}, ${nextSeq(subscriptions)}
+    where ${destination} is not null
+    on conflict do nothing
+    returning id
+  `,
+  );
+  return created !== undefined;
+}
+
 /**
  * 購読を、そのフォルダから外す（フォルダなしにする）。そのフォルダに入っていなければ何もしない。
  * 入っているかは UPDATE と同じ文の中で確かめる。先に読んでから外すと、その間に別のフォルダへ
@@ -131,18 +159,22 @@ export async function updateSubscription(
     feedId: string;
     folderId?: string | null | undefined;
     displayName?: string | null | undefined;
+    workspaceId?: string | null | undefined;
+    subscriptionId?: string | undefined;
   },
 ): Promise<Subscription | undefined> {
-  const { userId, folderId, displayName } = input;
+  const { userId, folderId, displayName, workspaceId, subscriptionId } = input;
   const destination = activeFolderId(userId, folderId ?? null);
   return db
     .update(subscriptions)
-    .set({ folderId, displayName, seq: nextSeq(subscriptions) })
+    .set({ folderId, displayName, workspaceId, seq: nextSeq(subscriptions) })
     .where(
       and(
         active(input.userId),
         eq(subscriptions.feedId, input.feedId),
         destination === null ? undefined : isNotNull(destination),
+        workspaceId == null ? undefined : isNotNull(activeWorkspaceId(userId, workspaceId)),
+        subscriptionId === undefined ? undefined : eq(subscriptions.id, subscriptionId),
       ),
     )
     .returning()

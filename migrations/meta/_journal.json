@@ -456,6 +456,20 @@
       "when": 1795520564329,
       "tag": "0064_clear-discord-retry-on-detach",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "6",
+      "when": 1795566928749,
+      "tag": "0065_workspaces",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "6",
+      "when": 1795566936527,
+      "tag": "0066_initialize-workspaces",
+      "breakpoints": true
     }
   ]
 }

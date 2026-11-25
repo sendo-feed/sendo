@@ -7,6 +7,7 @@ import {
   unsubscribe,
   updateSubscription,
 } from "../db/subscriptions";
+import { getWorkspace, WorkspaceNotFoundError } from "../db/workspaces";
 import { FeedDisplayNameInput } from "../feeds/display-name";
 import { subscribeToUrl } from "../feeds/subscribe";
 import { DiscoverError, findFeedLinks } from "../fetcher/discover";
@@ -38,6 +39,7 @@ const SubscribeBodySchema = z
       description: "フィードの URL か、フィードを持つサイトの URL",
     }),
     folderId: z.string().min(1).max(64).nullable().optional(),
+    workspaceId: z.string().min(1).max(64).nullable().optional(),
   })
   .openapi("SubscribeRequest");
 
@@ -63,7 +65,7 @@ const subscribeRoute = createRoute({
       description: "購読した",
       content: { "application/json": { schema: z.object({ feed: FeedSchema }) } },
     },
-    400: error("URL が正しくない、取得が許されていない、またはフォルダがない"),
+    400: error("URL が正しくない、取得が許されていない、フォルダかワークスペースがない"),
     422: error(
       "取得できなかった（fetch_failed）、またはフィードが見つからなかった（feed_not_found）",
     ),
@@ -108,7 +110,7 @@ const listRoute = createRoute({
 const updateRoute = createRoute({
   method: "patch",
   path: "/feeds/{id}",
-  summary: "購読を変える（フォルダと表示名）",
+  summary: "購読を変える（フォルダ、表示名、ワークスペース）",
   request: {
     params: IdParamSchema,
     body: {
@@ -124,15 +126,44 @@ const updateRoute = createRoute({
                 .nullable()
                 .openapi({ description: "null ならフォルダなしにする" })
                 .optional(),
+              workspaceId: z
+                .string()
+                .min(1)
+                .max(64)
+                .nullable()
+                .openapi({ description: "null ならワークスペースから外す" })
+                .optional(),
+              subscriptionId: z
+                .string()
+                .min(1)
+                .max(64)
+                .openapi({
+                  description: "所属を変更するときは、変更対象の購読 ID を指定する",
+                })
+                .optional(),
               displayName: FeedDisplayNameInput.openapi({
                 description: "前後の空白を除いた購読の表示名。null なら配信元の名前に戻す",
               }).optional(),
             })
             .refine(
-              ({ folderId, displayName }) => folderId !== undefined || displayName !== undefined,
+              ({ folderId, displayName, workspaceId }) =>
+                folderId !== undefined || displayName !== undefined || workspaceId !== undefined,
               { message: "at least one subscription field is required" },
             )
-            .openapi("UpdateFeedRequest", { minProperties: 1 }),
+            .refine(
+              ({ workspaceId, subscriptionId }) =>
+                workspaceId === undefined || subscriptionId !== undefined,
+              { path: ["subscriptionId"], message: "subscriptionId is required with workspaceId" },
+            )
+            .openapi("UpdateFeedRequest", {
+              anyOf: [
+                { required: ["workspaceId", "subscriptionId"] },
+                {
+                  not: { required: ["workspaceId"] },
+                  anyOf: [{ required: ["folderId"] }, { required: ["displayName"] }],
+                },
+              ],
+            }),
         },
       },
     },
@@ -142,7 +173,7 @@ const updateRoute = createRoute({
       description: "変えた",
       content: { "application/json": { schema: z.object({ feed: FeedSchema }) } },
     },
-    400: error("フォルダがない"),
+    400: error("フォルダかワークスペースがない"),
     404: error("フィードがない"),
   },
 });
@@ -190,6 +221,7 @@ export function feedsApi(platform: Platform) {
           userId: user.id,
           url: url.href,
           folderId,
+          workspaceId: body.workspaceId,
         });
         return c.json(
           { feed: await toFeedResponse(subscription, imageSigner(db)) },
@@ -197,6 +229,9 @@ export function feedsApi(platform: Platform) {
         );
       } catch (e) {
         if (e instanceof DiscoverError) return c.json(errorBody(e.code, e.message), 422);
+        if (e instanceof WorkspaceNotFoundError) {
+          return c.json(errorBody("workspace_not_found", e.message), 400);
+        }
         throw e;
       }
     })
@@ -237,13 +272,28 @@ export function feedsApi(platform: Platform) {
     .openapi(updateRoute, async (c) => {
       const user = c.get("user");
       const { id } = c.req.valid("param");
-      const { folderId, displayName } = c.req.valid("json");
+      const { folderId, displayName, workspaceId, subscriptionId } = c.req.valid("json");
       const updated = await updateSubscription(db, {
         userId: user.id,
         feedId: id,
         folderId,
         displayName,
+        workspaceId,
+        subscriptionId,
       });
+      if (!updated && subscriptionId !== undefined) {
+        const current = await getSubscription(db, { userId: user.id, feedId: id });
+        if (current?.id !== subscriptionId) {
+          return c.json(errorBody("not_found", "feed is not subscribed"), 404);
+        }
+      }
+      if (
+        !updated &&
+        typeof workspaceId === "string" &&
+        !(await getWorkspace(db, { userId: user.id, id: workspaceId }))
+      ) {
+        return c.json(errorBody("workspace_not_found", "workspace does not exist"), 400);
+      }
       if (
         !updated &&
         typeof folderId === "string" &&

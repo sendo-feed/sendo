@@ -20,6 +20,7 @@ import { syncApi } from "./sync";
 import { syncUpdatesApi } from "./sync-updates";
 import { tokensApi } from "./tokens";
 import { translationsApi } from "./translations";
+import { workspacesApi } from "./workspaces";
 
 /** OpenAPI の定義の、paths 以外の部分。/api/v1/openapi.json と spec/openapi.json で同じものを使う */
 export const OPENAPI_CONFIG = {
@@ -90,6 +91,7 @@ export function createApi(platform: Platform) {
   protectedApi.route("/", translationsApi(platform));
   protectedApi.route("/", activityApi(platform));
   protectedApi.route("/", foldersApi(platform));
+  protectedApi.route("/", workspacesApi(platform));
   protectedApi.route("/", imagesApi(platform));
   protectedApi.route("/", opmlApi(platform));
   protectedApi.route("/", savedApi(platform));

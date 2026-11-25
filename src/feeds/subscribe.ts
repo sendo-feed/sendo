@@ -1,7 +1,13 @@
 import { findFeedByUrl, insertFeed } from "../db/feeds";
 import { backfillInbox } from "../db/inbox";
 import type { Feed } from "../db/schema";
-import { getSubscription, type SubscriptionWithFeed, subscribeMany } from "../db/subscriptions";
+import {
+  getSubscription,
+  type SubscriptionWithFeed,
+  subscribeInWorkspace,
+  subscribeMany,
+} from "../db/subscriptions";
+import { requireWorkspace } from "../db/workspaces";
 import { discoverFeed } from "../fetcher/discover";
 import { toFetchableUrl } from "../fetcher/url-guard";
 import type { Platform } from "../platform";
@@ -17,18 +23,25 @@ import type { Platform } from "../platform";
  */
 export async function subscribeFeed(
   platform: Platform,
-  input: { userId: string; feed: Feed; feedCreated: boolean; folderId: string | null },
+  input: {
+    userId: string;
+    feed: Feed;
+    feedCreated: boolean;
+    folderId: string | null;
+    workspaceId?: string | null | undefined;
+  },
 ): Promise<{ subscription: SubscriptionWithFeed; created: boolean }> {
   const { db } = platform;
   const now = platform.now();
-  const created =
-    (
-      await subscribeMany(db, {
-        userId: input.userId,
-        rows: [{ feedId: input.feed.id, folderId: input.folderId }],
-        now,
-      })
-    ).length > 0;
+  const { userId, folderId, workspaceId } = input;
+  const feedId = input.feed.id;
+  let created: boolean;
+  if (workspaceId == null) {
+    created = (await subscribeMany(db, { userId, rows: [{ feedId, folderId }], now })).length > 0;
+  } else {
+    created = await subscribeInWorkspace(db, { userId, feedId, folderId, workspaceId, now });
+    if (!created) await requireWorkspace(db, userId, workspaceId);
+  }
   // 新しく購読したときだけでなく、前回の補充が途中で落ちていた場合も、ここで入れ直す
   await backfillInbox(db, { userId: input.userId, feedIds: [input.feed.id], now });
   if (input.feedCreated || (created && input.feed.nextFetchAt <= now)) {
@@ -47,10 +60,16 @@ export async function subscribeFeed(
  */
 export async function subscribeToUrl(
   platform: Platform,
-  input: { userId: string; url: string; folderId: string | null },
+  input: {
+    userId: string;
+    url: string;
+    folderId: string | null;
+    workspaceId?: string | null | undefined;
+  },
 ): Promise<{ subscription: SubscriptionWithFeed; created: boolean }> {
   const { db } = platform;
   const url = toFetchableUrl(input.url);
+  if (input.workspaceId != null) await requireWorkspace(db, input.userId, input.workspaceId);
 
   const existing = await findFeedByUrl(db, url.href);
   if (existing) {
