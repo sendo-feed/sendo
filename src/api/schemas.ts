@@ -102,6 +102,8 @@ export const FeedSchema = z
     siteUrl: z.string().nullable(),
     iconUrl: FeedIconUrlSchema,
     folderId: z.string().nullable(),
+    workspaceId: z.string().nullable().openapi({ description: "購読の所属。未割り当てなら null" }),
+    subscriptionId: z.string().openapi({ description: "購読の ID。購読し直すと変わる" }),
     lastFetchedAt: dateTime.nullable().openapi({ description: "最後に取得を試した時刻" }),
     lastSuccessfulFetchAt: dateTime.nullable().openapi({
       description: "最後に成功した取得（HTTP 304 を含む）を試した時刻。記録がなければ null",
@@ -122,6 +124,18 @@ export const FolderSchema = z
 
 export function toFolderResponse(folder: Folder): z.infer<typeof FolderSchema> {
   return { id: folder.id, name: folder.name, createdAt: folder.createdAt.toISOString() };
+}
+
+export const WorkspaceSchema = z
+  .object({ id: z.string(), name: z.string(), createdAt: dateTime })
+  .openapi("Workspace");
+
+export function toWorkspaceResponse(workspace: {
+  id: string;
+  name: string;
+  createdAt: Date;
+}): z.infer<typeof WorkspaceSchema> {
+  return { id: workspace.id, name: workspace.name, createdAt: workspace.createdAt.toISOString() };
 }
 
 export const ArticleSchema = z
@@ -163,6 +177,8 @@ export async function toFeedResponse(
     siteUrl: feed.siteUrl,
     iconUrl: await images.toRelayUrl(feed.iconUrl),
     folderId: subscription.folderId,
+    workspaceId: subscription.workspaceId,
+    subscriptionId: subscription.id,
     lastFetchedAt: feed.lastFetchedAt?.toISOString() ?? null,
     lastSuccessfulFetchAt: feed.lastSuccessfulFetchAt?.toISOString() ?? null,
     nextFetchAt: feed.nextFetchAt.toISOString(),

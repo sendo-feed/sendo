@@ -223,6 +223,28 @@ export const folders = sqliteTable(
   ],
 );
 
+/** ユーザーが、購読の表示範囲を分けるためのワークスペース。 */
+export const workspaces = sqliteTable(
+  "workspaces",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    seq: seq(),
+  },
+  (t) => [
+    uniqueIndex("workspaces_user_id_name_idx")
+      .on(t.userId, t.name)
+      .where(sql`${t.deletedAt} is null`),
+    index("workspaces_user_id_seq_idx").on(t.userId, t.seq),
+    index("workspaces_seq_idx").on(t.seq),
+  ],
+);
+
 export type FeedErrorCode = FetchFeedErrorCode | "invalid_feed";
 
 /** Discord OAuth で確認した、Sendo のユーザーと Discord のアカウントの結び付き */
@@ -312,6 +334,7 @@ export const subscriptions = sqliteTable(
       .references(() => feeds.id, { onDelete: "cascade" }),
     /** 入っているフォルダ。フォルダを消すときは、先にこの列を null に戻す */
     folderId: text("folder_id").references(() => folders.id),
+    workspaceId: text("workspace_id").references(() => workspaces.id),
     displayName: text("display_name"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     /**
@@ -329,6 +352,9 @@ export const subscriptions = sqliteTable(
       .on(t.userId, t.feedId)
       .where(sql`${t.deletedAt} is null`),
     index("subscriptions_feed_id_idx").on(t.feedId),
+    index("subscriptions_active_workspace_idx")
+      .on(t.userId, t.workspaceId)
+      .where(sql`${t.deletedAt} is null`),
     index("subscriptions_user_id_seq_idx").on(t.userId, t.seq),
     index("subscriptions_seq_idx").on(t.seq),
   ],
@@ -897,6 +923,7 @@ export type OAuthGrant = typeof oauthGrants.$inferSelect;
 export type OAuthCode = typeof oauthCodes.$inferSelect;
 export type OAuthToken = typeof oauthTokens.$inferSelect;
 export type Folder = typeof folders.$inferSelect;
+export type Workspace = typeof workspaces.$inferSelect;
 export type Feed = typeof feeds.$inferSelect;
 export type NewFeed = typeof feeds.$inferInsert;
 export type Subscription = typeof subscriptions.$inferSelect;
