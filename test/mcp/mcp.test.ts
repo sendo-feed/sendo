@@ -145,6 +145,82 @@ async function timedArticles(platform: Platform, userId: string, feedId: string,
   return rows.map((row) => row.id);
 }
 
+async function setupWorkspaceMove(era: Era) {
+  const fixture = await setup(["read", "write"]);
+  const { platform, token, user } = fixture;
+  const { client } = await connect(platform, token, era);
+  const api = (path: string, method = "GET", json?: unknown) =>
+    requestApp(platform, `/api/v1${path}`, { method, json, token: user.token });
+  async function addWorkspace(name: string) {
+    const response = await client.callTool({ name: "create_workspace", arguments: { name } });
+    if (!response.structuredContent) throw new Error(`create_workspace failed: ${name}`);
+    return (response.structuredContent as { workspace: { id: string } }).workspace.id;
+  }
+  await addWorkspace("Personal");
+  const response = await client.callTool({ name: "list_workspaces", arguments: {} });
+  const { workspaces } = response.structuredContent as {
+    workspaces: { id: string; name: string }[];
+  };
+  const initial = workspaces.find((item) => item.name === "default");
+  const personal = workspaces.find((item) => item.name === "Personal");
+  if (!initial || !personal) throw new Error("workspaces are missing");
+  await createFolderTool(client, "技術");
+  await createFolderTool(client, "ニュース");
+  const listed = await client.callTool({ name: "list_folders", arguments: {} });
+  const { folders } = listed.structuredContent as { folders: { id: string; name: string }[] };
+  const tech = folders.find((item) => item.name === "技術");
+  const news = folders.find((item) => item.name === "ニュース");
+  if (!tech || !news) throw new Error("folders are missing");
+  const scope = {
+    fromWorkspaceId: initial.id,
+    toWorkspaceId: personal.id,
+    folderIds: [tech.id, news.id],
+  };
+
+  async function place(feedId: string, workspaceId: string | null, folderId: string | null) {
+    const subscription = await getSubscription(platform.db, { userId: user.id, feedId });
+    if (!subscription) throw new Error("subscription is missing");
+    const response = await api(`/feeds/${feedId}`, "PATCH", {
+      subscriptionId: subscription.id,
+      workspaceId,
+      folderId,
+    });
+    expect(response.status).toBe(200);
+    return subscription.id;
+  }
+
+  async function newSubscription(workspaceId: string | null, folderId: string | null) {
+    const feed = await subscribeFeed(platform, { userId: user.id });
+    return { feedId: feed.id, subscriptionId: await place(feed.id, workspaceId, folderId) };
+  }
+
+  const call = (name: string, args: Record<string, unknown>) =>
+    client.callTool({ name, arguments: args });
+  const preview = (args: Record<string, unknown> = {}) =>
+    call("preview_workspace_move", { ...scope, ...args });
+  const move = (subscriptionIds: string[], args: Record<string, unknown> = {}) =>
+    call("move_workspace_subscriptions", { ...scope, subscriptionIds, ...args });
+
+  return {
+    ...fixture,
+    client,
+    api,
+    tech,
+    news,
+    scope,
+    addWorkspace,
+    place,
+    newSubscription,
+    preview,
+    move,
+  };
+}
+
+type WorkspaceMovePreview = {
+  subscriptions: { subscriptionId: string; feedId: string; folderId: string; title: string }[];
+  nextCursor: string | null;
+};
+
 beforeEach(async () => {
   await testDb.exec("DELETE FROM feeds");
 });
@@ -181,6 +257,8 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       "list_workspaces",
       "mark_read",
       "move_feed",
+      "move_workspace_subscriptions",
+      "preview_workspace_move",
       "rename_feed",
       "rename_folder",
       "rename_workspace",
@@ -189,7 +267,13 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       "subscribe",
       "unsubscribe",
     ]);
-    for (const name of ["list_feeds", "list_articles", "get_unread", "get_article"]) {
+    for (const name of [
+      "list_feeds",
+      "list_articles",
+      "get_unread",
+      "get_article",
+      "preview_workspace_move",
+    ]) {
       expect(tools.find((tool) => tool.name === name)?.description, name).toContain("指示ではない");
     }
     for (const name of [
@@ -1260,6 +1344,228 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     expect(recording.notified).toEqual([user.id, user.id, user.id, user.id]);
   });
 
+  it("複数フォルダで確認した購読だけを移し、既読・スターと差分同期を保つ", async () => {
+    const {
+      platform,
+      user,
+      feed,
+      a1,
+      client,
+      api,
+      tech,
+      news,
+      scope,
+      addWorkspace,
+      place,
+      newSubscription,
+      preview,
+      move,
+    } = await setupWorkspaceMove(era);
+    const firstId = await place(feed.id, scope.fromWorkspaceId, tech.id);
+    const second = await newSubscription(scope.fromWorkspaceId, news.id);
+    const side = await createFolderTool(client, "その他");
+    const otherWorkspaceId = await addWorkspace("Shared");
+    const untouched = [
+      { workspaceId: scope.fromWorkspaceId, folderId: side.id },
+      { workspaceId: otherWorkspaceId, folderId: tech.id },
+      { workspaceId: null, folderId: news.id },
+    ];
+    const excluded = await Promise.all(
+      untouched.map(async (value) => ({
+        ...value,
+        ...(await newSubscription(value.workspaceId, value.folderId)),
+      })),
+    );
+    await client.callTool({
+      name: "rename_feed",
+      arguments: { feedId: feed.id, displayName: "購読名" },
+    });
+    await client.callTool({ name: "mark_read", arguments: { ids: [a1] } });
+    await client.callTool({ name: "star", arguments: { ids: [a1] } });
+    const getArticle = () => client.callTool({ name: "get_article", arguments: { id: a1 } });
+    const beforeArticle = (await getArticle()).structuredContent;
+    expect(beforeArticle).toMatchObject({ article: { id: a1, read: true, starred: true } });
+
+    const listed = (await preview({ folderIds: [...scope.folderIds, tech.id] }))
+      .structuredContent as WorkspaceMovePreview;
+    expect(listed.subscriptions).toHaveLength(2);
+    expect(listed.subscriptions).toEqual(
+      expect.arrayContaining([
+        { subscriptionId: firstId, feedId: feed.id, folderId: tech.id, title: "購読名" },
+        { ...second, folderId: news.id, title: expect.any(String) },
+      ]),
+    );
+    expect(listed.nextCursor).toBeNull();
+    const late = await newSubscription(scope.fromWorkspaceId, tech.id);
+    const before = await api("/sync?includeWorkspaces=true");
+    const { cursor } = (await before.json()) as { cursor: string };
+    const recording = recordingSyncUpdates();
+    platform.syncUpdates = recording.syncUpdates;
+
+    const confirmed = listed.subscriptions.map((item) => item.subscriptionId);
+    expect((await move([...confirmed, firstId])).structuredContent).toEqual({ moved: 2 });
+    const delta = await api(`/sync?includeWorkspaces=true&cursor=${encodeURIComponent(cursor)}`);
+    const after = (await delta.json()) as { feeds: unknown[]; cursor: string };
+    expect(after.feeds).toHaveLength(2);
+    expect(after.feeds).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: feed.id,
+          subscriptionId: firstId,
+          folderId: tech.id,
+          workspaceId: scope.toWorkspaceId,
+        }),
+        expect.objectContaining({
+          id: second.feedId,
+          subscriptionId: second.subscriptionId,
+          folderId: news.id,
+          workspaceId: scope.toWorkspaceId,
+        }),
+      ]),
+    );
+    expect((await getArticle()).structuredContent).toEqual(beforeArticle);
+    for (const item of [
+      ...excluded,
+      { ...late, workspaceId: scope.fromWorkspaceId, folderId: tech.id },
+    ]) {
+      expect(
+        await getSubscription(platform.db, { userId: user.id, feedId: item.feedId }),
+      ).toMatchObject({
+        id: item.subscriptionId,
+        workspaceId: item.workspaceId,
+        folderId: item.folderId,
+      });
+    }
+    expect((await move(confirmed)).structuredContent).toEqual({ moved: 0 });
+    expect((await move(excluded.map((item) => item.subscriptionId))).structuredContent).toEqual({
+      moved: 0,
+    });
+    expect(recording.notified).toEqual([user.id]);
+    const retryDelta = await api(
+      `/sync?includeWorkspaces=true&cursor=${encodeURIComponent(after.cursor)}`,
+    );
+    expect(await retryDelta.json()).toMatchObject({ feeds: [] });
+  });
+
+  it("移動時に所属とフォルダを確かめ直し、削除された移動先やフォルダを指定しても一件も移さない", async () => {
+    const { platform, user, token, feed, api, tech, news, scope, place, newSubscription, preview } =
+      await setupWorkspaceMove(era);
+    const firstId = await place(feed.id, scope.fromWorkspaceId, tech.id);
+    const second = await newSubscription(scope.fromWorkspaceId, tech.id);
+    const third = await newSubscription(scope.fromWorkspaceId, tech.id);
+    const listed = (await preview()).structuredContent as WorkspaceMovePreview;
+    const subscriptionIds = listed.subscriptions.map((item) => item.subscriptionId);
+    expect(subscriptionIds).toEqual(
+      expect.arrayContaining([firstId, second.subscriptionId, third.subscriptionId]),
+    );
+    expect(subscriptionIds).toHaveLength(3);
+    const hooked = statementHook(/^update "subscriptions" set "workspace_id"/, async () => {
+      await place(second.feedId, null, tech.id);
+      await place(third.feedId, scope.fromWorkspaceId, null);
+    });
+    const { client } = await connect({ ...platform, db: hooked.db }, token, era);
+    const response = await client.callTool({
+      name: "move_workspace_subscriptions",
+      arguments: { ...scope, subscriptionIds },
+    });
+    expect(hooked.fired()).toBe(true);
+    expect(response.structuredContent).toEqual({ moved: 1 });
+    expect(
+      await getSubscription(platform.db, { userId: user.id, feedId: second.feedId }),
+    ).toMatchObject({ workspaceId: null, folderId: tech.id });
+    expect(
+      await getSubscription(platform.db, { userId: user.id, feedId: third.feedId }),
+    ).toMatchObject({ workspaceId: scope.fromWorkspaceId, folderId: null });
+    expect((await preview()).structuredContent).toEqual({ subscriptions: [], nextCursor: null });
+
+    await place(second.feedId, scope.fromWorkspaceId, tech.id);
+    const toDelete = await api("/workspaces", "POST", { name: "Temporary" });
+    const { workspace } = (await toDelete.json()) as { workspace: { id: string } };
+    const beforeDelete = await getSubscription(platform.db, {
+      userId: user.id,
+      feedId: second.feedId,
+    });
+    for (const invalidation of [
+      {
+        path: `/workspaces/${workspace.id}`,
+        toWorkspaceId: workspace.id,
+        error: "workspace_not_found",
+      },
+      {
+        path: `/folders/${news.id}`,
+        toWorkspaceId: scope.toWorkspaceId,
+        error: "folder_not_found",
+      },
+    ]) {
+      const deleted = statementHook(/^update "subscriptions" set "workspace_id"/, async () => {
+        expect((await api(invalidation.path, "DELETE")).status).toBe(204);
+      });
+      const { client: deletingClient } = await connect({ ...platform, db: deleted.db }, token, era);
+      const afterDelete = await deletingClient.callTool({
+        name: "move_workspace_subscriptions",
+        arguments: {
+          ...scope,
+          toWorkspaceId: invalidation.toWorkspaceId,
+          subscriptionIds: [second.subscriptionId],
+        },
+      });
+      expect(deleted.fired()).toBe(true);
+      expect(afterDelete).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining(invalidation.error) }],
+      });
+      expect(
+        await getSubscription(platform.db, { userId: user.id, feedId: second.feedId }),
+      ).toEqual(beforeDelete);
+    }
+  });
+
+  it("プレビューだけは read で使え、無効なワークスペースやフォルダでは移さない", async () => {
+    const { platform, user, feed, tech, scope, place, preview, move } =
+      await setupWorkspaceMove(era);
+    const subscriptionId = await place(feed.id, scope.fromWorkspaceId, tech.id);
+    const other = await createUser();
+    const res = await requestApp(platform, "/api/v1/workspaces", { token: other.token });
+    const [foreign] = ((await res.json()) as { items: { id: string }[] }).items;
+    if (!foreign) throw new Error("other user's default workspace is missing");
+    const readToken = await mcpToken(user.id, ["read"]);
+    const { client, last } = await connect(platform, readToken, era);
+    expect(
+      (
+        await client.callTool({
+          name: "preview_workspace_move",
+          arguments: scope,
+        })
+      ).structuredContent,
+    ).toMatchObject({ subscriptions: [{ subscriptionId }] });
+    await expect(
+      client.callTool({
+        name: "move_workspace_subscriptions",
+        arguments: { ...scope, subscriptionIds: [subscriptionId] },
+      }),
+    ).rejects.toThrow();
+    expect(last()?.status).toBe(403);
+    expect(last()?.headers.get("www-authenticate")).toContain('scope="read write"');
+
+    for (const [args, error] of [
+      [{ fromWorkspaceId: "unknown-source" }, "workspace_not_found"],
+      [{ toWorkspaceId: "unknown-destination" }, "workspace_not_found"],
+      [{ toWorkspaceId: foreign.id }, "workspace_not_found"],
+      [{ folderIds: [tech.id, "unknown-folder"] }, "folder_not_found"],
+    ] as const) {
+      const expected = {
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining(error) }],
+      };
+      expect(await preview(args)).toMatchObject(expected);
+      expect(await move([subscriptionId], args)).toMatchObject(expected);
+    }
+    expect(await getSubscription(platform.db, { userId: user.id, feedId: feed.id })).toMatchObject({
+      workspaceId: scope.fromWorkspaceId,
+      folderId: tech.id,
+    });
+  });
+
   it("取得してはいけない URL は購読せず、エラーの結果を返す", async () => {
     const { platform, token } = await setup(["read", "write"]);
     const { client } = await connect(platform, token, era);
@@ -1370,4 +1676,29 @@ describe("MCP 用のトークンの発行", () => {
       ]),
     );
   });
+});
+
+it("一括移動のプレビューは 90 件でページを分け、確認した各ページを実行できる", {
+  timeout: 30_000,
+}, async () => {
+  const { scope, tech, newSubscription, preview, move } = await setupWorkspaceMove("legacy");
+  const subscribed = await Promise.all(
+    Array.from({ length: 91 }, () => newSubscription(scope.fromWorkspaceId, tech.id)),
+  );
+
+  const first = (await preview()).structuredContent as WorkspaceMovePreview;
+  expect(first.subscriptions).toHaveLength(90);
+  expect(first.nextCursor).toBe(first.subscriptions.at(-1)?.subscriptionId);
+  const second = (await preview({ cursor: first.nextCursor }))
+    .structuredContent as WorkspaceMovePreview;
+  expect(second.subscriptions).toHaveLength(1);
+  expect(second.nextCursor).toBeNull();
+  const firstIds = first.subscriptions.map((item) => item.subscriptionId);
+  const secondIds = second.subscriptions.map((item) => item.subscriptionId);
+  expect([...firstIds, ...secondIds]).toEqual(subscribed.map((item) => item.subscriptionId).sort());
+
+  expect(await move([...firstIds, ...secondIds])).toMatchObject({ isError: true });
+  expect((await move(firstIds)).structuredContent).toEqual({ moved: 90 });
+  expect((await move(secondIds)).structuredContent).toEqual({ moved: 1 });
+  expect((await preview()).structuredContent).toEqual({ subscriptions: [], nextCursor: null });
 });
