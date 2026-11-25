@@ -37,6 +37,8 @@ import {
   subscriptions,
   userArticleRemovals,
   userArticles,
+  type Workspace,
+  workspaces,
 } from "./schema";
 import { readSettingHorizon } from "./settings";
 import type { TranslationFailure } from "./translations";
@@ -66,6 +68,7 @@ export type SyncCursor = {
   articles: SyncPosition;
   settings: SyncPosition;
   savedPages?: SyncPosition | undefined;
+  workspaces?: SyncPosition | undefined;
 };
 
 /** 最初の同期の始まり。upTo は、最初のページで決める（-1 は「まだ決めていない」） */
@@ -74,6 +77,9 @@ const START: SyncPosition = { seq: 0, id: null, upTo: -1, done: false };
 /** カーソルなしで来たとき（最初の同期の始まり） */
 /** 最初の同期の始まりの位置。設定の位置を持たない古いカーソルを、設定だけ最初から送るのにも使う */
 export const INITIAL_POSITION = START;
+
+/** 既存のクライアントに所属を補うとき、変更と削除の印を番号0から読む。 */
+export const START_OF_CHANGES: SyncPosition = { ...START, upTo: null };
 
 export const INITIAL_CURSOR: SyncCursor = {
   folders: START,
@@ -89,6 +95,7 @@ export const SYNC_LIMITS = {
   articles: 300,
   settings: 500,
   savedPages: 100,
+  workspaces: 500,
 } as const;
 
 /** 最初の同期で送る、既読の記事の範囲（受信箱に入ってからの日数） */
@@ -202,6 +209,7 @@ export type SyncChanges = {
   articles: SyncArticle[];
   settings: SyncSetting[];
   savedPages?: SyncSavedPage[];
+  workspaces?: Workspace[];
   cursor: SyncCursor;
   hasMore: boolean;
 };
@@ -304,7 +312,7 @@ export async function readChanges(
   const ua = userArticles;
   const removals = userArticleRemovals;
   const since = new Date(input.now.getTime() - INITIAL_SYNC_DAYS * 24 * 60 * 60 * 1000);
-  const maxSeqOf = async (table: typeof folders | typeof subscriptions) => {
+  const maxSeqOf = async (table: typeof folders | typeof subscriptions | typeof workspaces) => {
     const row = await db
       .select({ value: max(table.seq) })
       .from(table)
@@ -332,6 +340,28 @@ export async function readChanges(
     }),
     cursor.folders,
   );
+
+  const w =
+    cursor.workspaces &&
+    (await readTable(
+      singleTable({
+        seq: workspaces.seq,
+        id: workspaces.id,
+        initialFilter: isNull(workspaces.deletedAt),
+        limit: SYNC_LIMITS.workspaces,
+        read: (where, limit) =>
+          db
+            .select()
+            .from(workspaces)
+            .where(and(eq(workspaces.userId, userId), where))
+            .orderBy(asc(workspaces.seq), asc(workspaces.id))
+            .limit(limit)
+            .all(),
+        position: (row) => ({ seq: row.seq, id: row.id }),
+        maxSeq: () => maxSeqOf(workspaces),
+      }),
+      cursor.workspaces,
+    ));
 
   const current = alias(subscriptions, "current");
   const s = await readTable(
@@ -618,6 +648,7 @@ export async function readChanges(
 
   return {
     folders: f.items,
+    ...(w && { workspaces: w.items }),
     subscriptions: s.items.map((row) => ({ ...row.subscription, feed: row.feed })),
     articles: a.items.map((row) => row.item),
     settings: c.items.map((row): SyncSetting => {
@@ -640,8 +671,9 @@ export async function readChanges(
       articles: a.next,
       settings: c.next,
       savedPages: p?.next,
+      workspaces: w?.next,
     },
-    hasMore: f.more || s.more || a.more || c.more || (p?.more ?? false),
+    hasMore: f.more || s.more || a.more || c.more || (p?.more ?? false) || (w?.more ?? false),
   };
 }
 
