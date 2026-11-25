@@ -975,6 +975,12 @@
             "items": {
               "$ref": "#/components/schemas/SyncSavedPage"
             }
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncWorkspace"
+            }
           }
         },
         "required": [
@@ -1113,6 +1119,17 @@
               "string",
               "null"
             ]
+          },
+          "workspaceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "includeWorkspaces=true の有効な購読に付く。未割り当てなら null"
+          },
+          "subscriptionId": {
+            "type": "string",
+            "description": "includeWorkspaces=true の有効な購読に付く。購読し直すと変わる"
           },
           "createdAt": {
             "type": "string",
@@ -1420,6 +1437,49 @@
         "required": [
           "id",
           "deleted"
+        ]
+      },
+      "SyncWorkspace": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Workspace"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "deleted": {
+                    "type": "boolean",
+                    "enum": [
+                      false
+                    ]
+                  }
+                },
+                "required": [
+                  "deleted"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "deleted": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "deleted"
+            ]
+          }
         ]
       },
       "AccessToken": {
@@ -3840,7 +3900,7 @@
     "/sync": {
       "get": {
         "summary": "前回の同期からの差分を取る",
-        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\nsettings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。\nincludeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
+        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\nsettings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。\nincludeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。\nincludeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
         "parameters": [
           {
             "schema": {
@@ -3852,6 +3912,18 @@
             },
             "required": false,
             "name": "includeSaved",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "includeWorkspaces",
             "in": "query"
           },
           {
