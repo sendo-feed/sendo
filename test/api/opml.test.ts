@@ -48,23 +48,78 @@ describe("OPML の API", () => {
     expect(folders.items.map((folder) => folder.name)).toEqual(["Tech", "セキュリティ"]);
 
     const feeds = (await (await requestApp(platform, "/api/v1/feeds")).json()) as {
-      items: { url: string; folderId: string | null }[];
+      items: {
+        id: string;
+        url: string;
+        folderId: string | null;
+        workspaceId: string | null;
+        subscriptionId: string;
+      }[];
     };
     expect(feeds.items).toHaveLength(4);
+    expect(feeds.items.every((feed) => feed.workspaceId === null)).toBe(true);
     const tech = folders.items.find((folder) => folder.name === "Tech")?.id;
     expect(
       feeds.items.find((feed) => feed.url === "https://blog.cloudflare.com/rss/"),
     ).toMatchObject({ folderId: tech });
 
+    const assigned = feeds.items.find((feed) => feed.url === "https://blog.cloudflare.com/rss/");
+    const groups = await requestApp(platform, "/api/v1/workspaces");
+    const { items } = (await groups.json()) as { items: Array<{ id: string }> };
+    const [workspace] = items;
+    if (!assigned || !workspace) throw new Error("subscription or workspace missing");
+    const move = await requestApp(platform, `/api/v1/feeds/${assigned.id}`, {
+      method: "PATCH",
+      json: { subscriptionId: assigned.subscriptionId, workspaceId: workspace.id, folderId: null },
+    });
+    expect(move.status).toBe(200);
+    const retained = feeds.items.find((feed) => feed.url === "https://example.com/feed.xml");
+    if (!retained) throw new Error("second subscription missing");
+    const folderResult = await requestApp(platform, "/api/v1/folders", {
+      method: "POST",
+      json: { name: "Reading" },
+    });
+    const { folder } = (await folderResult.json()) as { folder: { id: string } };
+    expect(
+      (
+        await requestApp(platform, `/api/v1/feeds/${retained.id}`, {
+          method: "PATCH",
+          json: { folderId: folder.id },
+        })
+      ).status,
+    ).toBe(200);
+
+    const start = enqueued.length;
+    expect((await postOpml(platform, FEEDLY_OPML)).status).toBe(202);
+    const retries = enqueued.slice(start).filter((job) => job.type === "import-feeds");
+    expect(retries.length).toBeGreaterThan(0);
+    for (const job of retries) await runJob(platform, job);
+    const after = (await (await requestApp(platform, "/api/v1/feeds")).json()) as typeof feeds;
+    expect(after.items).toHaveLength(4);
+    expect(after.items.find((feed) => feed.id === assigned.id)).toMatchObject({
+      workspaceId: workspace.id,
+      folderId: tech,
+      subscriptionId: assigned.subscriptionId,
+    });
+
+    expect(after.items.find((feed) => feed.id === retained.id)).toMatchObject({
+      folderId: folder.id,
+    });
+
     const exported = await requestApp(platform, "/api/v1/opml");
     expect(exported.status).toBe(200);
     expect(exported.headers.get("content-type")).toContain("text/x-opml");
     expect(exported.headers.get("content-disposition")).toContain("attachment");
-    expect(readOpml(await exported.text()).entries).toEqual(
+    const entries = readOpml(await exported.text()).entries;
+    expect(entries.map((entry) => entry.url).sort()).toEqual(
+      feeds.items.map((feed) => feed.url).sort(),
+    );
+    expect(entries).toEqual(
       expect.arrayContaining([
         { url: "https://blog.cloudflare.com/rss/", folder: "Tech" },
         { url: "https://jvndb.jvn.jp/ja/rss/jvndb_new.rdf", folder: "セキュリティ" },
         { url: "https://top.example/atom.xml", folder: null },
+        { url: retained.url, folder: "Reading" },
       ]),
     );
   });

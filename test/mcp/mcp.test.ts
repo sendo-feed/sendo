@@ -836,16 +836,46 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     expect(moved.structuredContent).toEqual({
       feed: { id: feed.id, folderId: techId, folder: "技術" },
     });
-    const subscribed = (await client.callTool({
-      name: "subscribe",
-      arguments: { url: "https://new.example.com/feed.xml", folderId: techId },
-    })) as Structured<{ feed: { id: string } }>;
+    const workspaceList = await requestApp(platform, "/api/v1/workspaces", { token: user.token });
+    const { items } = (await workspaceList.json()) as { items: Array<{ id: string }> };
+    const [workspace] = items;
+    if (!workspace) throw new Error("default workspace missing");
+
+    const subscribe = async (url: string) => {
+      const result = (await client.callTool({
+        name: "subscribe",
+        arguments: { url, folderId: techId },
+      })) as Structured<{ feed: { id: string } }>;
+      const feedId = result.structuredContent?.feed.id;
+      if (!feedId) throw new Error("subscription missing");
+      return getSubscription(platform.db, { userId: user.id, feedId });
+    };
+    const url = "https://new.example.com/feed.xml";
+    const first = await subscribe(url);
+    if (!first) throw new Error("subscription missing");
+    expect(first).toMatchObject({ folderId: techId, folderName: "技術", workspaceId: null });
+
+    const place = (workspaceId: string | null) =>
+      requestApp(platform, `/api/v1/feeds/${first.feedId}`, {
+        method: "PATCH",
+        token: user.token,
+        json: { subscriptionId: first.id, workspaceId },
+      });
+    expect((await place(workspace.id)).status).toBe(200);
+    expect(await subscribe(url)).toMatchObject({ id: first.id, workspaceId: workspace.id });
+
+    expect((await place(null)).status).toBe(200);
     expect(
-      await getSubscription(platform.db, {
-        userId: user.id,
-        feedId: subscribed.structuredContent?.feed.id ?? "",
-      }),
-    ).toMatchObject({ folderId: techId, folderName: "技術" });
+      (
+        await requestApp(platform, `/api/v1/workspaces/${workspace.id}`, {
+          method: "DELETE",
+          token: user.token,
+        })
+      ).status,
+    ).toBe(204);
+    expect(await subscribe("https://other.example.com/feed.xml")).toMatchObject({
+      workspaceId: null,
+    });
   });
 
   it("create_folder は、切り詰めた位置の直前が空白の名前でも、2 回目に同じフォルダを返す", async () => {

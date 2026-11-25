@@ -586,6 +586,19 @@ describe("購読を変える", () => {
     );
     const { platform } = createTestPlatform({ fetch });
     const send = reader(platform, user.token);
+    const workspaceList = await requestApp(platform, "/api/v1/workspaces", { token: user.token });
+    const { items } = (await workspaceList.json()) as { items: Array<{ id: string }> };
+    const [workspace] = items;
+    if (!workspace) throw new Error("default workspace missing");
+    expect(
+      (
+        await requestApp(platform, `/api/v1/workspaces/${workspace.id}`, {
+          method: "PATCH",
+          json: { name: "Reading" },
+          token: user.token,
+        })
+      ).status,
+    ).toBe(200);
 
     const res = await send("/reader/api/0/subscription/quickadd", {
       form: [["quickadd", "https://quick.example.com/feed.xml"]],
@@ -596,6 +609,27 @@ describe("購読を変える", () => {
       subscriptions: { id: string }[];
     };
     expect(list.subscriptions.map((s) => s.id)).toEqual([body.streamId]);
+    const feeds = async () => {
+      const response = await requestApp(platform, "/api/v1/feeds", { token: user.token });
+      return (await response.json()) as {
+        items: Array<{ id: string; workspaceId: string | null; subscriptionId: string }>;
+      };
+    };
+    const [feed] = (await feeds()).items;
+    if (!feed) throw new Error("subscription missing");
+    expect(feed.workspaceId).toBeNull();
+    const move = await requestApp(platform, `/api/v1/feeds/${feed.id}`, {
+      method: "PATCH",
+      token: user.token,
+      json: { workspaceId: workspace.id, subscriptionId: feed.subscriptionId },
+    });
+    expect(move.status).toBe(200);
+    const retried = await send("/reader/api/0/subscription/quickadd", {
+      form: [["quickadd", "https://quick.example.com/feed.xml"]],
+    });
+    expect(retried.status).toBe(200);
+    expect(await retried.json()).toMatchObject({ numResults: 1, streamId: body.streamId });
+    expect((await feeds()).items).toMatchObject([{ ...feed, workspaceId: workspace.id }]);
 
     const rejected = await send("/reader/api/0/subscription/quickadd", {
       form: [["quickadd", "http://127.0.0.1/feed"]],
