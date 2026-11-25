@@ -1,10 +1,13 @@
 import { expect, it } from "vitest";
 import { decodeSyncCursor } from "../../src/api/sync";
-import { getSubscription, unsubscribe, updateSubscription } from "../../src/db/subscriptions";
-import { createWorkspace, deleteWorkspace, listWorkspaces } from "../../src/db/workspaces";
 import { testDb } from "../db";
-import { createTestPlatform, createUser, requestApp, subscribeFeed } from "../helpers";
+import { createTestPlatform, createUser, fakeFetch, requestApp } from "../helpers";
 
+const rss = `<rss version="2.0"><channel><title>Blog</title>
+<link>https://example.com/</link><item><title>Post</title></item></channel></rss>`;
+
+type ActiveWorkspace = { id: string; name: string };
+type Feed = { id: string; subscriptionId: string; url: string };
 type Workspace = { id: string; deleted: true } | { id: string; name: string; deleted: false };
 type SyncPage = {
   cursor: string;
@@ -21,41 +24,51 @@ type SyncPage = {
 };
 
 async function setup() {
-  const { platform } = createTestPlatform();
+  const { fetch } = fakeFetch(() => new Response(rss));
+  const { platform } = createTestPlatform({ fetch });
   const user = await createUser();
+  const request = (path: string, method = "GET", json?: unknown, token = user.token) =>
+    requestApp(platform, `/api/v1${path}`, { method, json, token });
   const sync = async (cursor?: string, include = true) => {
     const query = new URLSearchParams();
     if (cursor !== undefined) query.set("cursor", cursor);
     if (include) query.set("includeWorkspaces", "true");
-    const response = await requestApp(platform, `/api/v1/sync?${query}`, { token: user.token });
+    const response = await request(`/sync?${query}`);
     expect(response.status).toBe(200);
     return (await response.json()) as SyncPage;
   };
-  const create = async (name: string) => {
-    const result = await createWorkspace(platform.db, {
-      userId: user.id,
-      id: crypto.randomUUID(),
-      name,
-      now: platform.now(),
-    });
-    if (typeof result === "string") throw new Error(result);
-    return result.workspace;
+  const list = async (token = user.token) => {
+    const response = await request("/workspaces", "GET", undefined, token);
+    expect(response.status).toBe(200);
+    return ((await response.json()) as { items: ActiveWorkspace[] }).items;
   };
-  const [initial] = await listWorkspaces(platform.db, user.id);
+  const create = async (name: string) => {
+    const response = await request("/workspaces", "POST", { name });
+    expect(response.status).toBe(201);
+    return ((await response.json()) as { workspace: ActiveWorkspace }).workspace;
+  };
+  const subscribe = async (url: string) => {
+    const response = await request("/feeds", "POST", { url });
+    expect(response.status).toBe(201);
+    return ((await response.json()) as { feed: Feed }).feed;
+  };
+  const move = async (feed: Feed, workspaceId: string) => {
+    const response = await request(`/feeds/${feed.id}`, "PATCH", {
+      subscriptionId: feed.subscriptionId,
+      workspaceId,
+    });
+    expect(response.status).toBe(200);
+  };
+  const [initial] = await list();
   if (!initial) throw new Error("default workspace is missing");
-  return { platform, sync, create, initial, user };
+  return { sync, list, create, subscribe, move, request, initial, user };
 }
 
 it("初回・既存カーソルの同期で所属を返し、指定のない従来の同期は同じ形を保つ", async () => {
-  const { initial, sync, platform, user } = await setup();
+  const { initial, sync, list, subscribe, move } = await setup();
   const other = await createUser();
-  const feed = await subscribeFeed(platform, { userId: user.id, url: "https://github.blog/feed/" });
-  const subscription = await updateSubscription(platform.db, {
-    userId: user.id,
-    feedId: feed.id,
-    workspaceId: initial.id,
-  });
-  expect(subscription).toBeDefined();
+  const feed = await subscribe("https://github.blog/feed/");
+  await move(feed, initial.id);
   const legacy = await sync(undefined, false);
   expect(legacy.workspaces).toBeUndefined();
   expect(legacy.feeds[0]).not.toHaveProperty("workspaceId");
@@ -70,30 +83,22 @@ it("初回・既存カーソルの同期で所属を返し、指定のない従�
       {
         id: feed.id,
         workspaceId: initial.id,
-        subscriptionId: subscription?.id,
+        subscriptionId: feed.subscriptionId,
         deleted: false,
       },
     ]);
     expect(page.hasMore).toBe(false);
   }
-  expect(
-    (await listWorkspaces(platform.db, other.id)).map((workspace) => workspace.id),
-  ).not.toContain(initial.id);
+  expect((await list(other.token)).map((workspace) => workspace.id)).not.toContain(initial.id);
 });
 
 it("差分や指定を戻したときに削除の印と購読の移動が届く", async () => {
-  const { initial, sync, platform, user, create } = await setup();
-  const feed = await subscribeFeed(platform, { userId: user.id });
+  const { initial, sync, subscribe, move, request, create } = await setup();
+  const feed = await subscribe("https://github.blog/feed/");
   const before = await sync();
   const next = await create("Personal");
-  await updateSubscription(platform.db, { userId: user.id, feedId: feed.id, workspaceId: next.id });
-  expect(
-    await deleteWorkspace(platform.db, {
-      userId: user.id,
-      id: initial.id,
-      now: platform.now(),
-    }),
-  ).toBe("deleted");
+  await move(feed, next.id);
+  expect((await request(`/workspaces/${initial.id}`, "DELETE")).status).toBe(204);
   const expected = [
     { id: next.id, name: "Personal", createdAt: expect.any(String), deleted: false },
     { id: initial.id, deleted: true },
@@ -103,10 +108,17 @@ it("差分や指定を戻したときに削除の印と購読の移動が届く"
   expect(delta.feeds).toMatchObject([{ id: feed.id, workspaceId: next.id }]);
   expect(delta.articles).toEqual([]);
 
-  const optedOut = await sync(delta.cursor, false);
+  expect((await request(`/workspaces/${next.id}`, "PATCH", { name: "Reading" })).status).toBe(200);
+  const renamed = await sync(delta.cursor);
+  const current = { id: next.id, name: "Reading", createdAt: expect.any(String), deleted: false };
+  expect(renamed.workspaces).toEqual([current]);
+  expect(renamed.feeds).toEqual([]);
+
+  const optedOut = await sync(renamed.cursor, false);
   expect(decodeSyncCursor(optedOut.cursor)?.workspaces).toBeUndefined();
   const restored = await sync(optedOut.cursor);
-  expect(restored.workspaces).toEqual(expected);
+  expect(restored.workspaces).toContainEqual(current);
+  expect(restored.workspaces).toContainEqual({ id: initial.id, deleted: true });
   expect(restored.feeds).toMatchObject([{ id: feed.id, workspaceId: next.id }]);
   expect(restored.folders).toEqual([]);
   expect(restored.articles).toEqual([]);
@@ -116,22 +128,15 @@ it("差分や指定を戻したときに削除の印と購読の移動が届く"
 });
 
 it("旧カーソルから購読を再送するとき、購読し直したフィードの古い削除印を返さない", async () => {
-  const { sync, platform, user } = await setup();
-  const reopened = await subscribeFeed(platform, {
-    userId: user.id,
-    url: "https://github.blog/feed/",
-  });
-  const removed = await subscribeFeed(platform, {
-    userId: user.id,
-    url: "https://www.w3.org/blog/feed/",
-  });
+  const { sync, subscribe, request } = await setup();
+  const reopened = await subscribe("https://github.blog/feed/");
+  const removed = await subscribe("https://www.w3.org/blog/feed/");
   const legacy = await sync(undefined, false);
   for (const feed of [reopened, removed]) {
-    await unsubscribe(platform.db, { userId: user.id, feedId: feed.id, now: platform.now() });
+    expect((await request(`/feeds/${feed.id}`, "DELETE")).status).toBe(204);
   }
-  await subscribeFeed(platform, { userId: user.id, url: reopened.url });
-  const current = await getSubscription(platform.db, { userId: user.id, feedId: reopened.id });
-  if (!current) throw new Error("subscription missing");
+  const current = await subscribe(reopened.url);
+  expect(current.subscriptionId).not.toBe(reopened.subscriptionId);
 
   const legacyDelta = await sync(legacy.cursor, false);
   expect(legacyDelta.hasMore).toBe(false);
@@ -139,7 +144,11 @@ it("旧カーソルから購読を再送するとき、購読し直したフィ�
   expect(page.feeds).toHaveLength(2);
   expect(page.feeds).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ id: reopened.id, deleted: false, subscriptionId: current.id }),
+      expect.objectContaining({
+        id: reopened.id,
+        deleted: false,
+        subscriptionId: current.subscriptionId,
+      }),
       expect.objectContaining({ id: removed.id, deleted: true }),
     ]),
   );
