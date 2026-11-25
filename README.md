@@ -247,6 +247,8 @@ Google Reader 互換 API は[廃止しました](docs/decisions/greader.md)。�
 
 `get_unread` は `feedId`、`folderId`、`limit` に加え、公開日時の期間を `since`（含む）と `until`（含まない）で指定できます。日時はタイムゾーン付きの ISO 8601 形式です。たとえば日本時間の 11 月 17 日は、`since: "2026-11-17T00:00:00+09:00"`、`until: "2026-11-18T00:00:00+09:00"` とします。続きがあるときは、同じ絞り込みと `nextCursor` を `cursor` に渡します。REST API の `GET /api/v1/articles` でも、同じ `since` と `until` を使えます。
 
+ワークスペースは `list_workspaces` で名前と ID を確認できます。`create_workspace` に名前を、`rename_workspace` に ID と新しい名前を渡します。`delete_workspace` には ID を渡します。有効な購読が残っていると削除できません。作成・改名・削除には `write` が必要です。
+
 Resources からも、読むだけの範囲（`read`）でデータを取り出せます。
 
 | URI | 内容 |

@@ -132,7 +132,7 @@ export function workspacesApi(platform: Platform) {
       if (result === "not_found") {
         return c.json(errorBody("not_found", "workspace does not exist"), 404);
       }
-      return c.json({ workspace: toWorkspaceResponse(result) }, 200);
+      return c.json({ workspace: toWorkspaceResponse(result.workspace) }, 200);
     })
     .openapi(deleteRoute, async (c) => {
       const { id } = c.req.valid("param");

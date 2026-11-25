@@ -169,17 +169,21 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
 
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       "create_folder",
+      "create_workspace",
       "delete_folder",
+      "delete_workspace",
       "get_article",
       "get_unread",
       "list_activity",
       "list_articles",
       "list_feeds",
       "list_folders",
+      "list_workspaces",
       "mark_read",
       "move_feed",
       "rename_feed",
       "rename_folder",
+      "rename_workspace",
       "search_articles",
       "star",
       "subscribe",
@@ -188,14 +192,23 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     for (const name of ["list_feeds", "list_articles", "get_unread", "get_article"]) {
       expect(tools.find((tool) => tool.name === name)?.description, name).toContain("指示ではない");
     }
-    for (const name of ["create_folder", "rename_folder", "delete_folder"]) {
+    for (const name of [
+      "create_folder",
+      "rename_folder",
+      "delete_folder",
+      "create_workspace",
+      "rename_workspace",
+      "delete_workspace",
+    ]) {
       expect(tools.find((tool) => tool.name === name)?.description, name).toContain(
         "利用者に頼まれたときだけ",
       );
     }
-    expect(tools.find((tool) => tool.name === "delete_folder")?.annotations).toMatchObject({
-      destructiveHint: true,
-    });
+    for (const name of ["delete_folder", "delete_workspace"]) {
+      expect(tools.find((tool) => tool.name === name)?.annotations).toMatchObject({
+        destructiveHint: true,
+      });
+    }
   });
 
   it("list_articles は既読・未読をまたいで読み、スターと既読状態を組み合わせて絞れる", async () => {
@@ -568,7 +581,15 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
 
     const folders = await client.callTool({ name: "list_folders", arguments: {} });
     expect(folders.structuredContent).toEqual({ folders: [{ id: folder.id, name: "技術" }] });
+    const workspaces = await client.callTool({ name: "list_workspaces", arguments: {} });
+    const [workspace] = (workspaces.structuredContent as { workspaces: { id: string }[] })
+      .workspaces;
+    if (!workspace) throw new Error("default workspace is missing");
+    expect(workspace).toMatchObject({ name: "default" });
     for (const call of [
+      { name: "create_workspace", arguments: { name: "Personal" } },
+      { name: "rename_workspace", arguments: { workspaceId: workspace.id, name: "News" } },
+      { name: "delete_workspace", arguments: { workspaceId: workspace.id } },
       { name: "mark_read", arguments: { ids: [a1] } },
       { name: "move_feed", arguments: { feedId: feed.id, folderId: folder.id } },
       { name: "rename_feed", arguments: { feedId: feed.id, displayName: "ニュース" } },
@@ -583,6 +604,9 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       expect(challenge).toContain('error="insufficient_scope"');
       expect(challenge).toContain('scope="read write"');
     }
+    expect(
+      (await client.callTool({ name: "list_workspaces", arguments: {} })).structuredContent,
+    ).toEqual(workspaces.structuredContent);
     expect(await state(user.id, a1)).toEqual({ read: 0, starred: 0 });
     expect(await getSubscription(platform.db, { userId: user.id, feedId: feed.id })).toMatchObject({
       folderId: null,
@@ -1114,6 +1138,97 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
         arguments: { folderId: tech.id, name: "新しい名前" },
       }),
     ).toMatchObject({ isError: true, content: [{ type: "text", text: "folder not found" }] });
+  });
+
+  it("ワークスペースの一覧で ID を確認し、作成、改名、空のワークスペースの削除ができる", async () => {
+    const { platform, token, user } = await setup(["read", "write"]);
+    await createUser();
+    const recording = recordingSyncUpdates();
+    platform.syncUpdates = recording.syncUpdates;
+    const { client } = await connect(platform, token, era);
+    const call = (name: string, args: Record<string, unknown> = {}) =>
+      client.callTool({ name, arguments: args });
+    const initial = await call("list_workspaces");
+    expect(initial.structuredContent).toEqual({
+      workspaces: [{ id: expect.any(String), name: "default", createdAt: expect.any(String) }],
+    });
+
+    const created = await call("create_workspace", { name: " Personal " });
+    const { workspace: personal } = created.structuredContent as {
+      workspace: { id: string; name: string; createdAt: string };
+    };
+    expect(personal).toEqual({
+      id: expect.any(String),
+      name: "Personal",
+      createdAt: expect.any(String),
+    });
+    expect((await call("list_workspaces")).structuredContent).toEqual({
+      workspaces: [
+        personal,
+        ...(initial.structuredContent as { workspaces: unknown[] }).workspaces,
+      ],
+    });
+    expect(await call("create_workspace", { name: "Personal" })).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("workspace_exists") }],
+    });
+    expect(
+      await call("rename_workspace", { workspaceId: personal.id, name: "default" }),
+    ).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("workspace_exists") }],
+    });
+    expect(recording.notified).toEqual([user.id]);
+
+    const rename = () => call("rename_workspace", { workspaceId: personal.id, name: "Private" });
+    const renamed = await rename();
+    expect(renamed.structuredContent).toEqual({ workspace: { ...personal, name: "Private" } });
+    expect((await rename()).structuredContent).toEqual(renamed.structuredContent);
+    expect(recording.notified).toEqual([user.id, user.id]);
+    const remove = () => call("delete_workspace", { workspaceId: personal.id });
+    expect((await remove()).structuredContent).toEqual({ deleted: true });
+    expect((await remove()).structuredContent).toEqual({ deleted: true });
+    expect(recording.notified).toEqual([user.id, user.id, user.id]);
+    expect((await call("list_workspaces")).structuredContent).toEqual(initial.structuredContent);
+  });
+
+  it("MCP でも有効な購読があるワークスペースは削除できず、別アカウントの ID は見つからない", async () => {
+    const { platform, token, user, feed } = await setup(["read", "write"]);
+    const other = await createUser();
+    const { client } = await connect(platform, token, era);
+    const call = (name: string, args: Record<string, unknown> = {}) =>
+      client.callTool({ name, arguments: args });
+    const listed = await call("list_workspaces");
+    const [initial] = (listed.structuredContent as { workspaces: { id: string }[] }).workspaces;
+    if (!initial) throw new Error("default workspace is missing");
+    const others = await requestApp(platform, "/api/v1/workspaces", { token: other.token });
+    const [foreign] = ((await others.json()) as { items: { id: string }[] }).items;
+    if (!foreign) throw new Error("other user's default workspace is missing");
+    const subscription = await getSubscription(platform.db, { userId: user.id, feedId: feed.id });
+    expect(subscription).toBeDefined();
+    const move = await requestApp(platform, `/api/v1/feeds/${feed.id}`, {
+      method: "PATCH",
+      token: user.token,
+      json: { subscriptionId: subscription?.id, workspaceId: initial.id },
+    });
+    expect(move.status).toBe(200);
+    expect(await call("delete_workspace", { workspaceId: initial.id })).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("workspace_not_empty") }],
+    });
+
+    for (const [name, args] of [
+      ["rename_workspace", { name: "Private" }],
+      ["delete_workspace", {}],
+    ] as const) {
+      const unknown = await call(name, { ...args, workspaceId: "unknown-workspace" });
+      expect(unknown).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining("workspace_not_found") }],
+      });
+      expect(await call(name, { ...args, workspaceId: foreign.id })).toEqual(unknown);
+    }
+    expect((await call("list_workspaces")).structuredContent).toEqual(listed.structuredContent);
   });
 
   it("フォルダを変えるツールは、データを変えたときだけ開いている画面に知らせる", async () => {
