@@ -497,6 +497,17 @@
               true
             ]
           },
+          "subscriptionIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "minItems": 1,
+            "maxItems": 90,
+            "description": "操作時の有効な購読の ID。cursor と組み合わせ、他の範囲指定とは併用しない"
+          },
           "until": {
             "type": "string",
             "format": "date-time",
@@ -2490,7 +2501,7 @@
     "/articles/mark-read": {
       "post": {
         "summary": "まとめて既読にする",
-        "description": "ID を並べるか、フィード ／ フォルダ ／ すべてを指定する。",
+        "description": "記事 ID、操作時の購読 ID、フィード、フォルダ、またはすべてを指定する。",
         "requestBody": {
           "required": true,
           "content": {

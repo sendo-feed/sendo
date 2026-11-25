@@ -369,6 +369,7 @@ export type MarkReadBoundary = { until: Date } | { synced: { seq: number; id: st
 /** まとめて既読にする範囲 */
 export type MarkReadScope =
   | { ids: readonly string[] }
+  | ({ subscriptionIds: readonly string[] } & Extract<MarkReadBoundary, { synced: unknown }>)
   | ({ feedId: string } & MarkReadBoundary)
   | ({ folderId: string } & MarkReadBoundary)
   | ({ all: true } & MarkReadBoundary);
@@ -379,7 +380,9 @@ export const MAX_MARK_READ_IDS = 90;
 /**
  * 受信箱の未読の記事をまとめて既読にする。1 つの UPDATE 文なので、途中までで止まることはない。
  *
- * ID 以外で指定するときは、until より前に受信箱に入った記事だけを既読にする。一覧の応答の
+ * 購読 ID を指定したときは、その ID がまだ有効な購読だけを見る。現在の所属を見ないので、
+ * 押したあとに別の購読が同じワークスペースへ移っても既読にならない。
+ * until を指定するときは、その時刻より前に受信箱へ入った記事だけを既読にする。一覧の応答の
  * asOf（DB の時計）を渡せば、一覧に出ていなかった記事は未読のまま残る。
  * @returns 既読にした記事の数
  */
@@ -415,6 +418,24 @@ export async function markArticlesRead(
   if (!("ids" in scope)) {
     if ("feedId" in scope) conditions.push(eq(ua.feedId, scope.feedId));
     if ("folderId" in scope) conditions.push(inFolder(input.userId, scope.folderId));
+  }
+
+  if ("subscriptionIds" in scope) {
+    if (scope.subscriptionIds.length === 0) return 0;
+    if (scope.subscriptionIds.length > MAX_MARK_READ_IDS) {
+      throw new RangeError(`at most ${MAX_MARK_READ_IDS} subscription ids`);
+    }
+    const subscribedFeeds = db
+      .select({ feedId: subscriptions.feedId })
+      .from(subscriptions)
+      .where(
+        and(
+          eq(subscriptions.userId, input.userId),
+          isNull(subscriptions.deletedAt),
+          inArray(subscriptions.id, [...scope.subscriptionIds]),
+        ),
+      );
+    conditions.push(inArray(ua.feedId, subscribedFeeds));
   }
 
   const updated = await db
