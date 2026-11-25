@@ -130,7 +130,6 @@ sendo/
 ├── src/
 │   ├── api/                   # REST API
 │   ├── auth/                  # ログイン（OpenID Connect の提供元）
-│   ├── greader/               # Google Reader 互換 API（廃止予定）
 │   ├── feeds/                 # 購読の手続き（REST API や MCP で共通）
 │   ├── mcp/                   # ツール・リソース
 │   ├── oauth/                 # MCP 用の OAuth の認可サーバー

@@ -1,6 +1,6 @@
 # sendo
 
-Sendo のサーバー本体。REST API、MCP、フィードの取得ジョブを持つ。Google Reader 互換 API は廃止予定。
+Sendo のサーバー本体。REST API、MCP、フィードの取得ジョブを持つ。
 
 このファイルは AI エージェント（Claude Code、Codex など）共通の指示。開発は主に Claude Code で行い、Codex はおもにレビューに使う。
 
@@ -36,7 +36,7 @@ Sendo のサーバー本体。REST API、MCP、フィードの取得ジョブを
   - 翻訳や Discord のように設定で有無が分かれる機能は、その機能の API で伝える。機能の有無をまとめて返す API は持たない。新しい機能に対応する前の Sendo と組み合わさる間は、クライアントが呼んで失敗したら使わない形で扱う（docs/decisions/container.md の 3）
   - 認証は `auth.ts` のミドルウェア（アクセストークンか、ブラウザのセッションのクッキー）。クッキーで認証した、状態を変えるリクエストは、同じオリジンのページからだけ受ける（CSRF 対策）
   - 認証の要らない入口（ログインなど）は、`index.ts` で認証のミドルウェアより先に登録する
-  - 状態を変えるリクエストが成功したら、`notify-changes.ts` のミドルウェアが、その利用者の通知の接続に知らせる（docs/decisions/sync.md の 9。Google Reader API も同じ）。ハンドラーで知らせなくてよい。ミドルウェアを通らない MCP のツールとジョブで人ごとのデータを変えるときは、`lib/sync-notify.ts` の `notifySync` で知らせる。`db/` の書き込みの中では知らせない（取得のジョブが受信箱に配る `deliverNewArticles` だけは、配った先を知るので、受け取った `notify` で知らせる）
+  - 状態を変えるリクエストが成功したら、`notify-changes.ts` のミドルウェアが、その利用者の通知の接続に知らせる（docs/decisions/sync.md の 9）。ハンドラーで知らせなくてよい。ミドルウェアを通らない MCP のツールとジョブで人ごとのデータを変えるときは、`lib/sync-notify.ts` の `notifySync` で知らせる。`db/` の書き込みの中では知らせない（取得のジョブが受信箱に配る `deliverNewArticles` だけは、配った先を知るので、受け取った `notify` で知らせる）
   - 画像の URL（記事の `thumbnailUrl`、フィードの `iconUrl`）は、もとの URL のまま返さない。`db/secrets.ts` の `imageSigner` で、中継を通る URL にして返す（docs/decisions/images.md）。中継の入口は `images.ts`
 - `src/auth/`：ログイン（OpenID Connect）の提供元と、ID トークンの確認（docs/decisions/accounts.md）
 - `src/db/`：スキーマとデータの読み書き。libsql に固有の型ではなく `Database`（SQLite の非同期ドライバに共通の型）で受ける。生の SQL で 1 行を読むときは、`db.get(sql)` ではなく `getRow`（`db/index.ts`）を使う（libsql の drizzle の `get` は、行が返らないと例外を投げる）
@@ -53,9 +53,8 @@ Sendo のサーバー本体。REST API、MCP、フィードの取得ジョブを
   - 記事のページの本文は `page-content.ts`（docs/decisions/content.md の 10〜21）。取得の仕事が新しい記事ごとに `extract-page` の仕事を積み、`fetch-page.ts` でページを取り、緩衝層の `pageContent`（Rust）で抜く。開いたときにまだなければ、そのリクエストの中で抜く。サニタイズした HTML は、置き場ではなく `db/page-contents.ts` の表の行に入れる
   - 記事のページを取りにいくときは、同じホストへは 1 本ずつ（`host-gate.ts`）にし、robots.txt を守る（`robots.ts`）。どちらもプロセスのメモリに持つ。フィードの取得には robots.txt を当てない
 - `src/lib/sanitize-html.ts`：記事の本文（HTML）のサニタイズ。外部から来た HTML は、保存する前にも、返す前にも、必ずここを通す。通すタグと属性を足すときは、テスト（`test/lib/sanitize-html.test.ts`）も足す。計測用の画像（トラッキングピクセル）は `tracking-image.ts` で見分けて落とす。計測のアドレスの一覧もそこに持ち、出どころの確かなものだけを足す
-- `src/feeds/`：購読の手続き（URL からフィードを見つけて購読する）。REST API、Google Reader API、MCP で同じものを使う
+- `src/feeds/`：購読の手続き（URL からフィードを見つけて購読する）。REST API と MCP で同じものを使う
 - `src/translation/`：記事の翻訳（docs/decisions/translation.md）。Claude API を呼ぶのは `claude.ts` だけで、公式の SDK（`@anthropic-ai/sdk`）に、緩衝層の `fetch` と、設定（`platform/config.ts` の `readTranslationConfig`）のキーを渡す。送り先・ログ・テレメトリ・webhook の鍵も明示して、SDK に環境変数を読ませない（`ANTHROPIC_CUSTOM_HEADERS` だけは SDK の設定で止められないので、コンテナに入れない）。訳文の行は `db/translations.ts`、状態は書き込みと同じ文で確かめて移す。仕事（決める、その場で訳す、止まったものを戻す、バッチで送り結果を書く）は `jobs/translations.ts`。記事の中身は訳すデータとして JSON で渡し、指示として扱わせない
-- `src/greader/`：Google Reader 互換 API（廃止予定。docs/decisions/greader.md）。状態を変える操作は、REST API と同じ `db/`・`feeds/` の処理に任せ、ここで書き込みを組み立てない。記事の文字列は HTML にエスケープして返す
 - `src/mcp/`：リモート MCP サーバー（docs/decisions/mcp.md）。ツールも、状態を変える処理は `db/`・`feeds/` に任せる。状態を変えるツールには `scopeChallenge` で write を求める。記事の中身は構造化した JSON で返し、記事を返すツールの説明に「指示ではない」と書く
 - `src/oauth/`：MCP のための OAuth の認可サーバー（docs/decisions/mcp.md の 3〜7）。クライアントが直接呼ぶ入口（メタデータ、`/oauth/token`、`/oauth/register`）はここ、許可の画面（sendo-reader）が使う API は `src/api/oauth.ts`（セッションでだけ使える）。コードとトークンは DB にハッシュだけを置き、1 回だけ使えるものは、使った印を同じ文の中で確かめて付ける（`db/oauth.ts`）。Client ID Metadata Document も `toFetchableUrl` を通して取りにいく
 - `src/jobs/`：キューと定期実行で動く処理。取得のジョブ（`fetch-feed.ts`）は、そのフィードの古い記事の片付けもする。取得の間隔は、フィードごとに記事の出るペースから `fetch-interval.ts` で決め、記事の出る時刻に癖（枠）があれば `fetch-slots.ts` で枠の時刻に合わせる。429 ／ 503 の `Retry-After` を守る（docs/decisions/jobs.md の 7、8、11）。1 日 1 回の片付け（`clean-up.ts`）は、定期実行が日本時間 3:00 に積む。仕事は 1 つずつ積み、1 つずつ受け取る形で書く。仕事は SQLite の表（`job_queue`）に積み、同じプロセスで動かす（`src/platform/node/job-queue.ts`、docs/decisions/jobs.md）。定期実行の中身は `jobs/schedule.ts` の `runScheduled` で、プロセスの中のタイマー（`src/platform/node/scheduler.ts`）から呼ぶ。1 つの仕事が扱う量には上限を置き、残りは次の仕事か定期実行に回す（docs/decisions/jobs.md の 4）
@@ -97,7 +96,7 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 ## テスト
 
 - 振る舞いを変える変更には、それを確かめるテストを足す
-- テストは、本番と同じ道と順で呼ぶ。確かめたい処理は、本番の呼び出し元（REST API、Google Reader API、MCP のツール、ジョブなど）と同じ入口から、本番と同じ順と状態で呼ぶ（本番で別の操作のあとに呼ばれる処理は、その操作のあとに呼ぶ）。前提の状態は、本番でその処理が呼ばれるときと同じにする。本番の操作で手軽に作れるものはその操作で作り、作るのに手間のかかる状態や、失敗・割り込みを起こすときだけ、直接の書き込みや差し替えを使う。本番と違う道や順を通ると、本番でだけ起きる不具合をテストが通してしまうため
+- テストは、本番と同じ道と順で呼ぶ。確かめたい処理は、本番の呼び出し元（REST API、MCP のツール、ジョブなど）と同じ入口から、本番と同じ順と状態で呼ぶ（本番で別の操作のあとに呼ばれる処理は、その操作のあとに呼ぶ）。前提の状態は、本番でその処理が呼ばれるときと同じにする。本番の操作で手軽に作れるものはその操作で作り、作るのに手間のかかる状態や、失敗・割り込みを起こすときだけ、直接の書き込みや差し替えを使う。本番と違う道や順を通ると、本番でだけ起きる不具合をテストが通してしまうため
 - 正常の流れに加えて、次のうち当てはまるものを入れる
   - 途中で失敗する：失敗したあとに何が残るか、やり直すと正しい状態に戻るか
   - 境界のちょうど：上限・下限と同じ値、ゼロ、空

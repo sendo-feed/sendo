@@ -528,14 +528,13 @@ export async function readChanges(
       const { seq, changedId: id } = row;
       if (row.removed) return { seq, id, item: { deleted: true, id } };
       // 同じ文で読むので、受信箱の行には必ず受信箱の状態と記事がある（外部キー）
-      const { feedId, guid, publishedAt, createdAt, receivedAt, itemId } = row;
+      const { feedId, guid, publishedAt, createdAt, receivedAt } = row;
       if (
         feedId === null ||
         guid === null ||
         publishedAt === null ||
         createdAt === null ||
-        receivedAt === null ||
-        itemId === null
+        receivedAt === null
       ) {
         throw new Error(`inbox row without its article: ${id}`);
       }
@@ -550,7 +549,6 @@ export async function readChanges(
         thumbnailUrl: row.thumbnailUrl,
         publishedAt,
         createdAt,
-        itemId,
         contentKey: row.contentKey,
         readAt: row.readAt,
         starredAt: row.starredAt,

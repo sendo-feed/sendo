@@ -1,6 +1,5 @@
 import { and, asc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import { type Database, getRow } from ".";
-import { randomItemId } from "./articles";
 import { DB_NOW_MS } from "./clock";
 import { discordConnections, type Feed, feeds, subscriptions } from "./schema";
 import { nextSeq } from "./seq";
@@ -160,17 +159,16 @@ export async function insertDiscordArticles(
   articles: readonly DiscordArticle[],
 ) {
   if (articles.length === 0) return 0;
-  const rows = articles.map((row) => ({ ...row, itemId: randomItemId() }));
   const inserted = await db.all<{ id: string }>(sql`
     insert into articles (
       id, feed_id, guid, url, title, summary, author, published_at, published_time_known, created_at,
-      item_id, in_current_feed, content_key
+      in_current_feed, content_key
     )
     select
       value ->> '$.id', ${feedId}, value ->> '$.guid', value ->> '$.url',
       value ->> '$.title', value ->> '$.summary', value ->> '$.author',
-      value ->> '$.publishedAt', 1, ${DB_NOW_MS}, value ->> '$.itemId', 0, value ->> '$.contentKey'
-    from json_each(${JSON.stringify(rows)})
+      value ->> '$.publishedAt', 1, ${DB_NOW_MS}, 0, value ->> '$.contentKey'
+    from json_each(${JSON.stringify(articles)})
     where exists (
       select 1 from feeds inner join subscriptions on subscriptions.feed_id = feeds.id
       where feeds.id = ${feedId} and feeds.discord_connection_id = ${connectionId}

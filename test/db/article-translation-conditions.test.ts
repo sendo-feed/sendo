@@ -124,7 +124,7 @@ describe("訳したときの条件を足すマイグレーション", () => {
         "INSERT INTO feeds (id, url, created_at, next_fetch_at) VALUES ('f', 'https://example.com/feed', 0, 0)",
       );
       await client.execute(
-        "INSERT INTO articles (id, feed_id, guid, item_id, published_at, created_at) VALUES ('a', 'f', 'a', 1, 0, 0)",
+        "INSERT INTO articles (id, feed_id, guid, published_at, created_at) VALUES ('a', 'f', 'a', 0, 0)",
       );
       await client.execute(
         "INSERT INTO user_articles (user_id, article_id, feed_id, published_at, created_at, seq, read_seq) VALUES ('u', 'a', 'f', 0, 0, 1, 1)",
