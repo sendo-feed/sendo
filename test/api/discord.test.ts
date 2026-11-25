@@ -11,6 +11,7 @@ import { subscribeMany } from "../../src/db/subscriptions";
 import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import { enqueueDueFeeds } from "../../src/jobs/schedule";
+import { readOpml } from "../../src/opml";
 import type { Platform } from "../../src/platform";
 import { startDiscordIngestion } from "../../src/platform/node/discord-ingestion";
 import { createDiscordBotFetch } from "../../src/platform/node/discord-rest";
@@ -18,7 +19,14 @@ import { createSqliteJobQueue, LEASE_MS } from "../../src/platform/node/job-queu
 import { MIGRATIONS_DIR, openTestDatabase } from "../db";
 import { fakeDiscordGateway } from "../fixtures/discord-gateway";
 import { PNG } from "../fixtures/images";
-import { createTestPlatform, createUser, fakeFetch, requestApp, statementHook } from "../helpers";
+import {
+  createTestPlatform,
+  createUser,
+  fakeFetch,
+  requestApp,
+  statementHook,
+  subscribeFeed,
+} from "../helpers";
 
 const BASE = "/api/v1/integrations/discord";
 const ORIGIN = "https://reader.example.com";
@@ -258,6 +266,21 @@ describe("Discord の購読", () => {
       connected: true,
       subscriptions: [],
     });
+  });
+
+  it("RSS と Discord を購読していても OPML には RSS だけを書き出す", async () => {
+    const { platform } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    await subscribe(await browser(platform, user.id));
+    const rss = await subscribeFeed(platform, {
+      userId: user.id,
+      url: "https://github.blog/feed/",
+    });
+
+    const exported = await requestApp(platform, "/api/v1/opml", { token: user.token });
+    expect(exported.status).toBe(200);
+    expect(readOpml(await exported.text()).entries).toEqual([{ url: rss.url, folder: null }]);
   });
 
   it("同じチャンネルでもユーザーごとに購読し、取り込んだ投稿を他の人に渡さない", async () => {
