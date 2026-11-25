@@ -147,8 +147,8 @@ async function runServer(env: NodeEnv): Promise<void> {
 const TOKEN_USAGE = `使い方: node dist/node/sendo.mjs token:create --email <メールアドレス> [--name <用途の名前>] [--mcp [--write]]
 
   --email   トークンを持つユーザーのメールアドレス。いなければ作る
-  --name    トークンの用途の名前（例：Reeder、CLI）。既定は CLI
-  --mcp     MCP 用（/mcp でだけ使える）にする。付けなければリーダーアプリと REST API 用
+  --name    トークンの用途の名前（例：CLI、Claude Code）。既定は CLI
+  --mcp     MCP 用（/mcp でだけ使える）にする。付けなければREST API 用
   --write   MCP 用のトークンに、状態を変えるツール（購読、既読、スターなど）も許す。付けなければ読むだけ`;
 
 async function runTokenCreate(env: NodeEnv, args: string[]): Promise<void> {

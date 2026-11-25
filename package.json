@@ -2,7 +2,7 @@
   "name": "sendo",
   "version": "0.0.0",
   "private": true,
-  "description": "Fresh feeds, guided. Open-source RSS/Atom aggregator server with REST API, MCP support, and Google Reader API compatibility.",
+  "description": "Fresh feeds, guided. Open-source RSS/Atom aggregator server with REST API and MCP support.",
   "license": "UNLICENSED",
   "type": "module",
   "packageManager": "pnpm@11.28.10",

@@ -1188,7 +1188,7 @@ describe("/mcp の認証", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
 
-  it("トークンがない ／ アプリ用パスワード（リーダーアプリ用）は 401", async () => {
+  it("トークンがない ／ REST API 用のトークンは 401", async () => {
     const { platform, user } = await setup();
 
     for (const headers of [{}, { authorization: `Bearer ${user.token}` }]) {
@@ -1198,17 +1198,10 @@ describe("/mcp の認証", () => {
     }
   });
 
-  it("MCP 用のトークンは、REST API と Google Reader API では使えない", async () => {
+  it("MCP 用のトークンは REST API では使えない", async () => {
     const { platform, token } = await setup(["read", "write"]);
 
     expect((await requestApp(platform, "/api/v1/feeds", { token })).status).toBe(401);
-    const reader = await createApp(platform).request(
-      "https://sendo.example.com/reader/api/0/user-info",
-      {
-        headers: { authorization: `GoogleLogin auth=${token}` },
-      },
-    );
-    expect(reader.status).toBe(401);
   });
 
   it("ほかのサイトのページからのリクエスト（Origin が違う）は 403", async () => {

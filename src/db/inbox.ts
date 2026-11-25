@@ -447,9 +447,6 @@ export async function markArticlesRead(
   return updated.length;
 }
 
-/** まとめて状態を変える記事の指し方。REST API と MCP は記事の ID、Google Reader API はアイテムの ID */
-export type ArticleTarget = { articleIds: readonly string[] } | { itemIds: readonly number[] };
-
 /**
  * 指定した記事の既読とスターを、まとめて変える。指定しなかったほうは変えない。
  * setArticleState と同じく、すでにその状態なら時刻を変えず、既読・未読が変わったときだけ
@@ -460,7 +457,7 @@ export async function setArticlesState(
   db: Database,
   input: {
     userId: string;
-    target: ArticleTarget;
+    target: { articleIds: readonly string[] };
     read?: boolean | undefined;
     starred?: boolean | undefined;
     now: Date;
@@ -480,22 +477,12 @@ export async function setArticlesState(
     set.starredAt = input.starred ? sql`coalesce(${ua.starredAt}, ${now})` : null;
   }
 
-  const { target } = input;
-  const chunks: SQL[] =
-    "articleIds" in target
-      ? chunked(target.articleIds, null).map((chunk) => inArray(ua.articleId, [...chunk]))
-      : chunked(target.itemIds, null).map((chunk) =>
-          inArray(
-            ua.articleId,
-            db.select({ id: articles.id }).from(articles).where(inArray(articles.itemId, chunk)),
-          ),
-        );
   let updated = 0;
-  for (const match of chunks) {
+  for (const chunk of chunked(input.target.articleIds, null)) {
     const rows = await db
       .update(ua)
       .set(set)
-      .where(and(eq(ua.userId, input.userId), match))
+      .where(and(eq(ua.userId, input.userId), inArray(ua.articleId, [...chunk])))
       .returning({ articleId: ua.articleId })
       .all();
     updated += rows.length;

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, isNull, type SQL, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
 import { truncateUtf16 } from "../lib/text";
 import type { Database } from ".";
 import { chunked } from "./chunk";
@@ -158,47 +158,6 @@ export async function deleteFolder(
     .returning({ id: folders.id })
     .get();
   await detachSubscriptions(db, input.userId, eq(subscriptions.folderId, input.id));
-  return deleted !== undefined;
-}
-
-/**
- * 名前でフォルダを消す（Google Reader API の disable-tag。フォルダを名前で指す）。
- *
- * 1. その名前の、消していないフォルダに消した印を付ける
- * 2. その名前の、消した印の付いたフォルダに入っている購読を、フォルダなしに戻す
- *
- * 2 は毎回行う。1 のあとで落ちたら、やり直したときには名前のフォルダが「消したもの」になって
- * いるので、消していないフォルダだけを探すと見つからず、後片付けができない（#38 のレビュー）。
- * 消したフォルダを指したままの購読はほかにないはずなので、名前で広く外しても困らない。
- * @returns 消したら true、その名前のフォルダがなければ false
- */
-export async function deleteFolderByName(
-  db: Database,
-  input: { userId: string; name: string; now: Date },
-): Promise<boolean> {
-  const deleted = await db
-    .update(folders)
-    .set({ deletedAt: input.now, seq: nextSeq(folders) })
-    .where(and(active(input.userId), eq(folders.name, input.name)))
-    .returning({ id: folders.id })
-    .get();
-  await detachSubscriptions(
-    db,
-    input.userId,
-    inArray(
-      subscriptions.folderId,
-      db
-        .select({ id: folders.id })
-        .from(folders)
-        .where(
-          and(
-            eq(folders.userId, input.userId),
-            eq(folders.name, input.name),
-            isNotNull(folders.deletedAt),
-          ),
-        ),
-    ),
-  );
   return deleted !== undefined;
 }
 

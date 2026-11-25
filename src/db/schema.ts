@@ -50,8 +50,7 @@ export const identities = sqliteTable(
 );
 
 /**
- * アクセストークン（アプリ用パスワード）。REST API の Bearer と、リーダーアプリの
- * パスワード欄に使う。中身は持たず、SHA-256 のハッシュだけを置く。
+ * REST API と MCP のアクセストークン。中身は持たず、SHA-256 のハッシュだけを置く。
  */
 export const accessTokens = sqliteTable(
   "access_tokens",
@@ -60,14 +59,14 @@ export const accessTokens = sqliteTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    /** 用途の名前（「Reeder」「CLI」など） */
+    /** 用途の名前（「CLI」「Claude Code」など） */
     name: text("name").notNull(),
     tokenHash: text("token_hash").notNull().unique(),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     /** 最後に使った時刻。書き込みを減らすため、1 時間に 1 回だけ更新する */
     lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
     /**
-     * 用途（docs/decisions/mcp.md の 2）。reader はリーダーアプリと REST API 用（アプリ用パスワード）、
+     * 用途（docs/decisions/mcp.md の 2）。reader は REST API 用、
      * mcp は /mcp 用。用途の違う入口では使えない
      */
     purpose: text("purpose", { enum: ["reader", "mcp"] })
@@ -395,12 +394,6 @@ export const articles = sqliteTable(
     /** 取り込んだ時刻（DB の時計）。受信箱に配る範囲を決めるのに使う */
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     /**
-     * Google Reader API のアイテムの ID（docs/decisions/greader.md の 3）。1 以上 2^53 未満の乱数で、
-     * 取り込むときに db/articles.ts の insertArticles が振る。順に振らないのは、ID の飛びから
-     * ほかの人が購読しているフィードの記事の数が分からないようにするため
-     */
-    itemId: integer("item_id").notNull().default(0),
-    /**
      * フィードに入っていた本文の、置き場での名前（docs/decisions/content.md の 3）。本文がなければ
      * null。取り込むときに決まり、あとから変えない。名前は置くたびに乱数で決め、二度使わない。
      * API には、名前ではなく、本文があるかどうかだけを出す
@@ -415,7 +408,6 @@ export const articles = sqliteTable(
     // 本文のある記事だけを索引に入れる（片付けが、名前から記事の行があるかを引く）
     uniqueIndex("articles_content_key_idx").on(t.contentKey).where(sql`content_key is not null`),
     uniqueIndex("articles_feed_id_guid_idx").on(t.feedId, t.guid),
-    uniqueIndex("articles_item_id_idx").on(t.itemId),
     index("articles_feed_id_created_at_idx").on(t.feedId, t.createdAt),
     index("articles_feed_id_published_at_idx").on(t.feedId, t.publishedAt),
     index("articles_created_at_id_idx").on(t.createdAt, t.id),

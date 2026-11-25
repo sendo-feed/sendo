@@ -15,20 +15,6 @@ export type ArticleInput = Omit<NewArticle, "createdAt" | "reservedInboxBytes"> 
   createdAt?: Date;
 };
 
-/** アイテムの ID の上限（含まない）。SQLite から JavaScript の数で受け取っても丸められない範囲 */
-export const ITEM_ID_LIMIT = 2 ** 53;
-
-/**
- * Google Reader API のアイテムの ID にする、1 以上 2^53 未満の乱数（docs/decisions/greader.md の 3）。
- * 重なる見込みはとても小さいが、重なれば一意の索引で INSERT が失敗し、取得のジョブがやり直す
- * （やり直すときは別の乱数を振る。記事は guid で飛ばすので重複しない）。
- */
-export function randomItemId(): number {
-  const [high = 0, low = 0] = crypto.getRandomValues(new Uint32Array(2));
-  const value = (high & 0x1fffff) * 2 ** 32 + low;
-  return value === 0 ? 1 : value;
-}
-
 /**
  * 記事をまとめて入れる。同じフィードの同じ guid はすでにあれば飛ばす。
  *
@@ -51,7 +37,6 @@ export async function insertArticles(
           inCurrentFeed: row.inCurrentFeed === false ? sql`0` : sql`1`,
           reservedInboxBytes: sql`0`,
           createdAt: row.createdAt ?? DB_NOW_MS,
-          itemId: row.itemId ?? randomItemId(),
         })),
       )
       .onConflictDoNothing({ target: [articles.feedId, articles.guid] })

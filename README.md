@@ -50,7 +50,7 @@ Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS �
    # MCP 用なら --mcp（状態を変えるツールも使うなら --mcp --write）
    ```
 
-REST API と MCP（`https://reader.example.com/mcp`）には、sendo-reader のオリジンを使います。[廃止予定の Google Reader 互換 API](#リーダーアプリで読むgoogle-reader-api) に接続するときも、同じオリジンを使います。
+REST API と MCP（`https://reader.example.com/mcp`）には、sendo-reader のオリジンを使います。
 
 記事の中で X の公式ウィジェットを表示するには、隔離フレーム用のホスト名をもう 1 つ用意し、手前のプロキシで同じ sendo-reader のコンテナに向けます。その HTTPS オリジンを `.env` の `X_EMBED_ORIGIN` に書きます。詳しくは [sendo-reader の「記事の中の X の投稿（任意）」](https://github.com/sendo-feed/sendo-reader/blob/main/README.md#記事の中の-x-の投稿任意)を参照してください。
 
@@ -235,17 +235,7 @@ Anthropic に送るのは、訳す文（タイトル、要約、本文の文字�
 
 ### リーダーアプリで読む（Google Reader API）
 
-Google Reader 互換 API（`/accounts/ClientLogin` と `/reader/api/0/...`）は[廃止予定です](docs/decisions/greader.md)。日常の閲覧には公式の sendo-reader を使います。
-
-削除までは、対応するリーダーアプリでアカウントの種類に「FreshRSS」か「Google Reader API」を選び、現在の入口に接続できます。
-
-| 項目 | 値 |
-|---|---|
-| サーバー（URL） | Sendo の URL（手元なら `http://localhost:8787`） |
-| ユーザー名 | ユーザーのメールアドレス |
-| パスワード | アクセストークン（`sendo_` で始まるもの）。ブラウザでログインして `/api/v1/tokens` で発行するか、`pnpm token:create` で発行する。アプリごとに発行すると、あとで個別に取り消せる |
-
-既読・スター・購読・フォルダの変更は、REST API や sendo-reader と同じデータに反映されます。
+Google Reader 互換 API は[廃止しました](docs/decisions/greader.md)。購読や記事は、公式の sendo-reader を同じアカウントで開くと引き続き利用できます。
 
 ### AI エージェントからつなぐ（MCP）
 
@@ -331,7 +321,6 @@ sendo/
 │   ├── discord/        # Discord の API の呼び出し
 │   ├── feeds/          # 購読の手続き（REST API や MCP で共通）
 │   ├── fetcher/        # フィードの取得と解析、SSRF 対策
-│   ├── greader/        # Google Reader 互換 API（廃止予定）
 │   ├── mcp/            # リモート MCP サーバー（/mcp）
 │   ├── oauth/          # OAuth の認可サーバー（MCP 用。メタデータ、トークン、クライアントの登録）
 │   ├── jobs/           # 仕事の表と定期実行で動く処理

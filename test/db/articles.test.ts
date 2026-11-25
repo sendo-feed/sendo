@@ -15,9 +15,9 @@ describe("記事の公開時刻の印（docs/decisions/jobs.md の 11）", () =>
     const id = crypto.randomUUID();
     await testDb
       .prepare(
-        "INSERT INTO articles (id, feed_id, guid, published_at, created_at, item_id) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO articles (id, feed_id, guid, published_at, created_at) VALUES (?, ?, ?, ?, ?)",
       )
-      .bind(id, feed.id, "old", now.getTime(), now.getTime(), 1)
+      .bind(id, feed.id, "old", now.getTime(), now.getTime())
       .run();
 
     expect(

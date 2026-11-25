@@ -13,8 +13,7 @@ import { toFetchableUrl } from "../fetcher/url-guard";
 import type { Platform } from "../platform";
 
 /*
- * URL から購読する手続き。REST API、Google Reader API、MCP で同じものを使う
- * （docs/decisions/greader.md の 5。同じ処理を 2 か所に書かない）。
+ * URL から購読する手続き。REST API と MCP で同じものを使う。
  */
 
 /**

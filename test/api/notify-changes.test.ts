@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { createApp } from "../../src/app";
 import { insertArticles } from "../../src/db/articles";
 import type { Platform } from "../../src/platform";
 import {
@@ -74,33 +73,6 @@ describe("状態を変えるリクエストの後の知らせ", () => {
     expect(recording.notified).toEqual([]);
   });
 
-  it("Google Reader API：成功した書き込みを、その利用者に知らせる", async () => {
-    const user = await createUser();
-    const recording = recordingSyncUpdates();
-    const { platform } = createTestPlatform({ syncUpdates: recording.syncUpdates });
-    const feed = await subscribeFeed(platform, { userId: user.id });
-    const send = (path: string, form?: Record<string, string>) =>
-      createApp(platform).request(`https://sendo.example.com${path}`, {
-        method: form ? "POST" : "GET",
-        headers: {
-          authorization: `GoogleLogin auth=${user.token}`,
-          ...(form && { "content-type": "application/x-www-form-urlencoded" }),
-        },
-        ...(form && { body: new URLSearchParams(form).toString() }),
-      });
-
-    await send("/reader/api/0/subscription/list");
-    expect(recording.notified).toEqual([]);
-
-    const res = await send("/reader/api/0/subscription/edit", {
-      ac: "edit",
-      s: `feed/${feed.id}`,
-      t: "ニュース",
-    });
-    expect(res.status).toBe(200);
-    expect(recording.notified).toEqual([user.id]);
-  });
-
   it("REST API：既読・スターを変えても、知らせるのは入口の 1 回だけ", async () => {
     const user = await createUser();
     const recording = recordingSyncUpdates();
@@ -122,27 +94,6 @@ describe("状態を変えるリクエストの後の知らせ", () => {
     });
     expect(marked.status).toBe(200);
     expect(recording.notified).toEqual([user.id, user.id]);
-  });
-
-  it("Google Reader API：すべて既読にしても、知らせるのは入口の 1 回だけ", async () => {
-    const user = await createUser();
-    const recording = recordingSyncUpdates();
-    const { platform } = createTestPlatform({ syncUpdates: recording.syncUpdates });
-    await inboxArticle(platform, user.id);
-
-    const res = await createApp(platform).request(
-      "https://sendo.example.com/reader/api/0/mark-all-as-read",
-      {
-        method: "POST",
-        headers: {
-          authorization: `GoogleLogin auth=${user.token}`,
-          "content-type": "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({ s: "user/-/state/com.google/reading-list" }).toString(),
-      },
-    );
-    expect(res.status).toBe(200);
-    expect(recording.notified).toEqual([user.id]);
   });
 
   it("知らせに失敗しても、書き込みの応答は成功のまま返す", async () => {
