@@ -1,5 +1,6 @@
 import { type AuthInfo, McpServer, requireScopes } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { toWorkspaceResponse, WorkspaceSchema } from "../api/schemas";
 import { listActivity } from "../db/activity";
 import {
   createFolder,
@@ -26,6 +27,13 @@ import {
   unsubscribe,
   updateSubscription,
 } from "../db/subscriptions";
+import {
+  createWorkspace,
+  deleteWorkspace,
+  listWorkspaces,
+  MAX_WORKSPACE_NAME_LENGTH,
+  renameWorkspace,
+} from "../db/workspaces";
 import { FeedDisplayNameInput } from "../feeds/display-name";
 import { subscribeToUrl } from "../feeds/subscribe";
 import { DiscoverError } from "../fetcher/discover";
@@ -39,9 +47,9 @@ import { MCP_ICON_PATH, MCP_ICON_SIZE, MCP_ICON_TYPE } from "./icon";
 /*
  * MCP のツール（docs/decisions/mcp.md の 6、8、9）。
  *
- * - read の範囲で使えるもの：list_feeds、list_folders、list_articles、list_activity、search_articles、get_unread、get_article
+ * - read の範囲で使えるもの：list_feeds、list_folders、list_workspaces、list_articles、list_activity、search_articles、get_unread、get_article
  * - write の範囲が要るもの：subscribe、move_feed、rename_feed、unsubscribe、mark_read、star、
- *   create_folder、rename_folder、delete_folder。read だけのトークンで呼ばれたら、
+ *   create_folder、rename_folder、delete_folder、create_workspace、rename_workspace、delete_workspace。read だけのトークンで呼ばれたら、
  *   SDK が 403 insufficient_scope を返す（scopeChallenge）
  *
  * 記事のタイトル・要約・著者は、誰でも書けるフィードから来る。結果は構造化した JSON で返して
@@ -681,6 +689,95 @@ export function createMcpServer(
       `フォルダの名前。前後の空白を除き、空白の並びを 1 つにまとめ、${MAX_FOLDER_NAME_LENGTH} 文字までに切り詰める`,
     );
   const FolderOutputSchema = z.object({ id: z.string(), name: z.string() });
+
+  const workspaceIdInput = z.string().min(1).max(64).describe("list_workspaces で調べた ID");
+  const workspaceNameInput = z
+    .string()
+    .trim()
+    .min(1)
+    .max(MAX_WORKSPACE_NAME_LENGTH)
+    .describe(`名前。前後の空白を除いて 1〜${MAX_WORKSPACE_NAME_LENGTH} 文字`);
+  const workspaceOutputSchema = z.object({ workspace: WorkspaceSchema });
+
+  server.registerTool(
+    "list_workspaces",
+    {
+      title: "ワークスペースの一覧",
+      description:
+        "有効なワークスペースを名前順で返す。名前が指定されたときはこの一覧で ID を調べる。",
+      outputSchema: z.object({ workspaces: z.array(WorkspaceSchema) }),
+      annotations: { readOnlyHint: true },
+    },
+    async () => result({ workspaces: (await listWorkspaces(db, userId)).map(toWorkspaceResponse) }),
+  );
+
+  server.registerTool(
+    "create_workspace",
+    {
+      title: "ワークスペースを作る",
+      description:
+        "利用者に頼まれたときだけ使う。同じ名前のワークスペースがあればエラーになる。応答が届かなければ list_workspaces で名前を確認する。",
+      inputSchema: z.object({ name: workspaceNameInput }),
+      outputSchema: workspaceOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      scopeChallenge: writeScope,
+    },
+    async ({ name }) => {
+      const created = await createWorkspace(db, {
+        userId,
+        id: crypto.randomUUID(),
+        name,
+        now: platform.now(),
+      });
+      if (created === "name_taken")
+        return failure("workspace_exists: workspace name is already used");
+      if (created === "id_taken") return failure("workspace_id_taken: workspace id is unavailable");
+      if (created.created) await changed();
+      return result({ workspace: toWorkspaceResponse(created.workspace) });
+    },
+  );
+
+  server.registerTool(
+    "rename_workspace",
+    {
+      title: "ワークスペースの名前を変える",
+      description: "利用者に頼まれたときだけ使う。list_workspaces で調べた ID と新しい名前を渡す。",
+      inputSchema: z.object({ workspaceId: workspaceIdInput, name: workspaceNameInput }),
+      outputSchema: workspaceOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      scopeChallenge: writeScope,
+    },
+    async ({ workspaceId, name }) => {
+      const renamed = await renameWorkspace(db, { userId, id: workspaceId, name });
+      if (renamed === "not_found") return failure("workspace_not_found: workspace does not exist");
+      if (renamed === "name_taken") {
+        return failure("workspace_exists: workspace name is already used");
+      }
+      if (renamed.renamed) await changed();
+      return result({ workspace: toWorkspaceResponse(renamed.workspace) });
+    },
+  );
+
+  server.registerTool(
+    "delete_workspace",
+    {
+      title: "ワークスペースを削除する",
+      description: "利用者に頼まれたときだけ使う。有効な購読が 0 件のワークスペースを削除する。",
+      inputSchema: z.object({ workspaceId: workspaceIdInput }),
+      outputSchema: z.object({ deleted: z.literal(true) }),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      scopeChallenge: writeScope,
+    },
+    async ({ workspaceId }) => {
+      const deleted = await deleteWorkspace(db, { userId, id: workspaceId, now: platform.now() });
+      if (deleted === "not_found") return failure("workspace_not_found: workspace does not exist");
+      if (deleted === "not_empty") {
+        return failure("workspace_not_empty: workspace still has subscriptions");
+      }
+      if (deleted === "deleted") await changed();
+      return result({ deleted: true as const });
+    },
+  );
 
   server.registerTool(
     "create_folder",
