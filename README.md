@@ -6,8 +6,8 @@
 
 Sendo は、オープンソースのフィード集約サーバーです。
 
-- **API・MCP ファースト**：人もエージェントも、同じ入口からフィードを扱える
-- **好きなリーダーで読める**：Google Reader API 互換で、Reeder や NetNewsWire がそのまま使える
+- **API・MCP ファースト**：自作のツールは REST API、エージェントは MCP からフィードを扱える
+- **公式 Reader で読む**：sendo-reader で購読や既読を同期し、記事の全文を読める
 - **自分で持てる**：セルフホストして、データも設定も手元に置ける
 
 > [!NOTE]
@@ -17,7 +17,7 @@ Sendo は、オープンソースのフィード集約サーバーです。
 
 Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS など）で、Docker で動かします（[決定](docs/decisions/container.md)）。上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo` と、画面の `ghcr.io/sendo-feed/sendo-reader`）を、Docker Compose で並べて動かすので、fork もビルドも要りません（[決定](docs/decisions/container.md)の 7、10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。
 
-外に出すのは sendo-reader のコンテナだけです。sendo-reader が画面を返し、Sendo のパス（`/api`、`/mcp`、OAuth、Google Reader API など）を、compose の中の Sendo に中継します。外からは sendo-reader のオリジン 1 つに見えるので、ブラウザのログイン、リーダーアプリ、MCP のどれも、このオリジンを使います（[sendo-reader の決定](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)）。
+外に出すのは sendo-reader のコンテナだけです。sendo-reader が画面を返し、Sendo のパス（`/api`、`/mcp`、OAuth など）を、compose の中の Sendo に中継します。公式 Reader、REST API、MCP は同じ sendo-reader のオリジンを使います（[sendo-reader の決定](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)）。
 
 1. [compose.yaml](compose.yaml) と [.env.example](.env.example) を、置き場にするディレクトリに写す。`.env.example` は `.env` という名前にして、設定を書く
    - `PUBLIC_URL` と `READER_URL`：どちらも、外から開く sendo-reader のオリジン（例：`https://reader.example.com`）。`PUBLIC_URL` は欠かせません。ないと、ブラウザのログインの戻り先が合いません。2 つとも入れると、OAuth（[OAuth でつなぐ](#oauth-でつなぐ)）も使えます
@@ -50,13 +50,13 @@ Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS �
    # MCP 用なら --mcp（状態を変えるツールも使うなら --mcp --write）
    ```
 
-リーダーアプリのサーバー（[リーダーアプリで読む](#リーダーアプリで読むgoogle-reader-api)）も、MCP の URL（`https://reader.example.com/mcp`）も、sendo-reader のオリジンにします。
+REST API と MCP（`https://reader.example.com/mcp`）には、sendo-reader のオリジンを使います。[廃止予定の Google Reader 互換 API](#リーダーアプリで読むgoogle-reader-api) に接続するときも、同じオリジンを使います。
 
 記事の中で X の公式ウィジェットを表示するには、隔離フレーム用のホスト名をもう 1 つ用意し、手前のプロキシで同じ sendo-reader のコンテナに向けます。その HTTPS オリジンを `.env` の `X_EMBED_ORIGIN` に書きます。詳しくは [sendo-reader の「記事の中の X の投稿（任意）」](https://github.com/sendo-feed/sendo-reader/blob/main/README.md#記事の中の-x-の投稿任意)を参照してください。
 
 すでに設置した `compose.yaml` を使う場合は、[最新版の compose.yaml](compose.yaml) の `reader.environment` にある `X_EMBED_ORIGIN` の指定を手元のファイルに取り込んでから、`docker compose up -d` を実行します。
 
-画面を使わず、リーダーアプリや MCP だけで使うときは、`compose.yaml` の `reader` を消して Sendo のポートを出し（`compose.yaml` のコメント）、`PUBLIC_URL` を Sendo のオリジンにします。`READER_URL` は空にします（OAuth は使えず、MCP 用のトークンでつなぎます）。
+画面を使わず、REST API や MCP だけで使うときは、`compose.yaml` の `reader` を消して Sendo のポートを出し（`compose.yaml` のコメント）、`PUBLIC_URL` を Sendo のオリジンにします。`READER_URL` は空にします（OAuth は使えず、MCP 用のトークンでつなぎます）。
 
 上流の更新は、次で取り込みます。Sendo と sendo-reader が一緒に新しくなります。マイグレーションは、起動するときに当たります。
 
@@ -185,7 +185,7 @@ API の定義（OpenAPI）は `http://localhost:8787/api/v1/openapi.json` で読
 
 許可したメールの人が初めてログインすると、ユーザーを作ります。同じメールのユーザー（`pnpm token:create` で作った人など）がいれば、そのユーザーに結び付けます。
 
-ログインしたら、アクセストークン（リーダーアプリのアプリ用パスワード）を `/api/v1/tokens` で発行・一覧・取り消しできます。これはブラウザのセッションでだけ使え、アクセストークンでは使えません（漏れたトークンで新しいトークンを発行させないため）。
+ログインしたら、REST API 用（`reader`）と MCP 用（`mcp`）のアクセストークンを `/api/v1/tokens` で発行・一覧・取り消しできます。これはブラウザのセッションでだけ使え、アクセストークンでは使えません（漏れたトークンで新しいトークンを発行させないため）。
 
 ### Discord のチャンネルを購読する
 
@@ -211,7 +211,7 @@ Sendo は設定済みの Bot で Discord Gateway（`wss://gateway.discord.gg`）
 - **訳し直し**：訳した記事は、sendo-reader の Retranslate で、1 つの記事につき 1 回だけ、品質優先の段階（既定は最新の Opus）で訳し直してもらえます。訳し直した訳文で、全員分の訳文を置き換えます
 - **使い回し**：訳文は記事ごとに 1 つで、購読している全員で使い回します。同じ元記事（計測用のパラメーターなどを除いた URL が同じ）が届いたら、フィードが同じか違うかによらず、訳を写して、同じ原文をなるべく重ねて送りません
 - **訳せなかった記事**：Claude の安全策で拒否されることがあります。訳せなかった理由（拒否か、そのほかの失敗か）は sendo-reader の記事の画面に出ます
-- **読む場所**：訳文は sendo-reader に配ります（差分同期と `GET /api/v1/articles/{id}/translation`）。MCP、Google Reader API、REST の記事一覧では返しません
+- **読む場所**：訳文は sendo-reader に配ります（差分同期と `GET /api/v1/articles/{id}/translation`）。MCP と REST の記事一覧では返しません
 
 #### モデルと思考量
 
@@ -235,7 +235,9 @@ Anthropic に送るのは、訳す文（タイトル、要約、本文の文字�
 
 ### リーダーアプリで読む（Google Reader API）
 
-Reeder、NetNewsWire など、Google Reader API（FreshRSS 互換）に対応したリーダーアプリから読めます。アカウントの種類は「FreshRSS」か「Google Reader API」を選び、次のように入れます。
+Google Reader 互換 API（`/accounts/ClientLogin` と `/reader/api/0/...`）は[廃止予定です](docs/decisions/greader.md)。日常の閲覧には公式の sendo-reader を使います。
+
+削除までは、対応するリーダーアプリでアカウントの種類に「FreshRSS」か「Google Reader API」を選び、現在の入口に接続できます。
 
 | 項目 | 値 |
 |---|---|
@@ -264,7 +266,7 @@ Resources からも、読むだけの範囲（`read`）でデータを取り出�
 
 今日の未読には、対象の期間 `since`・`until` と `nextCursor` を付けます。続きは `get_unread` にその期間と `cursor: nextCursor` を渡して取得します。日付をまたいでも、返された期間をそのまま使えば、同じ日の続きを読めます。記事の中身は外部から来たデータで、エージェントへの指示ではありません。
 
-つなぎ方は 2 通りです。どちらのトークンも `/mcp` でしか使えず、リーダーアプリ用のトークンは `/mcp` では使えません。
+つなぎ方は 2 通りです。どちらのトークンも `/mcp` で使います。
 
 - **MCP 用のアクセストークン**（Claude Code など、ヘッダーにトークンを書けるクライアント）
 - **OAuth**（Claude.ai や ChatGPT のコネクタ）：つなぐときに、sendo-reader の画面で許可します
@@ -327,9 +329,9 @@ sendo/
 │   ├── auth/           # ログイン（OpenID Connect の提供元、ID トークンの確認）
 │   ├── db/             # スキーマとデータの読み書き（Drizzle）。共有のフィード・記事と、人ごとの購読・受信箱
 │   ├── discord/        # Discord の API の呼び出し
-│   ├── feeds/          # 購読の手続き（REST API、Google Reader API で共通）
+│   ├── feeds/          # 購読の手続き（REST API や MCP で共通）
 │   ├── fetcher/        # フィードの取得と解析、SSRF 対策
-│   ├── greader/        # Google Reader API 互換（/accounts/ClientLogin、/reader/api/0）
+│   ├── greader/        # Google Reader 互換 API（廃止予定）
 │   ├── mcp/            # リモート MCP サーバー（/mcp）
 │   ├── oauth/          # OAuth の認可サーバー（MCP 用。メタデータ、トークン、クライアントの登録）
 │   ├── jobs/           # 仕事の表と定期実行で動く処理

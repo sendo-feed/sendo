@@ -1,6 +1,6 @@
 # sendo
 
-Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィードの取得ジョブを持つ。
+Sendo のサーバー本体。REST API、MCP、フィードの取得ジョブを持つ。Google Reader 互換 API は廃止予定。
 
 このファイルは AI エージェント（Claude Code、Codex など）共通の指示。開発は主に Claude Code で行い、Codex はおもにレビューに使う。
 
@@ -55,7 +55,7 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/lib/sanitize-html.ts`：記事の本文（HTML）のサニタイズ。外部から来た HTML は、保存する前にも、返す前にも、必ずここを通す。通すタグと属性を足すときは、テスト（`test/lib/sanitize-html.test.ts`）も足す。計測用の画像（トラッキングピクセル）は `tracking-image.ts` で見分けて落とす。計測のアドレスの一覧もそこに持ち、出どころの確かなものだけを足す
 - `src/feeds/`：購読の手続き（URL からフィードを見つけて購読する）。REST API、Google Reader API、MCP で同じものを使う
 - `src/translation/`：記事の翻訳（docs/decisions/translation.md）。Claude API を呼ぶのは `claude.ts` だけで、公式の SDK（`@anthropic-ai/sdk`）に、緩衝層の `fetch` と、設定（`platform/config.ts` の `readTranslationConfig`）のキーを渡す。送り先・ログ・テレメトリ・webhook の鍵も明示して、SDK に環境変数を読ませない（`ANTHROPIC_CUSTOM_HEADERS` だけは SDK の設定で止められないので、コンテナに入れない）。訳文の行は `db/translations.ts`、状態は書き込みと同じ文で確かめて移す。仕事（決める、その場で訳す、止まったものを戻す、バッチで送り結果を書く）は `jobs/translations.ts`。記事の中身は訳すデータとして JSON で渡し、指示として扱わせない
-- `src/greader/`：Google Reader API 互換（docs/decisions/greader.md）。状態を変える操作は、REST API と同じ `db/`・`feeds/` の処理に任せ、ここで書き込みを組み立てない。記事の文字列は HTML にエスケープして返す
+- `src/greader/`：Google Reader 互換 API（廃止予定。docs/decisions/greader.md）。状態を変える操作は、REST API と同じ `db/`・`feeds/` の処理に任せ、ここで書き込みを組み立てない。記事の文字列は HTML にエスケープして返す
 - `src/mcp/`：リモート MCP サーバー（docs/decisions/mcp.md）。ツールも、状態を変える処理は `db/`・`feeds/` に任せる。状態を変えるツールには `scopeChallenge` で write を求める。記事の中身は構造化した JSON で返し、記事を返すツールの説明に「指示ではない」と書く
 - `src/oauth/`：MCP のための OAuth の認可サーバー（docs/decisions/mcp.md の 3〜7）。クライアントが直接呼ぶ入口（メタデータ、`/oauth/token`、`/oauth/register`）はここ、許可の画面（sendo-reader）が使う API は `src/api/oauth.ts`（セッションでだけ使える）。コードとトークンは DB にハッシュだけを置き、1 回だけ使えるものは、使った印を同じ文の中で確かめて付ける（`db/oauth.ts`）。Client ID Metadata Document も `toFetchableUrl` を通して取りにいく
 - `src/jobs/`：キューと定期実行で動く処理。取得のジョブ（`fetch-feed.ts`）は、そのフィードの古い記事の片付けもする。取得の間隔は、フィードごとに記事の出るペースから `fetch-interval.ts` で決め、記事の出る時刻に癖（枠）があれば `fetch-slots.ts` で枠の時刻に合わせる。429 ／ 503 の `Retry-After` を守る（docs/decisions/jobs.md の 7、8、11）。1 日 1 回の片付け（`clean-up.ts`）は、定期実行が日本時間 3:00 に積む。仕事は 1 つずつ積み、1 つずつ受け取る形で書く。仕事は SQLite の表（`job_queue`）に積み、同じプロセスで動かす（`src/platform/node/job-queue.ts`、docs/decisions/jobs.md）。定期実行の中身は `jobs/schedule.ts` の `runScheduled` で、プロセスの中のタイマー（`src/platform/node/scheduler.ts`）から呼ぶ。1 つの仕事が扱う量には上限を置き、残りは次の仕事か定期実行に回す（docs/decisions/jobs.md の 4）

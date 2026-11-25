@@ -54,7 +54,7 @@ sendo-reader の CSP は、画像を同じオリジンと `data:` に限る（`i
 9. **API では、中継を通る URL にして返す。**
    - 記事の `thumbnailUrl` とフィードの `iconUrl` に載せる。値は `/api/v1/images?url=…&sig=…` の形のパス（オリジンは付けない）か null
    - REST API の記事とフィード、差分同期（`GET /api/v1/sync`）の記事とフィードに載せる。クライアントは URL を組み立てず、受け取ったものをそのまま使う
-   - Google Reader API と MCP には載せない
+   - MCP には載せない。廃止予定の Google Reader 互換 API にも削除までは載せない
 10. **サムネイルは記事を取り込むときに決める。** 取り込み済みの記事にはさかのぼって付けない。アイコンはフィードを取得する際に、8 の間隔で探す（Discord のフィードは [Discord チャンネルの購読](discord.md)の 7 に従う）。
 
 ## 理由
