@@ -928,12 +928,25 @@
             "type": "string"
           },
           "subscriptionId": {
-            "type": "string",
-            "description": "鳴らす購読の ID。購読し直すと変わる"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "鳴らす購読の ID。購読し直すと変わる。購読のないベルは null"
           },
           "feedId": {
-            "type": "string",
-            "description": "鳴らす購読のフィードの ID"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "鳴らす購読のフィードの ID。購読のないベルは null"
+          },
+          "words": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "当てる言葉（半角の空白区切り）。言葉のないベルは null。今は常に null"
           },
           "createdAt": {
             "type": "string",
@@ -944,6 +957,7 @@
           "id",
           "subscriptionId",
           "feedId",
+          "words",
           "createdAt"
         ]
       },

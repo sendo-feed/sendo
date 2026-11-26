@@ -1741,7 +1741,13 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     const recording = recordingSyncUpdates();
     const platform = { ...base, syncUpdates: recording.syncUpdates };
     const { client } = await connect(platform, await mcpToken(user.id, ["read", "write"]), era);
-    type Bell = { id: string; subscriptionId: string; feedId: string; createdAt: string };
+    type Bell = {
+      id: string;
+      subscriptionId: string | null;
+      feedId: string | null;
+      words: string | null;
+      createdAt: string;
+    };
     const call = async <T>(name: string, args: Record<string, unknown>) =>
       (await client.callTool({ name, arguments: args })) as Structured<T> & {
         content: { type: string; text: string }[];
@@ -1754,6 +1760,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
         id: expect.any(String),
         subscriptionId: subscription?.id,
         feedId: feed.id,
+        words: null,
         createdAt: expect.any(String),
       },
       created: true,

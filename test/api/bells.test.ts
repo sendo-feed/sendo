@@ -18,7 +18,13 @@ import {
 const rss = `<rss version="2.0"><channel><title>Blog</title>
 <link>https://example.com/</link><item><title>Post</title></item></channel></rss>`;
 
-type Bell = { id: string; subscriptionId: string; feedId: string; createdAt: string };
+type Bell = {
+  id: string;
+  subscriptionId: string | null;
+  feedId: string | null;
+  words: string | null;
+  createdAt: string;
+};
 type SyncBell = (Bell & { deleted: false }) | { id: string; deleted: true };
 type SyncPage = { cursor: string; hasMore: boolean; bells?: SyncBell[] };
 
@@ -81,6 +87,7 @@ describe("ベルの付け外し（REST API）", () => {
       id: expect.stringMatching(/^[0-9a-f-]{36}$/),
       subscriptionId: feed.subscriptionId,
       feedId: feed.id,
+      words: null,
       createdAt: expect.any(String),
     });
     expect(notified).toEqual([user.id]);

@@ -150,8 +150,17 @@ export function toWorkspaceResponse(
 export const BellSchema = z
   .object({
     id: z.string(),
-    subscriptionId: z.string().openapi({ description: "鳴らす購読の ID。購読し直すと変わる" }),
-    feedId: z.string().openapi({ description: "鳴らす購読のフィードの ID" }),
+    subscriptionId: z
+      .string()
+      .nullable()
+      .openapi({ description: "鳴らす購読の ID。購読し直すと変わる。購読のないベルは null" }),
+    feedId: z
+      .string()
+      .nullable()
+      .openapi({ description: "鳴らす購読のフィードの ID。購読のないベルは null" }),
+    words: z.string().nullable().openapi({
+      description: "当てる言葉（半角の空白区切り）。言葉のないベルは null。今は常に null",
+    }),
     createdAt: dateTime,
   })
   .openapi("Bell");
@@ -161,6 +170,7 @@ export function toBellResponse(bell: ActiveBell): z.infer<typeof BellSchema> {
     id: bell.id,
     subscriptionId: bell.subscriptionId,
     feedId: bell.feedId,
+    words: null,
     createdAt: bell.createdAt.toISOString(),
   };
 }
