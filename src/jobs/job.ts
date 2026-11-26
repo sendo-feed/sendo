@@ -70,10 +70,16 @@ export const jobSchema = z.discriminatedUnion("type", [
     registrationId: z.string().min(1),
   }),
   /**
-   * 閉じた窓のまとめを作って送る（docs/decisions/notifications.md の 13）。定期実行が、Web Push を
-   * 使えるときに 5 分おきに積む
+   * 1 つの窓のまとめを作って送る（docs/decisions/notifications.md の 13）。取得の仕事が、窓の最初の
+   * bundled の通知の記事の行を作ったときに、窓が閉じる時刻を指定して積む。windowStart は窓の
+   * 始まり（ミリ秒）
    */
-  z.object({ type: z.literal("bundle-bell-notifications") }),
+  z.object({
+    type: z.literal("bundle-bell-notifications"),
+    userId: z.string().min(1),
+    bellId: z.string().min(1),
+    windowStart: z.int().nonnegative(),
+  }),
   /** 記事のページから本文を抜く（docs/decisions/content.md の 10）。取得の仕事のあとで積む */
   z.object({ type: z.literal("extract-page"), articleId: z.string().min(1) }),
   z.object({

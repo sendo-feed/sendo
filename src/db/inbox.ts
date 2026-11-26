@@ -490,16 +490,23 @@ export async function setArticlesState(
   return updated;
 }
 
-/** フィードごとの未読の数。未読のないフィードは含まない */
-export async function countUnreadByFeed(
+/**
+ * 受信箱の未読の数。byFeed はフィードごとの数（未読のないフィードは含まない）、total はその合計。
+ * total は GET /api/v1/unread-counts の total と、ベルの通知の app_badge（docs/decisions/
+ * notifications.md の 14）で使い、どちらも同じ数え方にする
+ */
+export async function countUnread(
   db: Database,
   userId: string,
-): Promise<Map<string, number>> {
+): Promise<{ total: number; byFeed: Map<string, number> }> {
   const rows = await db
     .select({ feedId: ua.feedId, unread: count() })
     .from(ua)
     .where(and(eq(ua.userId, userId), isNull(ua.readAt)))
     .groupBy(ua.feedId)
     .all();
-  return new Map(rows.map((row) => [row.feedId, row.unread]));
+  return {
+    total: rows.reduce((sum, row) => sum + row.unread, 0),
+    byFeed: new Map(rows.map((row) => [row.feedId, row.unread])),
+  };
 }

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "561a44c5-c59e-4056-9c50-39e4f8078f1a",
+  "id": "10c7409f-2c82-46a8-86ff-98dca3cb596f",
   "prevId": "715fdead-1600-4016-95f2-a4fed6f31989",
   "tables": {
     "access_tokens": {
@@ -1151,14 +1151,6 @@
             "created_at"
           ],
           "isUnique": false
-        },
-        "bell_notifications_bundled_idx": {
-          "name": "bell_notifications_bundled_idx",
-          "columns": [
-            "window_start"
-          ],
-          "isUnique": false,
-          "where": "\"bell_notifications\".\"state\" = 'bundled'"
         },
         "bell_notifications_created_at_idx": {
           "name": "bell_notifications_created_at_idx",

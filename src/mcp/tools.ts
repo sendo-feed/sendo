@@ -16,7 +16,7 @@ import {
 } from "../db/folders";
 import {
   type ArticleCursor,
-  countUnreadByFeed,
+  countUnread,
   getInboxArticle,
   type InboxArticle,
   listInbox,
@@ -288,7 +288,7 @@ export function createMcpServer(
 
   const readFeeds = async () => {
     const subscriptions = await listSubscriptions(db, userId);
-    const unread = await countUnreadByFeed(db, userId);
+    const { byFeed: unread } = await countUnread(db, userId);
     return {
       feeds: subscriptions.map((s) => ({
         id: s.feed.id,

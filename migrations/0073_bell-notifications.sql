@@ -17,5 +17,4 @@ CREATE UNIQUE INDEX `bell_notifications_article_id_user_id_idx` ON `bell_notific
 CREATE UNIQUE INDEX `bell_notifications_bundle_idx` ON `bell_notifications` (`user_id`,`bell_id`,`window_start`) WHERE "bell_notifications"."article_id" is null;--> statement-breakpoint
 CREATE INDEX `bell_notifications_bell_id_window_start_idx` ON `bell_notifications` (`bell_id`,`window_start`);--> statement-breakpoint
 CREATE INDEX `bell_notifications_user_id_created_at_idx` ON `bell_notifications` (`user_id`,`created_at`);--> statement-breakpoint
-CREATE INDEX `bell_notifications_bundled_idx` ON `bell_notifications` (`window_start`) WHERE "bell_notifications"."state" = 'bundled';--> statement-breakpoint
 CREATE INDEX `bell_notifications_created_at_idx` ON `bell_notifications` (`created_at`);

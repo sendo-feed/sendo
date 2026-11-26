@@ -1,28 +1,29 @@
 import {
+  BELL_WINDOW_MS,
   type BellHit,
+  type BellWindow,
   type CreatedNotification,
   findBellHits,
-  findClosedWindows,
   insertArticleNotifications,
   insertBundleNotification,
-  MAX_BUNDLES_PER_JOB,
   type PushDelivery,
   readBundledArticles,
   readPushDelivery,
 } from "../db/bell-notifications";
-import { countUnreadByFeed } from "../db/inbox";
+import { countUnread } from "../db/inbox";
 import { deletePushRegistrationById, listPushRegistrations } from "../db/push-registrations";
 import { parseRetryAfter } from "../fetcher/fetch-feed";
 import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
 import { loggableError } from "../lib/log-error";
 import { type BellNotification, BUNDLE_LINES, buildNotificationPayload } from "../notify/payload";
-import { vapidAuthorization } from "../notify/vapid";
+import { discardRefusedVapidToken, vapidAuthorization } from "../notify/vapid";
 import { encryptPushMessage } from "../notify/web-push";
 import type { Platform } from "../platform";
 
 /*
  * ベルの通知（docs/decisions/notifications.md の 8〜13、21、22）。取得の仕事が、取り込んだ記事を
- * 判定して通知の行を作り、送る行なら端末ごとに送る仕事を積む。送る仕事は、送るときに中身を
+ * 判定して通知の記事の行を作り、送る行なら端末ごとに送る仕事を積む。窓の 4 件目（最初の bundled）
+ * の行を作ったら、窓が閉じる時刻を指定して、まとめの仕事を積む。送る仕事は、送るときに中身を
  * 組み立てて、Web Push で送る。
  */
 
@@ -53,8 +54,10 @@ export type IngestedArticle = {
  *
  * - Web Push が使えない設定なら、何もしない
  * - 判定する記事は、公開日時の新しい順に 50 件まで。行は、公開日時の古い順に 1 件ずつ作る
- * - 判定や積むのに失敗しても、取得の仕事は失敗にしない（その回の通知は出ないことがある）。行を
- *   作るか積むのに失敗した記事は飛ばし、残りの記事を続ける
+ * - 窓の最初の bundled の行を作ったら、窓が閉じる時刻に、その窓のまとめの仕事を積む
+ * - 判定や積むのに失敗しても、取得の仕事は失敗にしない（その回の通知は出ないことがある。まとめの
+ *   仕事を積む前に落ちたら、その窓のまとめは出ない）。行を作るか積むのに失敗した記事は飛ばし、
+ *   残りの記事を続ける
  *
  * @param previousSuccessAt 今回より前に、このフィードの取得に最後に成功した時刻
  */
@@ -83,12 +86,17 @@ export async function notifyBells(
     const found = hits.filter((hit) => hit.articleId === article.id);
     if (found.length === 0) continue;
     try {
-      const created = await insertArticleNotifications(platform.db, {
+      const { created, bundles } = await insertArticleNotifications(platform.db, {
         articleId: article.id,
         publishedAt: article.dated ? article.publishedAt : null,
         hits: found,
       });
       await enqueueSends(platform, created);
+      for (const window of bundles) {
+        await platform.jobs.enqueue([{ type: "bundle-bell-notifications", ...window }], {
+          runAt: new Date(window.windowStart + BELL_WINDOW_MS),
+        });
+      }
     } catch (error) {
       console.error("could not notify bells", {
         articleId: article.id,
@@ -99,18 +107,18 @@ export async function notifyBells(
 }
 
 /**
- * 閉じた窓を拾い、窓ごとにまとめの行を作って、送る行なら端末ごとに送る仕事を積む（docs/decisions/
- * notifications.md の 13）。定期実行が 5 分おきに積む。1 回に拾う窓は 100 個まで。まとめの行を作って
- * から積む前に落ちたら、そのまとめは出ない（窓にまとめの行があるので、拾い直さない）
+ * 1 つの窓の通知のまとめの行を作り、送る行なら端末ごとに送る仕事を積む（docs/decisions/
+ * notifications.md の 13）。取得の仕事が、窓が閉じる時刻を指定して積んだ仕事で動く。同じ窓の仕事が
+ * 2 度動いても、まとめの行は窓に 1 つなので 1 通になる。まとめの行を作ってから積む前に落ちたら、
+ * そのまとめは出ない（やり直した仕事は、窓にまとめの行があるので作らない）
  */
-export async function runBundleBellNotifications(
+export async function runBundleBellNotification(
   platform: Pick<Platform, "db" | "jobs" | "push">,
+  window: BellWindow,
 ): Promise<void> {
   if (!platform.push) return;
-  for (const window of await findClosedWindows(platform.db, MAX_BUNDLES_PER_JOB)) {
-    const created = await insertBundleNotification(platform.db, window);
-    if (created) await enqueueSends(platform, [created]);
-  }
+  const created = await insertBundleNotification(platform.db, window);
+  if (created) await enqueueSends(platform, [created]);
 }
 
 /** 作った行のうち sent のものについて、その人の端末ごとに送る仕事を積む */
@@ -137,12 +145,14 @@ async function enqueueSends(
 
 /**
  * 通知の行 1 つを、端末 1 つに送る。中身は送るときに組み立てる。登録の行がもうない、セッションの
- * 期限が切れた、ベルが外された、のどれかなら送らない。
+ * 期限が切れた、ベルが外された、記事がもう受信箱に未読でない（まとめは、未読の記事が 1 件もない）、
+ * のどれかなら送らない。
  *
  * - 404 ／ 410、内部のアドレス：登録を行の ID で消し、やり直さない
  * - 429 ／ 503 で Retry-After が 1 分より先：やり直さずに諦める
  * - そのほかの 429、5xx、つながらない、時間切れ：例外を投げ、仕事の表がやり直す
- * - 3xx とそのほかの 4xx：やり直さず、状態コードをログに出す
+ * - 3xx とそのほかの 4xx：やり直さず、状態コードをログに出す。401 ／ 403 では、作ってから 1 時間
+ *   以上たった、その送り先の JWT を捨てる（次に送るときに作り直す）
  *
  * エンドポイントと鍵は秘密なので、ログに出さない
  */
@@ -167,11 +177,8 @@ export async function runSendBellNotification(
   }
   const payload = buildNotificationPayload(content, push.readerOrigin);
   const body = await encryptPushMessage(new TextEncoder().encode(payload), delivery.registration);
-  const authorization = await vapidAuthorization(db, {
-    subject: push.subject,
-    endpoint: endpoint.href,
-    now: platform.now(),
-  });
+  const vapid = { subject: push.subject, endpoint: endpoint.href, now: platform.now };
+  const authorization = await vapidAuthorization(db, vapid);
 
   let response: Response;
   try {
@@ -217,6 +224,7 @@ export async function runSendBellNotification(
   }
   if (status === 429 || status >= 500) throw new Error(`push service answered ${status}`);
   console.warn("push service refused the notification", { status });
+  if (status === 401 || status === 403) await discardRefusedVapidToken(db, vapid);
 }
 
 /** 緩衝層の fetch が、内部のアドレスに解決された宛先につながなかった（platform/node/safe-fetch.ts） */
@@ -226,8 +234,8 @@ function connectsToPrivateAddress(error: unknown): boolean {
 }
 
 /**
- * 通知の行から、通知の中身を組み立てる。記事の行はその記事、まとめの行は窓の bundled の記事
- * （新しい順に 3 件と、まとめた数）。まとめる記事がもうなければ undefined
+ * 通知の行から、通知の中身を組み立てる。通知の記事の行はその記事、通知のまとめの行は窓の bundled の
+ * 記事のうち受信箱に未読のもの（新しい順に 3 件と、その数）。まとめる記事がもうなければ undefined
  */
 async function loadContent(
   platform: Pick<Platform, "db">,
@@ -238,10 +246,7 @@ async function loadContent(
     ? { count: 1, articles: [delivery.article] }
     : await readBundledArticles(db, { ...delivery, limit: BUNDLE_LINES });
   if (articles.length === 0) return undefined;
-  const unread = [...(await countUnreadByFeed(db, delivery.userId)).values()].reduce(
-    (sum, n) => sum + n,
-    0,
-  );
+  const { total: unread } = await countUnread(db, delivery.userId);
   return {
     bellId: delivery.bellId,
     words: null,

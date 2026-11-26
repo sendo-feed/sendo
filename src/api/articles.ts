@@ -3,7 +3,7 @@ import { isDiscordArticle } from "../db/articles";
 import { dbNow } from "../db/clock";
 import {
   type ArticleCursor,
-  countUnreadByFeed,
+  countUnread,
   getInboxArticle,
   listInbox,
   MAX_MARK_READ_IDS,
@@ -376,8 +376,8 @@ export function articlesApi(platform: Platform) {
     })
     .openapi(unreadCountsRoute, async (c) => {
       const userId = c.get("user").id;
-      const [byFeed, subscriptions] = [
-        await countUnreadByFeed(db, userId),
+      const [{ total, byFeed }, subscriptions] = [
+        await countUnread(db, userId),
         await listSubscriptions(db, userId),
       ];
       const byFolder = new Map<string, number>();
@@ -388,7 +388,7 @@ export function articlesApi(platform: Platform) {
       }
       return c.json(
         {
-          total: [...byFeed.values()].reduce((sum, n) => sum + n, 0),
+          total,
           feeds: [...byFeed].map(([feedId, unread]) => ({ feedId, unread })),
           folders: [...byFolder].map(([folderId, unread]) => ({ folderId, unread })),
         },

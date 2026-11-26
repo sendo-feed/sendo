@@ -129,11 +129,6 @@ function createWorld(options: { resolve?: Resolver; processLagMs?: number } = {}
       await jobs.enqueue([{ type: "fetch-feed", feedId }]);
       await drain();
     },
-    /** まとめの仕事を積んで、送る仕事まで動かす（定期実行が積むのと同じ仕事） */
-    async bundle() {
-      await jobs.enqueue([{ type: "bundle-bell-notifications" }]);
-      await drain();
-    },
     /** 今の時刻から ago だけ前に出た記事 */
     item(title: string, ago = MINUTE): Item {
       return { guid: crypto.randomUUID(), title, publishedAt: new Date(clock.ms - ago) };
@@ -440,7 +435,7 @@ describe("ベルの記事を送る", () => {
 
     await world.fetchFeed(feedId);
     world.clock.ms = opened + 10 * MINUTE;
-    await world.bundle();
+    await world.drain();
 
     // 古い順に行を作るので、1 件ずつ送るのは、選んだ 50 件のうち古い 3 件。いちばん古い
     // 「記事 50」は選ばない。残りの 47 件を 1 通にまとめる
@@ -493,12 +488,15 @@ describe("10 分の窓", () => {
     world.clock.ms = opened + 10 * MINUTE - 1;
     source.items.push(world.item("窓の中"));
     await world.fetchFeed(feedId);
+    // 窓の中の 4 件目は、1 件ずつは送らない
+    expect(titles(world.service, endpoint).sort()).toEqual(["1", "2", "3"]);
     world.clock.ms = opened + 10 * MINUTE;
     source.items.push(world.item("ちょうど 10 分"));
     await world.fetchFeed(feedId);
 
+    // 窓が閉じたので、窓の中の 4 件目はまとめ（1 件）で届く
     expect(titles(world.service, endpoint).sort()).toEqual(
-      ["1", "2", "3", "ちょうど 10 分"].sort(),
+      ["1", "2", "3", "ちょうど 10 分", "窓の中"].sort(),
     );
   });
 });
@@ -519,6 +517,25 @@ describe("閉じた窓のまとめ", () => {
     return opened;
   }
 
+  /** そのベルの通知のまとめの行の数 */
+  const bundleRows = (bellId: string) =>
+    testDb
+      .prepare(
+        "SELECT count(*) AS n FROM bell_notifications WHERE bell_id = ? AND article_id IS NULL",
+      )
+      .bind(bellId)
+      .first<number>("n");
+
+  /** 仕事の表に積まれている、そのベルのまとめの仕事の数 */
+  const bundleJobs = (bellId: string) =>
+    testDb
+      .prepare(
+        `SELECT count(*) AS n FROM job_queue
+        WHERE job ->> '$.type' = 'bundle-bell-notifications' AND job ->> '$.bellId' = ?`,
+      )
+      .bind(bellId)
+      .first<number>("n");
+
   it("窓が閉じたら、4 件目からを 1 通にまとめ、新しい順に 3 件のタイトルと「ほか n 件」を並べ、いちばん新しい記事を開く", async () => {
     const world = createWorld();
     const reader = await belledReader(world);
@@ -526,8 +543,9 @@ describe("閉じた窓のまとめ", () => {
     const opened = await hits(world, reader, 7);
     expect(titles(world.service, endpoint).sort()).toEqual(["記事 1", "記事 2", "記事 3"]);
 
+    // 定期実行は動かさない。窓が閉じる時刻を指定して積んだまとめの仕事が動く
     world.clock.ms = opened + 10 * MINUTE;
-    await world.bundle();
+    await world.drain();
 
     const newest = await user.articleId("記事 7");
     const bundles = world.service.delivered(endpoint).slice(3);
@@ -547,35 +565,66 @@ describe("閉じた窓のまとめ", () => {
     ]);
   });
 
-  it("窓に 3 件ちょうどなら、まとめを作らない", async () => {
+  it("窓に 3 件ちょうどなら、まとめの仕事を積まず、まとめを作らない", async () => {
     const world = createWorld();
     const reader = await belledReader(world);
     const opened = await hits(world, reader, 3);
+    expect(await bundleJobs(reader.bellId)).toBe(0);
 
     world.clock.ms = opened + 10 * MINUTE;
-    await world.bundle();
+    await world.drain();
 
     expect(titles(world.service, reader.endpoint).sort()).toEqual(["記事 1", "記事 2", "記事 3"]);
   });
 
-  it("窓の始まりから 10 分ちょうどで閉じ、1 ミリ秒前はまだ拾わない。1 つの窓のまとめは 1 通だけ", async () => {
+  it("まとめの仕事は窓の 4 件目の行を作ったときに 1 つだけ積み、窓が閉じる時刻ちょうどに動く。1 ミリ秒前には動かない", async () => {
     const world = createWorld();
     const reader = await belledReader(world);
     const opened = await hits(world, reader, 4);
+    world.clock.ms = opened + MINUTE;
+    reader.source.items.push(world.item("記事 5", 2 * MINUTE), world.item("記事 6"));
+    await world.fetchFeed(reader.feedId);
+    expect(await bundleJobs(reader.bellId)).toBe(1);
 
     world.clock.ms = opened + 10 * MINUTE - 1;
-    await world.bundle();
+    await world.drain();
     expect(world.service.delivered(reader.endpoint)).toHaveLength(3);
 
     world.clock.ms = opened + 10 * MINUTE;
-    await world.bundle();
+    await world.drain();
     world.advance(5 * MINUTE);
-    await world.bundle();
+    await world.drain();
 
-    expect(titles(world.service, reader.endpoint).slice(3)).toEqual(["記事 4"]);
+    expect(titles(world.service, reader.endpoint).slice(3)).toEqual(["記事 6\n記事 5\n記事 4"]);
+    expect(await bundleJobs(reader.bellId)).toBe(0);
   });
 
-  it("閉じてから 1 時間以内の窓だけを拾う。始まりから 70 分ちょうどの窓は拾わず、1 ミリ秒前なら拾う", async () => {
+  it("同じ窓のまとめの仕事が 2 つ動いても、まとめは 1 通", async () => {
+    const world = createWorld();
+    const reader = await belledReader(world);
+    const opened = await hits(world, reader, 4);
+    // 同じ窓の仕事をもう 1 つ積む（窓の最初の bundled の行が片付けで消え、次の bundled の行を作った
+    // ときなど）。どちらも窓が閉じる時刻に、並んで動く
+    await world.platform.jobs.enqueue(
+      [
+        {
+          type: "bundle-bell-notifications",
+          userId: reader.user.id,
+          bellId: reader.bellId,
+          windowStart: opened,
+        },
+      ],
+      { runAt: new Date(opened + 10 * MINUTE) },
+    );
+
+    world.clock.ms = opened + 10 * MINUTE;
+    await world.drain();
+
+    expect(titles(world.service, reader.endpoint).slice(3)).toEqual(["記事 4"]);
+    expect(await bundleRows(reader.bellId)).toBe(1);
+  });
+
+  it("窓が閉じてから 1 時間を過ぎて動いたまとめの仕事は、まとめない。始まりから 70 分ちょうどならまとめず、1 ミリ秒前ならまとめる", async () => {
     const world = createWorld();
     const late = await belledReader(world);
     const onTime = await belledReader(world);
@@ -583,12 +632,36 @@ describe("閉じた窓のまとめ", () => {
     world.clock.ms = lateOpened + 1;
     await hits(world, onTime, 4);
 
-    // late の窓は始まりから 70 分ちょうど、onTime の窓は 70 分に 1 ミリ秒足りない
+    // プロセスが止まっていて、時刻の来た仕事が遅れて動く。late の窓は始まりから 70 分ちょうど、
+    // onTime の窓は 70 分に 1 ミリ秒足りない
     world.clock.ms = lateOpened + 70 * MINUTE;
-    await world.bundle();
+    await world.drain();
 
     expect(world.service.delivered(late.endpoint)).toHaveLength(3);
+    expect(await bundleRows(late.bellId)).toBe(0);
     expect(titles(world.service, onTime.endpoint).slice(3)).toEqual(["記事 4"]);
+  });
+
+  it("窓の 4 件目の行を作ってからまとめの仕事を積む前に落ちたら、その窓のまとめは出ない", async () => {
+    const world = createWorld();
+    const reader = await belledReader(world);
+    const opened = await hits(world, reader, 3);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    // 4 件目は送らないので、行を作ったあとに積むのは、まとめの仕事だけ
+    world.before(/insert into "bell_notifications"/i, async () => {
+      world.before(/insert into "job_queue"/i, async () => {
+        throw new Error("crashed before enqueueing");
+      });
+    });
+    reader.source.items.push(world.item("記事 4"));
+
+    await world.fetchFeed(reader.feedId);
+    expect(error).toHaveBeenCalledWith("could not notify bells", expect.anything());
+    world.clock.ms = opened + 10 * MINUTE;
+    await world.drain();
+
+    expect(world.service.delivered(reader.endpoint)).toHaveLength(3);
+    expect(await bundleRows(reader.bellId)).toBe(0);
   });
 
   it("まとめる前にベルを外したら、まとめない", async () => {
@@ -598,12 +671,12 @@ describe("閉じた窓のまとめ", () => {
     expect((await reader.user.api(`/bells/${reader.bellId}`, "DELETE")).status).toBe(204);
 
     world.clock.ms = opened + 10 * MINUTE;
-    await world.bundle();
+    await world.drain();
 
     expect(world.service.delivered(reader.endpoint)).toHaveLength(3);
   });
 
-  it("まとめの窓を拾ってから行を作るまでにベルを外したら、まとめない", async () => {
+  it("まとめの仕事が行を作る直前にベルを外したら、まとめの行を作らない", async () => {
     const world = createWorld();
     const reader = await belledReader(world);
     const opened = await hits(world, reader, 4);
@@ -612,17 +685,11 @@ describe("閉じた窓のまとめ", () => {
       expect((await reader.user.api(`/bells/${reader.bellId}`, "DELETE")).status).toBe(204);
     });
 
-    await world.bundle();
+    await world.drain();
 
     expect(world.service.delivered(reader.endpoint)).toHaveLength(3);
     // 送るときにもベルを確かめるが、まとめの行そのものを作らない
-    const bundles = await testDb
-      .prepare(
-        "SELECT count(*) AS n FROM bell_notifications WHERE bell_id = ? AND article_id IS NULL",
-      )
-      .bind(reader.bellId)
-      .first<number>("n");
-    expect(bundles).toBe(0);
+    expect(await bundleRows(reader.bellId)).toBe(0);
   });
 
   it("まとめの行を作る直前に同じベルの記事が当たると、その記事は新しい窓に入って 1 件で届き、まとめには入らない", async () => {
@@ -635,7 +702,7 @@ describe("閉じた窓のまとめ", () => {
       await runJob(world.platform, { type: "fetch-feed", feedId: reader.feedId });
     });
 
-    await world.bundle();
+    await world.drain();
 
     const later = world.service.delivered(reader.endpoint).slice(3);
     expect(
@@ -659,7 +726,7 @@ describe("閉じた窓のまとめ", () => {
     expect(world.service.delivered(endpoint)).toHaveLength(20);
 
     world.clock.ms = opened + 10 * MINUTE;
-    await world.bundle();
+    await world.drain();
 
     expect(world.service.delivered(endpoint)).toHaveLength(20);
   });
@@ -680,7 +747,7 @@ describe("閉じた窓のまとめ", () => {
     expect(world.service.delivered(endpoint)).toHaveLength(20);
     // 窓が閉じるときには、20 通は 1 時間より前になっている
     world.clock.ms = opened + 10 * MINUTE;
-    await world.bundle();
+    await world.drain();
 
     expect(
       world.service
@@ -702,8 +769,58 @@ describe("閉じた窓のまとめ", () => {
     expect((await reader.user.api(`/feeds/${reader.feedId}`, "DELETE")).status).toBe(204);
 
     world.clock.ms = opened + 10 * MINUTE;
-    await world.bundle();
+    await world.drain();
 
+    expect(world.service.delivered(reader.endpoint)).toHaveLength(3);
+  });
+
+  it("まとめ待ちの間に読んだ記事は、まとめにも件数にも入れない。まとめる記事をすべて読んだら、まとめの行も作らない", async () => {
+    const world = createWorld();
+    const some = await belledReader(world);
+    const all = await belledReader(world);
+    const opened = await hits(world, some, 6);
+    await hits(world, all, 4);
+    // ほかの端末で読む
+    const read = async (reader: typeof some, title: string) => {
+      const id = await reader.user.articleId(title);
+      expect((await reader.user.api(`/articles/${id}`, "PATCH", { read: true })).status).toBe(200);
+    };
+    await read(some, "記事 6");
+    await read(all, "記事 4");
+
+    world.clock.ms = opened + 10 * MINUTE;
+    await world.drain();
+
+    const newest = await some.user.articleId("記事 5");
+    expect(world.service.delivered(some.endpoint).slice(3)).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          notification: expect.objectContaining({
+            body: "記事 5\n記事 4",
+            navigate: `${READER}/?article=${newest}`,
+            data: { bellId: some.bellId, articleId: newest, count: 2 },
+          }),
+          app_badge: await some.user.unreadTotal(),
+        }),
+      }),
+    ]);
+    expect(world.service.delivered(all.endpoint)).toHaveLength(3);
+    expect(await bundleRows(all.bellId)).toBe(0);
+  });
+
+  it("まとめの行を作ったあと、送る前にまとめる記事をすべて読んだら送らない", async () => {
+    const world = createWorld();
+    const reader = await belledReader(world);
+    const opened = await hits(world, reader, 4);
+    world.clock.ms = opened + 10 * MINUTE;
+    world.before(/from "bell_notifications" as notification/i, async () => {
+      const id = await reader.user.articleId("記事 4");
+      expect((await reader.user.api(`/articles/${id}`, "PATCH", { read: true })).status).toBe(200);
+    });
+
+    await world.drain();
+
+    expect(await bundleRows(reader.bellId)).toBe(1);
     expect(world.service.delivered(reader.endpoint)).toHaveLength(3);
   });
 
@@ -719,53 +836,14 @@ describe("閉じた窓のまとめ", () => {
       });
     });
 
-    await world.bundle();
-    // まとめの仕事のやり直しと、次の定期実行
+    await world.drain();
+    // まとめの仕事のやり直し
     world.advance(MINUTE);
     await world.drain();
-    world.advance(5 * MINUTE);
-    await world.bundle();
 
     expect(world.service.delivered(reader.endpoint)).toHaveLength(3);
-    const bundles = await testDb
-      .prepare(
-        "SELECT count(*) AS n FROM bell_notifications WHERE bell_id = ? AND article_id IS NULL",
-      )
-      .bind(reader.bellId)
-      .first<number>("n");
-    expect(bundles).toBe(1);
+    expect(await bundleRows(reader.bellId)).toBe(1);
   });
-
-  it("まとめの仕事が 1 回に拾う窓は 100 個まで。101 個目は次の回に拾う", async () => {
-    const world = createWorld();
-    const source = world.source([world.item("前からある記事", HOUR)]);
-    // 送り先のオリジンをそろえ、JWT を使い回させる
-    const device = await createDevice();
-    const host = `${crypto.randomUUID()}.push.example`;
-    // 101 人が同じフィードにベルを付ける。1 回の取得で、どの人にも同じ時刻に 4 件当たる
-    const endpoints = new Set<string>();
-    let feedId = "";
-    for (let i = 0; i < 101; i++) {
-      const user = await createReader(world);
-      feedId = await user.subscribe(source);
-      await user.bell(feedId);
-      endpoints.add((await user.register(device, host)).endpoint);
-    }
-    world.advance(SECOND);
-    await world.drain();
-    world.advance(SECOND);
-    const opened = await hits(world, { source, feedId }, 4);
-    expect(world.service.delivered()).toHaveLength(303);
-
-    world.clock.ms = opened + 10 * MINUTE;
-    await world.bundle();
-    expect(world.service.delivered().slice(303)).toHaveLength(100);
-    await world.bundle();
-
-    const bundles = world.service.delivered().slice(303);
-    expect(bundles).toHaveLength(101);
-    expect(new Set(bundles.map((r) => r.endpoint))).toEqual(endpoints);
-  }, 60_000);
 });
 
 describe("通知の行の片付け", () => {
@@ -1027,6 +1105,45 @@ describe("プッシュサービスの応答", () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain(endpoint);
   });
 
+  it.each([401, 403])(
+    "%i を返したら、作ってから 1 時間以上たった JWT を捨て、次の送信で作り直す。1 時間に 1 ミリ秒足りなければ使い回す",
+    async (status) => {
+      const world = createWorld();
+      const { source, feedId, endpoint } = await belledReader(world);
+      const statuses = [201, status, 201, status, 201];
+      world.service.respondWith(() => new Response(null, { status: statuses.shift() ?? 201 }));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const createdAt = world.clock.ms;
+      const send = async (title: string, at: number) => {
+        world.clock.ms = at;
+        source.items.push(world.item(title));
+        await world.fetchFeed(feedId);
+      };
+
+      await send("JWT を作る", createdAt);
+      await send("1 時間に 1 ミリ秒足りずに断られる", createdAt + HOUR - 1);
+      await send("使い回す", createdAt + HOUR - 1);
+      await send("1 時間ちょうどで断られる", createdAt + HOUR);
+      // 同じ窓に入らないよう、10 分あける
+      const renewedAt = createdAt + HOUR + 10 * MINUTE;
+      await send("作り直す", renewedAt);
+
+      const requests = world.service.requests.filter((r) => r.endpoint === endpoint);
+      expect(requests.map((r) => [r.payload.notification.body, r.status])).toEqual([
+        ["JWT を作る", 201],
+        ["1 時間に 1 ミリ秒足りずに断られる", status],
+        ["使い回す", 201],
+        ["1 時間ちょうどで断られる", status],
+        ["作り直す", 201],
+      ]);
+      const [first, ...rest] = requests.map((r) => r.vapid);
+      expect(rest.slice(0, 3).map((vapid) => vapid.token)).toEqual(Array(3).fill(first?.token));
+      expect(rest[3]?.token).not.toBe(first?.token);
+      expect(rest[3]?.claims.exp).toBe((renewedAt + 12 * HOUR) / SECOND);
+      expect(warn).toHaveBeenCalledWith("push service refused the notification", { status });
+    },
+  );
+
   it("エンドポイントが内部の IP に解決されたら送らず、その登録を消す（SSRF）", async () => {
     const world = createWorld({ resolve: async () => [{ address: "10.0.0.1", family: 4 }] });
     const { source, feedId, endpoint } = await belledReader(world);
@@ -1137,6 +1254,57 @@ describe("送る前の取り消しと失敗", () => {
     source.items.push(world.item("新しい記事"));
     world.before(/from "bell_notifications" as notification/i, async () => {
       expect((await user.api(`/feeds/${feedId}`, "DELETE")).status).toBe(204);
+    });
+
+    await world.fetchFeed(feedId);
+
+    expect(world.service.requests).toEqual([]);
+  });
+
+  it("判定を読んだあと、行を作る前にほかの端末で記事を読んだら、行を作らず送らない", async () => {
+    const world = createWorld();
+    const { user, source, feedId, bellId } = await belledReader(world);
+    source.items.push(world.item("新しい記事"));
+    world.before(/insert into "bell_notifications"/i, async () => {
+      const id = await user.articleId("新しい記事");
+      expect((await user.api(`/articles/${id}`, "PATCH", { read: true })).status).toBe(200);
+    });
+
+    await world.fetchFeed(feedId);
+
+    expect(world.service.requests).toEqual([]);
+    const rows = await testDb
+      .prepare("SELECT count(*) AS n FROM bell_notifications WHERE bell_id = ?")
+      .bind(bellId)
+      .first<number>("n");
+    expect(rows).toBe(0);
+  });
+
+  it("送る仕事を積んだあと、送る前にほかの端末で記事を読んだら送らない", async () => {
+    const world = createWorld();
+    const { user, source, feedId } = await belledReader(world);
+    source.items.push(world.item("新しい記事"));
+    world.before(/from "bell_notifications" as notification/i, async () => {
+      const id = await user.articleId("新しい記事");
+      expect((await user.api(`/articles/${id}`, "PATCH", { read: true })).status).toBe(200);
+    });
+
+    await world.fetchFeed(feedId);
+
+    expect(world.service.requests).toEqual([]);
+  });
+
+  it("送る仕事を積んだあと、送る前に記事が受信箱から消えたら送らない", async () => {
+    const world = createWorld();
+    const { user, source, feedId } = await belledReader(world);
+    source.items.push(world.item("新しい記事"));
+    world.before(/from "bell_notifications" as notification/i, async () => {
+      // 古い記事の片付けは、受信箱の行を消してから記事の行を消す（docs/decisions/retention.md）。
+      // その間に送る仕事が動いた
+      await testDb
+        .prepare("DELETE FROM user_articles WHERE user_id = ? AND article_id = ?")
+        .bind(user.id, await user.articleId("新しい記事"))
+        .run();
     });
 
     await world.fetchFeed(feedId);
