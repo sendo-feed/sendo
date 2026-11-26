@@ -211,6 +211,18 @@ describe("Web Push の有無と公開鍵", () => {
         env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:admin@example.com?subject=hi" },
         logged: "error",
       },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:admin@example.com?" }, logged: "error" },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:admin@example.com#" }, logged: "error" },
+      // `,` は宛先の区切り（RFC 6068）
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:a,b@example.com" }, logged: "error" },
+      // 符号化した空白と改行、ASCII の外の見えない文字
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:%20admin@example.com" }, logged: "error" },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:admin@example.com%0A" }, logged: "error" },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:admin@example.com\u200B" }, logged: "error" },
+      {
+        env: { ...PUSH_ENV, VAPID_SUBJECT: "https://sendo.example.com/contact\u200B" },
+        logged: "error",
+      },
       { env: { ...PUSH_ENV, VAPID_SUBJECT: "http://sendo.example.com/" }, logged: "error" },
       { env: { ...PUSH_ENV, VAPID_SUBJECT: "https://" }, logged: "error" },
       { env: { ...PUSH_ENV, READER_URL: "http://reader.example.com" }, logged: "error" },
