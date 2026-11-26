@@ -83,7 +83,7 @@ Google Reader 互換 API は[廃止](decisions/greader.md)済み。購読の取�
 
 | ツール | 用途 |
 |---|---|
-| `list_feeds` ／ `subscribe` ／ `unsubscribe` | 購読管理。新しい購読のワークスペースは `subscribe` で指定する |
+| `list_feeds` ／ `subscribe` ／ `unsubscribe` | 購読管理。新規購読ではワークスペースを指定でき、省略するとデフォルトに入る |
 | `rename_feed` | 購読ごとの表示名を設定し、null で配信元の名前に戻す |
 | `list_folders` ／ `move_feed` | 空のフォルダも含めて名前と ID を調べ、購読済みのフィードを別のフォルダか未分類へ移す |
 | `create_folder` ／ `rename_folder` ／ `delete_folder` | フォルダを作る（同じ名前があればそれを返す）、名前を変える、消す（中のフィードは購読したまま未分類に戻す） |
