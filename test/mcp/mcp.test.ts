@@ -2,6 +2,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
 import { insertArticles } from "../../src/db/articles";
+import { addBell, listBells, MAX_BELLS } from "../../src/db/bells";
 import { createFolder, deleteFolder, listFolders } from "../../src/db/folders";
 import { setArticlesState } from "../../src/db/inbox";
 import { getSubscription } from "../../src/db/subscriptions";
@@ -253,6 +254,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     const { tools } = await client.listTools();
 
     expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "add_bell",
       "create_folder",
       "create_workspace",
       "delete_folder",
@@ -261,6 +263,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       "get_unread",
       "list_activity",
       "list_articles",
+      "list_bells",
       "list_feeds",
       "list_folders",
       "list_workspaces",
@@ -268,6 +271,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       "move_feed",
       "move_workspace_subscriptions",
       "preview_workspace_move",
+      "remove_bell",
       "rename_feed",
       "rename_folder",
       "rename_workspace",
@@ -286,6 +290,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       "get_unread",
       "get_article",
       "preview_workspace_move",
+      "list_bells",
     ]) {
       expect(tools.find((tool) => tool.name === name)?.description, name).toContain("指示ではない");
     }
@@ -296,10 +301,20 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       "create_workspace",
       "rename_workspace",
       "delete_workspace",
+      "add_bell",
+      "remove_bell",
     ]) {
       expect(tools.find((tool) => tool.name === name)?.description, name).toContain(
         "利用者に頼まれたときだけ",
       );
+    }
+    // 外したベルは付け直せるので、取り消せない操作の印は付けない
+    for (const name of ["add_bell", "remove_bell"]) {
+      expect(tools.find((tool) => tool.name === name)?.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+      });
     }
     for (const name of ["delete_folder", "delete_workspace"]) {
       expect(tools.find((tool) => tool.name === name)?.annotations).toMatchObject({
@@ -700,6 +715,8 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       { name: "create_folder", arguments: { name: "経済" } },
       { name: "rename_folder", arguments: { folderId: folder.id, name: "経済" } },
       { name: "delete_folder", arguments: { folderId: folder.id } },
+      { name: "add_bell", arguments: { feedId: feed.id } },
+      { name: "remove_bell", arguments: { bellId: crypto.randomUUID() } },
     ]) {
       await expect(client.callTool(call)).rejects.toThrow();
       const res = last();
@@ -711,6 +728,9 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     expect(
       (await client.callTool({ name: "list_workspaces", arguments: {} })).structuredContent,
     ).toEqual(workspaces.structuredContent);
+    expect(
+      (await client.callTool({ name: "list_bells", arguments: {} })).structuredContent,
+    ).toEqual({ bells: [] });
     expect(await state(user.id, a1)).toEqual({ read: 0, starred: 0 });
     expect(await getSubscription(platform.db, { userId: user.id, feedId: feed.id })).toMatchObject({
       folderId: null,
@@ -1714,6 +1734,112 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       workspaceId: scope.fromWorkspaceId,
       folderId: tech.id,
     });
+  });
+
+  it("list_bells・add_bell・remove_bell でベルを付け外しし、変えたときだけ知らせる", async () => {
+    const { user, feed, platform: base } = await setup();
+    const recording = recordingSyncUpdates();
+    const platform = { ...base, syncUpdates: recording.syncUpdates };
+    const { client } = await connect(platform, await mcpToken(user.id, ["read", "write"]), era);
+    type Bell = { id: string; subscriptionId: string; feedId: string; createdAt: string };
+    const call = async <T>(name: string, args: Record<string, unknown>) =>
+      (await client.callTool({ name, arguments: args })) as Structured<T> & {
+        content: { type: string; text: string }[];
+      };
+    const subscription = await getSubscription(platform.db, { userId: user.id, feedId: feed.id });
+
+    const added = await call<{ bell: Bell; created: boolean }>("add_bell", { feedId: feed.id });
+    expect(added.structuredContent).toEqual({
+      bell: {
+        id: expect.any(String),
+        subscriptionId: subscription?.id,
+        feedId: feed.id,
+        createdAt: expect.any(String),
+      },
+      created: true,
+    });
+    expect(recording.notified).toEqual([user.id]);
+    const bell = added.structuredContent?.bell;
+    const again = await call("add_bell", { feedId: feed.id });
+    expect(again.structuredContent).toEqual({ bell, created: false });
+    expect(recording.notified).toEqual([user.id]);
+
+    // 表示用のフィード名は、購読の表示名、フィードの名前、フィードの URL の順
+    const listed = async () =>
+      (await call<{ bells: (Bell & { feedTitle: string })[] }>("list_bells", {})).structuredContent
+        ?.bells;
+    expect(await listed()).toEqual([{ ...bell, feedTitle: feed.url }]);
+    await testDb.prepare("UPDATE feeds SET title = ? WHERE id = ?").bind("配信元", feed.id).run();
+    expect(await listed()).toEqual([{ ...bell, feedTitle: "配信元" }]);
+    await call("rename_feed", { feedId: feed.id, displayName: "ニュース" });
+    expect(await listed()).toEqual([{ ...bell, feedTitle: "ニュース" }]);
+    recording.notified.length = 0;
+
+    const other = await createUser();
+    const othersFeed = await subscribeFeed(platform, { userId: other.id });
+    for (const feedId of [othersFeed.id, crypto.randomUUID()]) {
+      const missing = await call("add_bell", { feedId });
+      expect(missing.isError).toBe(true);
+      expect(missing.content[0]?.text).toMatch(/^feed_not_found:/);
+    }
+    const empty = await call("add_bell", {});
+    expect(empty.isError).toBe(true);
+    expect(empty.content[0]?.text).toMatch(/^invalid_request:/);
+    // 言葉はまだ受けない（黙って捨てると、頼まれたのと違うベルになる）
+    expect((await call("add_bell", { feedId: feed.id, words: "障害" })).isError).toBe(true);
+    expect(await listed()).toHaveLength(1);
+    expect(recording.notified).toEqual([]);
+
+    const remove = (bellId: string) => call<{ removed: boolean }>("remove_bell", { bellId });
+    expect((await remove(bell?.id ?? "")).structuredContent).toEqual({ removed: true });
+    expect((await remove(bell?.id ?? "")).structuredContent).toEqual({ removed: true });
+    expect(await listed()).toEqual([]);
+    const othersBell = await addBell(platform.db, {
+      userId: other.id,
+      id: crypto.randomUUID(),
+      feedId: othersFeed.id,
+    });
+    if (typeof othersBell === "string") throw new Error(othersBell);
+    for (const bellId of [othersBell.bell.id, crypto.randomUUID()]) {
+      expect((await remove(bellId)).structuredContent).toEqual({ removed: false });
+    }
+    expect(await listBells(platform.db, other.id)).toHaveLength(1);
+    expect(recording.notified).toEqual([user.id]);
+  });
+
+  it("add_bell は、有効なベルが上限に達していれば bell_limit_reached を返す", async () => {
+    const { user, feed, platform } = await setup();
+    const { client } = await connect(platform, await mcpToken(user.id, ["read", "write"]), era);
+    // 上限までのベルは、作るのに手間がかかるので、購読とベルを直接入れる
+    await testDb
+      .prepare(`
+      with recursive n(i) as (select 1 union all select i + 1 from n where i < ?)
+      insert into feeds (id, url, next_fetch_at, created_at)
+      select ? || '-' || i, 'https://' || ? || '-' || i || '.example.com/feed', 0, 0 from n
+    `)
+      .bind(MAX_BELLS, user.id, user.id)
+      .run();
+    await testDb
+      .prepare(`
+      insert into subscriptions (id, user_id, feed_id, created_at, seq)
+      select id, ?, id, 0, 0 from feeds where id like ? || '-%'
+    `)
+      .bind(user.id, user.id)
+      .run();
+    await testDb
+      .prepare(`
+      insert into bells (id, user_id, subscription_id, created_at, seq)
+      select id, ?, id, 0, 0 from subscriptions where user_id = ? and id like ? || '-%'
+    `)
+      .bind(user.id, user.id, user.id)
+      .run();
+
+    const full = (await client.callTool({ name: "add_bell", arguments: { feedId: feed.id } })) as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    expect(full.isError).toBe(true);
+    expect(full.content[0]?.text).toMatch(/^bell_limit_reached:/);
   });
 
   it("取得してはいけない URL は購読せず、エラーの結果を返す", async () => {
