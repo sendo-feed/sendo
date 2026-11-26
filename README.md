@@ -241,6 +241,8 @@ Google Reader 互換 API は[廃止しました](docs/decisions/greader.md)。�
 
 `/mcp` にリモート MCP サーバーがあります（[決定](docs/decisions/mcp.md)）。ツールは `list_feeds`、`list_folders`、`list_articles`、`get_unread`、`get_article`（読む）と、`subscribe`、`move_feed`、`unsubscribe`、`mark_read`、`star`（変える）です。
 
+`subscribe` には、フィードかサイトの URL と、`list_workspaces` で調べた購読先の `workspaceId` を渡します。
+
 `list_folders` は、空のフォルダも含めて名前と ID を返します。フォルダの ID を `subscribe` に渡すと、そこに新しく購読を追加できます。購読済みのフィードを移動するときは、`list_feeds` でフィードの ID を調べ、`move_feed` に `feedId` と `folderId` を渡します。`folderId` に `null` を指定すると未分類に戻せます。
 
 ワークスペース間で購読を移すときは、`list_workspaces` と `list_folders` で移動元・先とフォルダの ID を調べ、`preview_workspace_move` で対象を確認します。同じ条件と確認した購読 ID を `move_workspace_subscriptions` に渡すと、条件に合う購読を最大 90 件移し、移した件数を返します。フォルダ、記事、既読・スターは引き継がれます。
