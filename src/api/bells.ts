@@ -90,7 +90,7 @@ export function bellsApi(platform: Platform) {
     })
     .openapi(addRoute, async (c) => {
       const { id = crypto.randomUUID(), feedId } = c.req.valid("json");
-      const result = await addBell(db, { userId: c.get("user").id, id, feedId });
+      const result = await addBell(db, { userId: c.get("user").id, id, feedId, words: null });
       if (result === "feed_not_found") {
         return c.json(errorBody("not_found", "feed is not subscribed"), 404);
       }

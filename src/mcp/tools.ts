@@ -964,7 +964,7 @@ export function createMcpServer(
     },
     async ({ feedId }) => {
       if (feedId === undefined) return failure("invalid_request: feedId is required");
-      const added = await addBell(db, { userId, id: crypto.randomUUID(), feedId });
+      const added = await addBell(db, { userId, id: crypto.randomUUID(), feedId, words: null });
       if (added === "feed_not_found") {
         return failure("feed_not_found: feed is not subscribed; choose a feedId from list_feeds");
       }

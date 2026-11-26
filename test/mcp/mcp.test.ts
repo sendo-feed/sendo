@@ -1805,6 +1805,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       userId: other.id,
       id: crypto.randomUUID(),
       feedId: othersFeed.id,
+      words: null,
     });
     if (typeof othersBell === "string") throw new Error(othersBell);
     for (const bellId of [othersBell.bell.id, crypto.randomUUID()]) {
@@ -1824,6 +1825,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
         userId: user.id,
         id: crypto.randomUUID(),
         feedId: subscribed.id,
+        words: null,
       });
       if (typeof added === "string") throw new Error(added);
     }

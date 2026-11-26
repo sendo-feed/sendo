@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnySQLiteColumn,
   check,
   index,
   integer,
@@ -872,8 +873,13 @@ export const savedPageHorizons = sqliteTable("saved_page_horizons", {
   seq: integer("seq").notNull(),
 });
 
+/** null を空文字にそろえる式（coalesce(列, '') と同じ）。カンマを含まない形で書く */
+const orEmpty = (column: AnySQLiteColumn) =>
+  sql`(case when ${column} is null then '' else ${column} end)`;
+
 /**
- * 通知のベル（docs/decisions/notifications.md の 1〜5）。今は購読のベルだけを持つ。
+ * 通知のベル（docs/decisions/notifications.md の 1〜7）。購読と言葉の組で表す。購読だけ、言葉だけ、
+ * 購読 AND 言葉の 3 つの種類は、2 つの列の有無で決まる。購読も言葉もない行は作らない。
  *
  * 外すと、行は残して消した印と新しい変更番号を付ける。付け直すと新しい行を作る。購読に消した印が
  * 付くと、トリガーが同じ文の中でその購読のベルにも印と番号を付ける。印の行は 30 日たったら
@@ -886,22 +892,31 @@ export const bells = sqliteTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    /**
-     * 鳴らす購読。言葉だけのベルを足すときに null を使うので、列は null を許す（作り直さずに列を
-     * 足せるようにする。今のベルは、書く文が必ず購読を入れる）
-     */
+    /** 鳴らす購読。言葉だけのベルは null */
     subscriptionId: text("subscription_id").references(() => subscriptions.id, {
       onDelete: "cascade",
     }),
+    /**
+     * 当てる言葉。NFKC にして区切った言葉を、半角の空白 1 つでつないだもの（大文字と小文字は
+     * 入れたまま）。言葉のないベルは null
+     */
+    words: text("words"),
+    /**
+     * 照合用の言葉。words の言葉を小文字にし、コードポイントの順に並べてつないだもの。言葉の並びに
+     * よらず同じになる。言葉のないベルは null
+     */
+    matchKey: text("match_key"),
     /** 作った時刻。書く文の中の DB の時計（db/clock.ts の DB_NOW_MS）で決める */
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
     seq: seq(),
   },
   (t) => [
-    // 同じ人・同じ購読の有効なベルは 1 つ。付ける文はこれにぶつけて止める
-    uniqueIndex("bells_user_id_subscription_id_idx")
-      .on(t.userId, t.subscriptionId)
+    // 同じ人で、購読と言葉の組が同じ有効なベルは 1 つ。付ける文はこれにぶつけて止める。SQLite の
+    // 一意索引は null どうしを別の値とみなすので、空文字にそろえる。coalesce(列, '') と同じ式を
+    // case で書くのは、drizzle-kit が索引の式をカンマで切ってしまい、正しい SQL を作れないため
+    uniqueIndex("bells_user_id_subscription_id_match_key_idx")
+      .on(t.userId, orEmpty(t.subscriptionId), orEmpty(t.matchKey))
       .where(sql`${t.deletedAt} is null`),
     // 購読をやめたときのトリガーと、外部キーの削除で使う
     index("bells_subscription_id_idx").on(t.subscriptionId),

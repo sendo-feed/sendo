@@ -170,7 +170,7 @@ export function toBellResponse(bell: ActiveBell): z.infer<typeof BellSchema> {
     id: bell.id,
     subscriptionId: bell.subscriptionId,
     feedId: bell.feedId,
-    words: null,
+    words: bell.words,
     createdAt: bell.createdAt.toISOString(),
   };
 }
