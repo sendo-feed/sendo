@@ -174,9 +174,8 @@ export async function runFetchFeed(
       articles: rows.flatMap((row, index) => {
         if (!insertedIds.has(row.id)) return [];
         const item = parsed.items[index];
-        // 置くか確かめるときにプレーンテキストにした本文（30 件まで）は使い回す。ほかの記事は、
-        // 判定するときにフィードの HTML を、置く本文と同じ基準でサニタイズしてプレーンテキストにする
-        const text = storedContents.texts.get(row.id);
+        // 置いたかどうかによらず、フィードの HTML を、置く本文と同じ基準（storeContents）で
+        // サニタイズして判定する
         const html = item?.contentHtml;
         return [
           {
@@ -185,12 +184,7 @@ export async function runFetchFeed(
             dated: item?.publishedAt != null,
             title: row.title ?? null,
             summary: row.summary ?? null,
-            body:
-              text !== undefined
-                ? { text }
-                : html
-                  ? { html, baseUrl: row.url ?? result.url }
-                  : null,
+            body: html ? { html, baseUrl: row.url ?? result.url } : null,
           },
         ];
       }),
@@ -395,20 +389,18 @@ async function refreshIcon(
  * - すでにある記事かどうかは、置く手間を省くために読むだけ。読んだあとで別の取得が同じ記事を
  *   入れても、こちらの行が入らず、置いた本文が片付けられるだけ
  *
- * @returns 置いた本文の名前、置くか確かめた本文のプレーンテキスト（記事の ID ごと。置かなかった
- *   ものも。ベルの判定に使う）、容量不足で記事ごと再試行する ID
+ * @returns 置いた本文の名前と、容量不足で記事ごと再試行する ID
  */
 async function storeContents(
   platform: Pick<Platform, "db" | "content">,
   input: { feedId: string; feedUrl: string; items: ParsedItem[]; rows: ArticleInput[] },
-): Promise<{ keys: string[]; texts: Map<string, string>; deferredIds: Set<string> }> {
+): Promise<{ keys: string[]; deferredIds: Set<string> }> {
   const { db } = platform;
-  const texts = new Map<string, string>();
   const withContent = input.rows.flatMap((row, index) => {
     const html = input.items[index]?.contentHtml;
     return html ? [{ row, html }] : [];
   });
-  if (withContent.length === 0) return { keys: [], texts, deferredIds: new Set() };
+  if (withContent.length === 0) return { keys: [], deferredIds: new Set() };
 
   const existing = await findExistingGuids(db, {
     feedId: input.feedId,
@@ -425,12 +417,11 @@ async function storeContents(
     // など）から採ることがあるので、短い本文でも、要約と違えば置く。要約に収まらなかった本文は、
     // 要約が切り詰められているので、同じにならない
     const text = htmlToText(sanitized, Number.POSITIVE_INFINITY) ?? "";
-    texts.set(row.id, text);
     if (text === (row.summary ?? "") && !hasMarkupBeyondText(sanitized)) continue;
     if (encoder.encode(sanitized).length > MAX_CONTENT_BYTES) continue;
     contents.push({ row, key: newContentKey(), html: sanitized });
   }
-  if (contents.length === 0) return { keys: [], texts, deferredIds: new Set() };
+  if (contents.length === 0) return { keys: [], deferredIds: new Set() };
 
   const keys = contents.map(({ key }) => key);
   await noteContentKeys(db, keys);
@@ -448,7 +439,6 @@ async function storeContents(
   for (const { row, key } of stored) row.contentKey = key;
   return {
     keys: stored.map(({ key }) => key),
-    texts,
     deferredIds: new Set(contents.filter(({ key }) => !reserved.has(key)).map(({ row }) => row.id)),
   };
 }

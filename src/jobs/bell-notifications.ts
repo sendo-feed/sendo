@@ -56,12 +56,11 @@ export type IngestedArticle = {
   title: string | null;
   summary: string | null;
   /**
-   * フィードの本文。置き場に置いたかどうかによらない。サニタイズした HTML をプレーンテキストに
-   * したもの（htmlToText で空白をまとめ、切る前の形）か、まだプレーンテキストにしていない HTML と、
-   * その URL の基準。HTML は判定するときにだけサニタイズしてプレーンテキストにし（サニタイズで
-   * 中身ごと落とす要素の文字は、読者に見えないので当てない）、保存も返しもしない。本文がなければ null
+   * フィードの本文の HTML と、その URL の基準。置き場に置いたかどうかによらない。判定するときにだけ
+   * サニタイズしてプレーンテキストにし（サニタイズで中身ごと落とす要素の文字は、読者に見えないので
+   * 当てない）、保存も返しもしない。本文がなければ null
    */
-  body: { text: string } | { html: string; baseUrl: string } | null;
+  body: { html: string; baseUrl: string } | null;
 };
 
 /**
@@ -156,9 +155,7 @@ function judgedText(article: IngestedArticle): { text: string; end: number } {
   const plain =
     body === null
       ? null
-      : "text" in body
-        ? body.text
-        : htmlToText(sanitizeHtml(body.html, body.baseUrl), Number.POSITIVE_INFINITY);
+      : htmlToText(sanitizeHtml(body.html, body.baseUrl), Number.POSITIVE_INFINITY);
   // 先頭の 20,001 コードポイントは、UTF-16 で 40,002 単位までに収まる
   const chars = plain ? Array.from(plain.slice(0, 2 * (MAX_JUDGED_BODY_LENGTH + 1))) : [];
   const cut = chars.slice(0, MAX_JUDGED_BODY_LENGTH).join("");
