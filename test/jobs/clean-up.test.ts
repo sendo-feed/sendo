@@ -70,6 +70,7 @@ describe("runCleanUp", () => {
       bells: 0,
       activity: 0,
       pushRegistrations: 0,
+      bellNotifications: 0,
       contents: 0,
     });
     expect(await count("SELECT count(*) AS n FROM articles")).toBe(2);

@@ -1,4 +1,8 @@
 import { ACTIVITY_RETENTION_MS, collectExpiredArticleActivity } from "../db/activity";
+import {
+  BELL_NOTIFICATION_RETENTION_MS,
+  collectOldBellNotifications,
+} from "../db/bell-notifications";
 import { BELL_REMOVAL_RETENTION_MS, collectRemovedBells } from "../db/bells";
 import {
   CONTENT_NOTE_GRACE_MS,
@@ -32,6 +36,7 @@ export const SWEEP_ROUNDS = {
   bells: 1,
   activity: 1,
   pushRegistrations: 1,
+  bellNotifications: 4,
   contents: 2,
 } as const;
 
@@ -45,6 +50,8 @@ export type CleanUpOutcome = {
   activity: number;
   /** 期限の切れたセッションの Web Push の登録 */
   pushRegistrations: number;
+  /** 作ってから 1 日たったベルの通知の行 */
+  bellNotifications: number;
   /** 置き場から消した本文の数 */
   contents: number;
 };
@@ -139,6 +146,14 @@ export async function runCleanUp(
     collectExpiredPushRegistrations(db, { now: new Date(now), limit: SWEEP_BATCH }),
   );
 
+  // 窓と上限を数え終えた通知の行（docs/decisions/notifications.md の 10）
+  const bellNotifications = await repeat(SWEEP_ROUNDS.bellNotifications, () =>
+    collectOldBellNotifications(db, {
+      before: new Date(now - BELL_NOTIFICATION_RETENTION_MS),
+      limit: SWEEP_BATCH,
+    }),
+  );
+
   // 行のない本文を、書き留めから片付ける（docs/decisions/content.md の 4）。上で消した記事の本文は、
   // トリガーが今書き留めたばかりなので、次の日に片付く
   const contents = await sweepContents(platform, new Date(now - CONTENT_NOTE_GRACE_MS));
@@ -152,6 +167,7 @@ export async function runCleanUp(
     bells,
     activity,
     pushRegistrations,
+    bellNotifications,
     contents,
   };
 }

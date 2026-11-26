@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createSession, SESSION_TTL_MS } from "../../src/db/sessions";
 import { runJob } from "../../src/jobs";
+import { runCleanUp } from "../../src/jobs/clean-up";
 import type { Job } from "../../src/jobs/job";
 import { createSqliteJobQueue } from "../../src/platform/node/job-queue";
 import { createSafeFetch, type Resolver } from "../../src/platform/node/safe-fetch";
@@ -637,6 +638,31 @@ describe("閉じた窓のまとめ", () => {
     await world.bundle();
 
     expect(world.service.delivered(endpoint)).toHaveLength(20);
+  });
+});
+
+describe("通知の行の片付け", () => {
+  it("1 日 1 回の片付けで、作ってから 1 日を過ぎた行を消す。ちょうど 1 日の行は残す", async () => {
+    const world = createWorld();
+    const reader = await belledReader(world);
+    reader.source.items.push(world.item("新しい記事"));
+    await world.fetchFeed(reader.feedId);
+    const createdAt = world.clock.ms;
+    const rows = () =>
+      testDb
+        .prepare("SELECT count(*) AS n FROM bell_notifications WHERE bell_id = ?")
+        .bind(reader.bellId)
+        .first<number>("n");
+    expect(await rows()).toBe(1);
+
+    // 消した数には、このファイルのほかのテストの行も入るので、このベルの行で確かめる
+    world.clock.ms = createdAt + DAY;
+    await runCleanUp(world.platform);
+    expect(await rows()).toBe(1);
+
+    world.clock.ms = createdAt + DAY + 1;
+    expect((await runCleanUp(world.platform)).bellNotifications).toBeGreaterThanOrEqual(1);
+    expect(await rows()).toBe(0);
   });
 });
 

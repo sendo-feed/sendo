@@ -296,3 +296,25 @@ export async function readPushDelivery(
     feed: { displayName: row.displayName, title: row.feedTitle, url: row.feedUrl },
   };
 }
+
+/**
+ * 作ってから 1 日たった通知の行を、limit 行まで消す（1 日 1 回の片付け）。窓と上限とまとめは、
+ * 直近 70 分より前の行を見ない
+ *
+ * @returns 消した行の数。limit と同じなら、まだ残っているかもしれない
+ */
+export async function collectOldBellNotifications(
+  db: Database,
+  input: { before: Date; limit: number },
+): Promise<number> {
+  const rows = await db.all<{ id: string }>(sql`
+    delete from ${bellNotifications}
+    where rowid in (
+      select rowid from ${bellNotifications}
+      where created_at < ${input.before.getTime()}
+      order by created_at limit ${input.limit}
+    )
+    returning id
+  `);
+  return rows.length;
+}
