@@ -6,6 +6,7 @@ import {
   deleteContentNotes,
   readOldContentNotes,
 } from "../db/content";
+import { collectExpiredPushRegistrations } from "../db/push-registrations";
 import { collectRemovals, REMOVAL_RETENTION_MS, raiseRemovalHorizons } from "../db/retention";
 import { collectDeletedSavedPages, SAVED_PAGE_REMOVAL_RETENTION_MS } from "../db/saved";
 import {
@@ -30,6 +31,7 @@ export const SWEEP_ROUNDS = {
   savedPages: 1,
   bells: 1,
   activity: 1,
+  pushRegistrations: 1,
   contents: 2,
 } as const;
 
@@ -41,6 +43,8 @@ export type CleanUpOutcome = {
   savedPages: number;
   bells: number;
   activity: number;
+  /** 期限の切れたセッションの Web Push の登録 */
+  pushRegistrations: number;
   /** 置き場から消した本文の数 */
   contents: number;
 };
@@ -130,9 +134,24 @@ export async function runCleanUp(
     }),
   );
 
+  // 期限の切れたセッションの端末には送らない（docs/decisions/notifications.md の 20）
+  const pushRegistrations = await repeat(SWEEP_ROUNDS.pushRegistrations, () =>
+    collectExpiredPushRegistrations(db, { now: new Date(now), limit: SWEEP_BATCH }),
+  );
+
   // 行のない本文を、書き留めから片付ける（docs/decisions/content.md の 4）。上で消した記事の本文は、
   // トリガーが今書き留めたばかりなので、次の日に片付く
   const contents = await sweepContents(platform, new Date(now - CONTENT_NOTE_GRACE_MS));
 
-  return { inbox, articles, removals, settings, savedPages, bells, activity, contents };
+  return {
+    inbox,
+    articles,
+    removals,
+    settings,
+    savedPages,
+    bells,
+    activity,
+    pushRegistrations,
+    contents,
+  };
 }

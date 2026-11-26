@@ -1,5 +1,7 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
+import { deletePushRegistration, putPushRegistration } from "../db/push-registrations";
+import { MAX_ENDPOINT_LENGTH, parsePushRegistration } from "../notify/registration";
 import { getVapidPublicKey } from "../notify/vapid";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
@@ -7,10 +9,11 @@ import { defaultHook } from "./hook";
 import { ErrorSchema, errorBody } from "./schemas";
 
 /*
- * Web Push の有無と VAPID の公開鍵（docs/decisions/notifications.md の 19）。
+ * Web Push の有無と VAPID の公開鍵、端末の登録（docs/decisions/notifications.md の 19、20）。
  *
  * ブラウザのセッションでだけ使える。登録は端末（セッション）に結ぶもので、アクセストークンは端末に
- * 結び付かない（同じく 20）。
+ * 結び付かない。状態を変えるリクエストは、同じオリジンのページからだけ受ける（auth.ts の CSRF の
+ * 対策）。エンドポイントと鍵は秘密として扱い、ログと応答に出さない。
  */
 
 const error = (description: string) => ({
@@ -47,6 +50,54 @@ const statusRoute = createRoute({
   },
 });
 
+// PushSubscription.toJSON() をそのまま送れるよう、知らない項目（expirationTime など）は捨てる
+const RegistrationSchema = z
+  .object({
+    endpoint: z
+      .string()
+      .max(MAX_ENDPOINT_LENGTH)
+      .openapi({
+        description: `プッシュサービスの URL（https:、${MAX_ENDPOINT_LENGTH} 文字まで）`,
+      }),
+    keys: z.object({
+      p256dh: z.string().max(256).openapi({
+        description: "端末の公開鍵（P-256 の非圧縮の点 65 バイト）の base64url",
+      }),
+      auth: z.string().max(256).openapi({ description: "認証の秘密（16 バイト）の base64url" }),
+    }),
+  })
+  .openapi("PushRegistration");
+
+const registerRoute = createRoute({
+  method: "put",
+  path: "/push/registration",
+  summary: "この端末の Web Push の登録を置く",
+  description:
+    "ブラウザが返した登録（PushSubscription.toJSON() の形）を、このセッションに結んで置く。同じ登録を何度送ってもよい。このセッションの前の登録と、ほかのセッションの同じエンドポイントの登録は外れる。ログアウトすると外れる。",
+  security,
+  request: {
+    body: { required: true, content: { "application/json": { schema: RegistrationSchema } } },
+  },
+  responses: {
+    204: { description: "置いた" },
+    400: error("エンドポイントか鍵の形が正しくない"),
+    403: sessionRequired,
+    501: error("Web Push を使う設定（VAPID_SUBJECT と READER_URL）がない"),
+  },
+});
+
+const unregisterRoute = createRoute({
+  method: "delete",
+  path: "/push/registration",
+  summary: "この端末の Web Push の登録を外す",
+  description: "登録がなくても、Web Push を使えない設定でも 204 を返す。",
+  security,
+  responses: {
+    204: { description: "外した、または登録がない" },
+    403: sessionRequired,
+  },
+});
+
 /** セッションで認証していなければ 403 の応答 */
 function denySession(c: Context) {
   return c.json(
@@ -57,12 +108,33 @@ function denySession(c: Context) {
 
 export function pushApi(platform: Platform) {
   const { db } = platform;
-  return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook }).openapi(
-    statusRoute,
-    async (c) => {
+  return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook })
+    .openapi(statusRoute, async (c) => {
       if (c.get("auth").kind !== "session") return denySession(c);
       if (!platform.push) return c.json({ available: false, publicKey: null }, 200);
       return c.json({ available: true, publicKey: await getVapidPublicKey(db) }, 200);
-    },
-  );
+    })
+    .openapi(registerRoute, async (c) => {
+      const auth = c.get("auth");
+      if (auth.kind !== "session") return denySession(c);
+      if (!platform.push) {
+        return c.json(errorBody("feature_unavailable", "Web Push is not configured"), 501);
+      }
+      const registration = await parsePushRegistration(c.req.valid("json"));
+      if ("invalid" in registration) {
+        return c.json(errorBody("invalid_request", `${registration.invalid}: invalid`), 400);
+      }
+      await putPushRegistration(db, {
+        userId: c.get("user").id,
+        sessionId: auth.sessionId,
+        ...registration,
+      });
+      return c.body(null, 204);
+    })
+    .openapi(unregisterRoute, async (c) => {
+      const auth = c.get("auth");
+      if (auth.kind !== "session") return denySession(c);
+      await deletePushRegistration(db, { userId: c.get("user").id, sessionId: auth.sessionId });
+      return c.body(null, 204);
+    });
 }
