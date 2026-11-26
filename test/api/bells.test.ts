@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { decodeSyncCursor } from "../../src/api/sync";
 import { MAX_BELLS } from "../../src/db/bells";
 import { runCleanUp } from "../../src/jobs/clean-up";
@@ -30,6 +30,8 @@ type SyncPage = { cursor: string; hasMore: boolean; bells?: SyncBell[] };
 
 /** 付ける文（bells への INSERT）の直前 */
 const addStatement = /insert into "bells"/i;
+/** 付ける文が入らなかったときに、理由を読み直す文の直前 */
+const readBackStatement = /with subscription as/i;
 
 /** 本番と同じ入口（REST API）で、購読して、ベルを付け外しし、同期する利用者 */
 async function setup(overrides: Partial<Platform> = {}) {
@@ -342,7 +344,7 @@ describe("ほかの操作と重なる", () => {
     const existing = await added({ feedId: feed.id });
 
     // 1 回目の付ける文は既存のベルにぶつかる。読み直す文の直前に、そのベルを外す
-    const hook = statementHook(/with subscription as/i, async () => {
+    const hook = statementHook(readBackStatement, async () => {
       expect((await remove(existing.id)).status).toBe(204);
     });
     const racer = client({ ...platform, db: hook.db }, user.token);
@@ -351,6 +353,37 @@ describe("ほかの操作と重なる", () => {
     expect(hook.fired()).toBe(true);
     expect(bell.id).not.toBe(existing.id);
     expect(await list()).toEqual([bell]);
+  });
+
+  it("付ける文を 2 回流しても入らず、読み直してもどの理由にも当たらなければ 500", async () => {
+    const { platform, user, subscribe, added, remove, list } = await setup();
+    const feed = await subscribe();
+
+    // 付ける文の直前には同じ購読のベルを付けてぶつけ、読み直す文の直前にはそれを外す。2 回とも
+    let other: Bell | undefined;
+    let fired = 0;
+    const hook = statementHook(
+      (sql) => addStatement.test(sql) || readBackStatement.test(sql),
+      async () => {
+        fired++;
+        if (other) {
+          expect((await remove(other.id)).status).toBe(204);
+          other = undefined;
+        } else {
+          other = await added({ feedId: feed.id });
+        }
+        if (fired < 4) hook.arm();
+      },
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const racer = client({ ...platform, db: hook.db }, user.token);
+    const response = await racer.add({ feedId: feed.id });
+    error.mockRestore();
+
+    expect(fired).toBe(4);
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: { code: "internal_error" } });
+    expect(await list()).toEqual([]);
   });
 });
 
@@ -382,27 +415,41 @@ describe("ベルの差分同期", () => {
     let now = new Date("2026-11-01T00:00:00Z");
     const { platform, subscribe, added, remove, sync, request } = await setup({ now: () => now });
     const feed = await subscribe();
+    const unsubscribed = await subscribe();
     const bell = await added({ feedId: feed.id });
+    const ended = await added({ feedId: unsubscribed.id });
     const before = await sync();
     expect((await remove(bell.id)).status).toBe(204);
-    const current = await sync(before.cursor);
-    expect(current.bells).toEqual([{ id: bell.id, deleted: true }]);
+    const middle = await sync(before.cursor);
+    expect(middle.bells).toEqual([{ id: bell.id, deleted: true }]);
+    // 購読をやめて印の付いたベルも、外したベルと同じに回収する
+    expect((await request(`/feeds/${unsubscribed.id}`, "DELETE")).status).toBe(204);
+    const current = await sync(middle.cursor);
+    expect(current.bells).toEqual([{ id: ended.id, deleted: true }]);
 
     // 外してからちょうど 30 日は残し、それを過ぎたら消す
     now = new Date("2026-12-01T00:00:00Z");
     expect(await runCleanUp(platform)).toMatchObject({ bells: 0 });
-    expect((await sync(before.cursor)).bells).toEqual([{ id: bell.id, deleted: true }]);
+    expect((await sync(before.cursor)).bells).toEqual([
+      ...(middle.bells ?? []),
+      ...(current.bells ?? []),
+    ]);
     now = new Date("2026-12-01T00:00:00.001Z");
-    expect(await runCleanUp(platform)).toMatchObject({ bells: 1 });
-    expect(
-      await testDb.prepare("SELECT count(*) AS n FROM bells WHERE id = ?").bind(bell.id).first("n"),
-    ).toBe(0);
+    expect(await runCleanUp(platform)).toMatchObject({ bells: 2 });
+    for (const id of [bell.id, ended.id]) {
+      expect(
+        await testDb.prepare("SELECT count(*) AS n FROM bells WHERE id = ?").bind(id).first("n"),
+      ).toBe(0);
+    }
     // 外してしまえば 404（本人のベルがない）
     expect((await remove(bell.id)).status).toBe(404);
 
-    const expired = await request(`/sync?includeBells=true&cursor=${before.cursor}`);
-    expect(expired.status).toBe(400);
-    expect(await expired.json()).toMatchObject({ error: { code: "invalid_cursor" } });
+    // 購読をやめて付いた印の回収も、下限に記録する（その印より前のカーソルは続けられない）
+    for (const cursor of [before.cursor, middle.cursor]) {
+      const expired = await request(`/sync?includeBells=true&cursor=${cursor}`);
+      expect(expired.status).toBe(400);
+      expect(await expired.json()).toMatchObject({ error: { code: "invalid_cursor" } });
+    }
     // ベルを受け取らないクライアントには、関係がない
     expect((await request(`/sync?cursor=${before.cursor}`)).status).toBe(200);
     // 回収したあとのカーソルは、そのまま続けられる

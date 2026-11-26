@@ -1817,29 +1817,16 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
   it("add_bell は、有効なベルが上限に達していれば bell_limit_reached を返す", async () => {
     const { user, feed, platform } = await setup();
     const { client } = await connect(platform, await mcpToken(user.id, ["read", "write"]), era);
-    // 上限までのベルは、作るのに手間がかかるので、購読とベルを直接入れる
-    await testDb
-      .prepare(`
-      with recursive n(i) as (select 1 union all select i + 1 from n where i < ?)
-      insert into feeds (id, url, next_fetch_at, created_at)
-      select ? || '-' || i, 'https://' || ? || '-' || i || '.example.com/feed', 0, 0 from n
-    `)
-      .bind(MAX_BELLS, user.id, user.id)
-      .run();
-    await testDb
-      .prepare(`
-      insert into subscriptions (id, user_id, feed_id, created_at, seq)
-      select id, ?, id, 0, 0 from feeds where id like ? || '-%'
-    `)
-      .bind(user.id, user.id)
-      .run();
-    await testDb
-      .prepare(`
-      insert into bells (id, user_id, subscription_id, created_at, seq)
-      select id, ?, id, 0, 0 from subscriptions where user_id = ? and id like ? || '-%'
-    `)
-      .bind(user.id, user.id, user.id)
-      .run();
+    // 上限まで、購読してベルを付ける（REST API と同じく、本番の操作で作る）
+    for (let i = 0; i < MAX_BELLS; i++) {
+      const subscribed = await subscribeFeed(platform, { userId: user.id });
+      const added = await addBell(platform.db, {
+        userId: user.id,
+        id: crypto.randomUUID(),
+        feedId: subscribed.id,
+      });
+      if (typeof added === "string") throw new Error(added);
+    }
 
     const full = (await client.callTool({ name: "add_bell", arguments: { feedId: feed.id } })) as {
       isError?: boolean;
