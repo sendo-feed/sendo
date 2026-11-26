@@ -150,6 +150,10 @@ export async function runFetchDiscord(
         id: article.id,
         publishedAt: new Date(article.publishedAt),
         dated: true,
+        title: article.title,
+        summary: article.summary,
+        // 置いた本文だけを判定に使う（記事の行に本文があるもの）
+        contentHtml: article.contentKey === null ? null : (htmls.get(article.guid) ?? null),
       })),
   });
   const usage = await readStorageUsage(db);

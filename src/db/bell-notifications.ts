@@ -46,11 +46,21 @@ export type BellNotificationState = (typeof BELL_NOTIFICATION_STATES)[number];
 /** 判定で記事に当たったベル */
 export type BellHit = { articleId: string; userId: string; bellId: string };
 
+/**
+ * 判定の候補のベル。言葉のあるベルは、記事の文字が言葉に当たったときだけ当たる（判定は
+ * jobs/bell-notifications.ts）
+ */
+export type BellCandidate = BellHit & {
+  /** 照合用の言葉。言葉のないベルは null */
+  matchKey: string | null;
+};
+
 /** 作った通知の行 */
 export type CreatedNotification = { id: string; userId: string; state: BellNotificationState };
 
 /**
- * 記事を受信箱に持つ人の、ベルの付いた購読を引く（今は購読だけのベル）。次の人と記事は除く。
+ * 記事を受信箱に持つ人の、判定の候補のベルを引く。その記事の購読のベル（購読だけ、購読 AND
+ * 言葉）と、言葉だけのベル。言葉はまだ当てない。次の人と記事は除く。
  *
  * - 登録した端末のない人
  * - 取り込んだ時刻（記事の行を作った時刻）が、ベルを作った時刻より前の記事
@@ -60,19 +70,20 @@ export type CreatedNotification = { id: string; userId: string; state: BellNotif
  *
  * ベルが有効かは、行を作る文（insertArticleNotifications）でも確かめ直す
  */
-export async function findBellHits(
+export async function findBellCandidates(
   db: Database,
   input: { articleIds: readonly string[]; previousSuccessAt: Date },
-): Promise<BellHit[]> {
-  return db.all<BellHit>(sql`
-    select inbox.article_id as "articleId", inbox.user_id as "userId", bell.id as "bellId"
+): Promise<BellCandidate[]> {
+  return db.all<BellCandidate>(sql`
+    select inbox.article_id as "articleId", inbox.user_id as "userId", bell.id as "bellId",
+      bell.match_key as "matchKey"
     from json_each(${JSON.stringify(input.articleIds)}) as target
     join ${articles} as article on article.id = target.value
     join ${userArticles} as inbox on inbox.article_id = article.id
     join ${subscriptions} as subscription on subscription.user_id = inbox.user_id
       and subscription.feed_id = article.feed_id and subscription.deleted_at is null
-    join ${bells} as bell on bell.subscription_id = subscription.id
-      and bell.user_id = inbox.user_id and bell.deleted_at is null
+    join ${bells} as bell on bell.user_id = inbox.user_id and bell.deleted_at is null
+      and (bell.subscription_id = subscription.id or bell.subscription_id is null)
     where article.created_at >= bell.created_at
       and subscription.created_at <= ${input.previousSuccessAt.getTime()}
       and exists (select 1 from ${pushRegistrations} as registration
@@ -83,7 +94,10 @@ export async function findBellHits(
 /**
  * 1 件の記事について、当たったベルの通知の行を作る。1 人に 1 つ（ユーザーと記事の一意索引）。
  *
- * 同じ文の中で、ベルが有効かを確かめ、窓、何件目か、上限を数えて状態を決める。
+ * 同じ文の中で、ベルが有効かを確かめ、1 人に当たった有効なベルから 1 つを選び、窓、何件目か、上限を
+ * 数えて状態を決める。
+ * - 選ぶ順は、購読 AND 言葉、言葉だけ、購読だけ。同じ種類なら、作ったのが古いベル（docs/decisions/
+ *   notifications.md の 9）。言葉のあるベルを先に選ぶと、通知に当たった言葉が出る
  * - 窓：同じベルに、始まり > 今 − 10 分 の窓があれば入れ、なければ今を始まりに開く
  * - その窓の記事の行（上限で送らなかったものも）が 3 つあれば bundled（4 件目から）
  * - そうでなければ、その人の sent の行（記事の行とまとめの行）のうち、作った時刻 > 今 − 1 時間 の
@@ -123,13 +137,23 @@ export async function insertArticleNotifications(
       select target.value ->> '$.id' as id, bell.user_id, bell.id as bell_id,
         (select max(open.window_start) from ${bellNotifications} as open
           where open.bell_id = bell.id and open.article_id is not null
-            and open.window_start > ${DB_NOW_MS} - ${BELL_WINDOW_MS}) as window_start
+            and open.window_start > ${DB_NOW_MS} - ${BELL_WINDOW_MS}) as window_start,
+        row_number() over (
+          partition by bell.user_id
+          order by case
+              when bell.subscription_id is not null and bell.match_key is not null then 0
+              when bell.subscription_id is null then 1
+              else 2
+            end,
+            bell.created_at, bell.id
+        ) as choice
       from json_each(${JSON.stringify(targets)}) as target
       join ${bells} as bell on bell.id = target.value ->> '$.bellId'
         and bell.user_id = target.value ->> '$.userId' and bell.deleted_at is null
     ) as hit
     join ${articles} as article on article.id = ${input.articleId}
-    where coalesce(${input.publishedAt?.getTime() ?? null}, article.created_at)
+    where hit.choice = 1
+      and coalesce(${input.publishedAt?.getTime() ?? null}, article.created_at)
       > ${DB_NOW_MS} - ${STALE_ARTICLE_MS}
     on conflict do nothing
     returning id, user_id as "userId", state
@@ -237,8 +261,13 @@ export type PushDelivery = {
   article: { id: string; title: string | null; summary: string | null } | null;
   windowStart: Date;
   registration: { endpoint: string; p256dh: string; auth: string };
-  /** フィード名の候補（購読の表示名、フィードの名前、フィードの URL） */
-  feed: { displayName: string | null; title: string | null; url: string };
+  /** ベルの言葉。言葉のないベルは null */
+  words: string | null;
+  /**
+   * フィード名の候補（購読の表示名、フィードの名前、フィードの URL）。記事の行は記事のフィード、
+   * まとめの行はベルの購読のフィード。言葉だけのベルのまとめは null
+   */
+  feed: { displayName: string | null; title: string | null; url: string } | null;
 };
 
 /**
@@ -246,7 +275,10 @@ export type PushDelivery = {
  * - 端末の登録の行がもうない（登録の解除、ログアウト、置き換え、404 ／ 410 で消した）か、その
  *   セッションの期限が切れた（期限の比べ方は sessions.ts の authenticateSession と同じ）
  * - 通知の行がもうないか、sent でない
- * - ベルが外された（購読をやめたときも、トリガーがベルを外す）
+ * - ベルが外された（購読をやめたときも、トリガーがその購読のベルを外す）
+ *
+ * フィード名の表示名は、その人のそのフィードの有効な購読から読む。言葉だけのベルの記事は、送る
+ * までに購読をやめていれば、表示名がないので、フィードの名前を使う
  */
 export async function readPushDelivery(
   db: Database,
@@ -262,15 +294,16 @@ export async function readPushDelivery(
     endpoint: string;
     p256dh: string;
     auth: string;
+    words: string | null;
     displayName: string | null;
     feedTitle: string | null;
-    feedUrl: string;
+    feedUrl: string | null;
   }>(
     db,
     sql`select notification.user_id as "userId", notification.bell_id as "bellId",
       notification.article_id as "articleId", article.title as "articleTitle",
       article.summary as "articleSummary", notification.window_start as "windowStart",
-      registration.endpoint, registration.p256dh, registration.auth,
+      registration.endpoint, registration.p256dh, registration.auth, bell.words,
       subscription.display_name as "displayName", feed.title as "feedTitle", feed.url as "feedUrl"
     from ${bellNotifications} as notification
     left join ${articles} as article on article.id = notification.article_id
@@ -279,8 +312,10 @@ export async function readPushDelivery(
     join ${sessions} as session on session.id = registration.session_id
       and session.expires_at > ${input.now.getTime()}
     join ${bells} as bell on bell.id = notification.bell_id and bell.deleted_at is null
-    join ${subscriptions} as subscription on subscription.id = bell.subscription_id
-    join ${feeds} as feed on feed.id = subscription.feed_id
+    left join ${subscriptions} as belled on belled.id = bell.subscription_id
+    left join ${feeds} as feed on feed.id = coalesce(article.feed_id, belled.feed_id)
+    left join ${subscriptions} as subscription on subscription.user_id = notification.user_id
+      and subscription.feed_id = feed.id and subscription.deleted_at is null
     where notification.id = ${input.notificationId} and notification.state = 'sent'`,
   );
   if (row === undefined) return undefined;
@@ -293,7 +328,11 @@ export async function readPushDelivery(
         : { id: row.articleId, title: row.articleTitle, summary: row.articleSummary },
     windowStart: new Date(row.windowStart),
     registration: { endpoint: row.endpoint, p256dh: row.p256dh, auth: row.auth },
-    feed: { displayName: row.displayName, title: row.feedTitle, url: row.feedUrl },
+    words: row.words,
+    feed:
+      row.feedUrl === null
+        ? null
+        : { displayName: row.displayName, title: row.feedTitle, url: row.feedUrl },
   };
 }
 

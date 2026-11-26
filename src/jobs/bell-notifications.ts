@@ -1,7 +1,7 @@
 import {
-  type BellHit,
+  type BellCandidate,
   type CreatedNotification,
-  findBellHits,
+  findBellCandidates,
   findClosedWindows,
   insertArticleNotifications,
   insertBundleNotification,
@@ -18,7 +18,9 @@ import { loggableError } from "../lib/log-error";
 import { type BellNotification, BUNDLE_LINES, buildNotificationPayload } from "../notify/payload";
 import { vapidAuthorization } from "../notify/vapid";
 import { encryptPushMessage } from "../notify/web-push";
+import { matchesBellWords, toMatchText } from "../notify/words";
 import type { Platform } from "../platform";
+import { articleText } from "./article-search";
 
 /*
  * ベルの通知（docs/decisions/notifications.md の 8〜13、21、22）。取得の仕事が、取り込んだ記事を
@@ -45,6 +47,11 @@ export type IngestedArticle = {
   publishedAt: Date;
   /** フィードに日付があったか。なければ、取り込んだ時刻を公開日時とみなす */
   dated: boolean;
+  /** 言葉で判定する欄。記事の行と同じタイトルと要約 */
+  title: string | null;
+  summary: string | null;
+  /** 置き場に置いたフィードの本文（サニタイズした HTML）。置かなかった記事は null */
+  contentHtml: string | null;
 };
 
 /**
@@ -53,6 +60,8 @@ export type IngestedArticle = {
  *
  * - Web Push が使えない設定なら、何もしない
  * - 判定する記事は、公開日時の新しい順に 50 件まで。行は、公開日時の古い順に 1 件ずつ作る
+ * - 言葉のあるベルは、言葉ごとに、タイトル、要約、フィードの本文（プレーンテキストにした先頭
+ *   20,000 文字）のどれかにあれば当たる（docs/decisions/notifications.md の 6、8）
  * - 判定や積むのに失敗しても、取得の仕事は失敗にしない（その回の通知は出ないことがある）。行を
  *   作るか積むのに失敗した記事は飛ばし、残りの記事を続ける
  *
@@ -68,9 +77,9 @@ export async function notifyBells(
     .sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime())
     .slice(0, MAX_JUDGED_ARTICLES)
     .reverse();
-  let hits: BellHit[];
+  let candidates: BellCandidate[];
   try {
-    hits = await findBellHits(platform.db, {
+    candidates = await findBellCandidates(platform.db, {
       articleIds: judged.map((article) => article.id),
       previousSuccessAt,
     });
@@ -80,9 +89,12 @@ export async function notifyBells(
   }
   // 1 件の失敗で、残りの記事の通知を捨てない
   for (const article of judged) {
-    const found = hits.filter((hit) => hit.articleId === article.id);
-    if (found.length === 0) continue;
     try {
+      const found = matchWords(
+        article,
+        candidates.filter((candidate) => candidate.articleId === article.id),
+      );
+      if (found.length === 0) continue;
       const created = await insertArticleNotifications(platform.db, {
         articleId: article.id,
         publishedAt: article.dated ? article.publishedAt : null,
@@ -96,6 +108,28 @@ export async function notifyBells(
       });
     }
   }
+}
+
+/**
+ * 候補のベルのうち、記事に当たるものを返す。言葉のないベルはそのまま当たり、言葉のあるベルは、
+ * すべての言葉が記事の文字にあれば当たる。記事の文字は、言葉のあるベルがあるときだけ作る
+ */
+function matchWords(
+  article: IngestedArticle,
+  candidates: readonly BellCandidate[],
+): BellCandidate[] {
+  let text: string | undefined;
+  return candidates.filter(({ matchKey }) => {
+    if (matchKey === null) return true;
+    text ??= toMatchText(
+      articleText({
+        title: article.title,
+        summary: article.summary,
+        bodyHtml: article.contentHtml,
+      }),
+    );
+    return matchesBellWords(text, matchKey);
+  });
 }
 
 /**
@@ -244,8 +278,8 @@ async function loadContent(
   );
   return {
     bellId: delivery.bellId,
-    words: null,
-    feedName: feedName(delivery.feed),
+    words: delivery.words,
+    feedName: delivery.feed === null ? null : feedName(delivery.feed),
     articles,
     count,
     unread,
@@ -253,7 +287,7 @@ async function loadContent(
 }
 
 /** フィード名。購読の表示名、フィードの名前、フィードの URL のホストの順に、空でないものを使う */
-function feedName(feed: PushDelivery["feed"]): string {
+function feedName(feed: NonNullable<PushDelivery["feed"]>): string {
   const named = [feed.displayName, feed.title].find((name) => name && name.trim() !== "");
   return named ?? new URL(feed.url).host;
 }

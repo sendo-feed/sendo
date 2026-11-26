@@ -1883,7 +1883,8 @@ describe("Discord の投稿の本文（docs/decisions/discord.md の 6）", () =
 });
 
 describe("Discord の投稿のベル（docs/decisions/notifications.md の 8）", () => {
-  it("ベルを付けた Discord の購読に新しい投稿が入ると端末に届く。購読した直後の取得の投稿には送らない", async () => {
+  /** Discord の購読、ベル（bell を POST /bells に送る）、端末の登録をそろえる */
+  async function setupBell(bell: (feedId: string) => Record<string, unknown>) {
     // 投稿の時刻（公開日時）に合わせて、DB の時計も FIXED_NOW から進める
     const clock = { ms: FIXED_NOW.getTime() };
     const remote = discordFetch();
@@ -1902,12 +1903,12 @@ describe("Discord の投稿のベル（docs/decisions/notifications.md の 8）"
     await connectDiscord(platform.db, user.id, DISCORD_USER);
     const request = await browser(platform, user.id);
     const feedId = await subscribe(request);
-    const bell = await requestApp(platform, "/api/v1/bells", {
+    const added = await requestApp(platform, "/api/v1/bells", {
       method: "POST",
       token: user.token,
-      json: { feedId },
+      json: bell(feedId),
     });
-    expect(bell.status).toBe(201);
+    expect(added.status).toBe(201);
     const device = await createDevice();
     const endpoint = service.endpoint(device);
     const registered = await request("/api/v1/push/registration", {
@@ -1920,27 +1921,50 @@ describe("Discord の投稿のベル（docs/decisions/notifications.md の 8）"
         if (job.type === "send-bell-notification") await runJob(platform, job);
       }
     };
+    /**
+     * 購読した直後の取得を終え、1 時間後に新しい投稿（body でテキストなどを差し替える）を取り込んで、
+     * 送る仕事まで動かす
+     */
+    const postAfterFirstFetch = async (body?: Record<string, unknown>) => {
+      expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
+      await sendAll();
+      expect(service.requests).toEqual([]);
 
-    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
-    await sendAll();
-    expect(service.requests).toEqual([]);
+      clock.ms += HOUR;
+      const posted = messageIdAt(clock.ms - 60_000);
+      if (body) remote.setMessages({ [MESSAGE_ID]: {}, [posted]: body });
+      else remote.setMessageIds([MESSAGE_ID, posted]);
+      expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
+      await sendAll();
+      const list = (await (
+        await requestApp(platform, "/api/v1/articles", { token: user.token })
+      ).json()) as { items: { id: string; url: string; title: string }[] };
+      return list.items.find((item) => item.url.endsWith(`/${posted}`));
+    };
+    return { service, postAfterFirstFetch };
+  }
 
-    clock.ms += HOUR;
-    const posted = messageIdAt(clock.ms - 60_000);
-    remote.setMessageIds([MESSAGE_ID, posted]);
-    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
-    await sendAll();
+  it("ベルを付けた Discord の購読に新しい投稿が入ると端末に届く。購読した直後の取得の投稿には送らない", async () => {
+    const { service, postAfterFirstFetch } = await setupBell((feedId) => ({ feedId }));
 
-    const list = (await (
-      await requestApp(platform, "/api/v1/articles", { token: user.token })
-    ).json()) as { items: { id: string; url: string; title: string }[] };
-    const article = list.items.find((item) => item.url.endsWith(`/${posted}`));
+    const article = await postAfterFirstFetch();
+
     expect(service.delivered().map((r) => r.payload.notification)).toEqual([
       expect.objectContaining({
         title: "releases",
         body: article?.title,
         navigate: `${ORIGIN}/?article=${article?.id}`,
       }),
+    ]);
+  });
+
+  it("言葉だけのベルは、Discord の投稿の文字でも判定する", async () => {
+    const { service, postAfterFirstFetch } = await setupBell(() => ({ words: "障害 復旧" }));
+
+    const article = await postAfterFirstFetch({ content: "お知らせ\n昨夜の障害は復旧しました" });
+
+    expect(service.delivered().map((r) => r.payload.notification)).toEqual([
+      expect.objectContaining({ title: "障害 復旧 · releases", body: article?.title }),
     ]);
   });
 });

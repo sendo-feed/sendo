@@ -178,6 +178,9 @@ export async function runFetchFeed(
                 id: row.id,
                 publishedAt: row.publishedAt,
                 dated: parsed.items[index]?.publishedAt != null,
+                title: row.title ?? null,
+                summary: row.summary ?? null,
+                contentHtml: storedContents.htmls.get(row.id) ?? null,
               },
             ]
           : [],
@@ -383,18 +386,19 @@ async function refreshIcon(
  * - すでにある記事かどうかは、置く手間を省くために読むだけ。読んだあとで別の取得が同じ記事を
  *   入れても、こちらの行が入らず、置いた本文が片付けられるだけ
  *
- * @returns 置いた本文の名前と、容量不足で記事ごと再試行する ID
+ * @returns 置いた本文の名前、置いた本文（記事の ID ごと。ベルの判定に使う）、容量不足で記事ごと
+ *   再試行する ID
  */
 async function storeContents(
   platform: Pick<Platform, "db" | "content">,
   input: { feedId: string; feedUrl: string; items: ParsedItem[]; rows: ArticleInput[] },
-): Promise<{ keys: string[]; deferredIds: Set<string> }> {
+): Promise<{ keys: string[]; htmls: Map<string, string>; deferredIds: Set<string> }> {
   const { db } = platform;
   const withContent = input.rows.flatMap((row, index) => {
     const html = input.items[index]?.contentHtml;
     return html ? [{ row, html }] : [];
   });
-  if (withContent.length === 0) return { keys: [], deferredIds: new Set() };
+  if (withContent.length === 0) return { keys: [], htmls: new Map(), deferredIds: new Set() };
 
   const existing = await findExistingGuids(db, {
     feedId: input.feedId,
@@ -415,7 +419,7 @@ async function storeContents(
     if (encoder.encode(sanitized).length > MAX_CONTENT_BYTES) continue;
     contents.push({ row, key: newContentKey(), html: sanitized });
   }
-  if (contents.length === 0) return { keys: [], deferredIds: new Set() };
+  if (contents.length === 0) return { keys: [], htmls: new Map(), deferredIds: new Set() };
 
   const keys = contents.map(({ key }) => key);
   await noteContentKeys(db, keys);
@@ -433,6 +437,7 @@ async function storeContents(
   for (const { row, key } of stored) row.contentKey = key;
   return {
     keys: stored.map(({ key }) => key),
+    htmls: new Map(stored.map(({ row, html }) => [row.id, html])),
     deferredIds: new Set(contents.filter(({ key }) => !reserved.has(key)).map(({ row }) => row.id)),
   };
 }
