@@ -235,23 +235,23 @@ export function readPushConfig(env: Partial<Record<PushEnvName, string>>): PushC
   return { subject, readerOrigin };
 }
 
+/** 宛先 1 つの mailto:（local@domain）。パーセントの符号化、`?`・`#`、宛先の区切りの `,` は使わせない */
+const MAILTO_SUBJECT = /^mailto:[A-Za-z0-9.!$&'*+/=^_{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$/i;
+
 /**
- * 宛先 1 つの mailto:（local@domain）か、https: の URL だけを受ける。プッシュサービスが送り手に連絡する先。
- * 空白と制御文字は、URL のパーサーが残したり黙って除いたりして通るので、読む前に断る
+ * 宛先 1 つの mailto: か、https: の URL だけを受ける。プッシュサービスが送り手に連絡する先。
+ * 断る文字を並べると漏れるので、生の文字列に許す形の式を当てる。https: は空白と制御文字のない
+ * ASCII で、URL として読めるものだけ
  */
 function parseVapidSubject(text: string): string | undefined {
-  if (/[\s\p{Cc}]/u.test(text)) return undefined;
-  let url: URL;
+  if (MAILTO_SUBJECT.test(text)) return new URL(text).href;
+  if (!/^https:[\x21-\x7e]+$/i.test(text)) return undefined;
   try {
-    url = new URL(text);
+    const url = new URL(text);
+    return url.protocol === "https:" ? url.href : undefined;
   } catch {
     return undefined;
   }
-  if (url.protocol === "mailto:") {
-    const address = /^[^@]+@[^@]+$/.test(url.pathname) && url.search === "" && url.hash === "";
-    return address ? url.href : undefined;
-  }
-  return url.protocol === "https:" ? url.href : undefined;
 }
 
 export type DiscordEnvName =
