@@ -104,6 +104,8 @@ export async function findBellCandidates(
  *   ものが 20 あれば limited、なければ sent
  * - 公開日時が、今から 1 日以上前の記事には作らない。publishedAt が null（フィードに日付がなかった）
  *   なら、取り込んだ時刻を公開日時とみなす
+ * - その人の受信箱にその記事がなければ作らない（判定を読んだあとに購読をやめた。言葉だけのベルは、
+ *   購読をやめても外れない）
  *
  * 同じ文で入れた行どうしは互いを数えられないので、記事ごとに文を分けて呼ぶ。同じ記事の同じ人の
  * 行がもうあれば作らない（やり直した取得の仕事は、送る仕事を積み直さない）
@@ -155,6 +157,8 @@ export async function insertArticleNotifications(
     where hit.choice = 1
       and coalesce(${input.publishedAt?.getTime() ?? null}, article.created_at)
       > ${DB_NOW_MS} - ${STALE_ARTICLE_MS}
+      and exists (select 1 from ${userArticles} as inbox
+        where inbox.user_id = hit.user_id and inbox.article_id = article.id)
     on conflict do nothing
     returning id, user_id as "userId", state
   `);
@@ -165,7 +169,8 @@ export type BellWindow = { userId: string; bellId: string; windowStart: number }
 
 /**
  * まとめ待ちの窓を、始まりの古い順に limit 個まで拾う。閉じてから 1 時間以内（始まり + 10 分 ≤ 今 <
- * 始まり + 70 分）で、bundled の行があり、まとめの行がまだなく、ベルが外されていない窓
+ * 始まり + 70 分）で、その人の受信箱にある記事の bundled の行があり、まとめの行がまだなく、ベルが
+ * 外されていない窓
  */
 export async function findClosedWindows(db: Database, limit: number): Promise<BellWindow[]> {
   return db.all<BellWindow>(sql`
@@ -173,6 +178,8 @@ export async function findClosedWindows(db: Database, limit: number): Promise<Be
       pending.window_start as "windowStart"
     from ${bellNotifications} as pending
     join ${bells} as bell on bell.id = pending.bell_id and bell.deleted_at is null
+    join ${userArticles} as inbox on inbox.user_id = pending.user_id
+      and inbox.article_id = pending.article_id
     where pending.state = 'bundled'
       and pending.window_start <= ${DB_NOW_MS} - ${BELL_WINDOW_MS}
       and pending.window_start > ${DB_NOW_MS} - ${BELL_WINDOW_MS + BELL_BUNDLE_PICKUP_MS}
@@ -186,9 +193,10 @@ export async function findClosedWindows(db: Database, limit: number): Promise<Be
 }
 
 /**
- * 窓のまとめの行を作る。同じ文の中で、窓が閉じたこと、bundled の行があること、ベルが有効なことを
- * 確かめ直し、上限を数えて sent か limited にする。窓のまとめの行がもうあれば作らない（部分一意
- * 索引）。窓が閉じたあとに当たった記事は、DB の時計で新しい窓に入るので、このまとめには入らない
+ * 窓のまとめの行を作る。同じ文の中で、窓が閉じたこと、その人の受信箱にある記事の bundled の行が
+ * あること（言葉だけのベルは、購読をやめても外れない）、ベルが有効なことを確かめ直し、上限を数えて
+ * sent か limited にする。窓のまとめの行がもうあれば作らない（部分一意索引）。窓が閉じたあとに
+ * 当たった記事は、DB の時計で新しい窓に入るので、このまとめには入らない
  *
  * @returns 作った行。作らなければ undefined
  */
@@ -206,6 +214,8 @@ export async function insertBundleNotification(
         else 'sent' end
     where ${windowStart} <= ${DB_NOW_MS} - ${BELL_WINDOW_MS}
       and exists (select 1 from ${bellNotifications} as pending
+        join ${userArticles} as inbox on inbox.user_id = pending.user_id
+          and inbox.article_id = pending.article_id
         where pending.bell_id = ${bellId} and pending.user_id = ${userId}
           and pending.window_start = ${windowStart} and pending.state = 'bundled')
       and exists (select 1 from ${bells} as bell
@@ -216,8 +226,8 @@ export async function insertBundleNotification(
 }
 
 /**
- * まとめに入れた記事を、新しい順に limit 件まで読み、まとめた数も返す。新しさは公開日時で決め、
- * 同じなら記事の行を作った順で決める
+ * まとめに入れた記事のうち、その人の受信箱にあるものを、新しい順に limit 件まで読み、まとめた数も
+ * 返す。新しさは公開日時で決め、同じなら記事の行を作った順で決める
  */
 export async function readBundledArticles(
   db: Database,
@@ -235,6 +245,8 @@ export async function readBundledArticles(
     select article.id, article.title, article.summary, count(*) over () as count
     from ${bellNotifications} as bundled
     join ${articles} as article on article.id = bundled.article_id
+    join ${userArticles} as inbox on inbox.user_id = bundled.user_id
+      and inbox.article_id = bundled.article_id
     where bundled.user_id = ${input.userId} and bundled.bell_id = ${input.bellId}
       and bundled.window_start = ${input.windowStart.getTime()} and bundled.state = 'bundled'
     order by article.published_at desc, bundled.created_at desc, bundled.rowid desc
@@ -276,9 +288,10 @@ export type PushDelivery = {
  *   セッションの期限が切れた（期限の比べ方は sessions.ts の authenticateSession と同じ）
  * - 通知の行がもうないか、sent でない
  * - ベルが外された（購読をやめたときも、トリガーがその購読のベルを外す）
+ * - 記事の行で、その人の受信箱にその記事がもうない（購読をやめた。言葉だけのベルは外れない）
  *
- * フィード名の表示名は、その人のそのフィードの有効な購読から読む。言葉だけのベルの記事は、送る
- * までに購読をやめていれば、表示名がないので、フィードの名前を使う
+ * フィード名の表示名は、その人のそのフィードの有効な購読から読む。購読をやめても受信箱に残った
+ * 記事（スターを付けたもの）は、表示名がないので、フィードの名前を使う
  */
 export async function readPushDelivery(
   db: Database,
@@ -316,7 +329,9 @@ export async function readPushDelivery(
     left join ${feeds} as feed on feed.id = coalesce(article.feed_id, belled.feed_id)
     left join ${subscriptions} as subscription on subscription.user_id = notification.user_id
       and subscription.feed_id = feed.id and subscription.deleted_at is null
-    where notification.id = ${input.notificationId} and notification.state = 'sent'`,
+    where notification.id = ${input.notificationId} and notification.state = 'sent'
+      and (notification.article_id is null or exists (select 1 from ${userArticles} as inbox
+        where inbox.user_id = notification.user_id and inbox.article_id = notification.article_id))`,
   );
   if (row === undefined) return undefined;
   return {

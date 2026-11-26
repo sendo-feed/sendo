@@ -146,15 +146,18 @@ export async function runFetchDiscord(
     previousSuccessAt: feed.lastSuccessfulFetchAt,
     articles: articles
       .filter((article) => insertedIds.has(article.id))
-      .map((article) => ({
-        id: article.id,
-        publishedAt: new Date(article.publishedAt),
-        dated: true,
-        title: article.title,
-        summary: article.summary,
-        // 置いた本文だけを判定に使う（記事の行に本文があるもの）
-        contentHtml: article.contentKey === null ? null : (htmls.get(article.guid) ?? null),
-      })),
+      .map((article) => {
+        // 置いたかどうか（大きすぎる本文は置かない）によらず、サニタイズした本文で判定する
+        const html = htmls.get(article.guid);
+        return {
+          id: article.id,
+          publishedAt: new Date(article.publishedAt),
+          dated: true,
+          title: article.title,
+          summary: article.summary,
+          body: html === undefined ? null : { html },
+        };
+      }),
   });
   const usage = await readStorageUsage(db);
   if (inserted !== articles.length) {

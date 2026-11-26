@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSession, SESSION_TTL_MS } from "../../src/db/sessions";
 import { runJob } from "../../src/jobs";
 import { runCleanUp } from "../../src/jobs/clean-up";
+import { MAX_CONTENT_BYTES, MAX_CONTENTS_PER_FETCH } from "../../src/jobs/fetch-feed";
 import type { Job } from "../../src/jobs/job";
 import { createSqliteJobQueue } from "../../src/platform/node/job-queue";
 import { createSafeFetch, type Resolver } from "../../src/platform/node/safe-fetch";
@@ -172,6 +173,15 @@ async function createReader(world: World) {
     expect(res.status).toBe(204);
     return { endpoint };
   };
+  const inboxArticle = async (title: string) => {
+    const res = await api("/articles?limit=100");
+    const { items } = (await res.json()) as {
+      items: { id: string; title: string | null; hasContent: boolean }[];
+    };
+    const found = items.find((item) => item.title === title);
+    if (!found) throw new Error(`not in the inbox: ${title}`);
+    return found;
+  };
 
   return {
     id,
@@ -218,11 +228,11 @@ async function createReader(world: World) {
       return rows.results.map((row) => row.endpoint);
     },
     async articleId(title: string) {
-      const res = await api("/articles?limit=100");
-      const { items } = (await res.json()) as { items: { id: string; title: string | null }[] };
-      const found = items.find((item) => item.title === title);
-      if (!found) throw new Error(`not in the inbox: ${title}`);
-      return found.id;
+      return (await inboxArticle(title)).id;
+    },
+    /** 受信箱の記事に、置き場に置いた本文があるか */
+    async hasContent(title: string) {
+      return (await inboxArticle(title)).hasContent;
     },
     async unreadTotal() {
       return ((await (await api("/unread-counts")).json()) as { total: number }).total;
@@ -707,22 +717,65 @@ describe("言葉のベル", () => {
     expect(titles(world.service, endpoint)).toEqual(["Rust の新しい記事"]);
   });
 
-  it("フィードの本文は、プレーンテキストにした先頭 20,000 文字で判定する", async () => {
+  it("フィードの本文は、空白をまとめたプレーンテキストの先頭ちょうど 20,000 文字で判定する", async () => {
     const world = createWorld();
     const { feeds, endpoint } = await wordReader(world, "障害");
     const [blog] = feeds;
     if (!blog) throw new Error("no feed");
-    // 本文の 19,999〜20,000 文字目に「障害」がある記事と、20,000〜20,001 文字目にある記事
+    // どちらも 20,000 文字を超える本文。「障害」が 19,999〜20,000 文字目にある記事と、20,000〜20,001
+    // 文字目にかかる記事。タグは空白になり、前後の空白は除く
     blog.source.items.push(
-      world.item("ちょうど 20,000 文字", 2 * MINUTE, {
-        content: `<p>${"あ".repeat(19_998)}障害</p>`,
+      world.item("20,000 文字目で終わる", 2 * MINUTE, {
+        content: `<p>${"あ".repeat(19_998)}障害${"い".repeat(10)}</p>`,
       }),
-      world.item("20,001 文字", MINUTE, { content: `<p>${"あ".repeat(19_999)}障害</p>` }),
+      world.item("20,001 文字目にかかる", MINUTE, {
+        content: `<p>${"あ".repeat(19_999)}障害${"い".repeat(10)}</p>`,
+      }),
     );
 
     await world.fetchFeed(blog.feedId);
 
-    expect(titles(world.service, endpoint)).toEqual(["ちょうど 20,000 文字"]);
+    expect(titles(world.service, endpoint)).toEqual(["20,000 文字目で終わる"]);
+  });
+
+  it("1 回の取得で本文を置く 30 件を超えた記事も、フィードの本文で判定する", async () => {
+    const world = createWorld();
+    const { user, feeds, endpoint } = await wordReader(world, "障害");
+    const [blog] = feeds;
+    if (!blog) throw new Error("no feed");
+    // 要約は description から採るので、言葉は本文にだけある
+    for (let i = 1; i <= MAX_CONTENTS_PER_FETCH; i++) {
+      blog.source.items.push(
+        world.item(`記事 ${i}`, MINUTE, { description: "要約", content: "<p>平常どおり</p>" }),
+      );
+    }
+    blog.source.items.push(
+      world.item("31 件目", MINUTE, { description: "要約", content: "<p>障害が起きた</p>" }),
+    );
+
+    await world.fetchFeed(blog.feedId);
+
+    expect(await user.hasContent("31 件目")).toBe(false);
+    expect(titles(world.service, endpoint)).toEqual(["31 件目"]);
+  });
+
+  it("大きすぎて置き場に置かなかった本文（256 KiB を超える）も判定する", async () => {
+    const world = createWorld();
+    const { user, feeds, endpoint } = await wordReader(world, "障害");
+    const [blog] = feeds;
+    if (!blog) throw new Error("no feed");
+    const filler = "あ".repeat(Math.ceil(MAX_CONTENT_BYTES / 3) + 1);
+    blog.source.items.push(
+      world.item("大きな記事", MINUTE, {
+        description: "要約",
+        content: `<p>障害が起きた</p><p>${filler}</p>`,
+      }),
+    );
+
+    await world.fetchFeed(blog.feedId);
+
+    expect(await user.hasContent("大きな記事")).toBe(false);
+    expect(titles(world.service, endpoint)).toEqual(["大きな記事"]);
   });
 
   it("言葉だけのベルのまとめは、title に言葉だけを出す", async () => {
@@ -748,6 +801,109 @@ describe("言葉のベル", () => {
         tag: `bell:${bellId}:${newest}`,
         data: { bellId, articleId: newest, count: 1 },
       },
+    ]);
+  });
+
+  /** そのベルの通知の行の数。まとめの行だけを数えるなら bundles を true にする */
+  const rowsOf = (bellId: string, bundles = false) =>
+    testDb
+      .prepare(
+        `SELECT count(*) AS n FROM bell_notifications WHERE bell_id = ?${bundles ? " AND article_id IS NULL" : ""}`,
+      )
+      .bind(bellId)
+      .first<number>("n");
+
+  it("判定を読んだあと、行を作る前に購読をやめたら、言葉だけのベルでも行を作らず送らない", async () => {
+    const world = createWorld();
+    const { user, feeds, bellId } = await wordReader(world, "Rust");
+    const [blog] = feeds;
+    if (!blog) throw new Error("no feed");
+    blog.source.items.push(world.item("Rust 1.80"));
+    world.before(/insert into "bell_notifications"/i, async () => {
+      expect((await user.api(`/feeds/${blog.feedId}`, "DELETE")).status).toBe(204);
+    });
+
+    await world.fetchFeed(blog.feedId);
+
+    expect(world.service.requests).toEqual([]);
+    expect(await rowsOf(bellId)).toBe(0);
+  });
+
+  it("送る仕事を積んだあと、送る前に購読をやめたら、言葉だけのベルでも送らない", async () => {
+    const world = createWorld();
+    const { user, feeds } = await wordReader(world, "Rust");
+    const [blog] = feeds;
+    if (!blog) throw new Error("no feed");
+    blog.source.items.push(world.item("Rust 1.80"));
+    world.before(/from "bell_notifications" as notification/i, async () => {
+      expect((await user.api(`/feeds/${blog.feedId}`, "DELETE")).status).toBe(204);
+    });
+
+    await world.fetchFeed(blog.feedId);
+
+    expect(world.service.requests).toEqual([]);
+  });
+
+  it("まとめ待ちの間に購読をやめたら、言葉だけのベルでもまとめず、まとめの行も作らない", async () => {
+    const world = createWorld();
+    const { user, feeds, bellId, endpoint } = await wordReader(world, "Rust");
+    const [blog] = feeds;
+    if (!blog) throw new Error("no feed");
+    for (let i = 1; i <= 4; i++) blog.source.items.push(world.item(`Rust ${i}`, (5 - i) * MINUTE));
+    const opened = world.clock.ms;
+    await world.fetchFeed(blog.feedId);
+    expect(world.service.delivered(endpoint)).toHaveLength(3);
+    expect((await user.api(`/feeds/${blog.feedId}`, "DELETE")).status).toBe(204);
+
+    world.clock.ms = opened + 10 * MINUTE;
+    await world.bundle();
+
+    expect(world.service.delivered(endpoint)).toHaveLength(3);
+    // 1 時間 20 通の上限に数えるまとめの行も作らない
+    expect(await rowsOf(bellId, true)).toBe(0);
+  });
+
+  it("まとめの窓を拾ってから行を作るまでに購読をやめたら、言葉だけのベルでもまとめの行を作らない", async () => {
+    const world = createWorld();
+    const { user, feeds, bellId, endpoint } = await wordReader(world, "Rust");
+    const [blog] = feeds;
+    if (!blog) throw new Error("no feed");
+    for (let i = 1; i <= 4; i++) blog.source.items.push(world.item(`Rust ${i}`, (5 - i) * MINUTE));
+    const opened = world.clock.ms;
+    await world.fetchFeed(blog.feedId);
+    world.clock.ms = opened + 10 * MINUTE;
+    world.before(/insert into "bell_notifications"/i, async () => {
+      expect((await user.api(`/feeds/${blog.feedId}`, "DELETE")).status).toBe(204);
+    });
+
+    await world.bundle();
+
+    expect(world.service.delivered(endpoint)).toHaveLength(3);
+    expect(await rowsOf(bellId, true)).toBe(0);
+  });
+
+  it("まとめ待ちの間に一部の購読をやめたら、受信箱に残る記事だけをまとめ、その数を載せる", async () => {
+    const world = createWorld();
+    const { user, feeds, endpoint } = await wordReader(world, "Rust", ["Blog", "News"]);
+    const [blog, news] = feeds;
+    if (!blog || !news) throw new Error("no feed");
+    const opened = world.clock.ms;
+    for (let i = 1; i <= 3; i++) blog.source.items.push(world.item(`Rust ${i}`, (6 - i) * MINUTE));
+    await world.fetchFeed(blog.feedId);
+    // 4 件目からはまとめ待ち
+    news.source.items.push(world.item("Rust 4", 2 * MINUTE));
+    blog.source.items.push(world.item("Rust 5", MINUTE));
+    await world.fetchFeed(news.feedId);
+    await world.fetchFeed(blog.feedId);
+    expect(world.service.delivered(endpoint)).toHaveLength(3);
+    expect((await user.api(`/feeds/${blog.feedId}`, "DELETE")).status).toBe(204);
+
+    world.clock.ms = opened + 10 * MINUTE;
+    await world.bundle();
+
+    const bundles = world.service.delivered(endpoint).slice(3);
+    expect(bundles.map((r) => r.payload.notification)).toEqual([
+      expect.objectContaining({ body: "Rust 4", data: expect.objectContaining({ count: 1 }) }),
     ]);
   });
 });

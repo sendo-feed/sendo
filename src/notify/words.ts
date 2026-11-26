@@ -12,6 +12,12 @@ export const MAX_BELL_WORDS = 8;
 /** 言葉の全体の長さの上限（保存する形の、区切りの空白を含むコードポイントの数） */
 export const MAX_BELL_WORDS_LENGTH = 64;
 
+/**
+ * 受ける文字列の長さの上限（UTF-16 の単位）。NFKC で縮む文字（半角のカナと濁点など）、重なる言葉、
+ * 余分な空白の分を見込んで、保存する形の上限より大きくとる。超えたら、正規化する前に断る
+ */
+export const MAX_BELL_WORDS_INPUT_LENGTH = 1024;
+
 /** 言葉を受けられない理由 */
 export type BellWordsProblem = "empty" | "too_many_words" | "too_long" | "invalid_character";
 
@@ -36,6 +42,7 @@ const CONTROL = /\p{Cc}/u;
  * @returns 保存する形。受けられなければ、その理由
  */
 export function parseBellWords(input: string): BellWords | BellWordsProblem {
+  if (input.length > MAX_BELL_WORDS_INPUT_LENGTH) return "too_long";
   const kept: string[] = [];
   const lowered = new Set<string>();
   for (const word of input.normalize("NFKC").split(SEPARATOR)) {

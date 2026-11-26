@@ -171,20 +171,24 @@ export async function runFetchFeed(
     const insertedIds = new Set(insertedArticles.map((article) => article.id));
     await notifyBells(platform, {
       previousSuccessAt: feed.lastSuccessfulFetchAt,
-      articles: rows.flatMap((row, index) =>
-        insertedIds.has(row.id)
-          ? [
-              {
-                id: row.id,
-                publishedAt: row.publishedAt,
-                dated: parsed.items[index]?.publishedAt != null,
-                title: row.title ?? null,
-                summary: row.summary ?? null,
-                contentHtml: storedContents.htmls.get(row.id) ?? null,
-              },
-            ]
-          : [],
-      ),
+      articles: rows.flatMap((row, index) => {
+        if (!insertedIds.has(row.id)) return [];
+        const item = parsed.items[index];
+        // 置くか確かめるときにプレーンテキストにした本文（30 件まで）は使い回す。ほかの記事は、
+        // 判定するときにフィードの HTML をプレーンテキストにする
+        const text = storedContents.texts.get(row.id);
+        const html = item?.contentHtml;
+        return [
+          {
+            id: row.id,
+            publishedAt: row.publishedAt,
+            dated: item?.publishedAt != null,
+            title: row.title ?? null,
+            summary: row.summary ?? null,
+            body: text !== undefined ? { text } : html ? { html } : null,
+          },
+        ];
+      }),
     });
     // 新しい記事ごとに、ページから本文を抜く仕事を積む（docs/decisions/content.md の 10）。ここで落ちて積めなくても、読者が開いたときに抜く
     await enqueuePageContents(platform, insertedArticles);
@@ -386,19 +390,20 @@ async function refreshIcon(
  * - すでにある記事かどうかは、置く手間を省くために読むだけ。読んだあとで別の取得が同じ記事を
  *   入れても、こちらの行が入らず、置いた本文が片付けられるだけ
  *
- * @returns 置いた本文の名前、置いた本文（記事の ID ごと。ベルの判定に使う）、容量不足で記事ごと
- *   再試行する ID
+ * @returns 置いた本文の名前、置くか確かめた本文のプレーンテキスト（記事の ID ごと。置かなかった
+ *   ものも。ベルの判定に使う）、容量不足で記事ごと再試行する ID
  */
 async function storeContents(
   platform: Pick<Platform, "db" | "content">,
   input: { feedId: string; feedUrl: string; items: ParsedItem[]; rows: ArticleInput[] },
-): Promise<{ keys: string[]; htmls: Map<string, string>; deferredIds: Set<string> }> {
+): Promise<{ keys: string[]; texts: Map<string, string>; deferredIds: Set<string> }> {
   const { db } = platform;
+  const texts = new Map<string, string>();
   const withContent = input.rows.flatMap((row, index) => {
     const html = input.items[index]?.contentHtml;
     return html ? [{ row, html }] : [];
   });
-  if (withContent.length === 0) return { keys: [], htmls: new Map(), deferredIds: new Set() };
+  if (withContent.length === 0) return { keys: [], texts, deferredIds: new Set() };
 
   const existing = await findExistingGuids(db, {
     feedId: input.feedId,
@@ -415,11 +420,12 @@ async function storeContents(
     // など）から採ることがあるので、短い本文でも、要約と違えば置く。要約に収まらなかった本文は、
     // 要約が切り詰められているので、同じにならない
     const text = htmlToText(sanitized, Number.POSITIVE_INFINITY) ?? "";
+    texts.set(row.id, text);
     if (text === (row.summary ?? "") && !hasMarkupBeyondText(sanitized)) continue;
     if (encoder.encode(sanitized).length > MAX_CONTENT_BYTES) continue;
     contents.push({ row, key: newContentKey(), html: sanitized });
   }
-  if (contents.length === 0) return { keys: [], htmls: new Map(), deferredIds: new Set() };
+  if (contents.length === 0) return { keys: [], texts, deferredIds: new Set() };
 
   const keys = contents.map(({ key }) => key);
   await noteContentKeys(db, keys);
@@ -437,7 +443,7 @@ async function storeContents(
   for (const { row, key } of stored) row.contentKey = key;
   return {
     keys: stored.map(({ key }) => key),
-    htmls: new Map(stored.map(({ row, html }) => [row.id, html])),
+    texts,
     deferredIds: new Set(contents.filter(({ key }) => !reserved.has(key)).map(({ row }) => row.id)),
   };
 }

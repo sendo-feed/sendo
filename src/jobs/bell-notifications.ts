@@ -13,6 +13,7 @@ import {
 import { countUnreadByFeed } from "../db/inbox";
 import { deletePushRegistrationById, listPushRegistrations } from "../db/push-registrations";
 import { parseRetryAfter } from "../fetcher/fetch-feed";
+import { htmlToText } from "../fetcher/parse-feed";
 import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
 import { loggableError } from "../lib/log-error";
 import { type BellNotification, BUNDLE_LINES, buildNotificationPayload } from "../notify/payload";
@@ -20,7 +21,6 @@ import { vapidAuthorization } from "../notify/vapid";
 import { encryptPushMessage } from "../notify/web-push";
 import { matchesBellWords, toMatchText } from "../notify/words";
 import type { Platform } from "../platform";
-import { articleText } from "./article-search";
 
 /*
  * ベルの通知（docs/decisions/notifications.md の 8〜13、21、22）。取得の仕事が、取り込んだ記事を
@@ -30,6 +30,9 @@ import { articleText } from "./article-search";
 
 /** 1 回の取得の仕事で判定する記事の数。公開日時の新しい順に選ぶ */
 const MAX_JUDGED_ARTICLES = 50;
+
+/** 判定に使うフィードの本文の長さ（プレーンテキストの先頭のコードポイントの数） */
+const MAX_JUDGED_BODY_LENGTH = 20_000;
 
 /** 送るときの時間切れ（応答を受け終えるまで。docs/decisions/images.md の 3 と同じ） */
 const PUSH_TIMEOUT_MS = 15_000;
@@ -50,8 +53,12 @@ export type IngestedArticle = {
   /** 言葉で判定する欄。記事の行と同じタイトルと要約 */
   title: string | null;
   summary: string | null;
-  /** 置き場に置いたフィードの本文（サニタイズした HTML）。置かなかった記事は null */
-  contentHtml: string | null;
+  /**
+   * フィードの本文。置き場に置いたかどうかによらない。プレーンテキストにしたもの（htmlToText で
+   * 空白をまとめ、切る前の形）か、まだプレーンテキストにしていない HTML。HTML は判定するときに
+   * だけプレーンテキストにし、保存も返しもしない。本文がなければ null
+   */
+  body: { text: string } | { html: string } | null;
 };
 
 /**
@@ -121,15 +128,31 @@ function matchWords(
   let text: string | undefined;
   return candidates.filter(({ matchKey }) => {
     if (matchKey === null) return true;
-    text ??= toMatchText(
-      articleText({
-        title: article.title,
-        summary: article.summary,
-        bodyHtml: article.contentHtml,
-      }),
-    );
+    text ??= toMatchText(judgedText(article));
     return matchesBellWords(text, matchKey);
   });
+}
+
+/**
+ * 言葉と比べる記事の文字。タイトル、要約、フィードの本文を、空でないものだけ改行でつなぐ。本文は、
+ * 空白をまとめたプレーンテキストを、コードポイントでちょうど 20,000 文字に切る。切った印は付けない
+ * （「…」は NFKC で「...」になり、言葉の文字に当たる）
+ */
+function judgedText(article: IngestedArticle): string {
+  const { body } = article;
+  const text =
+    body === null
+      ? null
+      : "text" in body
+        ? body.text
+        : htmlToText(body.html, Number.POSITIVE_INFINITY);
+  // 先頭の 20,000 コードポイントは、UTF-16 で 40,000 単位までに収まる
+  const cut =
+    text &&
+    Array.from(text.slice(0, 2 * MAX_JUDGED_BODY_LENGTH))
+      .slice(0, MAX_JUDGED_BODY_LENGTH)
+      .join("");
+  return [article.title, article.summary, cut].filter(Boolean).join("\n");
 }
 
 /**

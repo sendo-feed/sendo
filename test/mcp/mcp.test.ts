@@ -1875,7 +1875,9 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
 
     // 言葉が上限などに合わなければ invalid_words。ベルは作らない
     const eight = Array.from({ length: 8 }, (_, i) => `w${i}`).join(" ");
-    for (const words of ["", " \u3000", `${eight} w8`, "あ".repeat(65), "障害\u0000"]) {
+    // 受ける文字列は 1,024 文字まで。区切ったあとが短くても、超えたら受けない
+    const padded = `Rust${" ".repeat(1021)}`;
+    for (const words of ["", " \u3000", `${eight} w8`, "あ".repeat(65), "障害\u0000", padded]) {
       for (const args of [{ words }, { feedId: feed.id, words }]) {
         const invalid = await call("add_bell", args);
         expect(invalid.isError, JSON.stringify(args)).toBe(true);
