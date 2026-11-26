@@ -259,7 +259,7 @@ const syncRoute = createRoute({
     "deleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。",
     "settings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。",
     "includeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。",
-    "includeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。",
+    "includeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。差分の有無にかかわらず、購読先の省略に対応した印 defaultWorkspaceOnSubscribe を返す。",
     "cursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
   ].join("\n"),
   request: {
@@ -284,6 +284,9 @@ const syncRoute = createRoute({
               settings: z.array(SyncSettingSchema),
               savedPages: z.array(SyncSavedPageSchema).optional(),
               workspaces: z.array(SyncWorkspaceSchema).optional(),
+              defaultWorkspaceOnSubscribe: z.literal(true).optional().openapi({
+                description: "includeWorkspaces=true のとき付く。購読先の省略はデフォルトを使う",
+              }),
             })
             .openapi("SyncChanges"),
         },
@@ -338,6 +341,7 @@ export function syncApi(platform: Platform) {
             deleted: folder.deletedAt !== null,
           })),
           ...(changes.workspaces && {
+            defaultWorkspaceOnSubscribe: true as const,
             workspaces: changes.workspaces.map((workspace) =>
               workspace.deletedAt === null
                 ? { ...toWorkspaceResponse(workspace), deleted: false as const }
