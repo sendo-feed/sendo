@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSession, SESSION_TTL_MS } from "../../src/db/sessions";
 import { runJob } from "../../src/jobs";
 import { runCleanUp } from "../../src/jobs/clean-up";
@@ -51,6 +51,10 @@ function rss(items: readonly Item[]) {
 beforeEach(async () => {
   // 仕事の表はテストファイルの中で共有される。前のテストのやり直し待ちの仕事を動かさない
   await testDb.prepare("DELETE FROM job_queue").run();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 /**
@@ -145,6 +149,17 @@ async function createReader(world: World) {
   const { platform } = world;
   const api = (path: string, method = "GET", json?: unknown) =>
     requestApp(platform, `/api/v1${path}`, { method, json, token });
+  const putRegistration = async (headers: Record<string, string>, key: Device, host?: string) => {
+    const endpoint = world.service.endpoint(key, host);
+    const res = await requestApp(platform, "/api/v1/push/registration", {
+      method: "PUT",
+      token: null,
+      headers,
+      json: { endpoint, expirationTime: null, keys: key.keys },
+    });
+    expect(res.status).toBe(204);
+    return { endpoint };
+  };
 
   return {
     id,
@@ -170,15 +185,19 @@ async function createReader(world: World) {
         "sec-fetch-site": "same-origin",
       };
       const key = device ?? (await createDevice());
-      const endpoint = world.service.endpoint(key, host);
-      const res = await requestApp(platform, "/api/v1/push/registration", {
-        method: "PUT",
-        token: null,
-        headers,
-        json: { endpoint, expirationTime: null, keys: key.keys },
-      });
-      expect(res.status).toBe(204);
-      return { endpoint, headers, device: key };
+      return { ...(await putRegistration(headers, key, host)), headers, device: key };
+    },
+    /** そのセッションで、新しいエンドポイントの登録を送る（ブラウザが登録し直したとき） */
+    async reregister(headers: Record<string, string>) {
+      return putRegistration(headers, await createDevice());
+    },
+    /** この人の端末の登録のエンドポイント。ほかのテストの行は数えない */
+    async registeredEndpoints() {
+      const rows = await testDb
+        .prepare("SELECT endpoint FROM push_registrations WHERE user_id = ?")
+        .bind(id)
+        .all<{ endpoint: string }>();
+      return rows.results.map((row) => row.endpoint);
     },
     async articleId(title: string) {
       const res = await api("/articles?limit=100");
@@ -414,25 +433,30 @@ describe("ベルの記事を送る", () => {
 
   it("1 回の取得で判定するのは、公開日時の新しい順に 50 件まで", async () => {
     const world = createWorld();
-    const { source, feedId } = await belledReader(world);
-    // 窓と上限で、送るのは最初の 3 件だけになるので、行を作った記事を DB で確かめる
+    const { source, feedId, endpoint } = await belledReader(world);
+    // 「記事 0」がいちばん新しく、「記事 50」がいちばん古い
     for (let i = 0; i < 51; i++) source.items.push(world.item(`記事 ${i}`, (i + 1) * MINUTE));
+    const opened = world.clock.ms;
 
     await world.fetchFeed(feedId);
+    world.clock.ms = opened + 10 * MINUTE;
+    await world.bundle();
 
-    const rows = await testDb
-      .prepare(
-        `SELECT a.title FROM bell_notifications n JOIN articles a ON a.id = n.article_id
-         WHERE n.bell_id = (SELECT id FROM bells WHERE subscription_id IN
-           (SELECT id FROM subscriptions WHERE feed_id = ?))`,
-      )
-      .bind(feedId)
-      .all<{ title: string }>();
-    expect(rows.results.map((row) => row.title).sort()).toEqual(
-      Array.from({ length: 50 }, (_, i) => `記事 ${i}`).sort(),
-    );
-    // 古い順に行を作るので、1 件ずつ送るのは、選んだ 50 件のうち古い 3 件
-    expect(titles(world.service).sort()).toEqual(["記事 47", "記事 48", "記事 49"]);
+    // 古い順に行を作るので、1 件ずつ送るのは、選んだ 50 件のうち古い 3 件。いちばん古い
+    // 「記事 50」は選ばない。残りの 47 件を 1 通にまとめる
+    const delivered = world.service.delivered(endpoint);
+    expect(
+      delivered
+        .slice(0, 3)
+        .map((r) => r.payload.notification.body)
+        .sort(),
+    ).toEqual(["記事 47", "記事 48", "記事 49"]);
+    expect(delivered.slice(3).map((r) => r.payload.notification)).toEqual([
+      expect.objectContaining({
+        body: "記事 0\n記事 1\n記事 2\nほか 44 件",
+        data: expect.objectContaining({ count: 47 }),
+      }),
+    ]);
   });
 });
 
@@ -639,6 +663,109 @@ describe("閉じた窓のまとめ", () => {
 
     expect(world.service.delivered(endpoint)).toHaveLength(20);
   });
+
+  it("上限で送らなかった 1〜3 件目は、上限が空いたあとのまとめにも入らない", async () => {
+    const world = createWorld();
+    const user = await createReader(world);
+    const feeds = await feedsOf(world, user, 8);
+    const { endpoint } = await user.register();
+    const quiet = feeds.at(-1);
+    if (!quiet) throw new Error("no feed");
+    await publish(world, feeds.slice(0, 7), 20);
+    const sentAt = world.clock.ms;
+
+    // 20 通がまだ直近 1 時間にあるうちに、別のベルで 5 件当たる。1〜3 件目は上限で送らない
+    world.clock.ms = sentAt + 51 * MINUTE;
+    const opened = await hits(world, quiet, 5);
+    expect(world.service.delivered(endpoint)).toHaveLength(20);
+    // 窓が閉じるときには、20 通は 1 時間より前になっている
+    world.clock.ms = opened + 10 * MINUTE;
+    await world.bundle();
+
+    expect(
+      world.service
+        .delivered(endpoint)
+        .slice(20)
+        .map((r) => r.payload.notification),
+    ).toEqual([
+      expect.objectContaining({
+        body: "記事 5\n記事 4",
+        data: expect.objectContaining({ count: 2 }),
+      }),
+    ]);
+  });
+
+  it("まとめる前に購読をやめたら、まとめない", async () => {
+    const world = createWorld();
+    const reader = await belledReader(world);
+    const opened = await hits(world, reader, 4);
+    expect((await reader.user.api(`/feeds/${reader.feedId}`, "DELETE")).status).toBe(204);
+
+    world.clock.ms = opened + 10 * MINUTE;
+    await world.bundle();
+
+    expect(world.service.delivered(reader.endpoint)).toHaveLength(3);
+  });
+
+  it("まとめの行を作ってから送る仕事を積む前に落ちたら、そのまとめは出ず、やり直しても 2 通にならない", async () => {
+    const world = createWorld();
+    const reader = await belledReader(world);
+    const opened = await hits(world, reader, 4);
+    world.clock.ms = opened + 10 * MINUTE;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    world.before(/insert into "bell_notifications"/i, async () => {
+      world.before(/insert into "job_queue"/i, async () => {
+        throw new Error("crashed before enqueueing");
+      });
+    });
+
+    await world.bundle();
+    // まとめの仕事のやり直しと、次の定期実行
+    world.advance(MINUTE);
+    await world.drain();
+    world.advance(5 * MINUTE);
+    await world.bundle();
+
+    expect(world.service.delivered(reader.endpoint)).toHaveLength(3);
+    const bundles = await testDb
+      .prepare(
+        "SELECT count(*) AS n FROM bell_notifications WHERE bell_id = ? AND article_id IS NULL",
+      )
+      .bind(reader.bellId)
+      .first<number>("n");
+    expect(bundles).toBe(1);
+  });
+
+  it("まとめの仕事が 1 回に拾う窓は 100 個まで。101 個目は次の回に拾う", async () => {
+    const world = createWorld();
+    const source = world.source([world.item("前からある記事", HOUR)]);
+    // 送り先のオリジンをそろえ、JWT を使い回させる
+    const device = await createDevice();
+    const host = `${crypto.randomUUID()}.push.example`;
+    // 101 人が同じフィードにベルを付ける。1 回の取得で、どの人にも同じ時刻に 4 件当たる
+    const endpoints = new Set<string>();
+    let feedId = "";
+    for (let i = 0; i < 101; i++) {
+      const user = await createReader(world);
+      feedId = await user.subscribe(source);
+      await user.bell(feedId);
+      endpoints.add((await user.register(device, host)).endpoint);
+    }
+    world.advance(SECOND);
+    await world.drain();
+    world.advance(SECOND);
+    const opened = await hits(world, { source, feedId }, 4);
+    expect(world.service.delivered()).toHaveLength(303);
+
+    world.clock.ms = opened + 10 * MINUTE;
+    await world.bundle();
+    expect(world.service.delivered().slice(303)).toHaveLength(100);
+    await world.bundle();
+
+    const bundles = world.service.delivered().slice(303);
+    expect(bundles).toHaveLength(101);
+    expect(new Set(bundles.map((r) => r.endpoint))).toEqual(endpoints);
+  }, 60_000);
 });
 
 describe("通知の行の片付け", () => {
@@ -777,7 +904,7 @@ describe("プッシュサービスの応答", () => {
 
   it("つながらないときもやり直す。3 回失敗したら諦め、登録は残す", async () => {
     const world = createWorld();
-    const { source, feedId } = await belledReader(world);
+    const { user, source, feedId, endpoint } = await belledReader(world);
     const attempts: string[] = [];
     const original = world.platform.fetch;
     world.platform.fetch = async (input, init) => {
@@ -801,10 +928,48 @@ describe("プッシュサービスの応答", () => {
     expect(attempts).toHaveLength(3);
     const left = await testDb.prepare("SELECT count(*) AS n FROM job_queue").first<number>("n");
     expect(left).toBe(0);
-    const registrations = await testDb
-      .prepare("SELECT count(*) AS n FROM push_registrations")
-      .first<number>("n");
-    expect(registrations).toBeGreaterThan(0);
+    expect(await user.registeredEndpoints()).toEqual([endpoint]);
+  });
+
+  it("15 秒のうちに応答を受け終えなければ時間切れにし、仕事をやり直す", async () => {
+    const world = createWorld();
+    const { source, feedId, endpoint } = await belledReader(world);
+    // 本物の 15 秒を待たないよう、時間切れの signal を、テストが切れるものに差し替える
+    const timeouts: { ms: number; controller: AbortController }[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      timeouts.push({ ms, controller });
+      return controller.signal;
+    });
+    let stalled: AbortSignal | undefined;
+    const { promise: sending, resolve: reached } = Promise.withResolvers<void>();
+    const original = world.platform.fetch;
+    world.platform.fetch = (input, init) => {
+      const signal = init?.signal;
+      if (stalled === undefined && String(input) === endpoint && signal) {
+        // プッシュサービスが応答を返さない
+        stalled = signal;
+        reached();
+        return new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason));
+        });
+      }
+      return original(input, init);
+    };
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    source.items.push(world.item("新しい記事"));
+
+    const fetching = world.fetchFeed(feedId);
+    await sending;
+    const timer = timeouts.find((t) => t.controller.signal === stalled);
+    expect(timer?.ms).toBe(15 * SECOND);
+    timer?.controller.abort(new DOMException("signal timed out", "TimeoutError"));
+    await fetching;
+    expect(titles(world.service, endpoint)).toEqual([]);
+
+    world.advance(MINUTE);
+    await world.drain();
+    expect(titles(world.service, endpoint)).toEqual(["新しい記事"]);
   });
 
   it("429 ／ 503 で Retry-After が 1 分ちょうどならやり直し、1 分より先なら諦める", async () => {
@@ -964,6 +1129,61 @@ describe("送る前の取り消しと失敗", () => {
     await world.fetchFeed(feedId);
 
     expect(world.service.requests).toEqual([]);
+  });
+
+  it("送る仕事を積んだあと、送る前に購読をやめたら送らない", async () => {
+    const world = createWorld();
+    const { user, source, feedId } = await belledReader(world);
+    source.items.push(world.item("新しい記事"));
+    world.before(/from "bell_notifications" as notification/i, async () => {
+      expect((await user.api(`/feeds/${feedId}`, "DELETE")).status).toBe(204);
+    });
+
+    await world.fetchFeed(feedId);
+
+    expect(world.service.requests).toEqual([]);
+  });
+
+  it("やり直しを待つ間に同じセッションで登録し直したら、古い仕事は新しいエンドポイントに送らず、登録は新しい 1 つが残る", async () => {
+    const world = createWorld();
+    const { user, source, feedId, endpoint, headers } = await belledReader(world);
+    world.service.respondWith((to) => new Response(null, { status: to === endpoint ? 500 : 201 }));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    source.items.push(world.item("新しい記事"));
+    await world.fetchFeed(feedId);
+    const renewed = await user.reregister(headers);
+
+    world.advance(MINUTE);
+    await world.drain();
+
+    expect(world.service.requests.map((r) => [r.endpoint, r.status])).toEqual([[endpoint, 500]]);
+    expect(await user.registeredEndpoints()).toEqual([renewed.endpoint]);
+    // 新しい登録には、次の記事から届く
+    world.advance(SECOND);
+    source.items.push(world.item("次の記事"));
+    await world.fetchFeed(feedId);
+    expect(titles(world.service, renewed.endpoint)).toEqual(["次の記事"]);
+  });
+
+  it("送っている間に同じセッションで登録し直し、古い仕事が 410 を受けても、新しい登録は消さない", async () => {
+    const world = createWorld();
+    const { user, source, feedId, endpoint, headers } = await belledReader(world);
+    let renewed: { endpoint: string } | undefined;
+    world.service.respondWith(async (to) => {
+      if (to !== endpoint) return new Response(null, { status: 201 });
+      renewed = await user.reregister(headers);
+      return new Response(null, { status: 410 });
+    });
+    source.items.push(world.item("1 件目"));
+
+    await world.fetchFeed(feedId);
+
+    if (!renewed) throw new Error("not re-registered");
+    expect(await user.registeredEndpoints()).toEqual([renewed.endpoint]);
+    world.advance(SECOND);
+    source.items.push(world.item("2 件目"));
+    await world.fetchFeed(feedId);
+    expect(titles(world.service, renewed.endpoint)).toEqual(["2 件目"]);
   });
 
   it("1 件の記事の通知の行を作るのに失敗しても、同じ回の残りの記事は送る", async () => {
