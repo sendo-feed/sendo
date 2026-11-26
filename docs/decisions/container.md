@@ -16,7 +16,7 @@ Sendo は、コンテナ（Node ＋ SQLite）だけで動かす（[テックス�
 3. **設定によって使えるかどうかが決まる機能は、その機能の API で有無を伝える。** 機能の有無をまとめて返す API（`GET /api/v1/features` など）は持たない。
    - [記事の翻訳](translation.md)は、Claude API のキー（`ANTHROPIC_API_KEY`）があるときだけ翻訳の行を作り、外へ送る。クライアントは、差分同期で配る記事ごとの翻訳の状態があるときに、翻訳の表示と操作を出す。キーを外したあとも残る行への翻訳の求めは 503（`translation_unavailable`）で断る（同じく 15）
    - [Discord チャンネルの購読](discord.md)には、`DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN` と、コールバック先に使う `READER_URL` の設定が要る。使える設定がそろっているかは `GET /api/v1/integrations/discord` の `available` で伝える。設定がそろっていなければ、接続・コールバック・新規購読の入口は 501（`feature_unavailable`）を返す
-   - [通知](notifications.md)の Web Push には、VAPID の `sub` に使う `VAPID_SUBJECT` と、通知から記事を開く URL に使う `READER_URL` の設定が要る。使える設定がそろっているかは `GET /api/v1/push` の `available` で伝える。設定がそろっていなければ、端末の登録の入口は 501（`feature_unavailable`）を返す（[通知](notifications.md)の 19）
+   - [通知](notifications.md)の Web Push には、VAPID の `sub` に使う `VAPID_SUBJECT` と、通知から記事を開く URL に使う `READER_URL` の設定が要る。使える設定がそろっているかは `GET /api/v1/push` の `available` で伝える。設定がそろっていなければ、端末の登録（`PUT`）は 501（`feature_unavailable`）を返す（[通知](notifications.md)の 19）
    - 新しい機能に対応する前の Sendo と組み合わさる間は、その機能を呼んで失敗したら使わずに動き続ける形で扱う（例：[差分同期](sync.md)の 9 の通知）
 
 ### 動かし方
@@ -126,7 +126,7 @@ Sendo がほかの RSS リーダーと違う価値を出すのは、CPU を多�
 - **Cloudflare 版も残し、2 つの版を同じコードから作る：** サーバーを持たない人も無料で使える。ただ、Cloudflare 版に載るのは普通の RSS リーダーの範囲だけで、Sendo を選ぶ理由にならない。緩衝層の 2 つの実装、workerd と Node の 2 組のテスト、上限に合わせた作り、2 つのデプロイの手順を保つ手間が大きい。
 - **重い処理だけを、Cloudflare から別の場所に任せる（Cloudflare Containers、別のサーバー）：** Cloudflare Containers は Workers Paid が必要。別のサーバーを足すと、デプロイするものが 2 つになり、結局サーバーを持つことになる。
 - **ネイティブのモジュールがなくても、その機能なしで起動する：** 開発の手元で Rust を入れずに動かせる。ただ、本番で読み込みに失敗したときに、機能が黙って止まる。手元でも `pnpm build:native` で作れる。
-- **機能の有無と新しい機能への対応を `GET /api/v1/features` にまとめる。** 新旧の組み合わせを、機能を呼ぶ前に見分けられる。ただ、項目ごとにいつ消すかを決め続けることになる。翻訳と Discord の設定の有無はそれぞれの API で伝えられ、新旧の組み合わせは呼んで失敗したときに扱える。
+- **機能の有無と新しい機能への対応を `GET /api/v1/features` にまとめる。** 新旧の組み合わせを、機能を呼ぶ前に見分けられる。ただ、項目ごとにいつ消すかを決め続けることになる。翻訳、Discord、Web Push の設定の有無はそれぞれの API で伝えられ、新旧の組み合わせは呼んで失敗したときに扱える。
 - **コンテナ版も、各自が fork してビルドする：** コードを自分で変えたい人はそうすればよい。ただ、動かすだけなら要らない。
 - **Postgres を支える：** 大勢で使うなら要るが、今は個人で使う規模を想定している。SQLite の方言で書いたスキーマ（FTS5 など）を、もう 1 組持つことになる。
 - **自動の更新に、汎用の道具（Watchtower など）を勧める：** 設定だけで済む。ただ、上げる前のバックアップ、sendo のあとに sendo-reader を上げる順番、バックアップと組の戻しを守れない。多くはコンテナとして動き、Docker のソケットを渡すことになる。
