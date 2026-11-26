@@ -28,6 +28,9 @@ type Bell = {
 type SyncBell = (Bell & { deleted: false }) | { id: string; deleted: true };
 type SyncPage = { cursor: string; hasMore: boolean; bells?: SyncBell[] };
 
+/** 作った時刻が同じミリ秒になることがあるので、並びによらずに比べる */
+const byId = (bells: readonly Bell[]) => [...bells].sort((a, b) => a.id.localeCompare(b.id));
+
 /** 付ける文（bells への INSERT）の直前 */
 const addStatement = /insert into "bells"/i;
 /** 付ける文が入らなかったときに、理由を読み直す文の直前 */
@@ -194,22 +197,25 @@ describe("ベルの付け外し（REST API）", () => {
     expect(await owner.list()).toEqual([bell]);
   });
 
-  it("ないフィード、入力の誤り、言葉には応じない", async () => {
-    const { subscribe, add, remove } = await setup();
+  it("ないフィードと入力の誤りには応じない", async () => {
+    const { subscribe, add, remove, list } = await setup();
     const feed = await subscribe();
     expect((await add({ feedId: crypto.randomUUID() })).status).toBe(404);
+    expect((await add({ feedId: crypto.randomUUID(), words: "障害" })).status).toBe(404);
     expect((await remove(crypto.randomUUID())).status).toBe(404);
     for (const json of [
       {},
-      { words: "障害" },
-      { feedId: feed.id, words: "障害" },
+      { id: crypto.randomUUID() },
       { feedId: feed.id, id: "NOT-A-UUID" },
       { feedId: feed.id, id: crypto.randomUUID().toUpperCase() },
+      { feedId: feed.id, unknown: true },
+      { words: 1 },
     ]) {
       const response = await add(json);
       expect(response.status, JSON.stringify(json)).toBe(400);
       expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
     }
+    expect(await list()).toEqual([]);
   });
 
   it("指定した id がほかの行（外したベル、ほかの購読のベル、ほかの人のベル）に使われていれば 409", async () => {
@@ -229,6 +235,145 @@ describe("ベルの付け外し（REST API）", () => {
       expect(await response.json()).toMatchObject({ error: { code: "bell_id_taken" } });
     }
     expect(await list()).toEqual([active]);
+  });
+});
+
+describe("言葉のベル", () => {
+  it("言葉だけのベルは購読を持たずに付き、一覧と次の同期に届く。言葉は NFKC にして区切った形で返す", async () => {
+    const { added, list, sync, user, notified } = await setup();
+    const before = await sync();
+    notified.length = 0;
+
+    const bell = await added({ words: "  Ａｚｕｒｅ\u3000障害\t" });
+    expect(bell).toEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      subscriptionId: null,
+      feedId: null,
+      words: "Azure 障害",
+      createdAt: expect.any(String),
+    });
+    expect(notified).toEqual([user.id]);
+    expect(await list()).toEqual([bell]);
+    expect((await sync(before.cursor)).bells).toEqual([{ ...bell, deleted: false }]);
+    expect((await sync()).bells).toEqual([{ ...bell, deleted: false }]);
+  });
+
+  it("購読 AND 言葉のベルは、購読と言葉の両方を持つ。購読だけ、言葉だけ、購読 AND 言葉は別のベル", async () => {
+    const { subscribe, added, list } = await setup();
+    const feed = await subscribe();
+
+    const both = await added({ feedId: feed.id, words: "Rust" });
+    expect(both).toMatchObject({
+      subscriptionId: feed.subscriptionId,
+      feedId: feed.id,
+      words: "Rust",
+    });
+    const subscriptionOnly = await added({ feedId: feed.id });
+    const wordsOnly = await added({ words: "Rust" });
+    expect(new Set([both.id, subscriptionOnly.id, wordsOnly.id]).size).toBe(3);
+    expect(byId(await list())).toEqual(byId([both, subscriptionOnly, wordsOnly]));
+  });
+
+  it("同じ言葉の集まりは、並びや大文字と小文字、全角と半角が違っても 1 つのベル。2 回目は最初の言葉のまま 200 で返す", async () => {
+    const { subscribe, added, list, sync } = await setup();
+    const feed = await subscribe();
+    const words = await added({ words: "Azure 障害" });
+    const both = await added({ feedId: feed.id, words: "Azure 障害" });
+    const before = await sync();
+
+    for (const again of ["障害 azure", "AZURE\u3000障害 Azure", "ａｚｕｒｅ 障害"]) {
+      expect(await added({ words: again }, 200)).toEqual(words);
+      expect(await added({ feedId: feed.id, words: again }, 200)).toEqual(both);
+    }
+    expect(byId(await list())).toEqual(byId([words, both]));
+    expect((await sync(before.cursor)).bells).toEqual([]);
+  });
+
+  it("言葉は 8 個まで。重なりを除く前に 9 個でも、除いたあと 8 個なら付く", async () => {
+    const { add, added } = await setup();
+    const eight = Array.from({ length: 8 }, (_, i) => `w${i}`).join(" ");
+    expect((await added({ words: eight })).words).toBe(eight);
+    expect((await added({ words: `${eight} W0` }, 200)).words).toBe(eight);
+
+    const nine = await add({ words: `${eight} w8` });
+    expect(nine.status).toBe(400);
+    expect(await nine.json()).toMatchObject({ error: { code: "invalid_request" } });
+  });
+
+  it("言葉は全体で 64 文字まで（区切りの空白を含むコードポイントの数）。65 文字は 400", async () => {
+    const { add, added, list } = await setup();
+    // 31 + 区切り 1 + 32 = 64 文字。絵文字はサロゲートの組でも 1 文字に数える
+    const exact = `${"あ".repeat(31)} ${"\u{1F600}".repeat(32)}`;
+    const bell = await added({ words: exact });
+    expect(bell.words).toBe(exact);
+
+    const over = await add({ words: `${exact}い` });
+    expect(over.status).toBe(400);
+    expect(await over.json()).toMatchObject({ error: { code: "invalid_request" } });
+    expect(await list()).toEqual([bell]);
+  });
+
+  it("言葉が空、空白だけ、制御文字や対になっていないサロゲートを含むなら 400 で、ベルを作らない", async () => {
+    const { subscribe, add, list } = await setup();
+    const feed = await subscribe();
+    for (const words of ["", " \u3000\t\n", "障害\u0000", "\u007f", "Azure \ud800"]) {
+      for (const json of [{ words }, { feedId: feed.id, words }]) {
+        const response = await add(json);
+        expect(response.status, JSON.stringify(json)).toBe(400);
+        expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
+      }
+    }
+    expect(await list()).toEqual([]);
+  });
+
+  it("購読をやめると、その購読の購読 AND 言葉のベルも消え、言葉だけのベルは残る", async () => {
+    const { subscribe, added, list, request, sync } = await setup();
+    const feed = await subscribe();
+    const both = await added({ feedId: feed.id, words: "Rust" });
+    const subscriptionOnly = await added({ feedId: feed.id });
+    const wordsOnly = await added({ words: "Rust" });
+    const before = await sync();
+
+    expect((await request(`/feeds/${feed.id}`, "DELETE")).status).toBe(204);
+
+    expect(await list()).toEqual([wordsOnly]);
+    expect((await sync(before.cursor)).bells).toEqual(
+      expect.arrayContaining([
+        { id: both.id, deleted: true },
+        { id: subscriptionOnly.id, deleted: true },
+      ]),
+    );
+    expect((await sync(before.cursor)).bells).toHaveLength(2);
+  });
+
+  it("言葉だけのベルも有効なベルの上限に数える", async () => {
+    const { subscribe, added, add } = await setup();
+    const feed = await subscribe();
+    for (let i = 0; i < MAX_BELLS; i++) await added({ words: `w${i}` });
+
+    for (const json of [{ words: "over" }, { feedId: feed.id }, { feedId: feed.id, words: "w0" }]) {
+      const response = await add(json);
+      expect(response.status, JSON.stringify(json)).toBe(409);
+      expect(await response.json()).toMatchObject({ error: { code: "bell_limit_reached" } });
+    }
+    // 上限に達していても、同じ組のベルは今のものを返す
+    expect((await added({ words: "W0" }, 200)).words).toBe("w0");
+  });
+
+  it("並びの違う同じ言葉を 2 つ同時に付けても、ベルは 1 つ。あとの方は先に入ったベルを 200 で返す", async () => {
+    const { platform, user, list } = await setup();
+    const bells = client(platform, user.token);
+
+    let first: Bell | undefined;
+    const hook = statementHook(addStatement, async () => {
+      first = await bells.added({ words: "Azure 障害" });
+    });
+    const racer = client({ ...platform, db: hook.db }, user.token);
+    const later = await racer.added({ words: "障害 AZURE" }, 200);
+
+    expect(hook.fired()).toBe(true);
+    expect(later).toEqual(first);
+    expect(await list()).toEqual([first]);
   });
 });
 
