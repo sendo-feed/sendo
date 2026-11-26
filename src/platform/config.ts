@@ -210,34 +210,47 @@ export type PushEnvName = "VAPID_SUBJECT" | "READER_URL";
 
 /**
  * Web Push の設定を読む（docs/decisions/notifications.md の 18、19）。VAPID_SUBJECT と READER_URL が
- * そろっているときだけ使える。形が正しくなければ、エラーをログに出して使わない
+ * そろっているときだけ使える。形が正しくなければ、エラーをログに出して使わない。VAPID_SUBJECT だけが
+ * あるときは、Web Push を使うつもりで入れたとみて、READER_URL がないことを警告に出す
  */
 export function readPushConfig(env: Partial<Record<PushEnvName, string>>): PushConfig | undefined {
   const text = env.VAPID_SUBJECT?.trim();
   if (!text) return undefined;
   const subject = parseVapidSubject(text);
   if (subject === undefined) {
-    console.error("Web Push is disabled: VAPID_SUBJECT must be a mailto: or https: URL");
+    console.error("Web Push is disabled: VAPID_SUBJECT must be a mailto: address or an https: URL");
     return undefined;
   }
+  let readerOrigin: string | undefined;
   try {
-    const readerOrigin = parseOrigin(env.READER_URL);
-    return readerOrigin ? { subject, readerOrigin } : undefined;
+    readerOrigin = parseOrigin(env.READER_URL);
   } catch (error) {
     console.error("Web Push is disabled: READER_URL must be an https origin", error);
     return undefined;
   }
+  if (readerOrigin === undefined) {
+    console.warn("Web Push is disabled: READER_URL is not set");
+    return undefined;
+  }
+  return { subject, readerOrigin };
 }
 
-/** mailto:（宛先のあるもの）か https: の URL だけを受ける。プッシュサービスが送り手に連絡する先 */
+/**
+ * 宛先 1 つの mailto:（local@domain）か、https: の URL だけを受ける。プッシュサービスが送り手に連絡する先。
+ * 空白と制御文字は、URL のパーサーが残したり黙って除いたりして通るので、読む前に断る
+ */
 function parseVapidSubject(text: string): string | undefined {
+  if (/[\s\p{Cc}]/u.test(text)) return undefined;
   let url: URL;
   try {
     url = new URL(text);
   } catch {
     return undefined;
   }
-  if (url.protocol === "mailto:") return url.pathname.includes("@") ? url.href : undefined;
+  if (url.protocol === "mailto:") {
+    const address = /^[^@]+@[^@]+$/.test(url.pathname) && url.search === "" && url.hash === "";
+    return address ? url.href : undefined;
+  }
   return url.protocol === "https:" ? url.href : undefined;
 }
 
