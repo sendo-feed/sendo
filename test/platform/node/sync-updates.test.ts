@@ -261,6 +261,45 @@ it("取得ジョブと既読・スターの更新を本人の接続に送り、�
   expect(unrelatedMessages).toEqual([]);
 });
 
+it("ベルを付けると本人の接続に知らせ、次の同期でそのベルが届く", async () => {
+  const reader = await session();
+  const other = await session();
+  const now = new Date();
+  const { feed } = await insertFeed(database.db, { id: crypto.randomUUID(), url: FEED_URL, now });
+  await subscribeMany(database.db, {
+    userId: reader.userId,
+    rows: [{ feedId: feed.id, folderId: null }],
+    now,
+  });
+  const socket = await openSocket(reader.cookie);
+  const unrelated = await openSocket(other.cookie);
+  const unrelatedMessages: string[] = [];
+  unrelated.on("message", (data) => unrelatedMessages.push(data.toString()));
+  const sync = async (cursor?: string) => {
+    const query = new URLSearchParams({ includeBells: "true", ...(cursor && { cursor }) });
+    const response = await fetch(`${httpUrl}/api/v1/sync?${query}`, {
+      headers: { cookie: reader.cookie },
+    });
+    expect(response.status).toBe(200);
+    return (await response.json()) as { cursor: string; bells: { id: string }[] };
+  };
+  const initial = await sync();
+
+  const arrival = nextMessage(socket);
+  const response = await fetch(`${httpUrl}/api/v1/bells`, {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie: reader.cookie, "content-type": "application/json" },
+    body: JSON.stringify({ feedId: feed.id }),
+  });
+  expect(response.status).toBe(201);
+  const { bell } = (await response.json()) as { bell: { id: string } };
+  expect(await arrival).toBe('{"type":"sync_required"}');
+  expect((await sync(initial.cursor)).bells).toEqual([
+    expect.objectContaining({ id: bell.id, feedId: feed.id, deleted: false }),
+  ]);
+  expect(unrelatedMessages).toEqual([]);
+});
+
 it("通知の失敗後も新着を差分で読めて、同じ記事の再取得では通知しない", async () => {
   const reader = await session();
   const now = new Date();

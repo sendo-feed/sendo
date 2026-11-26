@@ -17,6 +17,7 @@ import {
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import { type Database, getRow } from ".";
+import { type ActiveBell, readBellHorizon } from "./bells";
 import type { InboxArticle } from "./inbox";
 import { readRemovalHorizon } from "./retention";
 import { readSavedPageHorizon, type SavedPage, toSavedPage } from "./saved";
@@ -24,6 +25,8 @@ import {
   type ArticleTranslation,
   articles,
   articleTranslations,
+  bellHorizons,
+  bells,
   clientSettings,
   type Feed,
   type Folder,
@@ -69,6 +72,7 @@ export type SyncCursor = {
   settings: SyncPosition;
   savedPages?: SyncPosition | undefined;
   workspaces?: SyncPosition | undefined;
+  bells?: SyncPosition | undefined;
 };
 
 /** 最初の同期の始まり。upTo は、最初のページで決める（-1 は「まだ決めていない」） */
@@ -96,6 +100,7 @@ export const SYNC_LIMITS = {
   settings: 500,
   savedPages: 100,
   workspaces: 500,
+  bells: 500,
 } as const;
 
 /** 最初の同期で送る、既読の記事の範囲（受信箱に入ってからの日数） */
@@ -203,6 +208,8 @@ export type SyncSetting = { deviceType: string; name: string } & (
 
 export type SyncSavedPage = (SavedPage & { deleted: false }) | { id: string; deleted: true };
 
+export type SyncBell = (ActiveBell & { deleted: false }) | { id: string; deleted: true };
+
 export type SyncChanges = {
   folders: Folder[];
   subscriptions: (Subscription & { feed: Feed })[];
@@ -210,6 +217,7 @@ export type SyncChanges = {
   settings: SyncSetting[];
   savedPages?: SyncSavedPage[];
   workspaces?: Workspace[];
+  bells?: SyncBell[];
   cursor: SyncCursor;
   hasMore: boolean;
 };
@@ -644,6 +652,46 @@ export async function readChanges(
       cursor.savedPages,
     ));
 
+  const b =
+    cursor.bells &&
+    (await readTable(
+      singleTable({
+        seq: bells.seq,
+        id: bells.id,
+        initialFilter: isNull(bells.deletedAt),
+        limit: SYNC_LIMITS.bells,
+        read: (where, limit) =>
+          db
+            .select({
+              id: bells.id,
+              subscriptionId: subscriptions.id,
+              feedId: subscriptions.feedId,
+              createdAt: bells.createdAt,
+              deletedAt: bells.deletedAt,
+              seq: bells.seq,
+            })
+            .from(bells)
+            .innerJoin(subscriptions, eq(subscriptions.id, bells.subscriptionId))
+            .where(and(eq(bells.userId, userId), where))
+            .orderBy(asc(bells.seq), asc(bells.id))
+            .limit(limit)
+            .all(),
+        position: (row) => ({ seq: row.seq, id: row.id }),
+        // 消した印の行を回収した下限も含める（記事の maxSeq と同じ理由）
+        maxSeq: async () => {
+          const row = await getRow<{ value: number }>(
+            db,
+            sql`select max(
+          coalesce((select max(${bells.seq}) from ${bells} where ${bells.userId} = ${userId}), 0),
+          coalesce((select ${bellHorizons.seq} from ${bellHorizons} where ${bellHorizons.userId} = ${userId}), 0)
+        ) as value`,
+          );
+          return row?.value ?? 0;
+        },
+      }),
+      cursor.bells,
+    ));
+
   return {
     folders: f.items,
     ...(w && { workspaces: w.items }),
@@ -663,6 +711,14 @@ export async function readChanges(
             : { id: row.id, deleted: true },
       ),
     }),
+    ...(b && {
+      bells: b.items.map(
+        ({ id, subscriptionId, feedId, createdAt, deletedAt }): SyncBell =>
+          deletedAt === null
+            ? { id, subscriptionId, feedId, createdAt, deleted: false }
+            : { id, deleted: true },
+      ),
+    }),
     cursor: {
       folders: f.next,
       subscriptions: s.next,
@@ -670,14 +726,29 @@ export async function readChanges(
       settings: c.next,
       savedPages: p?.next,
       workspaces: w?.next,
+      bells: b?.next,
     },
-    hasMore: f.more || s.more || a.more || c.more || (p?.more ?? false) || (w?.more ?? false),
+    hasMore:
+      f.more ||
+      s.more ||
+      a.more ||
+      c.more ||
+      (p?.more ?? false) ||
+      (w?.more ?? false) ||
+      (b?.more ?? false),
   };
 }
 
 /**
- * カーソルの位置より後の、その人の消した記録（受信箱）か消した印の行（設定）が、回収されている
- * かもしれないか（docs/decisions/retention.md の 5、settings.md の 3）。そうなら、クライアントには
+ * 最初の同期の途中なら、送り終えたあと upTo から差分を取るので、upTo を位置として見る。
+ * 始めたばかり（upTo を決めていない、-1）なら、消した記録は要らない
+ */
+const positionOf = (at: SyncPosition) => (at.upTo === null ? at.seq : at.upTo);
+
+/**
+ * カーソルの位置より後の、その人の消した記録（受信箱）か消した印の行（保存、設定、ベル）が、
+ * 回収されているかもしれないか（docs/decisions/retention.md の 5、settings.md の 3、
+ * notifications.md の 3）。そうなら、クライアントには
  * 最初から同期し直してもらう。
  *
  * 変更を読んだ「あと」に呼ぶ。片付けは、回収の下限を引き上げてから記録を消すので、読んだときに
@@ -688,9 +759,6 @@ export async function isCursorExpired(
   db: Database,
   input: { userId: string; cursor: SyncCursor },
 ): Promise<boolean> {
-  // 最初の同期の途中なら、送り終えたあと upTo から差分を取るので、upTo を位置として見る。
-  // 始めたばかり（upTo を決めていない）なら、消した記録は要らない
-  const positionOf = (at: SyncPosition) => (at.upTo === null ? at.seq : at.upTo);
   const articlesAt = positionOf(input.cursor.articles);
   if (articlesAt >= 0 && articlesAt < (await readRemovalHorizon(db, input.userId))) return true;
 
@@ -703,14 +771,30 @@ export async function isCursorExpired(
     return true;
   }
 
-  const { settings: at } = input.cursor;
-  const settingsAt = positionOf(at);
-  if (settingsAt < 0) return false;
-  const horizon = await readSettingHorizon(db, input.userId);
-  // 設定は、1 回のリクエストで消した項目が同じ番号になる（受信箱の消した記録は、1 つずつ別の番号）。
-  // 差分の位置がその番号の途中かもしれず（続きのあるページの終わり）、その番号まで回収されて
-  // いたら、続きの消した印の行はもうない。送り切った位置（done）なら、同じ番号の行は 1 つの文で
-  // 書かれているので、すべて送ってある
+  if (await isCollectedAfter(input.cursor.settings, () => readSettingHorizon(db, input.userId))) {
+    return true;
+  }
+  return (
+    input.cursor.bells !== undefined &&
+    (await isCollectedAfter(input.cursor.bells, () => readBellHorizon(db, input.userId)))
+  );
+}
+
+/**
+ * 位置より後の消した印の行（設定、ベル）が、回収されているかもしれないか。
+ *
+ * 1 つの文で消した印を付けた行は、同じ番号になる（設定は、1 回のリクエストで消した項目。受信箱の
+ * 消した記録は、1 つずつ別の番号）。差分の位置がその番号の途中かもしれず
+ * （続きのあるページの終わり）、その番号まで回収されていたら、続きの消した印の行はもうない。
+ * 送り切った位置（done）なら、同じ番号の行は 1 つの文で書かれているので、すべて送ってある
+ */
+async function isCollectedAfter(
+  at: SyncPosition,
+  readHorizon: () => Promise<number>,
+): Promise<boolean> {
+  const position = positionOf(at);
+  if (position < 0) return false;
+  const horizon = await readHorizon();
   const midway = at.upTo === null && at.id !== null && !at.done;
-  return settingsAt < horizon || (midway && settingsAt === horizon);
+  return position < horizon || (midway && position === horizon);
 }

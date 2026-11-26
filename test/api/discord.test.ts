@@ -605,6 +605,25 @@ describe("Discord の購読", () => {
     ).toBe(404);
   });
 
+  it("Discord の購読をやめると、その購読のベルにも削除の印が付く", async () => {
+    const { platform } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const feedId = await subscribe(await browser(platform, user.id));
+    const api = (path: string, init: { method?: string; json?: unknown } = {}) =>
+      requestApp(platform, `/api/v1${path}`, { ...init, token: user.token });
+    const added = await api("/bells", { method: "POST", json: { feedId } });
+    expect(added.status).toBe(201);
+    const { bell } = (await added.json()) as { bell: { id: string } };
+    const before = (await (await api("/sync?includeBells=true")).json()) as { cursor: string };
+
+    expect((await api(`/feeds/${feedId}`, { method: "DELETE" })).status).toBe(204);
+    expect(await (await api("/bells")).json()).toEqual({ items: [] });
+    expect(
+      await (await api(`/sync?includeBells=true&cursor=${before.cursor}`)).json(),
+    ).toMatchObject({ bells: [{ id: bell.id, deleted: true }] });
+  });
+
   it.each([
     { count: 0, ids: [] },
     { count: 1, ids: [MESSAGE_ID] },
