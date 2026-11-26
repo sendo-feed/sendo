@@ -1,8 +1,12 @@
 import {
   type CreatedNotification,
   findBellHits,
+  findClosedWindows,
   insertArticleNotifications,
+  insertBundleNotification,
+  MAX_BUNDLES_PER_JOB,
   type PushDelivery,
+  readBundledArticles,
   readPushDelivery,
 } from "../db/bell-notifications";
 import { countUnreadByFeed } from "../db/inbox";
@@ -10,7 +14,7 @@ import { deletePushRegistrationById, listPushRegistrations } from "../db/push-re
 import { parseRetryAfter } from "../fetcher/fetch-feed";
 import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
 import { loggableError } from "../lib/log-error";
-import { type BellNotification, buildNotificationPayload } from "../notify/payload";
+import { type BellNotification, BUNDLE_LINES, buildNotificationPayload } from "../notify/payload";
 import { vapidAuthorization } from "../notify/vapid";
 import { encryptPushMessage } from "../notify/web-push";
 import type { Platform } from "../platform";
@@ -79,6 +83,21 @@ export async function notifyBells(
     }
   } catch (error) {
     console.error("could not notify bells", { error: loggableError(error) });
+  }
+}
+
+/**
+ * 閉じた窓を拾い、窓ごとにまとめの行を作って、送る行なら端末ごとに送る仕事を積む（docs/decisions/
+ * notifications.md の 13）。定期実行が 5 分おきに積む。1 回に拾う窓は 100 個まで。まとめの行を作って
+ * から積む前に落ちたら、そのまとめは出ない（窓にまとめの行があるので、拾い直さない）
+ */
+export async function runBundleBellNotifications(
+  platform: Pick<Platform, "db" | "jobs" | "push">,
+): Promise<void> {
+  if (!platform.push) return;
+  for (const window of await findClosedWindows(platform.db, MAX_BUNDLES_PER_JOB)) {
+    const created = await insertBundleNotification(platform.db, window);
+    if (created) await enqueueSends(platform, [created]);
   }
 }
 
@@ -194,24 +213,29 @@ function connectsToPrivateAddress(error: unknown): boolean {
   return cause instanceof Error && "code" in cause && cause.code === "ERR_PRIVATE_ADDRESS";
 }
 
-/** 通知の行から、通知の中身を組み立てる */
+/**
+ * 通知の行から、通知の中身を組み立てる。記事の行はその記事、まとめの行は窓の bundled の記事
+ * （新しい順に 3 件と、まとめた数）。まとめる記事がもうなければ undefined
+ */
 async function loadContent(
   platform: Pick<Platform, "db">,
   delivery: PushDelivery,
 ): Promise<BellNotification | undefined> {
   const { db } = platform;
-  const { article } = delivery;
-  if (article === null) return undefined;
+  const { count, articles } = delivery.article
+    ? { count: 1, articles: [delivery.article] }
+    : await readBundledArticles(db, { ...delivery, limit: BUNDLE_LINES });
+  if (articles.length === 0) return undefined;
   const unread = [...(await countUnreadByFeed(db, delivery.userId)).values()].reduce(
-    (sum, count) => sum + count,
+    (sum, n) => sum + n,
     0,
   );
   return {
     bellId: delivery.bellId,
     words: null,
     feedName: feedName(delivery.feed),
-    articles: [article],
-    count: 1,
+    articles,
+    count,
     unread,
   };
 }

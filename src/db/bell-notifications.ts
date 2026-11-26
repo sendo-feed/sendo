@@ -29,6 +29,12 @@ export const BELL_WINDOW_SINGLES = 3;
 export const BELL_HOURLY_LIMIT = 20;
 export const BELL_LIMIT_PERIOD_MS = 60 * 60 * 1000;
 
+/** 閉じた窓をまとめの仕事が拾う長さ。閉じてからこれより前の窓は、まとめない */
+export const BELL_BUNDLE_PICKUP_MS = 60 * 60 * 1000;
+
+/** まとめの仕事が 1 回に拾う窓の数 */
+export const MAX_BUNDLES_PER_JOB = 100;
+
 /** 公開日時が、当たった時刻からこれだけ前の記事には送らない */
 export const STALE_ARTICLE_MS = 24 * 60 * 60 * 1000;
 
@@ -128,6 +134,92 @@ export async function insertArticleNotifications(
     on conflict do nothing
     returning id, user_id as "userId", state
   `);
+}
+
+/** まとめる窓（同じ人の同じベルの、同じ始まりの記事の行） */
+export type BellWindow = { userId: string; bellId: string; windowStart: number };
+
+/**
+ * まとめ待ちの窓を、始まりの古い順に limit 個まで拾う。閉じてから 1 時間以内（始まり + 10 分 ≤ 今 <
+ * 始まり + 70 分）で、bundled の行があり、まとめの行がまだなく、ベルが外されていない窓
+ */
+export async function findClosedWindows(db: Database, limit: number): Promise<BellWindow[]> {
+  return db.all<BellWindow>(sql`
+    select pending.user_id as "userId", pending.bell_id as "bellId",
+      pending.window_start as "windowStart"
+    from ${bellNotifications} as pending
+    join ${bells} as bell on bell.id = pending.bell_id and bell.deleted_at is null
+    where pending.state = 'bundled'
+      and pending.window_start <= ${DB_NOW_MS} - ${BELL_WINDOW_MS}
+      and pending.window_start > ${DB_NOW_MS} - ${BELL_WINDOW_MS + BELL_BUNDLE_PICKUP_MS}
+      and not exists (select 1 from ${bellNotifications} as bundle
+        where bundle.article_id is null and bundle.user_id = pending.user_id
+          and bundle.bell_id = pending.bell_id and bundle.window_start = pending.window_start)
+    group by pending.user_id, pending.bell_id, pending.window_start
+    order by pending.window_start
+    limit ${limit}
+  `);
+}
+
+/**
+ * 窓のまとめの行を作る。同じ文の中で、窓が閉じたこと、bundled の行があること、ベルが有効なことを
+ * 確かめ直し、上限を数えて sent か limited にする。窓のまとめの行がもうあれば作らない（部分一意
+ * 索引）。窓が閉じたあとに当たった記事は、DB の時計で新しい窓に入るので、このまとめには入らない
+ *
+ * @returns 作った行。作らなければ undefined
+ */
+export async function insertBundleNotification(
+  db: Database,
+  window: BellWindow,
+): Promise<CreatedNotification | undefined> {
+  const { userId, bellId, windowStart } = window;
+  return getRow<CreatedNotification>(
+    db,
+    sql`insert into ${bellNotifications}
+      (id, user_id, bell_id, article_id, window_start, created_at, state)
+    select ${crypto.randomUUID()}, ${userId}, ${bellId}, null, ${windowStart}, ${DB_NOW_MS},
+      case when (${sentInLastHour(sql`${userId}`)}) >= ${BELL_HOURLY_LIMIT} then 'limited'
+        else 'sent' end
+    where ${windowStart} <= ${DB_NOW_MS} - ${BELL_WINDOW_MS}
+      and exists (select 1 from ${bellNotifications} as pending
+        where pending.bell_id = ${bellId} and pending.user_id = ${userId}
+          and pending.window_start = ${windowStart} and pending.state = 'bundled')
+      and exists (select 1 from ${bells} as bell
+        where bell.id = ${bellId} and bell.user_id = ${userId} and bell.deleted_at is null)
+    on conflict do nothing
+    returning id, user_id as "userId", state`,
+  );
+}
+
+/**
+ * まとめに入れた記事を、新しい順に limit 件まで読み、まとめた数も返す。新しさは公開日時で決め、
+ * 同じなら記事の行を作った順で決める
+ */
+export async function readBundledArticles(
+  db: Database,
+  input: { userId: string; bellId: string; windowStart: Date; limit: number },
+): Promise<{
+  count: number;
+  articles: { id: string; title: string | null; summary: string | null }[];
+}> {
+  const rows = await db.all<{
+    id: string;
+    title: string | null;
+    summary: string | null;
+    count: number;
+  }>(sql`
+    select article.id, article.title, article.summary, count(*) over () as count
+    from ${bellNotifications} as bundled
+    join ${articles} as article on article.id = bundled.article_id
+    where bundled.user_id = ${input.userId} and bundled.bell_id = ${input.bellId}
+      and bundled.window_start = ${input.windowStart.getTime()} and bundled.state = 'bundled'
+    order by article.published_at desc, bundled.created_at desc, bundled.rowid desc
+    limit ${input.limit}
+  `);
+  return {
+    count: rows[0]?.count ?? 0,
+    articles: rows.map(({ id, title, summary }) => ({ id, title, summary })),
+  };
 }
 
 /** その人の sent の行のうち、作った時刻が直近 1 時間のものの数（SQL の式） */

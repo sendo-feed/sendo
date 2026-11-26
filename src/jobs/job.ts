@@ -69,6 +69,11 @@ export const jobSchema = z.discriminatedUnion("type", [
     notificationId: z.string().min(1),
     registrationId: z.string().min(1),
   }),
+  /**
+   * 閉じた窓のまとめを作って送る（docs/decisions/notifications.md の 13）。定期実行が、Web Push を
+   * 使えるときに 5 分おきに積む
+   */
+  z.object({ type: z.literal("bundle-bell-notifications") }),
   /** 記事のページから本文を抜く（docs/decisions/content.md の 10）。取得の仕事のあとで積む */
   z.object({ type: z.literal("extract-page"), articleId: z.string().min(1) }),
   z.object({
