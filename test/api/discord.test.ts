@@ -9,7 +9,7 @@ import { createSession } from "../../src/db/sessions";
 import { readStorageUsage } from "../../src/db/storage";
 import { subscribeMany } from "../../src/db/subscriptions";
 import { runJob } from "../../src/jobs";
-import { runFetchFeed } from "../../src/jobs/fetch-feed";
+import { MAX_CONTENT_BYTES, runFetchFeed } from "../../src/jobs/fetch-feed";
 import { enqueueDueFeeds } from "../../src/jobs/schedule";
 import { readOpml } from "../../src/opml";
 import type { Platform } from "../../src/platform";
@@ -1938,7 +1938,7 @@ describe("Discord の投稿のベル（docs/decisions/notifications.md の 8）"
       await sendAll();
       const list = (await (
         await requestApp(platform, "/api/v1/articles", { token: user.token })
-      ).json()) as { items: { id: string; url: string; title: string }[] };
+      ).json()) as { items: { id: string; url: string; title: string; hasContent: boolean }[] };
       return list.items.find((item) => item.url.endsWith(`/${posted}`));
     };
     return { service, postAfterFirstFetch };
@@ -1978,6 +1978,24 @@ describe("Discord の投稿のベル（docs/decisions/notifications.md の 8）"
     });
 
     expect(article?.title).toBe("お知らせ");
+    expect(service.delivered().map((r) => r.payload.notification)).toEqual([
+      expect.objectContaining({ title: "障害 復旧 · releases", body: "お知らせ" }),
+    ]);
+  });
+
+  it("大きすぎて置き場に置かなかった投稿の本文（256 KiB を超える）でも、言葉で判定する", async () => {
+    const { service, postAfterFirstFetch } = await setupBell(() => ({ words: "障害 復旧" }));
+
+    // 言葉は埋め込みの欄（投稿の本文）にだけある
+    const filler = "あ".repeat(Math.ceil(MAX_CONTENT_BYTES / 3) + 1);
+    const article = await postAfterFirstFetch({
+      content: "",
+      embeds: [
+        { title: "お知らせ", fields: [{ name: "状態", value: `障害は復旧した ${filler}` }] },
+      ],
+    });
+
+    expect(article?.hasContent).toBe(false);
     expect(service.delivered().map((r) => r.payload.notification)).toEqual([
       expect.objectContaining({ title: "障害 復旧 · releases", body: "お知らせ" }),
     ]);

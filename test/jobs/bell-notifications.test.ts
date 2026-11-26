@@ -1261,6 +1261,51 @@ describe("閉じた窓のまとめ", () => {
     expect(bundles).toBe(1);
   });
 
+  it("受信箱に記事の残っていない窓は拾わない。そういう窓が 100 個先にあっても、101 個目の窓をまとめる", async () => {
+    const world = createWorld();
+    // 100 人が言葉だけのベルを付け、1 回の取得で 4 件当たってから購読をやめる。言葉だけのベルは外れず、
+    // 窓に bundled の行が残るが、受信箱に記事はない
+    const gone = world.source([world.item("前からある記事", HOUR)]);
+    // 送り先のオリジンをそろえ、JWT を使い回させる
+    const device = await createDevice();
+    const host = `${crypto.randomUUID()}.push.example`;
+    let goneFeedId = "";
+    const leavers: Reader[] = [];
+    for (let i = 0; i < 100; i++) {
+      const user = await createReader(world);
+      goneFeedId = await user.subscribe(gone);
+      await user.wordBell("Rust");
+      await user.register(device, host);
+      leavers.push(user);
+    }
+    // あとでまとめを受ける人
+    const reader = await createReader(world);
+    const kept = world.source([world.item("前からある記事", HOUR)]);
+    const keptFeedId = await reader.subscribe(kept);
+    await reader.wordBell("Rust");
+    const { endpoint } = await reader.register();
+    world.advance(SECOND);
+    await world.drain();
+    world.advance(SECOND);
+
+    for (let i = 1; i <= 4; i++) gone.items.push(world.item(`Rust ${i}`, (5 - i) * MINUTE));
+    await world.fetchFeed(goneFeedId);
+    for (const user of leavers) {
+      expect((await user.api(`/feeds/${goneFeedId}`, "DELETE")).status).toBe(204);
+    }
+    // 窓の始まりを後ろにずらす
+    world.advance(SECOND);
+    const opened = world.clock.ms;
+    for (let i = 5; i <= 8; i++) kept.items.push(world.item(`Rust ${i}`, (9 - i) * MINUTE));
+    await world.fetchFeed(keptFeedId);
+    expect(world.service.delivered(endpoint)).toHaveLength(3);
+
+    world.clock.ms = opened + 10 * MINUTE;
+    await world.bundle();
+
+    expect(world.service.delivered(endpoint).slice(3)).toHaveLength(1);
+  }, 60_000);
+
   it("まとめの仕事が 1 回に拾う窓は 100 個まで。101 個目は次の回に拾う", async () => {
     const world = createWorld();
     const source = world.source([world.item("前からある記事", HOUR)]);
