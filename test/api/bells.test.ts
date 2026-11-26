@@ -97,6 +97,27 @@ describe("ベルの付け外し（REST API）", () => {
     expect((await sync(before.cursor)).bells).toEqual([{ ...bell, deleted: false }]);
   });
 
+  it("同じミリ秒に作ったベルも、作った順に並ぶ（最初の同期と同じ順）", async () => {
+    const { subscribe, added, list, sync } = await setup();
+    const [one, two] = [await subscribe(), await subscribe()];
+    // id の大小を、作った順と逆にする
+    const [larger, smaller] = [crypto.randomUUID(), crypto.randomUUID()].sort().reverse();
+    const first = await added({ id: larger, feedId: one.id });
+    const second = await added({ id: smaller, feedId: two.id });
+    // 2 つの付ける操作が DB の時計の同じミリ秒に入った状態を、作った時刻をそろえて作る
+    await testDb
+      .prepare("UPDATE bells SET created_at = ? WHERE id IN (?, ?)")
+      .bind(new Date(first.createdAt).getTime(), first.id, second.id)
+      .run();
+    const sameMs = { ...second, createdAt: first.createdAt };
+
+    expect(await list()).toEqual([first, sameMs]);
+    expect((await sync()).bells).toEqual([
+      { ...first, deleted: false },
+      { ...sameMs, deleted: false },
+    ]);
+  });
+
   it("新しく購読したばかりの購読には、ベルが付いていない", async () => {
     const { subscribe, list, sync } = await setup();
     await subscribe();
