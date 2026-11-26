@@ -1967,4 +1967,19 @@ describe("Discord の投稿のベル（docs/decisions/notifications.md の 8）"
       expect.objectContaining({ title: "障害 復旧 · releases", body: article?.title }),
     ]);
   });
+
+  it("言葉が埋め込みの欄（投稿の本文）にだけある投稿も判定する", async () => {
+    const { service, postAfterFirstFetch } = await setupBell(() => ({ words: "障害 復旧" }));
+
+    // タイトルは埋め込みのタイトル、要約はない。言葉は埋め込みの欄にだけある
+    const article = await postAfterFirstFetch({
+      content: "",
+      embeds: [{ title: "お知らせ", fields: [{ name: "状態", value: "障害は復旧した" }] }],
+    });
+
+    expect(article?.title).toBe("お知らせ");
+    expect(service.delivered().map((r) => r.payload.notification)).toEqual([
+      expect.objectContaining({ title: "障害 復旧 · releases", body: "お知らせ" }),
+    ]);
+  });
 });

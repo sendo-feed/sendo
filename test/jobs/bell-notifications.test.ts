@@ -701,20 +701,25 @@ describe("言葉のベル", () => {
     ]);
   });
 
-  it("言葉だけのベルも、購読したばかりの初回の取得で入った記事には送らない", async () => {
+  it("言葉だけのベルも、ほかの人が取得していたフィードを購読した直後の取得で入った記事には送らない", async () => {
     const world = createWorld();
+    // ほかの人が購読して取得しているフィード
+    const { source: shared, feedId: sharedId } = await belledReader(world);
     const { user, endpoint } = await wordReader(world, "Rust");
-    const fresh = world.source([world.item("Rust の古い記事", HOUR)]);
-    const feedId = await user.subscribe(fresh);
+    expect(await user.subscribe(shared)).toBe(sharedId);
+    shared.items.push(world.item("Rust の購読した直後の記事"));
     world.advance(SECOND);
     await world.drain();
-    expect(world.service.requests).toEqual([]);
+    await world.fetchFeed(sharedId);
 
+    expect(titles(world.service, endpoint)).toEqual([]);
+
+    // 購読してから取得に 1 度成功したあとの記事は届く
     world.advance(SECOND);
-    fresh.items.push(world.item("Rust の新しい記事"));
-    await world.fetchFeed(feedId);
+    shared.items.push(world.item("Rust の次の取得の記事"));
+    await world.fetchFeed(sharedId);
 
-    expect(titles(world.service, endpoint)).toEqual(["Rust の新しい記事"]);
+    expect(titles(world.service, endpoint)).toEqual(["Rust の次の取得の記事"]);
   });
 
   it("フィードの本文は、空白をまとめたプレーンテキストの先頭ちょうど 20,000 文字で判定する", async () => {
@@ -776,6 +781,38 @@ describe("言葉のベル", () => {
 
     expect(await user.hasContent("大きな記事")).toBe(false);
     expect(titles(world.service, endpoint)).toEqual(["大きな記事"]);
+  });
+
+  it("同じフィードを別の表示名で購読した 2 人には、それぞれの表示名で届く", async () => {
+    const world = createWorld();
+    const { user: first, feeds, endpoint: firstEndpoint } = await wordReader(world, "Rust");
+    const [blog] = feeds;
+    if (!blog) throw new Error("no feed");
+    const second = await createReader(world);
+    expect(await second.subscribe(blog.source)).toBe(blog.feedId);
+    // 購読してから 1 度取得に成功したあと（初回の取得ではない）
+    world.advance(SECOND);
+    await world.fetchFeed(blog.feedId);
+    world.advance(SECOND);
+    await second.bell(blog.feedId);
+    const { endpoint: secondEndpoint } = await second.register();
+    for (const [reader, displayName] of [
+      [first, "1 人目の名前"],
+      [second, "2 人目の名前"],
+    ] as const) {
+      const res = await reader.api(`/feeds/${blog.feedId}`, "PATCH", { displayName });
+      expect(res.status).toBe(200);
+    }
+    world.advance(SECOND);
+    blog.source.items.push(world.item("Rust 1.80"));
+
+    await world.fetchFeed(blog.feedId);
+
+    const titlesOf = (endpoint: string) =>
+      world.service.delivered(endpoint).map((r) => r.payload.notification.title);
+    // 言葉だけのベルは言葉と表示名、購読だけのベルは表示名
+    expect(titlesOf(firstEndpoint)).toEqual(["Rust · 1 人目の名前"]);
+    expect(titlesOf(secondEndpoint)).toEqual(["2 人目の名前"]);
   });
 
   it("言葉だけのベルのまとめは、title に言葉だけを出す", async () => {
