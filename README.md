@@ -75,6 +75,7 @@ docker compose pull && docker compose up -d
 | `PUBLIC_URL`、`READER_URL` | なし | 外から呼ぶときのオリジンと、sendo-reader のオリジン。[OAuth でつなぐ](#oauth-でつなぐ) |
 | `ALLOWED_EMAILS`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` | なし | ブラウザのログイン。[ブラウザでログインする](#ブラウザでログインするgoogle) |
 | `DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN` | なし | Discord の購読。[Discord のチャンネルを購読する](#discord-のチャンネルを購読する) |
+| `VAPID_SUBJECT` | なし | Web Push（ベルの通知を端末に送る）の送り手の連絡先。`mailto:` か `https:` の URL で、VAPID の `sub` に入れる。`READER_URL` とそろわないと、Web Push は使えない（[決定](docs/decisions/notifications.md)の 18、19） |
 | `ANTHROPIC_API_KEY` | なし | Claude API のキー。入れると、日本語以外の記事を Claude API で日本語に訳す。空なら翻訳は動かず、記事を外へ送らない。[記事を日本語に訳す](#記事を日本語に訳すclaude-api) |
 | `TRANSLATION_MODEL` | `sonnet` | 通常の段階（その場の翻訳と、送る本文が閾値より短い自動の翻訳）のモデル。系列の名前（`sonnet` ／ `haiku` ／ `opus`。Models API でその系列の最新を選び、1 日 1 回選び直す）か、`claude-` で始まるモデルの ID（固定する）。[モデルと思考量](#モデルと思考量) |
 | `TRANSLATION_EFFORT` | `medium` | 通常の段階の思考量（`low` ／ `medium` ／ `high` ／ `xhigh` ／ `max`） |
