@@ -2,7 +2,7 @@ import { extractPageContentOnce } from "../fetcher/page-content";
 import type { Platform } from "../platform";
 import { detectArticleLanguages } from "./article-languages";
 import { indexArticleSearch } from "./article-search";
-import { runBundleBellNotifications, runSendBellNotification } from "./bell-notifications";
+import { runBundleBellNotification, runSendBellNotification } from "./bell-notifications";
 import { runCleanUp } from "./clean-up";
 import { runFetchFeed } from "./fetch-feed";
 import { runImportFeeds } from "./import-feeds";
@@ -50,7 +50,7 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
       return;
     }
     case "bundle-bell-notifications": {
-      await runBundleBellNotifications(platform);
+      await runBundleBellNotification(platform, job);
       return;
     }
     case "send-bell-notification": {

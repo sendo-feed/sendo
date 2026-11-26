@@ -2,6 +2,7 @@
  * 仕事の運び方（docs/decisions/container.md の 6、docs/decisions/jobs.md）。仕事を SQLite の表（job_queue）に
  * 積み、同じプロセスの中で取り出して動かす。
  *
+ * - 積むとき：run_at に、取り出してよい時刻を入れる。指定がなければ今
  * - 取り出すとき：1 つの文で、取り出した回数を増やし、run_at を借りの期限まで先へ送る
  * - 終わったら：行を消す
  * - 失敗したら：MAX_ATTEMPTS 回までは、run_at を少し先へ送ってやり直す。それ以上は諦めて消す
@@ -46,7 +47,7 @@ export const LEASE_MS = 15 * 60 * 1000;
 /** 同時に動かす仕事の数。取得の仕事はほとんど相手の応答を待っているので、少し重ねる */
 export const DEFAULT_CONCURRENCY = 4;
 
-/** 積まれた知らせがなくても、表を見に行く間隔（やり直しの時期が来た仕事を拾う） */
+/** 積まれた知らせがなくても、表を見に行く間隔（やり直しの時期や、指定した時刻が来た仕事を拾う） */
 const POLL_INTERVAL_MS = 5 * 1000;
 
 /** 1 つの文で積む仕事の数 */
@@ -272,8 +273,8 @@ export function createSqliteJobQueue(
       if (inserted.length > 0) notify();
       return inserted.length;
     },
-    async enqueue(jobs) {
-      const at = now();
+    async enqueue(jobs, options) {
+      const at = options?.runAt ?? now();
       for (let i = 0; i < jobs.length; i += ENQUEUE_CHUNK_SIZE) {
         await db
           .insert(jobQueue)

@@ -66,19 +66,6 @@ export async function enqueueTranslationMaintenance(
 }
 
 /**
- * ベルの通知のまとめを積む（docs/decisions/jobs.md の 12、notifications.md の 13）。Web Push が
- * 使えるときだけ。投入の失敗で、ほかの定期実行を止めない（閉じた窓は、次の区切りでも拾える）
- */
-export async function enqueueBellBundles(platform: Pick<Platform, "jobs" | "push">): Promise<void> {
-  if (!platform.push) return;
-  try {
-    await platform.jobs.enqueue([{ type: "bundle-bell-notifications" }]);
-  } catch (error) {
-    console.warn("could not enqueue bell bundles; retrying at the next schedule", { error });
-  }
-}
-
-/**
  * 定期実行の時刻が、1 日 1 回の片付けの時刻なら、片付けの仕事を積む（docs/decisions/retention.md の 4）。
  *
  * 定期実行は SCHEDULE_INTERVAL_MINUTES おきに動くので、片付けの時刻の最初のその分の間に
@@ -119,7 +106,7 @@ export function isBackgroundSlot(scheduledTime: Date): boolean {
  * @param scheduledTime 定期実行が予定された時刻
  */
 export async function runScheduled(
-  platform: Pick<Platform, "db" | "jobs" | "now" | "push">,
+  platform: Pick<Platform, "db" | "jobs" | "now">,
   scheduledTime: Date,
 ): Promise<void> {
   if (await enqueueDailyCleanUp(platform, scheduledTime)) {
@@ -128,7 +115,6 @@ export async function runScheduled(
   const count = await enqueueDueFeeds(platform);
   if (count > 0) console.info("enqueued due feeds", { count });
   await enqueueTranslationMaintenance(platform);
-  await enqueueBellBundles(platform);
   if (!isBackgroundSlot(scheduledTime)) return;
   await enqueueLanguageDetection(platform);
   try {

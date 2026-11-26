@@ -10,6 +10,7 @@ import { base64UrlEncode, type WebCryptoKey } from "../lib/crypto";
  * なる。
  *
  * JWT は送り先のオリジン（aud）ごとに作り、プロセスのメモリに持って、作ってから 6 時間は使い回す。
+ * プッシュサービスが断ったら、作ってから 1 時間以上たった JWT を捨てる。
  */
 
 const ES256 = { name: "ECDSA", namedCurve: "P-256" } as const;
@@ -21,11 +22,10 @@ export const VAPID_TOKEN_REUSE_MS = 6 * 60 * 60 * 1000;
 export const VAPID_TOKEN_LIFETIME_MS = 12 * 60 * 60 * 1000;
 
 /**
- * 時計が戻ったとみなすまでの余裕。同時に送る仕事は、それぞれ鍵を読む前に「今」を取るので、あとから
- * 作り始めた JWT のほうが、少し前の「今」を持つ仕事より先の時刻になることがある。その差で作り直すと、
- * 同じ aud の JWT を同時に 2 つ作ってしまう
+ * 断られた JWT を捨てるのは、作ってからこれだけたったものだけ。Apple は、JWT を 1 時間に 1 回より
+ * 多く作り直さないよう求める
  */
-export const VAPID_CLOCK_TOLERANCE_MS = 10 * 1000;
+export const VAPID_MIN_RENEW_INTERVAL_MS = 60 * 60 * 1000;
 
 /** メモリに持つ JWT の数の上限。超えたら捨てて作り直す（送り先のオリジンは、ふつう数個） */
 const MAX_CACHED_TOKENS = 1000;
@@ -70,42 +70,61 @@ export async function getVapidPublicKey(db: Database): Promise<string> {
   return (await loadVapidKey(db)).publicKey;
 }
 
+/** 送る要求の宛先と、送り手の識別 */
+type VapidTarget = {
+  subject: string;
+  endpoint: string;
+  /** 時計。時刻は、鍵を読み、作っている途中の JWT を待ち終えてから読む */
+  now: () => Date;
+};
+
+/** JWT を使い回す単位（送り手の公開鍵、sub、送り先のオリジン） */
+const tokenId = (key: VapidKey, input: VapidTarget) =>
+  `${key.publicKey} ${input.subject} ${new URL(input.endpoint).origin}`;
+
 /**
  * エンドポイントへ送る要求の Authorization（`vapid t=<JWT>, k=<公開鍵>`。RFC 8292 の 3）。
  * JWT は ES256 で、aud はエンドポイントのオリジン、exp は作った時刻の 12 時間後
  */
-export async function vapidAuthorization(
-  db: Database,
-  input: { subject: string; endpoint: string; now: Date },
-): Promise<string> {
+export async function vapidAuthorization(db: Database, input: VapidTarget): Promise<string> {
   const key = await loadVapidKey(db);
   const aud = new URL(input.endpoint).origin;
-  const createdAt = input.now.getTime();
-  const token = await reuseToken(`${key.publicKey} ${input.subject} ${aud}`, createdAt, () =>
+  const token = await reuseToken(tokenId(key, input), input.now, (createdAt) =>
     signToken(key.privateKey, { aud, sub: input.subject, createdAt }),
   );
   return `vapid t=${token}, k=${key.publicKey}`;
 }
 
 /**
+ * プッシュサービスが 401 ／ 403 を返したときに呼ぶ。その送り先の JWT が、作ってから 1 時間以上たって
+ * いれば、メモリから捨てる。次に送るときに作り直す（docs/decisions/notifications.md の 18）
+ */
+export async function discardRefusedVapidToken(db: Database, input: VapidTarget): Promise<void> {
+  const id = tokenId(await loadVapidKey(db), input);
+  const cached = tokens.get(id);
+  const token = await cached?.catch(() => undefined);
+  if (token === undefined || tokens.get(id) !== cached) return;
+  if (input.now().getTime() - token.createdAt >= VAPID_MIN_RENEW_INTERVAL_MS) tokens.delete(id);
+}
+
+/**
  * 作ってから 6 時間たっていない JWT があれば、それを使う。作っている途中なら、それを待って使う。
- * 古いか、作るのに失敗していたら、作り直す（時計が 10 秒より大きく戻って、作った時刻より前に
- * なったときも）
+ * 古いか、作るのに失敗していたら、作り直す（時計が戻って、作った時刻より前になったときも）。
+ *
+ * 「今」は、作っている途中の JWT を待ち終えてから読む。先に読むと、待っている間にできた JWT の作った
+ * 時刻が「今」より後になり、時計が戻ったとみなして作り直してしまう
  */
 async function reuseToken(
   id: string,
-  now: number,
-  sign: () => Promise<VapidToken>,
+  clock: () => Date,
+  sign: (createdAt: number) => Promise<VapidToken>,
 ): Promise<string> {
   for (;;) {
     const cached = tokens.get(id);
     if (cached === undefined) break;
     const token = await cached.catch(() => undefined);
-    if (
-      token &&
-      token.createdAt <= now + VAPID_CLOCK_TOLERANCE_MS &&
-      now - token.createdAt < VAPID_TOKEN_REUSE_MS
-    ) {
+    const now = clock().getTime();
+    if (token && token.createdAt <= now && now - token.createdAt < VAPID_TOKEN_REUSE_MS) {
       return token.value;
     }
     // 待っている間に、ほかの送信が作り直し始めていたら、そちらを待つ
@@ -115,7 +134,7 @@ async function reuseToken(
     }
   }
   if (tokens.size >= MAX_CACHED_TOKENS) tokens.clear();
-  const created = sign();
+  const created = sign(clock().getTime());
   tokens.set(id, created);
   try {
     return (await created).value;

@@ -74,18 +74,6 @@ describe("runScheduled（docs/decisions/jobs.md の 12）", () => {
     ]);
   });
 
-  it("Web Push が使えるときは、5 分の区切りごとに、ベルの通知のまとめも積む", async () => {
-    await testDb.exec("DELETE FROM feeds");
-    const push = { subject: "mailto:admin@example.com", readerOrigin: "https://reader.example" };
-    const { platform, enqueued } = createTestPlatform({ now: () => NOW, push });
-
-    await runScheduled(platform, at("12:05"));
-    expect(enqueued).toEqual([
-      { type: "maintain-translations" },
-      { type: "bundle-bell-notifications" },
-    ]);
-  });
-
   it("10 分の区切りでは、言語の判定と検索の索引も積む", async () => {
     await testDb.exec("DELETE FROM feeds");
     const { platform, enqueued } = createTestPlatform({ now: () => NOW });
