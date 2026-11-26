@@ -67,6 +67,7 @@ describe("runCleanUp", () => {
       removals: 2,
       settings: 0,
       savedPages: 0,
+      bells: 0,
       activity: 0,
       contents: 0,
     });
