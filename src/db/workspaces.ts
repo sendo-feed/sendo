@@ -168,6 +168,12 @@ export function activeWorkspaceId(userId: string, id: string): SQL {
       and ${workspaces.deletedAt} is null)`;
 }
 
+/** 所属先を省いた購読には、書き込む文の中でデフォルトを選ぶ。 */
+export function defaultWorkspaceId(userId: string): SQL {
+  return sql`(select ${workspaces.id} from ${workspaces}
+    where ${active(userId)} and ${workspaces.isDefault} = 1)`;
+}
+
 export class WorkspaceNotFoundError extends Error {}
 
 /** 取得を始める前にも入力を確かめる。書き込みでは activeWorkspaceId で確認し直す。 */

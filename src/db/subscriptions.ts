@@ -22,7 +22,7 @@ import {
   userArticles,
 } from "./schema";
 import { nextSeq } from "./seq";
-import { activeWorkspaceId } from "./workspaces";
+import { activeWorkspaceId, defaultWorkspaceId } from "./workspaces";
 
 /** 購読と、そのフィード（共有）と、入っているフォルダの名前 */
 export type SubscriptionWithFeed = Subscription & { feed: Feed; folderName: string | null };
@@ -63,7 +63,7 @@ export async function getSubscription(
 }
 
 /**
- * フィードをまとめて購読する。すでに購読しているものは飛ばし、フォルダも変えない。
+ * フィードをまとめてデフォルトに購読する。すでに購読しているものは飛ばす。
  * @returns 新しく購読したフィードの ID
  */
 export async function subscribeMany(
@@ -84,6 +84,7 @@ export async function subscribeMany(
           userId: input.userId,
           feedId: row.feedId,
           folderId: activeFolderId(input.userId, row.folderId),
+          workspaceId: defaultWorkspaceId(input.userId),
           createdAt: input.now,
           seq: nextSeq(subscriptions),
         })),

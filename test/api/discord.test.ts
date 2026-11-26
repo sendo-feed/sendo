@@ -223,6 +223,48 @@ async function subscribe(request: Awaited<ReturnType<typeof browser>>, url = CHA
 }
 
 describe("Discord の購読", () => {
+  it("チャンネルの取得中に切り替えたデフォルトに購読し、再追加でも所属を保つ", async () => {
+    const { platform, remote } = await setup();
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const request = await browser(platform, user.id);
+    const listed = await request("/api/v1/workspaces");
+    const { items } = (await listed.json()) as { items: { id: string; isDefault: boolean }[] };
+    const initial = items.find((item) => item.isDefault);
+    if (!initial) throw new Error("default is missing");
+    const created = await request("/api/v1/workspaces", {
+      method: "POST",
+      json: { name: "Personal" },
+    });
+    const { workspace } = (await created.json()) as { workspace: { id: string } };
+    const setDefault = async (id: string) => {
+      const response = await request(`/api/v1/workspaces/${id}`, {
+        method: "PATCH",
+        json: { isDefault: true },
+      });
+      expect(response.status).toBe(200);
+    };
+    let switched = false;
+    remote.beforeChannelRead(async () => {
+      if (switched) return;
+      await setDefault(workspace.id);
+      switched = true;
+    });
+    const feedId = await subscribe(request);
+    expect(switched).toBe(true);
+    await setDefault(initial.id);
+    const retry = await request(`${BASE}/subscriptions`, {
+      method: "POST",
+      json: { url: CHANNEL },
+    });
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ feedId });
+    const synced = await request("/api/v1/sync?includeWorkspaces=true");
+    expect(await synced.json()).toMatchObject({
+      feeds: [{ id: feedId, workspaceId: workspace.id, deleted: false }],
+    });
+  });
+
   it("同じブラウザとセッションで許可した Discord アカウントを接続する", async () => {
     const { platform, remote } = await setup();
     const user = await createUser();
