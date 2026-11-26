@@ -180,31 +180,55 @@ describe("Web Push の有無と公開鍵", () => {
     expect(await readStatus(platformFor(PUSH_ENV), headers)).toEqual(first);
   });
 
-  it("どちらかがない、または形が正しくなければ、使えないと返し、登録の PUT は 501、DELETE は 204。形の誤りはログに出す", async () => {
+  it("どちらかがない、または形が正しくなければ、使えないと返し、登録の PUT は 501、DELETE は 204。形の誤りはエラー、READER_URL がないことは警告に出す", async () => {
     const user = await createUser();
     const { headers } = await sessionFor(user.id);
     const body = await subscription();
-    const cases: { env: NodeEnv; logged: boolean }[] = [
-      { env: {}, logged: false },
-      { env: { VAPID_SUBJECT: PUSH_ENV.VAPID_SUBJECT }, logged: false },
-      { env: { READER_URL: PUSH_ENV.READER_URL }, logged: false },
-      { env: { ...PUSH_ENV, VAPID_SUBJECT: " " }, logged: false },
-      { env: { ...PUSH_ENV, VAPID_SUBJECT: "admin@example.com" }, logged: true },
-      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:" }, logged: true },
-      { env: { ...PUSH_ENV, VAPID_SUBJECT: "http://sendo.example.com/" }, logged: true },
-      { env: { ...PUSH_ENV, READER_URL: "http://reader.example.com" }, logged: true },
-      { env: { ...PUSH_ENV, READER_URL: "https://reader.example.com/app" }, logged: true },
+    const cases: { env: NodeEnv; logged: "error" | "warn" | null }[] = [
+      { env: {}, logged: null },
+      // VAPID_SUBJECT を入れたのは Web Push を使うつもりなので、READER_URL がないことを知らせる
+      { env: { VAPID_SUBJECT: PUSH_ENV.VAPID_SUBJECT }, logged: "warn" },
+      // READER_URL は OAuth と Discord も使うので、それだけでは Web Push を使うつもりとはみなさない
+      { env: { READER_URL: PUSH_ENV.READER_URL }, logged: null },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: " " }, logged: null },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "admin@example.com" }, logged: "error" },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:" }, logged: "error" },
+      // 空白と制御文字（URL のパーサーが残す、または黙って除くもの）
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto: admin@example.com" }, logged: "error" },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:ad min@example.com" }, logged: "error" },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:admin@exa\tmple.com" }, logged: "error" },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:admin@example.com\u0000" }, logged: "error" },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:\u3000admin@example.com" }, logged: "error" },
+      {
+        env: { ...PUSH_ENV, VAPID_SUBJECT: "https://sendo.example.com/con tact" },
+        logged: "error",
+      },
+      // mailto: は、宛先 1 つのアドレス（local@domain）だけ
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:@example.com" }, logged: "error" },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:admin@" }, logged: "error" },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:a@b@example.com" }, logged: "error" },
+      {
+        env: { ...PUSH_ENV, VAPID_SUBJECT: "mailto:admin@example.com?subject=hi" },
+        logged: "error",
+      },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "http://sendo.example.com/" }, logged: "error" },
+      { env: { ...PUSH_ENV, VAPID_SUBJECT: "https://" }, logged: "error" },
+      { env: { ...PUSH_ENV, READER_URL: "http://reader.example.com" }, logged: "error" },
+      { env: { ...PUSH_ENV, READER_URL: "https://reader.example.com/app" }, logged: "error" },
     ];
     for (const { env, logged } of cases) {
       const label = JSON.stringify(env);
       const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
       try {
         const platform = platformFor(env);
-        // READER_URL の誤りは、OAuth と Discord の設定もログに出す。Web Push の分だけを数える
-        const pushErrors = errors.mock.calls.filter(([message]) =>
-          String(message).startsWith("Web Push is disabled"),
-        );
-        expect(pushErrors.length > 0, label).toBe(logged);
+        // READER_URL の誤りは、OAuth と Discord の設定もログに出す。Web Push の分だけを見る
+        const pushLogs = (calls: unknown[][]) =>
+          calls.filter(([message]) => String(message).startsWith("Web Push is disabled")).length;
+        expect(
+          { error: pushLogs(errors.mock.calls), warn: pushLogs(warnings.mock.calls) },
+          label,
+        ).toEqual({ error: logged === "error" ? 1 : 0, warn: logged === "warn" ? 1 : 0 });
 
         expect(await readStatus(platform, headers), label).toEqual({
           available: false,
@@ -216,6 +240,7 @@ describe("Web Push の有無と公開鍵", () => {
         expect((await unregister(platform, headers)).status, label).toBe(204);
       } finally {
         errors.mockRestore();
+        warnings.mockRestore();
       }
     }
     expect(await registrations("user_id", user.id)).toEqual([]);
