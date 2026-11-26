@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import type { Database } from "../../src/db";
 import { createSession } from "../../src/db/sessions";
@@ -141,6 +142,26 @@ describe("Web Push の有無と公開鍵", () => {
       ).resolves.toBeDefined();
       // 組み立て直した（起動し直した）sendo でも、同じ鍵を返す
       expect(await readStatus(platformFor(env), headers)).toEqual(status);
+    }
+  });
+
+  it("鍵を置く文が失敗したら 500 で、作った鍵はログに出さない", async () => {
+    await testDb.exec("DELETE FROM app_secrets WHERE name = 'vapid_key'");
+    const hook = statementHook(/insert into "app_secrets"/i, async () => {
+      throw new Error("database is locked");
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await requestApp(platformFor(PUSH_ENV, { db: hook.db }), "/api/v1/push");
+
+      expect(hook.fired()).toBe(true);
+      expect(res.status).toBe(500);
+      const logged = inspect(errors.mock.calls, { depth: 10 });
+      expect(logged).toContain('insert into "app_secrets"');
+      // 秘密の JWK（kty や d を含む JSON）は出さない
+      expect(logged).not.toContain('"kty"');
+    } finally {
+      errors.mockRestore();
     }
   });
 
@@ -459,6 +480,32 @@ describe("端末の登録", () => {
     const body = await subscription();
     expect((await register(clocked, headers, body)).status).toBe(204);
     expect(await registrations("user_id", user.id)).toEqual([rowOf(sessionId, user.id, body)]);
+  });
+
+  it("書く文が失敗したら 500 で、エンドポイントと鍵はログに出さない", async () => {
+    const user = await createUser();
+    const { headers } = await sessionFor(user.id);
+    const body = await subscription();
+    const hook = statementHook(/insert or replace into "push_registrations"/i, async () => {
+      throw new Error("database is locked");
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await register(platformFor(PUSH_ENV, { db: hook.db }), headers, body);
+
+      expect(hook.fired()).toBe(true);
+      expect(res.status).toBe(500);
+      const logged = inspect(errors.mock.calls, { depth: 10 });
+      // 何の文が、なぜ失敗したかは残す
+      expect(logged).toContain('insert or replace into "push_registrations"');
+      expect(logged).toContain("database is locked");
+      for (const secret of [body.endpoint, body.keys.p256dh, body.keys.auth]) {
+        expect(logged).not.toContain(secret);
+      }
+    } finally {
+      errors.mockRestore();
+    }
+    expect(await registrations("user_id", user.id)).toEqual([]);
   });
 });
 

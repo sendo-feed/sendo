@@ -28,6 +28,7 @@ import { alias } from "drizzle-orm/sqlite-core";
 import type { Database } from "../../db";
 import { discordConnections, feeds, jobQueue, subscriptions } from "../../db/schema";
 import { type Job, jobSchema } from "../../jobs/job";
+import { loggableError } from "../../lib/log-error";
 import type { JobQueue } from "..";
 
 /** 1 つの仕事を試す回数の上限（docs/decisions/jobs.md の 5） */
@@ -174,11 +175,11 @@ export function createSqliteJobQueue(
       await run(job);
     } catch (error) {
       if (row.attempts >= MAX_ATTEMPTS) {
-        console.error("job failed; giving up", { ...detail, error });
+        console.error("job failed; giving up", { ...detail, error: loggableError(error) });
         await remove(row.id);
         return;
       }
-      console.error("job failed; will retry", { ...detail, error });
+      console.error("job failed; will retry", { ...detail, error: loggableError(error) });
       // 行の ID と、取り出した回数で絞る。借りの期限が過ぎて取り出し直された行は動かさない
       await db
         .update(jobQueue)
@@ -230,7 +231,9 @@ export function createSqliteJobQueue(
           claimed = rows.length;
           for (const row of rows) {
             const task: Promise<void> = process(row, run)
-              .catch((error) => console.error("could not settle job", { id: row.id, error }))
+              .catch((error) =>
+                console.error("could not settle job", { id: row.id, error: loggableError(error) }),
+              )
               .finally(() => {
                 active.delete(task);
                 notify();
@@ -238,7 +241,7 @@ export function createSqliteJobQueue(
             active.set(task, row);
           }
         } catch (error) {
-          console.error("could not claim jobs", error);
+          console.error("could not claim jobs", loggableError(error));
         }
       }
       // 取り出せるものがなかったか、手がいっぱいなら、知らせを待つ
