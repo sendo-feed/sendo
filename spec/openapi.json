@@ -4121,11 +4121,6 @@
     "/push": {
       "get": {
         "summary": "Web Push の有無と VAPID の公開鍵",
-        "security": [
-          {
-            "sessionCookie": []
-          }
-        ],
         "responses": {
           "200": {
             "description": "有無と公開鍵",
@@ -4133,16 +4128,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PushStatus"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "ブラウザのセッションではない（アクセストークンでは使えない）",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
                 }
               }
             }

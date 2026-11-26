@@ -210,11 +210,20 @@ describe("Web Push の有無と公開鍵", () => {
     expect(await registrations("user_id", user.id)).toEqual([]);
   });
 
-  it("アクセストークンでは使えない（403 session_required）", async () => {
+  it("有無と公開鍵は、アクセストークンでも読める", async () => {
+    const platform = platformFor(PUSH_ENV);
+    const fromSession = await readStatus(platform, await createSessionHeaders(TEST_USER.id));
+
+    const res = await requestApp(platform, "/api/v1/push");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(fromSession);
+  });
+
+  it("登録の置き外しは、アクセストークンでは使えない（403 session_required）", async () => {
     const platform = platformFor(PUSH_ENV);
     const body = await subscription();
     const responses = [
-      await requestApp(platform, "/api/v1/push"),
       await requestApp(platform, "/api/v1/push/registration", { method: "PUT", json: body }),
       await requestApp(platform, "/api/v1/push/registration", { method: "DELETE" }),
     ];
@@ -349,6 +358,11 @@ describe("端末の登録", () => {
       { name: "標準でないポート", endpoint: "https://push.example.com:9999/send/1" },
       { name: "URL の中の認証情報", endpoint: "https://user:pass@push.example.com/send/1" },
       { name: "2,049 文字", endpoint: prefix + "a".repeat(2049 - prefix.length) },
+      // 送られた形は 2,048 文字でも、正規化すると é が %C3%A9 になって 2,053 文字
+      {
+        name: "正規化すると 2,048 文字を超える",
+        endpoint: `${prefix}${"a".repeat(2047 - prefix.length)}é`,
+      },
       { name: "p256dh が 64 バイト", p256dh: base64UrlEncode(point.slice(0, 64)) },
       { name: "p256dh が 66 バイト", p256dh: base64UrlEncode(Uint8Array.of(...point, 0)) },
       { name: "p256dh が圧縮した点", p256dh: withFirstByte(0x02).slice(0, 44) },
@@ -417,6 +431,34 @@ describe("端末の登録", () => {
     expect(hook.fired()).toBe(true);
     expect(res.status).toBe(204);
     expect(await registrations("user_id", user.id)).toEqual([]);
+  });
+
+  it("認証したあと、書く前にセッションの期限が来たら、何も置かない。期限ちょうどから切れたとみなす", async () => {
+    const user = await createUser();
+    const { sessionId, headers } = await sessionFor(user.id);
+    const at = Date.now();
+    // 認証と書く文の間に期限が来るのは、時刻をちょうどに合わせないと起きないので、期限を直接書き換える
+    const expireAt = (expiresAt: number) =>
+      testDb
+        .prepare("UPDATE sessions SET expires_at = ? WHERE id = ?")
+        .bind(expiresAt, sessionId)
+        .run();
+    const hook = statementHook(/insert or replace into "push_registrations"/i, async () => {
+      await expireAt(at);
+    });
+    const clocked = { ...platformFor(PUSH_ENV, { db: hook.db }), now: () => new Date(at) };
+
+    const res = await register(clocked, headers, await subscription());
+
+    expect(hook.fired()).toBe(true);
+    expect(res.status).toBe(204);
+    expect(await registrations("user_id", user.id)).toEqual([]);
+
+    // 期限が 1 ミリ秒でも先なら置ける
+    await expireAt(at + 1);
+    const body = await subscription();
+    expect((await register(clocked, headers, body)).status).toBe(204);
+    expect(await registrations("user_id", user.id)).toEqual([rowOf(sessionId, user.id, body)]);
   });
 });
 

@@ -19,19 +19,21 @@ export type PushRegistrationKeys = { endpoint: string; p256dh: string; auth: str
  * 410 を受けて新しい登録を消してしまう。同じ登録の送り直しで行を変えないのは、起動のたびに送り
  * 直しても、送っている途中の仕事を空振りさせないため。
  *
- * セッションがまだあることも同じ文の中で確かめる（認証のあとにログアウトしたら、何も入れない）
+ * セッションがまだあり、期限が切れていないことも同じ文の中で確かめる（認証のあとにログアウトしたり、
+ * 期限が切れたりしたら、何も入れない。期限の比べ方は sessions.ts の authenticateSession と同じ）
  */
 export async function putPushRegistration(
   db: Database,
-  input: { userId: string; sessionId: string } & PushRegistrationKeys,
+  input: { userId: string; sessionId: string; now: Date } & PushRegistrationKeys,
 ): Promise<void> {
-  const { userId, sessionId, endpoint, p256dh, auth } = input;
+  const { userId, sessionId, now, endpoint, p256dh, auth } = input;
   await db.run(sql`insert or replace into ${pushRegistrations}
     (id, user_id, session_id, endpoint, p256dh, auth, created_at)
     select ${crypto.randomUUID()}, ${sessions.userId}, ${sessions.id}, ${endpoint}, ${p256dh},
       ${auth}, ${DB_NOW_MS}
     from ${sessions}
     where ${sessions.id} = ${sessionId} and ${sessions.userId} = ${userId}
+      and ${sessions.expiresAt} > ${now.getTime()}
       and not exists (select 1 from ${pushRegistrations} as same
         where same.session_id = ${sessionId} and same.endpoint = ${endpoint}
           and same.p256dh = ${p256dh} and same.auth = ${auth})`);

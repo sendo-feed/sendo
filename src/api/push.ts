@@ -11,9 +11,10 @@ import { ErrorSchema, errorBody } from "./schemas";
 /*
  * Web Push の有無と VAPID の公開鍵、端末の登録（docs/decisions/notifications.md の 19、20）。
  *
- * ブラウザのセッションでだけ使える。登録は端末（セッション）に結ぶもので、アクセストークンは端末に
- * 結び付かない。状態を変えるリクエストは、同じオリジンのページからだけ受ける（auth.ts の CSRF の
- * 対策）。エンドポイントと鍵は秘密として扱い、ログと応答に出さない。
+ * 有無と公開鍵は、アクセストークンでもセッションでも読める。登録の置き外しは、ブラウザのセッションで
+ * だけ使える。登録は端末（セッション）に結ぶもので、アクセストークンは端末に結び付かない。状態を変える
+ * リクエストは、同じオリジンのページからだけ受ける（auth.ts の CSRF の対策）。エンドポイントと鍵は
+ * 秘密として扱い、ログと応答に出さない。
  */
 
 const error = (description: string) => ({
@@ -40,13 +41,11 @@ const statusRoute = createRoute({
   method: "get",
   path: "/push",
   summary: "Web Push の有無と VAPID の公開鍵",
-  security,
   responses: {
     200: {
       description: "有無と公開鍵",
       content: { "application/json": { schema: PushStatusSchema } },
     },
-    403: sessionRequired,
   },
 });
 
@@ -110,7 +109,6 @@ export function pushApi(platform: Platform) {
   const { db } = platform;
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook })
     .openapi(statusRoute, async (c) => {
-      if (c.get("auth").kind !== "session") return denySession(c);
       if (!platform.push) return c.json({ available: false, publicKey: null }, 200);
       return c.json({ available: true, publicKey: await getVapidPublicKey(db) }, 200);
     })
@@ -127,6 +125,7 @@ export function pushApi(platform: Platform) {
       await putPushRegistration(db, {
         userId: c.get("user").id,
         sessionId: auth.sessionId,
+        now: platform.now(),
         ...registration,
       });
       return c.body(null, 204);
