@@ -643,7 +643,8 @@ describe("閉じた窓のまとめ", () => {
 
 describe("通知の行の片付け", () => {
   it("1 日 1 回の片付けで、作ってから 1 日を過ぎた行を消す。ちょうど 1 日の行は残す", async () => {
-    const world = createWorld();
+    // 行を作った時刻と同じ DB の時計で比べる。プロセスの時計が遅れていても、ずれない
+    const world = createWorld({ processLagMs: 2 * DAY });
     const reader = await belledReader(world);
     reader.source.items.push(world.item("新しい記事"));
     await world.fetchFeed(reader.feedId);
@@ -963,6 +964,25 @@ describe("送る前の取り消しと失敗", () => {
     await world.fetchFeed(feedId);
 
     expect(world.service.requests).toEqual([]);
+  });
+
+  it("1 件の記事の通知の行を作るのに失敗しても、同じ回の残りの記事は送る", async () => {
+    const world = createWorld();
+    const { user, source, feedId, endpoint } = await belledReader(world);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    source.items.push(world.item("古い記事", 2 * MINUTE), world.item("新しい記事"));
+    // 行は公開日時の古い順に作る。古い記事の行を作る文だけが、一時的に失敗する
+    world.before(/insert into "bell_notifications"/i, async () => {
+      throw new Error("database is locked");
+    });
+
+    await world.fetchFeed(feedId);
+
+    expect(titles(world.service, endpoint)).toEqual(["新しい記事"]);
+    expect(error).toHaveBeenCalledWith(
+      "could not notify bells",
+      expect.objectContaining({ articleId: await user.articleId("古い記事") }),
+    );
   });
 
   it("通知の行を作ってから送る仕事を積む前に落ちても、取得は成功する。その通知は出ず、取得し直しても 2 通にならない", async () => {

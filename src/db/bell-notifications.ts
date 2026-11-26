@@ -299,19 +299,19 @@ export async function readPushDelivery(
 
 /**
  * 作ってから 1 日たった通知の行を、limit 行まで消す（1 日 1 回の片付け）。窓と上限とまとめは、
- * 直近 70 分より前の行を見ない
+ * 直近 70 分より前の行を見ない。行を作った時刻と同じ DB の時計で比べる
  *
  * @returns 消した行の数。limit と同じなら、まだ残っているかもしれない
  */
 export async function collectOldBellNotifications(
   db: Database,
-  input: { before: Date; limit: number },
+  input: { limit: number },
 ): Promise<number> {
   const rows = await db.all<{ id: string }>(sql`
     delete from ${bellNotifications}
     where rowid in (
       select rowid from ${bellNotifications}
-      where created_at < ${input.before.getTime()}
+      where created_at < ${DB_NOW_MS} - ${BELL_NOTIFICATION_RETENTION_MS}
       order by created_at limit ${input.limit}
     )
     returning id

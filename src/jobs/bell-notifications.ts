@@ -1,4 +1,5 @@
 import {
+  type BellHit,
   type CreatedNotification,
   findBellHits,
   findClosedWindows,
@@ -52,7 +53,8 @@ export type IngestedArticle = {
  *
  * - Web Push が使えない設定なら、何もしない
  * - 判定する記事は、公開日時の新しい順に 50 件まで。行は、公開日時の古い順に 1 件ずつ作る
- * - 判定や積むのに失敗しても、取得の仕事は失敗にしない（その回の通知は出ないことがある）
+ * - 判定や積むのに失敗しても、取得の仕事は失敗にしない（その回の通知は出ないことがある）。行を
+ *   作るか積むのに失敗した記事は飛ばし、残りの記事を続ける
  *
  * @param previousSuccessAt 今回より前に、このフィードの取得に最後に成功した時刻
  */
@@ -62,27 +64,37 @@ export async function notifyBells(
 ): Promise<void> {
   const { previousSuccessAt } = input;
   if (!platform.push || previousSuccessAt === null || input.articles.length === 0) return;
+  const judged = [...input.articles]
+    .sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime())
+    .slice(0, MAX_JUDGED_ARTICLES)
+    .reverse();
+  let hits: BellHit[];
   try {
-    const judged = [...input.articles]
-      .sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime())
-      .slice(0, MAX_JUDGED_ARTICLES)
-      .reverse();
-    const hits = await findBellHits(platform.db, {
+    hits = await findBellHits(platform.db, {
       articleIds: judged.map((article) => article.id),
       previousSuccessAt,
     });
-    for (const article of judged) {
-      const found = hits.filter((hit) => hit.articleId === article.id);
-      if (found.length === 0) continue;
+  } catch (error) {
+    console.error("could not notify bells", { error: loggableError(error) });
+    return;
+  }
+  // 1 件の失敗で、残りの記事の通知を捨てない
+  for (const article of judged) {
+    const found = hits.filter((hit) => hit.articleId === article.id);
+    if (found.length === 0) continue;
+    try {
       const created = await insertArticleNotifications(platform.db, {
         articleId: article.id,
         publishedAt: article.dated ? article.publishedAt : null,
         hits: found,
       });
       await enqueueSends(platform, created);
+    } catch (error) {
+      console.error("could not notify bells", {
+        articleId: article.id,
+        error: loggableError(error),
+      });
     }
-  } catch (error) {
-    console.error("could not notify bells", { error: loggableError(error) });
   }
 }
 

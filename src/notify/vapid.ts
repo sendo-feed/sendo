@@ -20,6 +20,13 @@ export const VAPID_TOKEN_REUSE_MS = 6 * 60 * 60 * 1000;
 /** JWT の exp を、作った時刻からどれだけ先にするか（RFC 8292 は 24 時間未満を求める） */
 export const VAPID_TOKEN_LIFETIME_MS = 12 * 60 * 60 * 1000;
 
+/**
+ * 時計が戻ったとみなすまでの余裕。同時に送る仕事は、それぞれ鍵を読む前に「今」を取るので、あとから
+ * 作り始めた JWT のほうが、少し前の「今」を持つ仕事より先の時刻になることがある。その差で作り直すと、
+ * 同じ aud の JWT を同時に 2 つ作ってしまう
+ */
+export const VAPID_CLOCK_TOLERANCE_MS = 10 * 1000;
+
 /** メモリに持つ JWT の数の上限。超えたら捨てて作り直す（送り先のオリジンは、ふつう数個） */
 const MAX_CACHED_TOKENS = 1000;
 
@@ -82,7 +89,8 @@ export async function vapidAuthorization(
 
 /**
  * 作ってから 6 時間たっていない JWT があれば、それを使う。作っている途中なら、それを待って使う。
- * 古いか、作るのに失敗していたら、作り直す（時計が戻って、作った時刻より前になったときも）
+ * 古いか、作るのに失敗していたら、作り直す（時計が 10 秒より大きく戻って、作った時刻より前に
+ * なったときも）
  */
 async function reuseToken(
   id: string,
@@ -93,7 +101,11 @@ async function reuseToken(
     const cached = tokens.get(id);
     if (cached === undefined) break;
     const token = await cached.catch(() => undefined);
-    if (token && token.createdAt <= now && now - token.createdAt < VAPID_TOKEN_REUSE_MS) {
+    if (
+      token &&
+      token.createdAt <= now + VAPID_CLOCK_TOLERANCE_MS &&
+      now - token.createdAt < VAPID_TOKEN_REUSE_MS
+    ) {
       return token.value;
     }
     // 待っている間に、ほかの送信が作り直し始めていたら、そちらを待つ

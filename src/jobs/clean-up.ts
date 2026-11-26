@@ -1,8 +1,5 @@
 import { ACTIVITY_RETENTION_MS, collectExpiredArticleActivity } from "../db/activity";
-import {
-  BELL_NOTIFICATION_RETENTION_MS,
-  collectOldBellNotifications,
-} from "../db/bell-notifications";
+import { collectOldBellNotifications } from "../db/bell-notifications";
 import { BELL_REMOVAL_RETENTION_MS, collectRemovedBells } from "../db/bells";
 import {
   CONTENT_NOTE_GRACE_MS,
@@ -148,10 +145,7 @@ export async function runCleanUp(
 
   // 窓と上限を数え終えた通知の行（docs/decisions/notifications.md の 10）
   const bellNotifications = await repeat(SWEEP_ROUNDS.bellNotifications, () =>
-    collectOldBellNotifications(db, {
-      before: new Date(now - BELL_NOTIFICATION_RETENTION_MS),
-      limit: SWEEP_BATCH,
-    }),
+    collectOldBellNotifications(db, { limit: SWEEP_BATCH }),
   );
 
   // 行のない本文を、書き留めから片付ける（docs/decisions/content.md の 4）。上で消した記事の本文は、

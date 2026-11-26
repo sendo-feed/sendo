@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   getVapidPublicKey,
+  VAPID_CLOCK_TOLERANCE_MS,
   VAPID_TOKEN_LIFETIME_MS,
   VAPID_TOKEN_REUSE_MS,
   vapidAuthorization,
@@ -67,14 +68,31 @@ describe("VAPID（RFC 8292）", () => {
     expect(new Set(all.map((vapid) => vapid.token)).size).toBe(1);
   });
 
-  it("時計が作った時刻より前に戻ったら、作り直す", async () => {
+  it("同時に送る仕事の「今」が前後しても、10 秒の内なら同じ JWT を使う", async () => {
+    // あとから「今」を取った仕事が先に JWT を作り、少し前の「今」を持つ仕事がそれを待つ
+    const origin = `https://${crypto.randomUUID()}.push.example`;
+    const later = new Date(NOW.getTime() + VAPID_CLOCK_TOLERANCE_MS);
+
+    const all = await Promise.all([
+      authorize(endpointAt(origin), later).then(verifyVapid),
+      authorize(endpointAt(origin), NOW).then(verifyVapid),
+    ]);
+
+    expect(all[1].token).toBe(all[0].token);
+  });
+
+  it("時計が作った時刻から 10 秒より大きく戻ったら、作り直す。10 秒ちょうどなら使い回す", async () => {
     const origin = `https://${crypto.randomUUID()}.push.example`;
     const first = await verifyVapid(await authorize(endpointAt(origin)));
 
+    const within = await verifyVapid(
+      await authorize(endpointAt(origin), new Date(NOW.getTime() - VAPID_CLOCK_TOLERANCE_MS)),
+    );
     const earlier = await verifyVapid(
-      await authorize(endpointAt(origin), new Date(NOW.getTime() - 1)),
+      await authorize(endpointAt(origin), new Date(NOW.getTime() - VAPID_CLOCK_TOLERANCE_MS - 1)),
     );
 
+    expect(within.token).toBe(first.token);
     expect(earlier.token).not.toBe(first.token);
   });
 });
