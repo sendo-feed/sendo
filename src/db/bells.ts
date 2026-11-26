@@ -52,6 +52,9 @@ const ADD_ATTEMPTS = 2;
 /**
  * その人の有効なベルを、作った順で返す。feedTitle は表示用のフィード名（購読の表示名、フィードの
  * 名前、フィードの URL の順。docs/decisions/mcp.md の 11）。購読のないベルは null
+ *
+ * 順は変更番号で決める。有効なベルの番号は付けたときに振ったまま変わらない（変わるのは外すときだけ）
+ * ので、同じミリ秒に作ったベルどうしでも、作った順と最初の同期の順にそろう
  */
 export async function listBells(
   db: Database,
@@ -72,7 +75,7 @@ export async function listBells(
     .leftJoin(subscriptions, eq(subscriptions.id, bells.subscriptionId))
     .leftJoin(feeds, eq(feeds.id, subscriptions.feedId))
     .where(and(eq(bells.userId, userId), isNull(bells.deletedAt)))
-    .orderBy(asc(bells.createdAt), asc(bells.id))
+    .orderBy(asc(bells.seq))
     .all();
 }
 
