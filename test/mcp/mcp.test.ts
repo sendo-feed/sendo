@@ -1007,7 +1007,8 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     );
     const { platform } = createTestPlatform({ fetch });
     const { client } = await connect(platform, token, era);
-    const original = await workspaceIdFromList(client);
+    await client.callTool({ name: "create_workspace", arguments: { name: "Temporary" } });
+    const original = await workspaceIdFromList(client, "Temporary");
     expect(
       (
         await client.callTool({
@@ -1082,7 +1083,8 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     );
     const { platform, enqueued } = createTestPlatform({ fetch });
     const { client } = await connect(platform, token, era);
-    const workspaceId = await workspaceIdFromList(client);
+    await client.callTool({ name: "create_workspace", arguments: { name: "Temporary" } });
+    const workspaceId = await workspaceIdFromList(client, "Temporary");
     const hook = statementHook(/^\s*insert into "subscriptions"/i, async () => {
       expect(
         (await client.callTool({ name: "delete_workspace", arguments: { workspaceId } }))
@@ -1359,17 +1361,20 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       client.callTool({ name, arguments: args });
     const initial = await call("list_workspaces");
     expect(initial.structuredContent).toEqual({
-      workspaces: [{ id: expect.any(String), name: "default", createdAt: expect.any(String) }],
+      workspaces: [
+        { id: expect.any(String), name: "default", createdAt: expect.any(String), isDefault: true },
+      ],
     });
 
     const created = await call("create_workspace", { name: " Personal " });
     const { workspace: personal } = created.structuredContent as {
-      workspace: { id: string; name: string; createdAt: string };
+      workspace: { id: string; name: string; createdAt: string; isDefault: boolean };
     };
     expect(personal).toEqual({
       id: expect.any(String),
       name: "Personal",
       createdAt: expect.any(String),
+      isDefault: false,
     });
     expect((await call("list_workspaces")).structuredContent).toEqual({
       workspaces: [
@@ -1401,7 +1406,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     expect((await call("list_workspaces")).structuredContent).toEqual(initial.structuredContent);
   });
 
-  it("MCP でも有効な購読があるワークスペースは削除できず、別アカウントの ID は見つからない", async () => {
+  it("MCP でもデフォルトや有効な購読があるワークスペースは削除できない", async () => {
     const { platform, token, user, feed } = await setup(["read", "write"]);
     const other = await createUser();
     const { client } = await connect(platform, token, era);
@@ -1410,6 +1415,10 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     const listed = await call("list_workspaces");
     const [initial] = (listed.structuredContent as { workspaces: { id: string }[] }).workspaces;
     if (!initial) throw new Error("default workspace is missing");
+    expect(await call("delete_workspace", { workspaceId: initial.id })).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("workspace_is_default") }],
+    });
     const others = await requestApp(platform, "/api/v1/workspaces", { token: other.token });
     const [foreign] = ((await others.json()) as { items: { id: string }[] }).items;
     if (!foreign) throw new Error("other user's default workspace is missing");
@@ -1421,6 +1430,17 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       json: { subscriptionId: subscription?.id, workspaceId: initial.id },
     });
     expect(move.status).toBe(200);
+    await call("create_workspace", { name: "Personal" });
+    const personal = await workspaceIdFromList(client, "Personal");
+    expect(
+      (
+        await requestApp(platform, `/api/v1/workspaces/${personal}`, {
+          method: "PATCH",
+          token: user.token,
+          json: { isDefault: true },
+        })
+      ).status,
+    ).toBe(200);
     expect(await call("delete_workspace", { workspaceId: initial.id })).toMatchObject({
       isError: true,
       content: [{ type: "text", text: expect.stringContaining("workspace_not_empty") }],
@@ -1437,7 +1457,12 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       });
       expect(await call(name, { ...args, workspaceId: foreign.id })).toEqual(unknown);
     }
-    expect((await call("list_workspaces")).structuredContent).toEqual(listed.structuredContent);
+    expect((await call("list_workspaces")).structuredContent).toMatchObject({
+      workspaces: [
+        { id: personal, isDefault: true },
+        { id: initial.id, isDefault: false },
+      ],
+    });
   });
 
   it("フォルダを変えるツールは、データを変えたときだけ開いている画面に知らせる", async () => {

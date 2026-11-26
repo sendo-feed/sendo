@@ -785,42 +785,68 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "アカウントのデフォルトか"
           }
         },
         "required": [
           "id",
           "name",
-          "createdAt"
+          "createdAt",
+          "isDefault"
         ]
       },
       "CreateWorkspaceRequest": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/RenameWorkspaceRequest"
-          },
-          {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                "description": "クライアントが決めた小文字の UUID。省略時は Sendo が決める"
-              }
-            }
-          }
-        ]
-      },
-      "RenameWorkspaceRequest": {
         "type": "object",
         "properties": {
           "name": {
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "クライアントが決めた小文字の UUID。省略時は Sendo が決める"
           }
         },
         "required": [
           "name"
+        ]
+      },
+      "UpdateWorkspaceRequest": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "isDefault": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              }
+            },
+            "required": [
+              "isDefault"
+            ],
+            "additionalProperties": false
+          }
         ]
       },
       "OpmlImportResult": {
@@ -3387,7 +3413,7 @@
     },
     "/workspaces/{id}": {
       "patch": {
-        "summary": "ワークスペースの名前を変える",
+        "summary": "ワークスペースを改名するか、デフォルトにする",
         "parameters": [
           {
             "schema": {
@@ -3405,14 +3431,14 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RenameWorkspaceRequest"
+                "$ref": "#/components/schemas/UpdateWorkspaceRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "名前を変えた",
+            "description": "指定された項目を更新した",
             "content": {
               "application/json": {
                 "schema": {
@@ -3430,7 +3456,7 @@
             }
           },
           "400": {
-            "description": "名前か ID が正しくない",
+            "description": "入力が正しくない。名前かデフォルトの指定のどちらかが必要",
             "content": {
               "application/json": {
                 "schema": {
@@ -3462,7 +3488,7 @@
         }
       },
       "delete": {
-        "summary": "有効な購読が0件のワークスペースを削除する",
+        "summary": "デフォルト以外で有効な購読が0件のワークスペースを削除する",
         "parameters": [
           {
             "schema": {
@@ -3490,7 +3516,7 @@
             }
           },
           "409": {
-            "description": "有効な購読がある（workspace_not_empty）",
+            "description": "デフォルト（workspace_is_default）か有効な購読がある（workspace_not_empty）",
             "content": {
               "application/json": {
                 "schema": {

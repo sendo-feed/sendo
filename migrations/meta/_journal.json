@@ -477,6 +477,20 @@
       "when": 1795583211082,
       "tag": "0067_remove-google-reader-item-id",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "6",
+      "when": 1795704282740,
+      "tag": "0068_workspace-default",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "6",
+      "when": 1795704304281,
+      "tag": "0069_initialize-workspace-default",
+      "breakpoints": true
     }
   ]
 }

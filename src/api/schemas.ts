@@ -1,6 +1,6 @@
 import { z } from "@hono/zod-openapi";
 import type { InboxArticle } from "../db/inbox";
-import type { Feed, Folder } from "../db/schema";
+import type { Feed, Folder, Workspace } from "../db/schema";
 import type { SubscriptionWithFeed } from "../db/subscriptions";
 import { FETCH_FEED_ERROR_CODES } from "../fetcher/fetch-feed";
 import type { ImageSigner } from "../lib/image-url";
@@ -127,15 +127,23 @@ export function toFolderResponse(folder: Folder): z.infer<typeof FolderSchema> {
 }
 
 export const WorkspaceSchema = z
-  .object({ id: z.string(), name: z.string(), createdAt: dateTime })
+  .object({
+    id: z.string(),
+    name: z.string(),
+    createdAt: dateTime,
+    isDefault: z.boolean().openapi({ description: "アカウントのデフォルトか" }),
+  })
   .openapi("Workspace");
 
-export function toWorkspaceResponse(workspace: {
-  id: string;
-  name: string;
-  createdAt: Date;
-}): z.infer<typeof WorkspaceSchema> {
-  return { id: workspace.id, name: workspace.name, createdAt: workspace.createdAt.toISOString() };
+export function toWorkspaceResponse(
+  workspace: Pick<Workspace, "id" | "name" | "createdAt" | "isDefault">,
+): z.infer<typeof WorkspaceSchema> {
+  return {
+    id: workspace.id,
+    name: workspace.name,
+    createdAt: workspace.createdAt.toISOString(),
+    isDefault: workspace.isDefault,
+  };
 }
 
 export const ArticleSchema = z
