@@ -743,6 +743,22 @@ describe("言葉のベル", () => {
     expect(titles(world.service, endpoint)).toEqual(["20,000 文字目で終わる"]);
   });
 
+  it("20,000 文字目で切っても、切った位置のすぐあとに英数字が続く言葉には当てない", async () => {
+    const world = createWorld();
+    const { feeds, endpoint } = await wordReader(world, "Go");
+    const [blog] = feeds;
+    if (!blog) throw new Error("no feed");
+    // どちらも「Go」が 19,999〜20,000 文字目にある。すぐあとが英字なら当てず、空白なら当てる
+    blog.source.items.push(
+      world.item("英字が続く", 2 * MINUTE, { content: `<p>${"あ".repeat(19_998)}Google</p>` }),
+      world.item("空白が続く", MINUTE, { content: `<p>${"あ".repeat(19_998)}Go 1.26</p>` }),
+    );
+
+    await world.fetchFeed(blog.feedId);
+
+    expect(titles(world.service, endpoint)).toEqual(["空白が続く"]);
+  });
+
   it("1 回の取得で本文を置く 30 件を超えた記事も、フィードの本文で判定する", async () => {
     const world = createWorld();
     const { user, feeds, endpoint } = await wordReader(world, "障害");
@@ -762,6 +778,30 @@ describe("言葉のベル", () => {
 
     expect(await user.hasContent("31 件目")).toBe(false);
     expect(titles(world.service, endpoint)).toEqual(["31 件目"]);
+  });
+
+  it("30 件を超えた記事の本文も、サニタイズで中身ごと落とす要素の文字では当てない", async () => {
+    const world = createWorld();
+    const { user, feeds, endpoint } = await wordReader(world, "障害");
+    const [blog] = feeds;
+    if (!blog) throw new Error("no feed");
+    for (let i = 1; i <= MAX_CONTENTS_PER_FETCH; i++) {
+      blog.source.items.push(
+        world.item(`記事 ${i}`, MINUTE, { description: "要約", content: "<p>平常どおり</p>" }),
+      );
+    }
+    // 言葉は、読者に見えないボタンの中にだけある
+    blog.source.items.push(
+      world.item("31 件目", MINUTE, {
+        description: "要約",
+        content: "<p>平常どおり</p><button>障害を報告</button>",
+      }),
+    );
+
+    await world.fetchFeed(blog.feedId);
+
+    expect(await user.hasContent("31 件目")).toBe(false);
+    expect(titles(world.service, endpoint)).toEqual([]);
   });
 
   it("大きすぎて置き場に置かなかった本文（256 KiB を超える）も判定する", async () => {

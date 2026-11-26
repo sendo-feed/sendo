@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_BELL_WORDS,
-  MAX_BELL_WORDS_INPUT_LENGTH,
   MAX_BELL_WORDS_LENGTH,
   matchesBellWords,
   parseBellTarget,
@@ -77,10 +76,8 @@ describe("言葉を受ける", () => {
     });
   });
 
-  it(`受ける文字列は、正規化する前の形で ${MAX_BELL_WORDS_INPUT_LENGTH} 文字まで。超えたら、区切ったあとが短くても受けない`, () => {
-    const padded = (length: number) => `障害${" ".repeat(length - 2)}`;
-    expect(parseBellWords(padded(MAX_BELL_WORDS_INPUT_LENGTH))).toMatchObject({ words: "障害" });
-    expect(parseBellWords(padded(MAX_BELL_WORDS_INPUT_LENGTH + 1))).toBe("too_long");
+  it("受ける文字列の長さでは断らない。区切ったあとの言葉が上限に収まれば受ける", () => {
+    expect(parseBellWords(`Rust${" ".repeat(1021)}`)).toMatchObject({ words: "Rust" });
   });
 
   it("NFKC で長くなる文字は、長くなったあとの形で数える", () => {

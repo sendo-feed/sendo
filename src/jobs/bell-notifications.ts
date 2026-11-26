@@ -16,6 +16,7 @@ import { parseRetryAfter } from "../fetcher/fetch-feed";
 import { htmlToText } from "../fetcher/parse-feed";
 import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
 import { loggableError } from "../lib/log-error";
+import { sanitizeHtml } from "../lib/sanitize-html";
 import { type BellNotification, BUNDLE_LINES, buildNotificationPayload } from "../notify/payload";
 import { vapidAuthorization } from "../notify/vapid";
 import { encryptPushMessage } from "../notify/web-push";
@@ -54,11 +55,12 @@ export type IngestedArticle = {
   title: string | null;
   summary: string | null;
   /**
-   * フィードの本文。置き場に置いたかどうかによらない。プレーンテキストにしたもの（htmlToText で
-   * 空白をまとめ、切る前の形）か、まだプレーンテキストにしていない HTML。HTML は判定するときに
-   * だけプレーンテキストにし、保存も返しもしない。本文がなければ null
+   * フィードの本文。置き場に置いたかどうかによらない。サニタイズした HTML をプレーンテキストに
+   * したもの（htmlToText で空白をまとめ、切る前の形）か、まだプレーンテキストにしていない HTML と、
+   * その URL の基準。HTML は判定するときにだけサニタイズしてプレーンテキストにし（サニタイズで
+   * 中身ごと落とす要素の文字は、読者に見えないので当てない）、保存も返しもしない。本文がなければ null
    */
-  body: { text: string } | { html: string } | null;
+  body: { text: string } | { html: string; baseUrl: string } | null;
 };
 
 /**
@@ -125,34 +127,35 @@ function matchWords(
   article: IngestedArticle,
   candidates: readonly BellCandidate[],
 ): BellCandidate[] {
-  let text: string | undefined;
+  let judged: { text: string; end: number } | undefined;
   return candidates.filter(({ matchKey }) => {
     if (matchKey === null) return true;
-    text ??= toMatchText(judgedText(article));
-    return matchesBellWords(text, matchKey);
+    judged ??= judgedText(article);
+    return matchesBellWords(judged.text, matchKey, judged.end);
   });
 }
 
 /**
- * 言葉と比べる記事の文字。タイトル、要約、フィードの本文を、空でないものだけ改行でつなぐ。本文は、
- * 空白をまとめたプレーンテキストを、コードポイントでちょうど 20,000 文字に切る。切った印は付けない
- * （「…」は NFKC で「...」になり、言葉の文字に当たる）
+ * 言葉と比べる記事の文字（toMatchText にしたもの）。タイトル、要約、フィードの本文を、空でないもの
+ * だけ改行でつなぐ。本文は、空白をまとめたプレーンテキストを、コードポイントでちょうど 20,000 文字に
+ * 切る。切った印は付けない（「…」は NFKC で「...」になり、言葉の文字に当たる）。
+ *
+ * 切った位置のすぐあとの 1 文字は残し、当てる範囲の終わり（end）をその前に置く。その文字は、言葉の
+ * すぐあとに英数字があるかを見るためだけに使う（「Go|ogle」で切っても「Go」に当てない）
  */
-function judgedText(article: IngestedArticle): string {
+function judgedText(article: IngestedArticle): { text: string; end: number } {
   const { body } = article;
-  const text =
+  const plain =
     body === null
       ? null
       : "text" in body
         ? body.text
-        : htmlToText(body.html, Number.POSITIVE_INFINITY);
-  // 先頭の 20,000 コードポイントは、UTF-16 で 40,000 単位までに収まる
-  const cut =
-    text &&
-    Array.from(text.slice(0, 2 * MAX_JUDGED_BODY_LENGTH))
-      .slice(0, MAX_JUDGED_BODY_LENGTH)
-      .join("");
-  return [article.title, article.summary, cut].filter(Boolean).join("\n");
+        : htmlToText(sanitizeHtml(body.html, body.baseUrl), Number.POSITIVE_INFINITY);
+  // 先頭の 20,001 コードポイントは、UTF-16 で 40,002 単位までに収まる
+  const chars = plain ? Array.from(plain.slice(0, 2 * (MAX_JUDGED_BODY_LENGTH + 1))) : [];
+  const cut = chars.slice(0, MAX_JUDGED_BODY_LENGTH).join("");
+  const text = toMatchText([article.title, article.summary, cut].filter(Boolean).join("\n"));
+  return { text: text + toMatchText(chars[MAX_JUDGED_BODY_LENGTH] ?? ""), end: text.length };
 }
 
 /**

@@ -313,15 +313,10 @@ describe("言葉のベル", () => {
     expect(await list()).toEqual([bell]);
   });
 
-  it("受ける文字列は 1,024 文字まで。1,025 文字なら、区切ったあとが短くても 400", async () => {
-    const { added, add, list } = await setup();
-    const padded = (length: number) => `障害${" ".repeat(length - 2)}`;
-    const bell = await added({ words: padded(1024) });
-    expect(bell.words).toBe("障害");
-
-    const over = await add({ words: `Rust${" ".repeat(1021)}` });
-    expect(over.status).toBe(400);
-    expect(await over.json()).toMatchObject({ error: { code: "invalid_request" } });
+  it("受ける文字列の長さでは断らない。余分な空白で長くても、区切ったあとが上限に収まれば受ける", async () => {
+    const { added, list } = await setup();
+    const bell = await added({ words: `Rust${" ".repeat(1021)}` });
+    expect(bell.words).toBe("Rust");
     expect(await list()).toEqual([bell]);
   });
 

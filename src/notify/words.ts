@@ -12,12 +12,6 @@ export const MAX_BELL_WORDS = 8;
 /** 言葉の全体の長さの上限（保存する形の、区切りの空白を含むコードポイントの数） */
 export const MAX_BELL_WORDS_LENGTH = 64;
 
-/**
- * 受ける文字列の長さの上限（UTF-16 の単位）。NFKC で縮む文字（半角のカナと濁点など）、重なる言葉、
- * 余分な空白の分を見込んで、保存する形の上限より大きくとる。超えたら、正規化する前に断る
- */
-export const MAX_BELL_WORDS_INPUT_LENGTH = 1024;
-
 /** 言葉を受けられない理由 */
 export type BellWordsProblem = "empty" | "too_many_words" | "too_long" | "invalid_character";
 
@@ -42,7 +36,6 @@ const CONTROL = /\p{Cc}/u;
  * @returns 保存する形。受けられなければ、その理由
  */
 export function parseBellWords(input: string): BellWords | BellWordsProblem {
-  if (input.length > MAX_BELL_WORDS_INPUT_LENGTH) return "too_long";
   const kept: string[] = [];
   const lowered = new Set<string>();
   for (const word of input.normalize("NFKC").split(SEPARATOR)) {
@@ -80,10 +73,12 @@ export function toMatchText(text: string): string {
 }
 
 /**
- * 照合用の言葉（match_key）の言葉が、すべて text にあるか。text は toMatchText にしたもの
+ * 照合用の言葉（match_key）の言葉が、すべて text にあるか。text は toMatchText にしたもの。end より
+ * あとにかかる箇所には当てない。end からあとの文字は、言葉のすぐあとに英数字があるかを見るためだけに
+ * 使う
  */
-export function matchesBellWords(text: string, matchKey: string): boolean {
-  return matchKey.split(" ").every((word) => containsWord(text, word));
+export function matchesBellWords(text: string, matchKey: string, end = text.length): boolean {
+  return matchKey.split(" ").every((word) => containsWord(text, word, end));
 }
 
 /**
@@ -91,10 +86,11 @@ export function matchesBellWords(text: string, matchKey: string): boolean {
  * 英数字で終わるなら、すぐあとに英数字のある箇所には当てない（「Go」は「Google」に当たらず、
  * 「Go言語」には当たる）。日本語や記号の端では、前後を見ない
  */
-function containsWord(text: string, word: string): boolean {
+function containsWord(text: string, word: string, end: number): boolean {
   const checkStart = isAsciiAlphanumeric(word.charCodeAt(0));
   const checkEnd = isAsciiAlphanumeric(word.charCodeAt(word.length - 1));
   for (let at = text.indexOf(word); at !== -1; at = text.indexOf(word, at + 1)) {
+    if (at + word.length > end) return false;
     if (checkStart && isAsciiAlphanumeric(text.charCodeAt(at - 1))) continue;
     if (checkEnd && isAsciiAlphanumeric(text.charCodeAt(at + word.length))) continue;
     return true;

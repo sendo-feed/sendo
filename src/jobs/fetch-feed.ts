@@ -175,7 +175,7 @@ export async function runFetchFeed(
         if (!insertedIds.has(row.id)) return [];
         const item = parsed.items[index];
         // 置くか確かめるときにプレーンテキストにした本文（30 件まで）は使い回す。ほかの記事は、
-        // 判定するときにフィードの HTML をプレーンテキストにする
+        // 判定するときにフィードの HTML を、置く本文と同じ基準でサニタイズしてプレーンテキストにする
         const text = storedContents.texts.get(row.id);
         const html = item?.contentHtml;
         return [
@@ -185,7 +185,12 @@ export async function runFetchFeed(
             dated: item?.publishedAt != null,
             title: row.title ?? null,
             summary: row.summary ?? null,
-            body: text !== undefined ? { text } : html ? { html } : null,
+            body:
+              text !== undefined
+                ? { text }
+                : html
+                  ? { html, baseUrl: row.url ?? result.url }
+                  : null,
           },
         ];
       }),

@@ -258,7 +258,10 @@ export async function readBundledArticles(
   };
 }
 
-/** その人の sent の行のうち、作った時刻が直近 1 時間のものの数（SQL の式） */
+/**
+ * その人の sent の行のうち、作った時刻が直近 1 時間のものの数（SQL の式）。行を作ったあと、送る前に
+ * 購読をやめたかベルを外して送らなかった行も数える
+ */
 function sentInLastHour(userId: SQL) {
   return sql`select count(*) from ${bellNotifications} as counted
     where counted.user_id = ${userId} and counted.state = 'sent'

@@ -147,7 +147,8 @@ export async function runFetchDiscord(
     articles: articles
       .filter((article) => insertedIds.has(article.id))
       .map((article) => {
-        // 置いたかどうか（大きすぎる本文は置かない）によらず、サニタイズした本文で判定する
+        // 置いたかどうか（大きすぎる本文は置かない）によらず、サニタイズした本文で判定する。判定の
+        // 前にもう一度サニタイズするが、サニタイズした HTML の文字は変わらない
         const html = htmls.get(article.guid);
         return {
           id: article.id,
@@ -155,7 +156,7 @@ export async function runFetchDiscord(
           dated: true,
           title: article.title,
           summary: article.summary,
-          body: html === undefined ? null : { html },
+          body: html === undefined ? null : { html, baseUrl: article.url },
         };
       }),
   });
