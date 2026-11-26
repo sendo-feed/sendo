@@ -10,6 +10,7 @@ import {
   type FetchConfig,
   MIN_FETCH_INTERVAL_MINUTES,
   type OAuthServerConfig,
+  type PushConfig,
   parseEmailList,
   parseFetchIntervalMinutes,
   parseOrigin,
@@ -203,6 +204,41 @@ function readThreshold(raw: string | undefined): number | undefined {
     `TRANSLATION_LONG_THRESHOLD_CHARS must be an integer from 1 to ${MAX_LONG_THRESHOLD_CHARS}; using the default`,
   );
   return undefined;
+}
+
+export type PushEnvName = "VAPID_SUBJECT" | "READER_URL";
+
+/**
+ * Web Push の設定を読む（docs/decisions/notifications.md の 18、19）。VAPID_SUBJECT と READER_URL が
+ * そろっているときだけ使える。形が正しくなければ、エラーをログに出して使わない
+ */
+export function readPushConfig(env: Partial<Record<PushEnvName, string>>): PushConfig | undefined {
+  const text = env.VAPID_SUBJECT?.trim();
+  if (!text) return undefined;
+  const subject = parseVapidSubject(text);
+  if (subject === undefined) {
+    console.error("Web Push is disabled: VAPID_SUBJECT must be a mailto: or https: URL");
+    return undefined;
+  }
+  try {
+    const readerOrigin = parseOrigin(env.READER_URL);
+    return readerOrigin ? { subject, readerOrigin } : undefined;
+  } catch (error) {
+    console.error("Web Push is disabled: READER_URL must be an https origin", error);
+    return undefined;
+  }
+}
+
+/** mailto:（宛先のあるもの）か https: の URL だけを受ける。プッシュサービスが送り手に連絡する先 */
+function parseVapidSubject(text: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol === "mailto:") return url.pathname.includes("@") ? url.href : undefined;
+  return url.protocol === "https:" ? url.href : undefined;
 }
 
 export type DiscordEnvName =

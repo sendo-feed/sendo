@@ -13,13 +13,21 @@ import { appSecrets } from "./schema";
 /** 画像の URL の署名の鍵の名前 */
 export const IMAGE_SIGNING_KEY = "image_signing_key";
 
+/** VAPID の鍵の組の名前（docs/decisions/notifications.md の 17） */
+export const VAPID_KEY = "vapid_key";
+
 /**
- * 秘密を読む。なければ 32 バイトの乱数で作る。
+ * 秘密を読む。なければ create で作る。
  *
  * 「なければ入れる」を 1 つの文で行い、入れたあとで読み直す。2 つのリクエストが同時に作ろうと
- * しても、主キーで 1 つにまとまり、どちらも同じ値を読む
+ * しても、主キーで 1 つにまとまり、どちらも同じ値を読む（先に入った方の値で、もう片方が作った値は
+ * 捨てる）
  */
-export async function getOrCreateSecret(db: Database, name: string): Promise<string> {
+export async function getOrCreateSecret(
+  db: Database,
+  name: string,
+  create: () => string | Promise<string>,
+): Promise<string> {
   const read = () =>
     db.select({ value: appSecrets.value }).from(appSecrets).where(eq(appSecrets.name, name)).get();
 
@@ -28,7 +36,7 @@ export async function getOrCreateSecret(db: Database, name: string): Promise<str
 
   await db
     .insert(appSecrets)
-    .values({ name, value: randomBase64Url(32), createdAt: DB_NOW_MS })
+    .values({ name, value: await create(), createdAt: DB_NOW_MS })
     .onConflictDoNothing({ target: appSecrets.name });
   const created = await read();
   if (!created) throw new Error(`secret disappeared while creating: ${name}`);
@@ -44,7 +52,9 @@ export async function getOrCreateSecret(db: Database, name: string): Promise<str
 export function imageSigner(db: Database): ImageSigner {
   let loading: Promise<ImageSigner> | undefined;
   const load = () => {
-    loading ??= getOrCreateSecret(db, IMAGE_SIGNING_KEY).then(createImageSigner);
+    loading ??= getOrCreateSecret(db, IMAGE_SIGNING_KEY, () => randomBase64Url(32)).then(
+      createImageSigner,
+    );
     return loading;
   };
   return {

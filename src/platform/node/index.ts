@@ -10,6 +10,7 @@ import {
   readAuthConfig,
   readDiscordConfig,
   readFetchConfig,
+  readPushConfig,
   readRetentionConfig,
   readTranslationConfig,
 } from "../config";
@@ -53,11 +54,13 @@ export function createNodePlatform(input: {
   const discord = readDiscordConfig(settings);
   const fetch = input.fetch ?? createSafeFetch();
   const translation = readTranslationConfig(settings);
+  const push = readPushConfig(settings);
   const now = () => new Date();
   return {
     ...(discord && {
       discord: { ...discord, botFetch: createDiscordBotFetch(fetch, discord.botToken) },
     }),
+    ...(push && { push }),
     ...(translation && { translator: createClaudeTranslator({ ...translation, fetch, now }) }),
     pageContent: input.pageContent,
     languageDetection: input.languageDetection,

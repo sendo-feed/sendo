@@ -923,12 +923,13 @@ export const bellHorizons = sqliteTable("bell_horizons", {
 });
 
 /**
- * sendo が自分で作って持つ秘密（docs/decisions/images.md の 2）。今は、画像の URL の署名の鍵だけ。
- * 初めて使うときに作る（db/secrets.ts）。行を消すと、次に使うときに作り直す
+ * sendo が自分で作って持つ秘密（docs/decisions/images.md の 2）。画像の URL の署名の鍵と、VAPID の
+ * 鍵の組（docs/decisions/notifications.md の 17）。初めて使うときに作る（db/secrets.ts）。行を消すと、
+ * 次に使うときに作り直す
  */
 export const appSecrets = sqliteTable("app_secrets", {
   name: text("name").primaryKey(),
-  /** 乱数を base64url にしたもの */
+  /** 署名の鍵は乱数を base64url にしたもの、VAPID の鍵の組は秘密の JWK の JSON */
   value: text("value").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });

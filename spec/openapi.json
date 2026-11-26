@@ -981,6 +981,26 @@
         ],
         "additionalProperties": false
       },
+      "PushStatus": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "Web Push を使える設定（VAPID_SUBJECT と READER_URL）がそろっているか"
+          },
+          "publicKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "VAPID の公開鍵（P-256 の非圧縮の点 65 バイトの base64url）。PushManager.subscribe の applicationServerKey に渡す。手元の登録の鍵と違えば、登録し直す。使えなければ null"
+          }
+        },
+        "required": [
+          "available",
+          "publicKey"
+        ]
+      },
       "Setting": {
         "type": "object",
         "properties": {
@@ -4054,6 +4074,38 @@
           },
           "404": {
             "description": "ベルがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/push": {
+      "get": {
+        "summary": "Web Push の有無と VAPID の公開鍵",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "有無と公開鍵",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "ブラウザのセッションではない（アクセストークンでは使えない）",
             "content": {
               "application/json": {
                 "schema": {

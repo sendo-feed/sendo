@@ -48,6 +48,14 @@ export interface OAuthServerConfig {
   readerOrigin: string;
 }
 
+/** Web Push の設定（docs/decisions/notifications.md の 18、19）。両方そろったときだけ使える */
+export interface PushConfig {
+  /** VAPID の JWT の sub（mailto: か https: の URL） */
+  subject: string;
+  /** 通知から記事を開く sendo-reader のオリジン */
+  readerOrigin: string;
+}
+
 /** ブラウザのログインの設定（docs/decisions/accounts.md） */
 export interface AuthConfig {
   /** ユーザーになれるメールアドレス（小文字） */
@@ -327,6 +335,8 @@ export interface Platform {
   now: () => Date;
   auth: AuthConfig;
   discord?: DiscordConfig;
+  /** Web Push。設定がそろっていなければない（docs/decisions/notifications.md の 19） */
+  push?: PushConfig;
   fetchConfig: FetchConfig;
   retentionConfig: RetentionConfig;
   /** 記事のページから本文を抜く（Rust） */
