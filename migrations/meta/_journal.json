@@ -512,6 +512,13 @@
       "when": 1795715886696,
       "tag": "0072_push-registrations",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "6",
+      "when": 1795718972919,
+      "tag": "0073_bell-notifications",
+      "breakpoints": true
     }
   ]
 }

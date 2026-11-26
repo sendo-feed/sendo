@@ -139,3 +139,89 @@ export async function verifyVapid(
     JSON.parse(new TextDecoder().decode(base64UrlDecode(part))) as unknown;
   return { token, publicKey, header: decode(header), claims: decode(payload) as VapidClaims };
 }
+
+/** 通知の中身（docs/decisions/notifications.md の 14） */
+export type PushPayload = {
+  web_push: number;
+  notification: {
+    title: string;
+    body: string;
+    navigate: string;
+    tag: string;
+    data: { bellId: string; articleId: string; count: number };
+  };
+  app_badge: number;
+  mutable: boolean;
+};
+
+/** プッシュサービスが受けた要求 */
+export type PushRequest = {
+  endpoint: string;
+  /** プッシュサービスが返した状態コード */
+  status: number;
+  headers: Headers;
+  redirect: RequestInit["redirect"];
+  vapid: Awaited<ReturnType<typeof verifyVapid>>;
+  /** 暗号化した本体のバイト数 */
+  bytes: number;
+  payload: PushPayload;
+};
+
+/**
+ * 偽のプッシュサービス。endpoint で端末ごとのエンドポイントを作り、届いた要求の VAPID を確かめ、
+ * 本体をその端末の秘密鍵で復号して記録する。知らないエンドポイントには 404 を返す
+ */
+export function createPushService() {
+  const devices = new Map<string, Device>();
+  const requests: PushRequest[] = [];
+  let respond: (endpoint: string) => Response | Promise<Response> = () =>
+    new Response(null, { status: 201 });
+  return {
+    requests,
+    /** 受け付けた（2xx を返した）通知 */
+    delivered: (endpoint?: string) =>
+      requests.filter(
+        (request) =>
+          request.status >= 200 &&
+          request.status < 300 &&
+          (endpoint === undefined || request.endpoint === endpoint),
+      ),
+    /** 端末のエンドポイントを作る。host を省くと、テストごとに重ならないホストにする */
+    endpoint(device: Device, host = `${crypto.randomUUID()}.push.example`) {
+      const endpoint = `https://${host}/send/${crypto.randomUUID()}`;
+      devices.set(endpoint, device);
+      return endpoint;
+    },
+    /** 返す応答を決める（既定は 201） */
+    respondWith(handler: (endpoint: string) => Response | Promise<Response>) {
+      respond = handler;
+    },
+    /** このサービスのエンドポイントか */
+    has: (url: URL) => devices.has(url.href),
+    /** fetch に渡された要求を受ける */
+    async receive(url: URL, init: RequestInit | undefined): Promise<Response> {
+      const device = devices.get(url.href);
+      if (!device) return new Response(null, { status: 404 });
+      const headers = new Headers(init?.headers);
+      const vapid = await verifyVapid(headers.get("authorization"));
+      const body = init?.body;
+      if (!(body instanceof Uint8Array)) throw new Error("push body must be bytes");
+      const payload = JSON.parse(
+        new TextDecoder().decode(await decryptPushMessage(body, device)),
+      ) as PushPayload;
+      const response = await respond(url.href);
+      requests.push({
+        endpoint: url.href,
+        status: response.status,
+        headers,
+        redirect: init?.redirect,
+        vapid,
+        bytes: body.length,
+        payload,
+      });
+      return response;
+    },
+  };
+}
+
+export type PushService = ReturnType<typeof createPushService>;

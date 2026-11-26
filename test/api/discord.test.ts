@@ -20,6 +20,7 @@ import { MIGRATIONS_DIR, openTestDatabase } from "../db";
 import { fakeDiscordGateway } from "../fixtures/discord-gateway";
 import { PNG } from "../fixtures/images";
 import {
+  clockedDatabase,
   createTestPlatform,
   createUser,
   fakeFetch,
@@ -27,6 +28,7 @@ import {
   statementHook,
   subscribeFeed,
 } from "../helpers";
+import { createDevice, createPushService } from "../push-service";
 
 const BASE = "/api/v1/integrations/discord";
 const ORIGIN = "https://reader.example.com";
@@ -475,7 +477,7 @@ describe("Discord の購読", () => {
           contentKey: null,
         })),
       ),
-    ).toBe(28);
+    ).toHaveLength(28);
     remote.setMessageIds([]);
 
     expect(await runFetchFeed(platform, feedId)).toEqual({ status: "not-modified" });
@@ -1877,5 +1879,68 @@ describe("Discord の投稿の本文（docs/decisions/discord.md の 6）", () =
         await t.platform.db.select().from(articles).where(eq(articles.contentKey, key)),
       ).toEqual([]);
     }
+  });
+});
+
+describe("Discord の投稿のベル（docs/decisions/notifications.md の 8）", () => {
+  it("ベルを付けた Discord の購読に新しい投稿が入ると端末に届く。購読した直後の取得の投稿には送らない", async () => {
+    // 投稿の時刻（公開日時）に合わせて、DB の時計も FIXED_NOW から進める
+    const clock = { ms: FIXED_NOW.getTime() };
+    const remote = discordFetch();
+    const service = createPushService();
+    const { platform, enqueued } = createTestPlatform({
+      db: clockedDatabase(clock),
+      discord: CONFIG,
+      fetch: (input, init) => {
+        const url = new URL(String(input));
+        return service.has(url) ? service.receive(url, init) : remote.fetch(input, init);
+      },
+      now: () => new Date(clock.ms),
+      push: { subject: "mailto:admin@example.com", readerOrigin: ORIGIN },
+    });
+    const user = await createUser();
+    await connectDiscord(platform.db, user.id, DISCORD_USER);
+    const request = await browser(platform, user.id);
+    const feedId = await subscribe(request);
+    const bell = await requestApp(platform, "/api/v1/bells", {
+      method: "POST",
+      token: user.token,
+      json: { feedId },
+    });
+    expect(bell.status).toBe(201);
+    const device = await createDevice();
+    const endpoint = service.endpoint(device);
+    const registered = await request("/api/v1/push/registration", {
+      method: "PUT",
+      json: { endpoint, keys: device.keys },
+    });
+    expect(registered.status).toBe(204);
+    const sendAll = async () => {
+      for (const job of enqueued.splice(0)) {
+        if (job.type === "send-bell-notification") await runJob(platform, job);
+      }
+    };
+
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
+    await sendAll();
+    expect(service.requests).toEqual([]);
+
+    clock.ms += HOUR;
+    const posted = messageIdAt(clock.ms - 60_000);
+    remote.setMessageIds([MESSAGE_ID, posted]);
+    expect(await runFetchFeed(platform, feedId)).toEqual({ status: "fetched", inserted: 1 });
+    await sendAll();
+
+    const list = (await (
+      await requestApp(platform, "/api/v1/articles", { token: user.token })
+    ).json()) as { items: { id: string; url: string; title: string }[] };
+    const article = list.items.find((item) => item.url.endsWith(`/${posted}`));
+    expect(service.delivered().map((r) => r.payload.notification)).toEqual([
+      expect.objectContaining({
+        title: "releases",
+        body: article?.title,
+        navigate: `${ORIGIN}/?article=${article?.id}`,
+      }),
+    ]);
   });
 });

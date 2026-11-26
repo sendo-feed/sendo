@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from ".";
 import { DB_NOW_MS } from "./clock";
 import { pushRegistrations, sessions } from "./schema";
@@ -53,6 +53,28 @@ export async function deletePushRegistration(
       ),
     )
     .run();
+}
+
+/** その人たちの登録（端末）。送る仕事を端末ごとに積むのに使う */
+export async function listPushRegistrations(
+  db: Database,
+  userIds: readonly string[],
+): Promise<{ id: string; userId: string }[]> {
+  if (userIds.length === 0) return [];
+  return db
+    .select({ id: pushRegistrations.id, userId: pushRegistrations.userId })
+    .from(pushRegistrations)
+    .where(inArray(pushRegistrations.userId, [...userIds]))
+    .all();
+}
+
+/**
+ * 登録を行の ID で消す（docs/decisions/notifications.md の 21、22）。プッシュサービスが 404 ／ 410 を
+ * 返したときと、エンドポイントが内部のアドレスに解決されたとき。エンドポイントで消すと、同じ
+ * エンドポイントで登録し直した新しい行まで消してしまう
+ */
+export async function deletePushRegistrationById(db: Database, id: string): Promise<void> {
+  await db.delete(pushRegistrations).where(eq(pushRegistrations.id, id)).run();
 }
 
 /**

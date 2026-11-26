@@ -2,6 +2,7 @@ import { extractPageContentOnce } from "../fetcher/page-content";
 import type { Platform } from "../platform";
 import { detectArticleLanguages } from "./article-languages";
 import { indexArticleSearch } from "./article-search";
+import { runSendBellNotification } from "./bell-notifications";
 import { runCleanUp } from "./clean-up";
 import { runFetchFeed } from "./fetch-feed";
 import { runImportFeeds } from "./import-feeds";
@@ -46,6 +47,10 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
       await runTranslateArticle(platform, job.articleId, new Date(job.startedAt), {
         retranslation: job.retranslation === true,
       });
+      return;
+    }
+    case "send-bell-notification": {
+      await runSendBellNotification(platform, job);
       return;
     }
     case "extract-page": {

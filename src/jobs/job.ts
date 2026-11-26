@@ -60,6 +60,15 @@ export const jobSchema = z.discriminatedUnion("type", [
     startedAt: z.int().nonnegative(),
     retranslation: z.boolean().optional(),
   }),
+  /**
+   * ベルの通知の行 1 つを、端末 1 つに送る（docs/decisions/notifications.md の 21）。取得の仕事が、
+   * 送る行を作ったときに積む。中身は送るときに組み立てる
+   */
+  z.object({
+    type: z.literal("send-bell-notification"),
+    notificationId: z.string().min(1),
+    registrationId: z.string().min(1),
+  }),
   /** 記事のページから本文を抜く（docs/decisions/content.md の 10）。取得の仕事のあとで積む */
   z.object({ type: z.literal("extract-page"), articleId: z.string().min(1) }),
   z.object({
