@@ -7,7 +7,7 @@ import { createTestPlatform, createUser, fakeFetch, requestApp, uniqueUrl } from
 const rss = `<rss version="2.0"><channel><title>Blog</title>
 <link>https://example.com/</link><item><title>Post</title></item></channel></rss>`;
 
-type Workspace = { id: string; name: string };
+type Workspace = { id: string; name: string; isDefault: boolean };
 type Feed = { id: string; subscriptionId: string; workspaceId: string | null };
 
 async function setup() {
@@ -23,13 +23,16 @@ async function setup() {
   return { initial, list, platform, request, user };
 }
 
-it("新規アカウントの default は改名・削除でき、同じ ID の作成を送り直せる", async () => {
+it("新規アカウントのデフォルトは改名でき、切り替えると空の旧デフォルトを削除できる", async () => {
   const { initial, list, request } = await setup();
   expect(initial.name).toBe("default");
+  expect(initial.isDefault).toBe(true);
   const id = crypto.randomUUID();
   const created = await request("/workspaces", "POST", { id, name: " Personal " });
   expect(created.status).toBe(201);
-  expect(await created.json()).toMatchObject({ workspace: { id, name: "Personal" } });
+  expect(await created.json()).toMatchObject({
+    workspace: { id, name: "Personal", isDefault: false },
+  });
 
   expect((await request(`/workspaces/${id}`, "PATCH", { name: "Private" })).status).toBe(200);
   const retry = await request("/workspaces", "POST", { id, name: "Personal" });
@@ -39,11 +42,22 @@ it("新規アカウントの default は改名・削除でき、同じ ID の作
   expect(duplicate.status).toBe(409);
   expect(await duplicate.json()).toMatchObject({ error: { code: "workspace_exists" } });
   expect((await request(`/workspaces/${initial.id}`, "PATCH", { name: "News" })).status).toBe(200);
-  expect((await list()).map((row) => row.name)).toEqual(["News", "Private"]);
+  expect(await list()).toMatchObject([
+    { id: initial.id, name: "News", isDefault: true },
+    { id, name: "Private", isDefault: false },
+  ]);
+  const blocked = await request(`/workspaces/${initial.id}`, "DELETE");
+  expect(blocked.status).toBe(409);
+  expect(await blocked.json()).toMatchObject({ error: { code: "workspace_is_default" } });
+  for (const invalid of [{ isDefault: false }, { name: "Both", isDefault: true }, {}]) {
+    expect((await request(`/workspaces/${id}`, "PATCH", invalid)).status).toBe(400);
+  }
+  const switched = await request(`/workspaces/${id}`, "PATCH", { isDefault: true });
+  expect(switched.status).toBe(200);
+  expect(await switched.json()).toMatchObject({ workspace: { id, isDefault: true } });
   expect((await request(`/workspaces/${initial.id}`, "DELETE")).status).toBe(204);
   expect((await request(`/workspaces/${initial.id}`, "DELETE")).status).toBe(204);
-  expect((await request(`/workspaces/${id}`, "DELETE")).status).toBe(204);
-  expect(await list()).toEqual([]);
+  expect(await list()).toMatchObject([{ id, isDefault: true }]);
 });
 
 it("購読の移動は記事・既読とスターを保ち、空のワークスペースだけ削除できる", async () => {
@@ -61,6 +75,11 @@ it("購読の移動は記事・既読とスターを保ち、空のワークス�
   expect(feed.workspaceId).toBe(initial.id);
   const supplied = await request("/workspaces", "POST", { name: "Personal" });
   const { workspace } = (await supplied.json()) as { workspace: Workspace };
+  const alternative = await request("/workspaces", "POST", { name: "Reading" });
+  const { workspace: reading } = (await alternative.json()) as { workspace: Workspace };
+  expect((await request(`/workspaces/${reading.id}`, "PATCH", { isDefault: true })).status).toBe(
+    200,
+  );
   const duplicate = await request("/feeds", "POST", { url, workspaceId: workspace.id });
   expect(duplicate.status).toBe(200);
   expect(await duplicate.json()).toMatchObject({ feed: { workspaceId: initial.id } });
@@ -118,6 +137,10 @@ it("別アカウントと削除済みのワークスペースへの書き込み�
   expect(
     (await owner.request(`/workspaces/${outsider.initial.id}`, "PATCH", { name: "News" })).status,
   ).toBe(404);
+  expect(
+    (await owner.request(`/workspaces/${outsider.initial.id}`, "PATCH", { isDefault: true }))
+      .status,
+  ).toBe(404);
   expect((await owner.request(`/workspaces/${outsider.initial.id}`, "DELETE")).status).toBe(404);
   const url = uniqueUrl();
   const otherDestination = await owner.request("/feeds", "POST", {
@@ -151,35 +174,66 @@ it("別アカウントと削除済みのワークスペースへの書き込み�
   });
   expect(stale.status).toBe(404);
 
+  const created = await owner.request("/workspaces", "POST", { name: "Personal" });
+  const { workspace } = (await created.json()) as { workspace: Workspace };
+  expect(
+    (await owner.request(`/workspaces/${workspace.id}`, "PATCH", { isDefault: true })).status,
+  ).toBe(200);
   expect((await owner.request(`/workspaces/${owner.initial.id}`, "DELETE")).status).toBe(204);
+  expect(
+    (await owner.request(`/workspaces/${owner.initial.id}`, "PATCH", { isDefault: true })).status,
+  ).toBe(404);
   const gone = await owner.request("/feeds", "POST", {
     url: uniqueUrl(),
     workspaceId: owner.initial.id,
   });
   expect(gone.status).toBe(400);
-  expect(await owner.list()).toEqual([]);
+  expect(await owner.list()).toMatchObject([{ id: workspace.id, isDefault: true }]);
 });
 
 it("購読の所属付けとワークスペースの削除が重なっても無効な所属を作らない", async () => {
-  const { initial, platform, request, user } = await setup();
+  const { platform, request, user } = await setup();
+  const created = await request("/workspaces", "POST", { name: "Personal" });
+  const { workspace } = (await created.json()) as { workspace: Workspace };
   const { feed } = (await (await request("/feeds", "POST", { url: uniqueUrl() })).json()) as {
     feed: Feed;
   };
   const [move, remove] = await Promise.all([
     request(`/feeds/${feed.id}`, "PATCH", {
       subscriptionId: feed.subscriptionId,
-      workspaceId: initial.id,
+      workspaceId: workspace.id,
     }),
-    request(`/workspaces/${initial.id}`, "DELETE"),
+    request(`/workspaces/${workspace.id}`, "DELETE"),
   ]);
   const workspaceId = (await getSubscription(platform.db, { userId: user.id, feedId: feed.id }))
     ?.workspaceId;
   if (move.status === 200) {
     expect(remove.status).toBe(409);
-    expect(workspaceId).toBe(initial.id);
+    expect(workspaceId).toBe(workspace.id);
   } else {
     expect(move.status).toBe(400);
     expect(remove.status).toBe(204);
     expect(workspaceId).toBeNull();
+  }
+});
+
+it("デフォルトへの切り替えと削除が重なっても有効なデフォルトが1件残る", async () => {
+  const { initial, list, request } = await setup();
+  const created = await request("/workspaces", "POST", { name: "Personal" });
+  const { workspace } = (await created.json()) as { workspace: Workspace };
+  const target = `/workspaces/${workspace.id}`;
+  const [switched, removed] = await Promise.all([
+    request(target, "PATCH", { isDefault: true }),
+    request(target, "DELETE"),
+  ]);
+  const defaults = (await list()).filter((item) => item.isDefault);
+  if (switched.status === 200) {
+    expect(removed.status).toBe(409);
+    expect(await removed.json()).toMatchObject({ error: { code: "workspace_is_default" } });
+    expect(defaults.map((item) => item.id)).toEqual([workspace.id]);
+  } else {
+    expect(switched.status).toBe(404);
+    expect(removed.status).toBe(204);
+    expect(defaults.map((item) => item.id)).toEqual([initial.id]);
   }
 });

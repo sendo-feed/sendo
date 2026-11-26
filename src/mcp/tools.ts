@@ -739,7 +739,7 @@ export function createMcpServer(
     {
       title: "ワークスペースの一覧",
       description:
-        "有効なワークスペースを名前順で返す。名前が指定されたときはこの一覧で ID を調べる。",
+        "有効なワークスペースを名前順で返す。isDefault が true の項目がデフォルト。名前が指定されたときはこの一覧で ID を調べる。",
       outputSchema: z.object({ workspaces: z.array(WorkspaceSchema) }),
       annotations: { readOnlyHint: true },
     },
@@ -797,7 +797,8 @@ export function createMcpServer(
     "delete_workspace",
     {
       title: "ワークスペースを削除する",
-      description: "利用者に頼まれたときだけ使う。有効な購読が 0 件のワークスペースを削除する。",
+      description:
+        "利用者に頼まれたときだけ使う。デフォルト以外で有効な購読が 0 件のワークスペースを削除する。",
       inputSchema: z.object({ workspaceId: workspaceIdInput }),
       outputSchema: z.object({ deleted: z.literal(true) }),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
@@ -806,6 +807,8 @@ export function createMcpServer(
     async ({ workspaceId }) => {
       const deleted = await deleteWorkspace(db, { userId, id: workspaceId, now: platform.now() });
       if (deleted === "not_found") return failure("workspace_not_found: workspace does not exist");
+      if (deleted === "is_default")
+        return failure("workspace_is_default: workspace is the default");
       if (deleted === "not_empty") {
         return failure("workspace_not_empty: workspace still has subscriptions");
       }
