@@ -4,6 +4,7 @@ import { recordExtractedPageContent } from "../../src/db/page-contents";
 import { articles, articleTranslations, feeds, userArticles } from "../../src/db/schema";
 import { configureStorage, readStorageUsage } from "../../src/db/storage";
 import {
+  BATCH_BODY_REPAIR_TIMEOUT_MS,
   BATCH_MARK_TTL_MS,
   decideTranslations,
   markForBatch,
@@ -25,6 +26,7 @@ import { splitBody } from "../../src/translation/segments";
 import { testDb } from "../db";
 import { ARTICLE_BODY } from "../fixtures/translation-article";
 import {
+  clockedDatabase,
   createTestPlatform,
   createUser,
   fakeFetch,
@@ -85,10 +87,16 @@ type Reply = {
   declinedText?: string;
   /** 流れを閉じない（打ち切りを確かめる） */
   hang?: boolean;
+  /** 最後の message_stop が来る前に接続が閉じる */
+  endWithoutStop?: boolean;
   /** 拒否の応答の stop_details（docs/decisions/translation.md の 17） */
   stopDetails?: { type: "refusal"; category: string | null; explanation: string | null };
   /** 送った断片から訳を作る（undefined を返した断片は、返さない） */
   transform?: (segment: { id: string; text: string }) => string | undefined;
+  /** 送信したモデルと異なる応答を試すときだけ指定する */
+  responseModel?: string;
+  /** リクエストが届いてから応答を返すまでに、別の操作を差し込む */
+  beforeResponse?: () => Promise<void>;
   /** 応答の usage（既定は入力 10、出力 10） */
   usage?: Usage;
 };
@@ -193,6 +201,7 @@ function claudeResponse(
     ],
     ["message_stop", { type: "message_stop" }],
   ];
+  if (reply.endWithoutStop) events.pop();
   return new Response(sse(events), { headers: { "content-type": "text/event-stream" } });
 }
 
@@ -419,12 +428,12 @@ async function setup(
     if (url.hostname === "api.anthropic.com") {
       const sent = String(init?.body ?? "");
       claude.push({ body: sent, headers: new Headers(init?.headers) });
-      // 応答のモデルは、送ったモデル
-      const model = (JSON.parse(sent) as { model?: string }).model;
       const reply = replies.shift() ?? {
         transform: (segment) =>
           segment.id === "title" ? JA_TITLE : segment.id === "summary" ? JA_SUMMARY : undefined,
       };
+      const model = reply.responseModel ?? (JSON.parse(sent) as { model?: string }).model;
+      await reply.beforeResponse?.();
       const { transform } = reply;
       if (transform !== undefined) {
         const request = JSON.parse(sent) as { messages: { content: string }[] };
@@ -633,9 +642,11 @@ describe("保存された訳文の本文断片のログ", () => {
         const batch = s.batches.list[0];
         if (!batch) throw new Error("no batch");
         s.batches.transform = partial;
+        s.replies.push({ status: 429, errorType: "rate_limit_error" });
         batch.ended = true;
         await maintain(s.platform);
         await maintain(s.platform);
+        expect(s.claude).toHaveLength(1);
       } else {
         s.replies.push({ transform: partial });
         const accepted = path === "retranslation" ? await retranslate(s, id) : await request(s, id);
@@ -665,10 +676,124 @@ describe("保存された訳文の本文断片のログ", () => {
           sentBodySegments: 4,
           missingBodySegments: 1,
           invalidMarkerBodySegments: 2,
+          ...(path === "batch" && {
+            repairSentBodySegments: 3,
+            repairAdoptedBodySegments: 0,
+            repairInputTokens: null,
+            repairOutputTokens: null,
+          }),
         },
       ]);
     },
   );
+
+  it("欠けた断片だけを同じ条件で補い、一度の保存で公開する", async () => {
+    const s = await setup({
+      body,
+      env: { TRANSLATION_LONG_THRESHOLD_CHARS: "1", TRANSLATION_LONG_EFFORT: "high" },
+    });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    s.batches.transform = (segment) => defaultTransform(segment) ?? partial(segment);
+    s.replies.push({
+      text: translated([
+        { id: "b1", text: "最初に ⟦1/⟧ を使う。⟦2/⟧次へ進む。" },
+        { id: "b2", text: "最初に ⟦1⟧ガイド⟦/1⟧ を読む。" },
+        { id: "b3", text: "補った段落。<script>例</script>" },
+        { id: "b4", text: "正しい既存の訳を上書きしてはいけない" },
+        { id: "title", text: "上書きするタイトル" },
+      ]),
+      usage: { input_tokens: 23, output_tokens: 37 },
+    });
+    const inbox = () =>
+      s.platform.db.select().from(userArticles).where(eq(userArticles.articleId, id)).get();
+    const before = (await inbox())?.seq;
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    await maintain(s.platform);
+    const first = await inbox();
+    await maintain(s.platform);
+    expect((await inbox())?.seq).toBe(first?.seq);
+    expect(first?.seq).toBeGreaterThan(before ?? Number.POSITIVE_INFINITY);
+    expect(s.claude).toHaveLength(1);
+    const sent = s.claude[0];
+    if (!sent) throw new Error("no repair request");
+    const payload = JSON.parse(sent.body);
+    expect(payload).toMatchObject({
+      model: "claude-haiku-5-5",
+      max_tokens: 8192,
+      output_config: { effort: "high" },
+      system: SYSTEM_PROMPT,
+      stream: true,
+    });
+    expect(payload).not.toHaveProperty("fallbacks");
+    expect(
+      JSON.parse(payload.messages[0].content).segments.map(({ id }: { id: string }) => id),
+    ).toEqual(["b1", "b2", "b3"]);
+    expect(sent.body).not.toMatch(/https:\/\/example|secret\(\)|Unsent code|<p>/);
+    const row = await translationOf(s.platform, id);
+    expect(row).toMatchObject({
+      status: "translated",
+      title: JA_TITLE,
+      summary: JA_SUMMARY,
+      model: "claude-haiku-5-5",
+      effort: "high",
+      tier: "long",
+      promptVersion: PROMPT_VERSION,
+      inputTokens: 33,
+      outputTokens: 47,
+      batchAttempts: 0,
+      retranslated: false,
+      batchBodyRepairStartedAt: expect.any(Date),
+    });
+    const response = await requestApp(s.platform, `/api/v1/articles/${id}/translation`);
+    expect(response.status).toBe(200);
+    const { content: html } = (await response.json()) as { content: string };
+    expect(html).toContain("<code>secret()</code> を使う。<br>次へ進む。");
+    expect(html).toContain(
+      'href="https://example.com/guide?private=1" rel="noopener noreferrer nofollow">ガイド</a>',
+    );
+    expect(html).toContain("<p>補った段落。&lt;script&gt;例&lt;/script&gt;</p>");
+    expect(html).toContain("<p>訳:This segment is translated.</p>");
+    expect(bodySegmentLogs(info.mock.calls)).toEqual([
+      expect.objectContaining({
+        missingBodySegments: 1,
+        invalidMarkerBodySegments: 2,
+        repairSentBodySegments: 3,
+        repairAdoptedBodySegments: 3,
+        repairInputTokens: 23,
+        repairOutputTokens: 37,
+      }),
+    ]);
+  });
+
+  it("補完でも印が壊れた断片と ID が欠けた断片は原文で残す", async () => {
+    const s = await setup({ body });
+    await maintain(s.platform);
+    const id = await articleId(s.platform, "en");
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    s.batches.transform = partial;
+    s.replies.push({
+      transform: ({ id }) => {
+        if (id === "b1") return "印がまだ壊れている";
+        if (id === "b2") return "⟦1⟧ガイド⟦/1⟧を読む。";
+        return undefined;
+      },
+    });
+    await maintain(s.platform);
+    const row = await translationOf(s.platform, id);
+    expect(row?.content).toContain("Codemods use <code>secret()</code> first.<br>Then continue.");
+    expect(row?.content).toContain(">ガイド</a>を読む。");
+    expect(row?.content).toContain("<p>This segment will be missing.</p>");
+    expect(row?.content).toContain("<p>訳:This segment is translated.</p>");
+    expect(s.claude[0]?.body).toContain('"model":"claude-sonnet-5-5"');
+    expect(s.claude[0]?.body).not.toContain('"fallbacks"');
+    expect(s.claude[0]?.headers.get("anthropic-beta")).toBeNull();
+  });
 
   it("容量待ちのバッチ結果は空いてから一度だけ数え、完全な訳も分母に含める", async () => {
     const s = await setup({ body: "<p>Codemods are useful.</p>" });
@@ -726,6 +851,317 @@ describe("保存された訳文の本文断片のログ", () => {
         invalidMarkerBodySegments: null,
       }),
     ]);
+  });
+});
+
+describe("バッチの本文補完の上限と再開（docs/decisions/translation.md の 4）", () => {
+  const original = "<p>Codemods make these changes.</p>";
+
+  async function endBatch(s: Setup) {
+    const id = await articleId(s.platform, "en");
+    await maintain(s.platform);
+    const batch = s.batches.list[0];
+    if (!batch) throw new Error("no batch");
+    batch.ended = true;
+    s.batches.transform = defaultTransform;
+    return { id, batch };
+  }
+
+  it.each([
+    { count: 4, chars: 4_000, calls: 1 },
+    { count: 5, chars: 100, calls: 0 },
+    { count: 1, chars: 4_001, calls: 0 },
+  ])(
+    "$count 断片・$chars 文字の本文の追加呼び出しは $calls 回",
+    async ({ count, chars, calls }) => {
+      const text = "Codemods".padEnd(chars - count + 1, "a");
+      const body = `<p>${text}</p>${"<p>b</p>".repeat(count - 1)}`;
+      const s = await setup({ body });
+      const { id } = await endBatch(s);
+      s.replies.push({ transform: () => "補った。" });
+      await maintain(s.platform);
+      expect(s.claude).toHaveLength(calls);
+      expect(await translationOf(s.platform, id)).toMatchObject({
+        status: "translated",
+        content: calls === 1 ? "<p>補った。</p>".repeat(count) : body,
+      });
+    },
+  );
+
+  it.each(["期限切れ", "途中終端"] as const)("補完の%sで観測済みの使用量を残す", async (kind) => {
+    const s = await setup({ body: original, callTimeoutMs: 100 });
+    const { id } = await endBatch(s);
+    s.replies.push({
+      hang: kind === "期限切れ",
+      endWithoutStop: kind === "途中終端",
+      text: translated([{ id: "b1", text: "保存しない補完。" }]),
+      usage: { input_tokens: 23, output_tokens: 37 },
+    });
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    await maintain(s.platform);
+    expect(s.claude).toHaveLength(1);
+    expect(bodySegmentLogs(info.mock.calls)).toEqual([
+      expect.objectContaining({
+        repairSentBodySegments: 1,
+        repairAdoptedBodySegments: 0,
+        repairInputTokens: 23,
+        repairOutputTokens: kind === "途中終端" ? 37 : null,
+      }),
+    ]);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      content: original,
+      batchAttempts: 0,
+      inputTokens: 10,
+      outputTokens: 10,
+    });
+  });
+
+  it.each([5000, 90_000])(
+    "補完した本文が容量または本文の上限を超えたらバッチの結果を保存する（%i）",
+    async (length) => {
+      const s = await setup({ body: original });
+      const { id } = await endBatch(s);
+      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+      s.replies.push({
+        transform: () => "訳".repeat(length),
+        usage: { input_tokens: 11, output_tokens: 12 },
+      });
+      const usage = await readStorageUsage(s.platform.db);
+      await maintain(
+        length === 5000
+          ? { ...s.platform, retentionConfig: { maxBytes: usage.bytes + 2000 } }
+          : s.platform,
+      );
+      expect(s.claude).toHaveLength(1);
+      expect(await translationOf(s.platform, id)).toMatchObject({
+        status: "translated",
+        content: original,
+        inputTokens: 10,
+        outputTokens: 10,
+      });
+      expect(bodySegmentLogs(info.mock.calls)).toEqual([
+        expect.objectContaining({
+          repairSentBodySegments: 1,
+          repairAdoptedBodySegments: 0,
+          repairInputTokens: 11,
+          repairOutputTokens: 12,
+        }),
+      ]);
+    },
+  );
+
+  it("保存容量が足りない間は試行時刻を書かず、空いてから補完する", async () => {
+    const s = await setup({ body: original });
+    const { id, batch } = await endBatch(s);
+    s.replies.push({ transform: () => "容量が戻ってから補った。" });
+    const usage = await readStorageUsage(s.platform.db);
+    await maintain({ ...s.platform, retentionConfig: { maxBytes: usage.bytes } });
+    expect(s.claude).toHaveLength(0);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "queued",
+      batchId: batch.id,
+      batchBodyRepairStartedAt: null,
+    });
+    const encoder = new TextEncoder();
+    const estimatedBytes =
+      encoder.encode(`${JA_TITLE}${JA_SUMMARY}claude-sonnet-5-5${original}`).length +
+      encoder.encode(original.slice(3, -4)).length * 2;
+    await maintain({ ...s.platform, retentionConfig: { maxBytes: usage.bytes + estimatedBytes } });
+    expect(s.claude).toHaveLength(1);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      content: "<p>容量が戻ってから補った。</p>",
+    });
+  });
+
+  it.each(["期限", "別モデル"] as const)(
+    "補完の応答を採用できなければバッチの本文と使用量を保つ（%s）",
+    async (condition) => {
+      const s = await setup({ body: original });
+      const { id } = await endBatch(s);
+      s.replies.push({
+        transform: () => "採用されない補完。",
+        usage: { input_tokens: 23, output_tokens: 37 },
+        ...(condition === "期限"
+          ? {
+              beforeResponse: async () => {
+                s.clock.ms += BATCH_BODY_REPAIR_TIMEOUT_MS;
+              },
+            }
+          : { responseModel: "claude-haiku-5-5" }),
+      });
+      await maintain({ ...s.platform, db: clockedDatabase(s.clock) });
+      expect(s.claude).toHaveLength(1);
+      expect(await translationOf(s.platform, id)).toMatchObject({
+        status: "translated",
+        content: original,
+        inputTokens: 10,
+        outputTokens: 10,
+      });
+    },
+  );
+
+  it.each(["同じ", "別の"] as const)(
+    "期限後に%sバッチを保存するときも再送せずに原文を保存する",
+    async (next) => {
+      const s = await setup({ body: original });
+      const { id, batch } = await endBatch(s);
+      const stopped = clockedDatabase(s.clock, (sql) => {
+        if (sql.startsWith("update article_translations set status = 'translated'")) {
+          throw new Error("crashed after requesting repair");
+        }
+      });
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      s.replies.push({ transform: () => "失われた補完。" });
+      await maintain({ ...s.platform, db: stopped });
+      expect(s.claude).toHaveLength(1);
+      expect(await translationOf(s.platform, id)).toMatchObject({
+        status: "queued",
+        batchId: batch.id,
+        batchBodyRepairStartedAt: new Date(s.clock.ms),
+      });
+      const restarted: Platform = {
+        ...s.platform,
+        db: clockedDatabase(s.clock),
+        translator: createClaudeTranslator({
+          ...translationConfig(),
+          fetch: s.platform.fetch,
+          now: () => new Date(s.clock.ms),
+        }),
+      };
+      s.clock.ms += BATCH_BODY_REPAIR_TIMEOUT_MS - 1;
+      await maintain(restarted);
+      expect(await translationOf(restarted, id)).toMatchObject({
+        status: "queued",
+        batchId: batch.id,
+      });
+      s.clock.ms += 1;
+      if (next === "別の") {
+        batch.gone = true;
+        await maintain(restarted);
+        const replacement = s.batches.list[1];
+        if (!replacement) throw new Error("no replacement batch");
+        replacement.ended = true;
+      }
+      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+      await maintain(restarted);
+      await maintain(restarted);
+      expect(s.claude).toHaveLength(1);
+      expect(await translationOf(restarted, id)).toMatchObject({
+        status: "translated",
+        batchId: null,
+        content: original,
+        inputTokens: 10,
+        outputTokens: 10,
+      });
+      expect(bodySegmentLogs(info.mock.calls)).toEqual([
+        expect.objectContaining({
+          repairSentBodySegments: null,
+          repairAdoptedBodySegments: 0,
+          repairInputTokens: null,
+        }),
+      ]);
+    },
+  );
+
+  it("補完中にその場の翻訳が保存した訳文を上書きしない", async () => {
+    const s = await setup({ body: original });
+    const { id, batch } = await endBatch(s);
+    s.replies.push(
+      {
+        transform: () => "遅れた補完。",
+        beforeResponse: async () => {
+          await maintain(s.platform);
+          expect(s.claude).toHaveLength(1);
+          expect(await translationOf(s.platform, id)).toMatchObject({
+            status: "queued",
+            batchId: batch.id,
+          });
+          expect((await request(s, id)).response.status).toBe(202);
+          await runQueuedTranslation(s);
+        },
+      },
+      { transform: () => "先に保存した訳。" },
+    );
+    await maintain(s.platform);
+    expect(s.claude).toHaveLength(2);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      batchId: null,
+      content: "<p>先に保存した訳。</p>",
+    });
+  });
+
+  it("保存に使うバッチを送り直した場合も初めて保存するときに補う", async () => {
+    const s = await setup({ body: original });
+    const { id, batch } = await endBatch(s);
+    batch.results = new Map([[id, { type: "expired" }]]);
+    await maintain(s.platform);
+    const second = s.batches.list[1];
+    if (!second) throw new Error("no second batch");
+    second.ended = true;
+    s.replies.push({ transform: () => "補完の訳。" });
+    await maintain(s.platform);
+    expect(s.claude).toHaveLength(1);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      content: "<p>補完の訳。</p>",
+    });
+  });
+
+  it("本文の指紋またはプロンプトの版が一致しない場合は補完を送らない", async () => {
+    const s = await setup({ body: original });
+    const { id, batch } = await endBatch(s);
+    await testDb.exec(
+      "UPDATE article_translations SET batch_body_hash = 'changed' WHERE batch_id IS NOT NULL",
+    );
+    await maintain(s.platform);
+    const second = s.batches.list[1];
+    if (!second) throw new Error("no replacement batch");
+    expect(second.id).not.toBe(batch.id);
+    await testDb.exec(
+      "UPDATE article_translations SET batch_prompt_version = NULL WHERE batch_id IS NOT NULL",
+    );
+    second.ended = true;
+    await maintain(s.platform);
+    expect(s.claude).toHaveLength(0);
+    expect(await translationOf(s.platform, id)).toMatchObject({
+      status: "translated",
+      content: original,
+      batchBodyRepairStartedAt: null,
+    });
+  });
+
+  it("同じ仕事で複数のバッチのうち2記事だけを補う", async () => {
+    const s = await setup({
+      body: original,
+      feeds: {
+        "/second.xml": () => rss(19_332, original),
+        "/third.xml": () => rss(29_332, original),
+      },
+    });
+    const { batch } = await endBatch(s);
+    batch.ended = false;
+    for (const feedId of Object.values(s.feedIds)) {
+      await runFetchFeed(s.platform, feedId);
+      for (const job of s.enqueued.splice(0)) {
+        if (job.type === "extract-page") await runJob(s.platform, job);
+      }
+      await runJob(s.platform, { type: "detect-article-languages" });
+      await maintain(s.platform);
+    }
+    expect(s.batches.list).toHaveLength(3);
+    for (const queued of s.batches.list) queued.ended = true;
+    s.replies.push({ transform: () => "補った。" }, { transform: () => "補った。" });
+    await maintain(s.platform);
+    await maintain(s.platform);
+    expect(s.claude).toHaveLength(2);
+    const rows = await s.platform.db.select().from(articleTranslations);
+    expect(rows.filter((row) => row.content === "<p>補った。</p>")).toHaveLength(2);
+    expect(
+      rows.filter((row) => row.content === original && row.status === "translated"),
+    ).toHaveLength(1);
   });
 });
 
@@ -3943,9 +4379,11 @@ describe("同じ元記事の訳を写す（docs/decisions/translation.md の 16�
     await maintain(s.platform);
     expect(bodySegmentLogs(info.mock.calls)).toEqual([]);
 
+    expect(s.claude).toHaveLength(0);
     const secondRow = await translationOf(s.platform, second);
     expect(secondRow).toMatchObject({
       status: "translated",
+      batchBodyRepairStartedAt: null,
       title: firstRow?.title,
       summary: "訳:Comments",
       content: firstRow?.content,

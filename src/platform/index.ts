@@ -318,6 +318,14 @@ export interface Translator {
     segments: readonly TranslationSegment[],
     options: { tier: OnDemandTier },
   ): Promise<TranslationResult>;
+  /** バッチで使えなかった本文断片だけを、指定された条件で 1 回補う（決定の 4） */
+  repairBatchBody(
+    segments: readonly TranslationSegment[],
+    options: { model: string; effort: TranslationEffort; timeoutMs: number },
+  ): Promise<{
+    segments: TranslationSegment[];
+    usage: { inputTokens: number | null; outputTokens: number | null } | null;
+  }>;
   /**
    * バッチを作って送る（Message Batches API）。バッチの ID を返す。失敗したら TranslatorError を投げる
    * （作れたかどうか分からないこともある）

@@ -517,6 +517,8 @@ export const articleTranslations = sqliteTable(
      * 本文を置かない（送ってから返るまでに、分け方が変わったとき）
      */
     batchBodyHash: text("batch_body_hash"),
+    /** 本文断片の補完を始めた時刻。記事ごとに 1 回にするため、バッチの印を外したあとも残す */
+    batchBodyRepairStartedAt: integer("batch_body_repair_started_at", { mode: "timestamp_ms" }),
     /**
      * バッチで訳せなかった回数（docs/decisions/translation.md の 4、8）。待てば通る失敗は数えない。
      * 上限で untranslated にする

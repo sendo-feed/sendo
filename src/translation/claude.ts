@@ -261,6 +261,40 @@ export function createClaudeTranslator(
       return result;
     },
 
+    async repairBatchBody(segments, options) {
+      const { model, effort, timeoutMs } = options;
+      // バッチの応答と送信時の条件を使う。代わりのモデルや、SDK による再試行は使わない（決定の 4）
+      const stream = client.beta.messages.stream(
+        { ...requestBody(model, effort, segments), max_tokens: 8192 },
+        { signal: AbortSignal.timeout(Math.min(timeoutMs, callTimeoutMs)) },
+      );
+      // SDK は途中で流れが閉じるとメッセージを捨てることがある。先に分かった使用量だけを控える
+      let observedUsage: { inputTokens: number; outputTokens: number | null } | null | undefined;
+      stream.on("streamEvent", (event, snapshot) => {
+        if (event.type !== "message_start" && event.type !== "message_delta") return;
+        const usage = snapshot.usage == null ? null : usageOf(snapshot.usage);
+        observedUsage =
+          usage === null
+            ? null
+            : {
+                inputTokens: usage.inputTokens,
+                outputTokens: snapshot.stop_reason === null ? null : usage.outputTokens,
+              };
+      });
+      let message: Anthropic.Beta.BetaMessage;
+      try {
+        message = await stream.finalMessage();
+      } catch (error) {
+        if (observedUsage === undefined) throw toTranslatorError(error);
+        return { segments: [], usage: observedUsage };
+      }
+      const result = readResult(message, segments);
+      return {
+        segments: result.status === "translated" && result.model === model ? result.segments : [],
+        usage: message.usage == null ? null : usageOf(message.usage),
+      };
+    },
+
     // バッチ（docs/decisions/translation.md の 4）。記事ごとに段階のモデルと思考量を指定する（9）。
     // 代わりのモデル（fallbacks）はバッチでは使えない
     async createBatch(requests) {

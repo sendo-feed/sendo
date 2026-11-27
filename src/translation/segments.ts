@@ -1,5 +1,6 @@
 import { decodeHTML } from "entities";
 import { escapeHtml, parseAttributes, tokenizeHtml } from "../lib/html";
+import type { TranslationSegment } from "../platform";
 
 /*
  * 記事の本文を、LLM に送る断片に分け、受け取った訳から本文を組み立て直す
@@ -61,11 +62,15 @@ interface Run {
 
 export interface BodySegments {
   /** 送る断片（ID は b1、b2…） */
-  segments: { id: string; text: string }[];
+  segments: TranslationSegment[];
   /** 送る文の長さの合計（Unicode の文字） */
   length: number;
   /** 受け取った訳（ID → 訳）から本文を組み立てる。使えない訳の断片は原文のまま */
-  assemble(translated: ReadonlyMap<string, string>): { html: string; counts: BodySegmentCounts };
+  assemble(translated: ReadonlyMap<string, string>): {
+    html: string;
+    counts: BodySegmentCounts;
+    rejected: TranslationSegment[];
+  };
 }
 
 export type BodySegmentCounts = { sent: number; missing: number; invalidMarkers: number };
@@ -113,6 +118,7 @@ export function splitBody(sanitized: string): BodySegments {
     length: segments.reduce((sum, segment) => sum + [...segment.text].length, 0),
     assemble(translated) {
       const counts = { sent: segments.length, missing: 0, invalidMarkers: 0 };
+      const rejected: TranslationSegment[] = [];
       const serializeChildren = (children: Node[]): string => {
         let out = "";
         let pending: Node[] = [];
@@ -122,9 +128,10 @@ export function splitBody(sanitized: string): BodySegments {
           const run = first === undefined ? undefined : runs.get(first);
           const text = run === undefined ? undefined : translated.get(run.id);
           const rebuilt = run !== undefined && text !== undefined ? rebuild(run, text) : null;
-          if (run !== undefined) {
+          if (run !== undefined && rebuilt === null) {
             if (text === undefined) counts.missing++;
-            else if (rebuilt === null) counts.invalidMarkers++;
+            else counts.invalidMarkers++;
+            rejected.push({ id: run.id, text: run.text });
           }
           out += rebuilt ?? pending.map(serialize).join("");
           pending = [];
@@ -142,7 +149,7 @@ export function splitBody(sanitized: string): BodySegments {
         flush();
         return out;
       };
-      return { html: serializeChildren(root), counts };
+      return { html: serializeChildren(root), counts, rejected };
     },
   };
 }

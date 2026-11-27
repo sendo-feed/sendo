@@ -10,7 +10,7 @@ import { type ArticleTranslation, articleTranslations, userArticles } from "./sc
 /**
  * 訳文の行の見積もり（行と主キー索引）。容量のトリガーと合わせる。訳したときの条件の列（思考量、段階、
  * プロンプトの版、トークン数、呼び出しのモデル、写した元。決定の 18）と、バッチで送った条件は、この
- * 1 行の見積もりの中に含める（docs/decisions/retention.md の 2）
+ * 1 行の見積もりの中に含める（docs/decisions/retention.md の 2）。本文の補完の試行時刻も同じ
  */
 export const ARTICLE_TRANSLATION_BYTES = 512;
 
@@ -40,6 +40,12 @@ export const MAX_BATCH_ATTEMPTS = 3;
 
 /** 印を付けてからバッチの ID がないまま、印を外すまでの長さ（同じく 4） */
 export const BATCH_MARK_TTL_MS = 60 * 60 * 1000;
+
+/** 試行時刻から本文の補完を打ち切るまで（docs/decisions/translation.md の 4） */
+export const BATCH_BODY_REPAIR_TIMEOUT_MS = 20_000;
+
+const NO_ACTIVE_BODY_REPAIR = sql`(batch_body_repair_started_at is null or
+  batch_body_repair_started_at <= ${DB_NOW_MS} - ${BATCH_BODY_REPAIR_TIMEOUT_MS})`;
 
 /** バッチの印を外す（待ちに戻す、訳文を書いた）。送った条件（決定の 9）も一緒に外す */
 const CLEAR_BATCH = sql`batch_key = null, batch_marked_at = null, batch_id = null,
@@ -941,6 +947,7 @@ export function listBatchRows(
     tier: BatchTier | null;
     effort: TranslationEffort | null;
     promptVersion: number | null;
+    repairStartedAt: Date | null;
   }[]
 > {
   return db
@@ -952,18 +959,38 @@ export function listBatchRows(
       tier: articleTranslations.batchTier,
       effort: articleTranslations.batchEffort,
       promptVersion: articleTranslations.batchPromptVersion,
+      repairStartedAt: articleTranslations.batchBodyRepairStartedAt,
     })
     .from(articleTranslations)
     .where(eq(articleTranslations.batchId, batchId))
     .all();
 }
 
+function batchResultTarget(articleId: string, batchId: string): SQL {
+  return sql`article_id = ${articleId} and batch_id = ${batchId}
+    and translated_at is null and status in ('queued', 'untranslated', 'translating')
+    and exists (select 1 from articles where id = ${articleId})`;
+}
+
+/** 容量を同じ文で確かめ、最初に試行時刻を書けた処理だけが本文を補う（決定の 4、12） */
+export function claimBatchBodyRepair(
+  db: Database,
+  articleId: string,
+  batchId: string,
+  estimatedBytes: number,
+): Promise<{ startedAt: number } | undefined> {
+  return getRow<{ startedAt: number }>(
+    db,
+    sql`update article_translations set batch_body_repair_started_at = ${DB_NOW_MS}
+      where ${batchResultTarget(articleId, batchId)} and batch_body_repair_started_at is null
+        and exists (select 1 from storage_usage where id = 1 and bytes + ${estimatedBytes} <= limit_bytes)
+      returning batch_body_repair_started_at as startedAt`,
+  );
+}
+
 /**
- * バッチの結果を書く。行がそのバッチの印を持ち、まだ訳文がないときだけ書き、印を外して translated に
- * する（同じ文で確かめる）。その場の翻訳の最中なら、それも終える。容量が足りなければ、トリガーが
- * 書かない（印は残る）
- *
- * @returns 書いたら true
+ * バッチの結果を書く。バッチの印、訳文の有無、補完の試行時刻と期限を同じ文で確かめる。その場の翻訳の
+ * 最中なら、それも終える。容量が足りなければ、トリガーが書かない（印は残る）
  */
 export async function finishBatchTranslation(
   db: Database,
@@ -984,9 +1011,15 @@ export async function finishBatchTranslation(
     bodySource: "feed" | "page" | null;
     /** 送った（写した）本文の指紋 */
     bodyHash: string;
+    repairStartedAt?: number;
+    repaired?: boolean;
   },
-): Promise<boolean> {
+): Promise<{ repairStartedAt: number | null } | undefined> {
   const c = translatedColumns(input);
+  const ownsRepair = sql`batch_body_repair_started_at = ${input.repairStartedAt ?? null}`;
+  const repairCondition = input.repaired
+    ? sql`(${ownsRepair} and not ${NO_ACTIVE_BODY_REPAIR})`
+    : sql`(${ownsRepair} or ${NO_ACTIVE_BODY_REPAIR})`;
   // 送った条件は、この文の右辺では書く前の値（CLEAR_BATCH で外す前）を読む
   const conditions = conditionColumns({
     copies: input.copies,
@@ -995,23 +1028,20 @@ export async function finishBatchTranslation(
     bodySrc: c.bodySrc,
     call: batchCall(input.model, input.usage),
   });
-  const row = await getRow<{ articleId: string }>(
+  return getRow<{ repairStartedAt: number | null }>(
     db,
     sql`update article_translations set status = 'translated', title = ${c.title},
         summary = ${c.summary}, content = ${c.content}, content_source = ${c.contentSource},
         ${conditions}, retranslated = ${c.retranslated}, body_hash = ${input.bodyHash},
         translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH},
         ${CLEAR_FAILURE}
-      where article_id = ${input.articleId} and batch_id = ${input.batchId}
-        and translated_at is null and status in ('queued', 'untranslated', 'translating')
-      returning article_id as articleId`,
+      where ${batchResultTarget(input.articleId, input.batchId)} and ${repairCondition}
+      returning batch_body_repair_started_at as repairStartedAt`,
   );
-  return row !== undefined;
 }
 
 /**
- * そのバッチの印を外し、待ちに戻す（印が同じ行だけ）。keep の記事は印を残す（容量が足りずに書けず、
- * 次の定期実行で書き直す）
+ * そのバッチの印を外し、待ちに戻す。keep の記事や、書く文の時点で補完中の記事は印を残す
  */
 export async function unmarkCheckedBatch(
   db: Database,
@@ -1019,7 +1049,7 @@ export async function unmarkCheckedBatch(
   keep: readonly string[] = [],
 ): Promise<void> {
   await db.run(sql`update article_translations set ${CLEAR_BATCH}
-    where batch_id = ${batchId}
+    where batch_id = ${batchId} and ${NO_ACTIVE_BODY_REPAIR}
       and article_id not in (select value from json_each(${JSON.stringify(keep)}))`);
 }
 
@@ -1076,7 +1106,7 @@ export async function failBatchArticles(
       batch_attempts = batch_attempts + ${increment},
       status = case when ${toUntranslated} then 'untranslated' else status end,
       ${setFailureWhen(toUntranslated, failure)}
-    where batch_id = ${batchId}
+    where batch_id = ${batchId} and ${NO_ACTIVE_BODY_REPAIR}
       ${input.articleId === undefined ? sql`` : sql`and article_id = ${input.articleId}`}
     returning article_id as articleId, status
   `);
