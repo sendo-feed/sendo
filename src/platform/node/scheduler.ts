@@ -2,6 +2,7 @@
  * 定期実行（docs/decisions/container.md の 6、jobs.md の 12）。時計の 5 分の区切りごとに動かし、
  * 予定した区切りの時刻を渡す（片付けや、10 分の区切りでだけ積む仕事は、その時刻で決める。jobs/schedule.ts）。
  */
+import { loggableError } from "../../lib/log-error";
 import { SCHEDULE_INTERVAL_MINUTES } from "..";
 
 export const SCHEDULE_INTERVAL_MS = SCHEDULE_INTERVAL_MINUTES * 60 * 1000;
@@ -36,7 +37,7 @@ export function startScheduler(
       () => {
         if (running === undefined) {
           running = tick(scheduledTime)
-            .catch((error) => console.error("scheduled run failed", error))
+            .catch((error) => console.error("scheduled run failed", loggableError(error)))
             .finally(() => {
               running = undefined;
             });

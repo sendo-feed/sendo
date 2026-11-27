@@ -5,6 +5,7 @@ import {
   INITIAL_POSITION,
   isCursorExpired,
   readChanges,
+  START_OF_CHANGES,
   type SyncCursor,
   type SyncPosition,
 } from "../db/sync";
@@ -14,6 +15,7 @@ import { defaultHook } from "./hook";
 import { SavedPageIdSchema, SavedPageSchema, toSavedPageResponse } from "./saved";
 import {
   ArticleSchema,
+  BellSchema,
   ErrorSchema,
   errorBody,
   FeedDisplayNameSchema,
@@ -22,8 +24,13 @@ import {
   FeedRelocationCandidateSchema,
   FeedStatusSchema,
   SettingValueSchema,
+  TRANSLATION_MODEL_DESCRIPTION,
   toArticleResponse,
+  toBellResponse,
   toFeedHealthResponse,
+  toWorkspaceResponse,
+  translationEffortSchema,
+  WorkspaceSchema,
 } from "./schemas";
 
 /*
@@ -48,6 +55,8 @@ const CursorSchema = z.object({
   // （全体を同期し直させない。docs/decisions/settings.md の 4）
   c: PositionSchema.optional(),
   p: PositionSchema.optional(),
+  w: PositionSchema.optional(),
+  b: PositionSchema.optional(),
 });
 
 const toTuple = (p: SyncPosition) => [p.seq, p.id, p.upTo, p.done] as const;
@@ -67,6 +76,8 @@ export function encodeSyncCursor(cursor: SyncCursor): string {
     a: toTuple(cursor.articles),
     c: toTuple(cursor.settings),
     ...(cursor.savedPages && { p: toTuple(cursor.savedPages) }),
+    ...(cursor.workspaces && { w: toTuple(cursor.workspaces) }),
+    ...(cursor.bells && { b: toTuple(cursor.bells) }),
   });
   const bytes = new TextEncoder().encode(json);
   return btoa(String.fromCharCode(...bytes))
@@ -88,6 +99,8 @@ export function decodeSyncCursor(value: string): SyncCursor | null {
       articles: fromTuple(parsed.data.a),
       settings: parsed.data.c ? fromTuple(parsed.data.c) : INITIAL_POSITION,
       ...(parsed.data.p && { savedPages: fromTuple(parsed.data.p) }),
+      ...(parsed.data.w && { workspaces: fromTuple(parsed.data.w) }),
+      ...(parsed.data.b && { bells: fromTuple(parsed.data.b) }),
     };
   } catch {
     return null;
@@ -114,6 +127,12 @@ const SyncFeedSchema = z
     siteUrl: z.string().nullable(),
     iconUrl: FeedIconUrlSchema,
     folderId: z.string().nullable(),
+    workspaceId: z.string().nullable().optional().openapi({
+      description: "includeWorkspaces=true の有効な購読に付く。未割り当てなら null",
+    }),
+    subscriptionId: z.string().optional().openapi({
+      description: "includeWorkspaces=true の有効な購読に付く。購読し直すと変わる",
+    }),
     createdAt: z.iso.datetime().openapi({ description: "購読した時刻" }),
     deleted: deleted.openapi({
       description:
@@ -121,6 +140,20 @@ const SyncFeedSchema = z
     }),
   })
   .openapi("SyncFeed");
+
+const SyncWorkspaceSchema = z
+  .discriminatedUnion("deleted", [
+    WorkspaceSchema.extend({ deleted: z.literal(false) }),
+    z.object({ id: z.string(), deleted: z.literal(true) }),
+  ])
+  .openapi("SyncWorkspace");
+
+const SyncBellSchema = z
+  .discriminatedUnion("deleted", [
+    BellSchema.extend({ deleted: z.literal(false) }),
+    z.object({ id: z.string(), deleted: z.literal(true) }),
+  ])
+  .openapi("SyncBell");
 
 const SyncTranslationFailureSchema = z
   .object({
@@ -161,12 +194,22 @@ const SyncTranslationSchema = z
     }),
     retranslated: z.boolean().openapi({
       description:
-        "Opus で訳し直したか（docs/decisions/translation.md の 6）。訳し直せるのは、translated で、これが false の記事だけ",
+        "品質優先の段階で訳し直したか（docs/decisions/translation.md の 6）。訳し直せるのは、translated で、これが false の記事だけ",
     }),
     failure: SyncTranslationFailureSchema.nullable().openapi({
       description:
         "訳せなかった理由（docs/decisions/translation.md の 17）。訳そうとして untranslated にした記事だけに付く。untranslated でない記事、言語が判定できなかった記事、訳すものがなく送らなかった記事、理由を残す前に untranslated になった記事は null",
     }),
+    model: z
+      .string()
+      .nullable()
+      .openapi({
+        description: `${TRANSLATION_MODEL_DESCRIPTION}。訳文のない記事（translatedAt が null）は null。訳し直しの最中（translating）は、もとの訳文のモデル`,
+        example: "claude-sonnet-5-5",
+      }),
+    effort: translationEffortSchema(
+      "訳文のない記事（translatedAt が null）も null。訳し直しの最中（translating）は、もとの訳文の思考量",
+    ),
   })
   .openapi("SyncArticleTranslation");
 
@@ -228,11 +271,15 @@ const syncRoute = createRoute({
     "deleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。",
     "settings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。",
     "includeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。",
+    "includeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。差分の有無にかかわらず、購読先の省略に対応した印 defaultWorkspaceOnSubscribe を返す。",
+    "includeBells=true なら、通知のベルの付けたものと外したものも bells に載せる。ベルの位置がない既存のカーソルでは、ベルだけを最初から送る。購読をやめると、その購読のベルも deleted で届く。",
     "cursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
   ].join("\n"),
   request: {
     query: z.object({
       includeSaved: z.enum(["true", "false"]).optional(),
+      includeWorkspaces: z.enum(["true", "false"]).optional(),
+      includeBells: z.enum(["true", "false"]).optional(),
       cursor: z.string().max(1024).optional().openapi({ description: "前回の応答の cursor" }),
     }),
   },
@@ -250,6 +297,11 @@ const syncRoute = createRoute({
               articles: z.array(SyncArticleSchema),
               settings: z.array(SyncSettingSchema),
               savedPages: z.array(SyncSavedPageSchema).optional(),
+              workspaces: z.array(SyncWorkspaceSchema).optional(),
+              bells: z.array(SyncBellSchema).optional(),
+              defaultWorkspaceOnSubscribe: z.literal(true).optional().openapi({
+                description: "includeWorkspaces=true のとき付く。購読先の省略はデフォルトを使う",
+              }),
             })
             .openapi("SyncChanges"),
         },
@@ -266,15 +318,22 @@ export function syncApi(platform: Platform) {
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook }).openapi(
     syncRoute,
     async (c) => {
-      const { cursor: raw, includeSaved } = c.req.valid("query");
+      const { cursor: raw, includeSaved, includeWorkspaces, includeBells } = c.req.valid("query");
       const decoded = raw === undefined ? INITIAL_CURSOR : decodeSyncCursor(raw);
       if (decoded === null) {
         return c.json(errorBody("invalid_cursor", "cursor is invalid; start over without it"), 400);
       }
 
+      const withWorkspaces = includeWorkspaces === "true";
+      const backfillMembership = withWorkspaces && raw !== undefined && !decoded.workspaces;
       const cursor = {
         ...decoded,
+        subscriptions: backfillMembership ? START_OF_CHANGES : decoded.subscriptions,
         savedPages: includeSaved === "true" ? (decoded.savedPages ?? INITIAL_POSITION) : undefined,
+        workspaces: withWorkspaces
+          ? (decoded.workspaces ?? (backfillMembership ? START_OF_CHANGES : INITIAL_POSITION))
+          : undefined,
+        bells: includeBells === "true" ? (decoded.bells ?? INITIAL_POSITION) : undefined,
       };
       const userId = c.get("user").id;
       const changes = await readChanges(platform.db, {
@@ -297,6 +356,14 @@ export function syncApi(platform: Platform) {
             createdAt: folder.createdAt.toISOString(),
             deleted: folder.deletedAt !== null,
           })),
+          ...(changes.workspaces && {
+            defaultWorkspaceOnSubscribe: true as const,
+            workspaces: changes.workspaces.map((workspace) =>
+              workspace.deletedAt === null
+                ? { ...toWorkspaceResponse(workspace), deleted: false as const }
+                : { id: workspace.id, deleted: true as const },
+            ),
+          }),
           feeds: await Promise.all(
             changes.subscriptions.map(async (subscription) => ({
               id: subscription.feedId,
@@ -307,6 +374,11 @@ export function syncApi(platform: Platform) {
               siteUrl: subscription.feed.siteUrl,
               iconUrl: await images.toRelayUrl(subscription.feed.iconUrl),
               folderId: subscription.folderId,
+              ...(withWorkspaces &&
+                subscription.deletedAt === null && {
+                  workspaceId: subscription.workspaceId,
+                  subscriptionId: subscription.id,
+                }),
               createdAt: subscription.createdAt.toISOString(),
               deleted: subscription.deletedAt !== null,
             })),
@@ -328,6 +400,11 @@ export function syncApi(platform: Platform) {
                   },
             ),
           ),
+          ...(changes.bells && {
+            bells: changes.bells.map((item) =>
+              item.deleted ? item : { ...toBellResponse(item), deleted: false as const },
+            ),
+          }),
           ...(changes.savedPages && {
             savedPages: changes.savedPages.map((item) =>
               item.deleted ? item : { ...toSavedPageResponse(item), deleted: false as const },

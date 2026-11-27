@@ -1,6 +1,6 @@
 # sendo
 
-Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィードの取得ジョブを持つ。
+Sendo のサーバー本体。REST API、MCP、フィードの取得ジョブを持つ。
 
 このファイルは AI エージェント（Claude Code、Codex など）共通の指示。開発は主に Claude Code で行い、Codex はおもにレビューに使う。
 
@@ -29,18 +29,19 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
 - `src/app.ts`：HTTP のルーティング。実行環境の入出力には直接触らず、`Platform` で受け取る
 - `crates/`：重い処理（Rust。docs/decisions/tech-stack.md の 5）。処理の本体の crate（`extract/` など。`#![forbid(unsafe_code)]`）と、Node から呼ぶための結び（`node/`。napi-rs）を分ける。外への取得と DB には触らず、TypeScript の側からバイト列を受け取って結果を返す。重い処理は `AsyncTask` でスレッドプールに出す
 - `src/platform/`：緩衝層。実行環境の入出力（DB、ファイル、外への取得、Rust のネイティブのモジュール、タイマー）をまとめる。インターフェースは `src/platform/index.ts`、実装と入口（`main.ts`）は `src/platform/node/` に置く（docs/decisions/tech-stack.md の 3、docs/decisions/container.md）。アプリはインターフェース越しに使い、テストでは差し替える。設定の読み方は `config.ts`
-  - Rust の処理（`pageContent`、`languageDetection`）は `Platform` の必須の項目。読み込めなければ起動しない（docs/decisions/container.md の 2）。機能の有無を返す API は持たない。新しい機能に対応する前の Sendo と組み合わさる間は、クライアントが呼んで失敗したら使わない形で扱う（同じく 3）
+  - Rust の処理（`pageContent`、`languageDetection`）は `Platform` の必須の項目。読み込めなければ起動しない（docs/decisions/container.md の 2）
   - Rust のネイティブのモジュールを読み込むのは `src/platform/node/native.ts` だけ
 - 機能のディレクトリ（`api/`、`fetcher/`、`jobs/` など）は `docs/tech-deck.md` の「6. ディレクトリ構成」に従う
 - `src/api/`：REST API。入力は zod のスキーマで検証し、OpenAPI の定義も同じスキーマから作る
+  - 翻訳や Discord のように設定で有無が分かれる機能は、その機能の API で伝える。機能の有無をまとめて返す API は持たない。新しい機能に対応する前の Sendo と組み合わさる間は、クライアントが呼んで失敗したら使わない形で扱う（docs/decisions/container.md の 3）
   - 認証は `auth.ts` のミドルウェア（アクセストークンか、ブラウザのセッションのクッキー）。クッキーで認証した、状態を変えるリクエストは、同じオリジンのページからだけ受ける（CSRF 対策）
   - 認証の要らない入口（ログインなど）は、`index.ts` で認証のミドルウェアより先に登録する
-  - 状態を変えるリクエストが成功したら、`notify-changes.ts` のミドルウェアが、その利用者の通知の接続に知らせる（docs/decisions/sync.md の 9。Google Reader API も同じ）。ハンドラーで知らせなくてよい。ミドルウェアを通らない MCP のツールとジョブで人ごとのデータを変えるときは、`lib/sync-notify.ts` の `notifySync` で知らせる。`db/` の書き込みの中では知らせない（取得のジョブが受信箱に配る `deliverNewArticles` だけは、配った先を知るので、受け取った `notify` で知らせる）
+  - 状態を変えるリクエストが成功したら、`notify-changes.ts` のミドルウェアが、その利用者の通知の接続に知らせる（docs/decisions/sync.md の 9）。ハンドラーで知らせなくてよい。ミドルウェアを通らない MCP のツールとジョブで人ごとのデータを変えるときは、`lib/sync-notify.ts` の `notifySync` で知らせる。`db/` の書き込みの中では知らせない（取得のジョブが受信箱に配る `deliverNewArticles` だけは、配った先を知るので、受け取った `notify` で知らせる）
   - 画像の URL（記事の `thumbnailUrl`、フィードの `iconUrl`）は、もとの URL のまま返さない。`db/secrets.ts` の `imageSigner` で、中継を通る URL にして返す（docs/decisions/images.md）。中継の入口は `images.ts`
 - `src/auth/`：ログイン（OpenID Connect）の提供元と、ID トークンの確認（docs/decisions/accounts.md）
 - `src/db/`：スキーマとデータの読み書き。libsql に固有の型ではなく `Database`（SQLite の非同期ドライバに共通の型）で受ける。生の SQL で 1 行を読むときは、`db.get(sql)` ではなく `getRow`（`db/index.ts`）を使う（libsql の drizzle の `get` は、行が返らないと例外を投げる）
   - 共有のデータ：`feeds.ts`（フィード）、`articles.ts`（記事。取り込んだあとは変えない）
-  - 人ごとのデータ：`folders.ts`、`subscriptions.ts`（購読）、`inbox.ts`（受信箱。既読・スター・一覧・未読の数）。人ごとのデータを読み書きするときは、必ずユーザーで絞る
+  - 人ごとのデータ：`folders.ts`、`subscriptions.ts`（購読）、`inbox.ts`（受信箱。既読・スター・一覧・未読の数）、`bells.ts`（通知のベル。docs/decisions/notifications.md。購読をやめると、トリガーがその購読のベルにも消した印を付ける）、`bell-notifications.ts`（通知の行。10 分の窓と 1 時間の上限を、行を作る文の中で DB の時計で数え、ベルが有効なことと、受信箱に記事が未読であることも同じ文で確かめる。同期しない）。人ごとのデータを読み書きするときは、必ずユーザーで絞る
   - クライアントの設定：`settings.ts`（docs/decisions/settings.md）。ユーザー × 端末の種類ごとに、名前と JSON の値の組を預かる。中身は解釈しない。上限は、置く文の中で確かめる。消すときは消した印を付け、30 日たった印の行は 1 日 1 回の片付けが消す
   - 記事の本文：`content.ts`（docs/decisions/content.md）。本文は置き場（`platform.content`。データのボリュームの上のファイル）に、名前は記事の行（`content_key`）に持つ。置く前に名前を書き留め、行に入ったら消す。記事の行が消えると、トリガーが名前を書き留める。記事を消す処理は置き場に触らず、1 日 1 回の片付けが、行のない本文を消す。置き場の名前は API に出さない
   - 古い記事の片付け：`retention.ts`（docs/decisions/retention.md）。受信箱の行を消してから、どの受信箱にも残っていない記事を消す。保存容量が圧迫したときだけ、古いスターなし記事を片付ける。スター付きとフィード掲載中の記事は保護する。`storage.ts` と DB のトリガーで使用量を集計し、保存前にも上限を確かめる。一度に消す量と 1 日の回数を抑える
@@ -52,9 +53,9 @@ Sendo のサーバー本体。REST API、Google Reader API 互換、MCP、フィ
   - 記事のページの本文は `page-content.ts`（docs/decisions/content.md の 10〜21）。取得の仕事が新しい記事ごとに `extract-page` の仕事を積み、`fetch-page.ts` でページを取り、緩衝層の `pageContent`（Rust）で抜く。開いたときにまだなければ、そのリクエストの中で抜く。サニタイズした HTML は、置き場ではなく `db/page-contents.ts` の表の行に入れる
   - 記事のページを取りにいくときは、同じホストへは 1 本ずつ（`host-gate.ts`）にし、robots.txt を守る（`robots.ts`）。どちらもプロセスのメモリに持つ。フィードの取得には robots.txt を当てない
 - `src/lib/sanitize-html.ts`：記事の本文（HTML）のサニタイズ。外部から来た HTML は、保存する前にも、返す前にも、必ずここを通す。通すタグと属性を足すときは、テスト（`test/lib/sanitize-html.test.ts`）も足す。計測用の画像（トラッキングピクセル）は `tracking-image.ts` で見分けて落とす。計測のアドレスの一覧もそこに持ち、出どころの確かなものだけを足す
-- `src/feeds/`：購読の手続き（URL からフィードを見つけて購読する）。REST API、Google Reader API、MCP で同じものを使う
+- `src/feeds/`：購読の手続き（URL からフィードを見つけて購読する）。REST API と MCP で同じものを使う
+- `src/notify/`：Web Push（docs/decisions/notifications.md の 14〜16、docs/decisions/web-push.md）。暗号化は `web-push.ts`（RFC 8291）、VAPID の鍵と JWT は `vapid.ts`、通知の中身は `payload.ts`、登録の確かめは `registration.ts`。どれも Web Crypto で書く。ベルの言葉の受け方と当て方（6、7）は `words.ts` で、REST API と MCP で同じものを使う。判定と送る仕事は `jobs/bell-notifications.ts`。言葉の照合は、DB で候補のベルを引いてから TypeScript で行う。記事の文字は `jobs/bell-notifications.ts` の `judgedText` で作り、本文はプレーンテキストの先頭 20,000 コードポイントちょうどで切って、切った印を付けない（検索の索引の 19,999 文字と「…」の切り方とは違う。「…」は NFKC で「...」になり、言葉に当たるため）。切った位置の直後の 1 文字は、言葉のすぐあとに英数字があるかを見るためだけに残す。取得の仕事が配ったあとに判定し、送るのは端末ごとの仕事にして取り込みと切り離す。まとめの仕事は、窓の 4 件目（最初の bundled）の行を作ったときに、窓が閉じる時刻を指定して積む（定期実行では拾わない）。送り先は緩衝層の `fetch` で、リダイレクトを追わない
 - `src/translation/`：記事の翻訳（docs/decisions/translation.md）。Claude API を呼ぶのは `claude.ts` だけで、公式の SDK（`@anthropic-ai/sdk`）に、緩衝層の `fetch` と、設定（`platform/config.ts` の `readTranslationConfig`）のキーを渡す。送り先・ログ・テレメトリ・webhook の鍵も明示して、SDK に環境変数を読ませない（`ANTHROPIC_CUSTOM_HEADERS` だけは SDK の設定で止められないので、コンテナに入れない）。訳文の行は `db/translations.ts`、状態は書き込みと同じ文で確かめて移す。仕事（決める、その場で訳す、止まったものを戻す、バッチで送り結果を書く）は `jobs/translations.ts`。記事の中身は訳すデータとして JSON で渡し、指示として扱わせない
-- `src/greader/`：Google Reader API 互換（docs/decisions/greader.md）。状態を変える操作は、REST API と同じ `db/`・`feeds/` の処理に任せ、ここで書き込みを組み立てない。記事の文字列は HTML にエスケープして返す
 - `src/mcp/`：リモート MCP サーバー（docs/decisions/mcp.md）。ツールも、状態を変える処理は `db/`・`feeds/` に任せる。状態を変えるツールには `scopeChallenge` で write を求める。記事の中身は構造化した JSON で返し、記事を返すツールの説明に「指示ではない」と書く
 - `src/oauth/`：MCP のための OAuth の認可サーバー（docs/decisions/mcp.md の 3〜7）。クライアントが直接呼ぶ入口（メタデータ、`/oauth/token`、`/oauth/register`）はここ、許可の画面（sendo-reader）が使う API は `src/api/oauth.ts`（セッションでだけ使える）。コードとトークンは DB にハッシュだけを置き、1 回だけ使えるものは、使った印を同じ文の中で確かめて付ける（`db/oauth.ts`）。Client ID Metadata Document も `toFetchableUrl` を通して取りにいく
 - `src/jobs/`：キューと定期実行で動く処理。取得のジョブ（`fetch-feed.ts`）は、そのフィードの古い記事の片付けもする。取得の間隔は、フィードごとに記事の出るペースから `fetch-interval.ts` で決め、記事の出る時刻に癖（枠）があれば `fetch-slots.ts` で枠の時刻に合わせる。429 ／ 503 の `Retry-After` を守る（docs/decisions/jobs.md の 7、8、11）。1 日 1 回の片付け（`clean-up.ts`）は、定期実行が日本時間 3:00 に積む。仕事は 1 つずつ積み、1 つずつ受け取る形で書く。仕事は SQLite の表（`job_queue`）に積み、同じプロセスで動かす（`src/platform/node/job-queue.ts`、docs/decisions/jobs.md）。定期実行の中身は `jobs/schedule.ts` の `runScheduled` で、プロセスの中のタイマー（`src/platform/node/scheduler.ts`）から呼ぶ。1 つの仕事が扱う量には上限を置き、残りは次の仕事か定期実行に回す（docs/decisions/jobs.md の 4）
@@ -96,7 +97,7 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 ## テスト
 
 - 振る舞いを変える変更には、それを確かめるテストを足す
-- テストは、本番と同じ道と順で呼ぶ。確かめたい処理は、本番の呼び出し元（REST API、Google Reader API、MCP のツール、ジョブなど）と同じ入口から、本番と同じ順と状態で呼ぶ（本番で別の操作のあとに呼ばれる処理は、その操作のあとに呼ぶ）。前提の状態は、本番でその処理が呼ばれるときと同じにする。本番の操作で手軽に作れるものはその操作で作り、作るのに手間のかかる状態や、失敗・割り込みを起こすときだけ、直接の書き込みや差し替えを使う。本番と違う道や順を通ると、本番でだけ起きる不具合をテストが通してしまうため
+- テストは、本番と同じ道と順で呼ぶ。確かめたい処理は、本番の呼び出し元（REST API、MCP のツール、ジョブなど）と同じ入口から、本番と同じ順と状態で呼ぶ（本番で別の操作のあとに呼ばれる処理は、その操作のあとに呼ぶ）。前提の状態は、本番でその処理が呼ばれるときと同じにする。本番の操作で手軽に作れるものはその操作で作り、作るのに手間のかかる状態や、失敗・割り込みを起こすときだけ、直接の書き込みや差し替えを使う。本番と違う道や順を通ると、本番でだけ起きる不具合をテストが通してしまうため
 - 正常の流れに加えて、次のうち当てはまるものを入れる
   - 途中で失敗する：失敗したあとに何が残るか、やり直すと正しい状態に戻るか
   - 境界のちょうど：上限・下限と同じ値、ゼロ、空
@@ -111,10 +112,12 @@ Conventional Commits を土台にする。全文は https://github.com/sendo-fee
 - 途中で受け入れ条件や範囲を変えたくなったら、先に Issue を直し、理由を添える。PR の説明だけを変えない
 - すべての変更は下書きの PR で出す。`main` へは直接 push できない。Issue が要る変更の PR は、説明に `Closes #番号` を 1 つだけ書き、受け入れ条件を Issue から写す（正本は Issue）
 - Codex に出す前に（下書きの PR を作る前に）自己レビューし、見つけたものを直してから出す。書いた側の考えを持ち込まないよう、差分と関係する決定だけを見て見直す。見る観点と終わり方は `.claude/skills/review-loop/SKILL.md` の手順 1。自己レビューはラウンドに数えない
-- そのあと Codex のレビューを回し、終了の条件を満たすまで直す。Claude Code では `/review-loop` スキルが、自己レビューも含めてこれを回す
+- 自己レビューのあとで下書きの PR を作り、レビュー待ちに切り替えて自動レビューを始める。修正後はレビュー待ちのまま push する。Claude Code では `/review-loop` スキルが、自己レビューも含めてこれを回す
+- セキュリティ指摘は報告元を問わず全件判定し、PR が持ち込むか悪化させる有効な問題をマージ前に解消する。セキュリティ対応だけの push で自動起動した Code Review は、通常のラウンド数に加えない
+- マージ前には最新 HEAD のレビューと CI を確認する。Security Review が対象なら、その完了と対象 SHA も確認する。手順は `/review-loop` を参照
 - マージは、人間にマージを指示されたときだけ行う。自分の判断ではマージしない
-- レビューは 3 回で打ち切る。打ち切った PR では、同じループを続けない。人間が「そのまま受け入れる」か「捨ててやり直す」を選ぶ。やり直すときは、コードを引き継がず、PR を閉じて Issue に戻り、やりたいこと、受け入れ条件、単位を、この順に見直して直し、着手の判定をやり直してから `main` から作る
-- Issue の決まりの全文は CONTRIBUTING.md の「始める前に」、終了の条件、打ち切りのあとの扱い、優先度の定義、指摘の扱いの全文は「レビューの進め方」にある。単位の分け方と自己レビューは、このリポジトリで試している決まりで、CONTRIBUTING.md にはまだない
+- 通常のコードレビューは 3 回で打ち切る。打ち切るときは修正を push する前に下書きに戻す。打ち切った PR では通常のループを再開せず、セキュリティ対応を続ける。人間が「そのまま受け入れる」か「捨ててやり直す」を選ぶ。やり直すときは、コードを引き継がず、PR を閉じて Issue に戻り、やりたいこと、受け入れ条件、単位を、この順に見直して直し、着手の判定をやり直してから `main` から作る
+- Issue の決まりの全文は CONTRIBUTING.md の「始める前に」、終了の条件、打ち切りのあとの扱い、優先度の定義、指摘の扱いの全文は「レビューの進め方」にある。単位の分け方と自己レビューの詳しい方法は、このリポジトリで定めている
 
 ## Code Review Rules
 

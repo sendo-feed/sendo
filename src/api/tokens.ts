@@ -15,9 +15,9 @@ import { defaultHook } from "./hook";
 import { ErrorSchema, errorBody } from "./schemas";
 
 /*
- * アクセストークン（アプリ用パスワード）の発行・一覧・取り消し（docs/decisions/accounts.md の 7）。
+ * アクセストークンの発行・一覧・取り消し（docs/decisions/accounts.md の 7）。
  *
- * ブラウザでログインした人（セッション）だけが使える。アクセストークンでも使えると、Reeder などに
+ * ブラウザでログインした人（セッション）だけが使える。アクセストークンでも使えると、外部のクライアントに
  * 入れたトークンが漏れたときに、それで新しいトークンを発行されて、漏れたものを取り消しても
  * 使われ続ける。
  */
@@ -27,14 +27,14 @@ const dateTime = z.iso.datetime();
 const AccessTokenSchema = z
   .object({
     id: z.string(),
-    name: z.string().openapi({ example: "Reeder" }),
+    name: z.string().openapi({ example: "CLI" }),
     createdAt: dateTime,
     lastUsedAt: dateTime.nullable().openapi({
       description: "最後に使った時刻（1 時間ごとにしか更新しない）。使っていなければ null",
     }),
     purpose: z.enum(["reader", "mcp"]).openapi({
       description:
-        "用途。reader はリーダーアプリ（Google Reader API）と REST API 用、mcp は /mcp（MCP サーバー）用。用途の違う入口では使えない",
+        "用途。reader は REST API 用、mcp は /mcp（MCP サーバー）用。用途の違う入口では使えない",
     }),
     scopes: z.array(z.enum(["read", "write"])).openapi({
       description: "mcp の範囲。read は読むだけ、write は購読や既読などの変更も。reader は空",
@@ -81,8 +81,7 @@ const createTokenRoute = createRoute({
   method: "post",
   path: "/tokens",
   summary: "アクセストークンを発行する",
-  description:
-    "リーダーアプリ（Reeder、NetNewsWire など）のパスワード欄や、エージェント・スクリプトの Authorization: Bearer に使う。",
+  description: "REST API または MCP のクライアントで Authorization: Bearer に使う。",
   security: [{ sessionCookie: [] }],
   request: {
     body: {
@@ -96,11 +95,10 @@ const createTokenRoute = createRoute({
                 .max(MAX_TOKEN_NAME_LENGTH * 2)
                 .openapi({
                   description: `用途の名前（前後の空白を除いて 1〜${MAX_TOKEN_NAME_LENGTH} 文字）`,
-                  example: "Reeder",
+                  example: "CLI",
                 }),
               purpose: z.enum(["reader", "mcp"]).optional().openapi({
-                description:
-                  "用途。既定は reader（リーダーアプリと REST API 用）。mcp なら /mcp でだけ使える",
+                description: "用途。既定は reader（REST API 用）。mcp なら /mcp でだけ使える",
               }),
               scopes: z
                 .array(z.enum(["read", "write"]))

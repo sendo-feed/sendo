@@ -1,11 +1,17 @@
 import { eq, inArray, type SQL, sql } from "drizzle-orm";
+import type { BatchTier, OnDemandTier, TranslationUsage } from "../platform";
+import type { TranslationEffort } from "../platform/config";
 import { normalizeSourceUrl } from "../translation/source-url";
 import { type Database, getRow } from ".";
 import { chunked } from "./chunk";
 import { DB_NOW_MS } from "./clock";
 import { type ArticleTranslation, articleTranslations, userArticles } from "./schema";
 
-/** 訳文の行の見積もり（行と主キー索引）。容量のトリガーと合わせる */
+/**
+ * 訳文の行の見積もり（行と主キー索引）。容量のトリガーと合わせる。訳したときの条件の列（思考量、段階、
+ * プロンプトの版、トークン数、呼び出しのモデル、写した元。決定の 18）と、バッチで送った条件は、この
+ * 1 行の見積もりの中に含める（docs/decisions/retention.md の 2）
+ */
 export const ARTICLE_TRANSLATION_BYTES = 512;
 
 /** 1 回の仕事で、訳すかどうかを決める記事の数（docs/decisions/jobs.md の 4） */
@@ -35,9 +41,10 @@ export const MAX_BATCH_ATTEMPTS = 3;
 /** 印を付けてからバッチの ID がないまま、印を外すまでの長さ（同じく 4） */
 export const BATCH_MARK_TTL_MS = 60 * 60 * 1000;
 
-/** バッチの印を外す（待ちに戻す、訳文を書いた） */
+/** バッチの印を外す（待ちに戻す、訳文を書いた）。送った条件（決定の 9）も一緒に外す */
 const CLEAR_BATCH = sql`batch_key = null, batch_marked_at = null, batch_id = null,
-  batch_content_source = null, batch_body_hash = null, batch_copies = 0`;
+  batch_content_source = null, batch_body_hash = null, batch_copies = 0,
+  batch_tier = null, batch_effort = null, batch_prompt_version = null`;
 
 // --- 同じ元記事で写す（docs/decisions/translation.md の 16） ---
 
@@ -140,6 +147,89 @@ function translatedColumns(input: {
       : sql`0`;
   return { title, summary, content, contentSource, retranslated, bodySrc };
 }
+
+/**
+ * 訳文を書いた呼び出し（決定の 18）。条件（思考量・段階・プロンプトの版）は、その場の翻訳では選んだ
+ * 段階の値、バッチでは送る印と一緒に行に書いた送った条件（その列）
+ */
+interface TranslationCall {
+  /** 応答が返したモデル（代わりのモデルに替わったら、代わりのモデル） */
+  model: string;
+  effort: SQL;
+  tier: SQL;
+  promptVersion: SQL;
+  usage: TranslationUsage;
+}
+
+/** バッチで送った条件（送る印と一緒に書いた列。決定の 9） */
+const batchCall = (model: string, usage: TranslationUsage): TranslationCall => ({
+  model,
+  effort: sql`batch_effort`,
+  tier: sql`batch_tier`,
+  promptVersion: sql`batch_prompt_version`,
+  usage,
+});
+
+/**
+ * 訳したときの条件の列（UPDATE の SET に入れる。決定の 18）。
+ *
+ * - モデル・思考量・段階・プロンプトの版は、代表の部分（置く本文、本文がなければタイトル、それも
+ *   なければ要約）を作ったもの。その部分を同じ元記事から写すなら、写す元の行の条件（この文の中で選び
+ *   直した行から読む）。送って訳したなら、呼び出しの条件。条件は 1 つの行からまとめて取り、混ぜない
+ * - トークン数と呼び出しのモデルは、呼び出しのもの。呼ばずにすべて写すなら 0 と null
+ * - 写した元は、写した部分ごとに写す元の記事の ID。送って訳した部分（と、写す元がなくなって原文を
+ *   書いた部分）は null
+ */
+function conditionColumns(input: {
+  copies: number;
+  /** 記事にタイトルがある（タイトルを訳すか写す） */
+  hasTitle: boolean;
+  /** 送って訳した本文を置く */
+  sentContent: boolean;
+  /** 本文の写す元の行の id（translatedColumns の bodySrc） */
+  bodySrc: SQL;
+  /** 呼ばずにすべて写すなら null */
+  call: TranslationCall | null;
+}): SQL {
+  const copyTitle = (input.copies & COPY_TITLE) !== 0;
+  const copySummary = (input.copies & COPY_SUMMARY) !== 0;
+  const copyBody = (input.copies & COPY_BODY) !== 0;
+  // 本文がないときの代表の部分の写す元（写さないなら null）
+  const titleOrSummary = input.hasTitle
+    ? copyTitle
+      ? titleSourceId
+      : null
+    : copySummary
+      ? summarySourceId
+      : null;
+  // 代表の部分の写す元。写す本文の写す元がなくなっていたら本文を置かないので、タイトル（なければ要約）
+  const representative = copyBody
+    ? titleOrSummary === null
+      ? input.bodySrc
+      : sql`coalesce(${input.bodySrc}, ${titleOrSummary})`
+    : input.sentContent
+      ? null
+      : titleOrSummary;
+  const { call } = input;
+  const condition = (column: string, value: SQL | null) => {
+    const fromCall = value ?? sql`null`;
+    if (representative === null) return fromCall;
+    return sql`case when ${representative} is not null then ${columnOf(column, representative)}
+      else ${fromCall} end`;
+  };
+  return sql`model = ${condition("model", call === null ? null : sql`${call.model}`)},
+    effort = ${condition("effort", call?.effort ?? null)},
+    tier = ${condition("tier", call?.tier ?? null)},
+    prompt_version = ${condition("prompt_version", call?.promptVersion ?? null)},
+    input_tokens = ${call?.usage.inputTokens ?? 0}, output_tokens = ${call?.usage.outputTokens ?? 0},
+    call_model = ${call?.model ?? null},
+    title_copied_from = ${copyTitle ? titleSourceId : null},
+    summary_copied_from = ${copySummary ? summarySourceId : null},
+    content_copied_from = ${copyBody ? input.bodySrc : null}`;
+}
+
+/** タイトルを訳すか写す記事か（空白だけのタイトルは送らず、写さない） */
+const hasTitle = (title: string | null | undefined) => Boolean(title?.trim());
 
 const languageFrom = (source: string) => sql`(select l.language from article_languages l
   where l.article_id = a.id and l.source = ${source} and l.status in ('detected', 'provisional'))`;
@@ -388,7 +478,13 @@ export async function finishTranslating(
     summary: string | null;
     /** 訳した本文（サニタイズした HTML）と出どころ。本文を訳さなかったら null */
     content: { html: string; source: "feed" | "page" } | null;
+    /** 応答が返したモデル */
     model: string;
+    /** 呼び出しの条件とトークン数（決定の 18） */
+    effort: TranslationEffort;
+    tier: OnDemandTier;
+    promptVersion: number;
+    usage: TranslationUsage;
     /** 訳し直しなら、訳し直しの印を付ける（docs/decisions/translation.md の 6） */
     retranslation?: boolean;
     /** 送った本文の指紋（決定の 16） */
@@ -413,12 +509,25 @@ export async function finishTranslating(
   });
   const retranslated =
     input.retranslation === true ? sql`1` : copies !== 0 ? c.retranslated : sql`retranslated`;
+  const conditions = conditionColumns({
+    copies,
+    hasTitle: hasTitle(input.originalTitle),
+    sentContent: input.content !== null,
+    bodySrc: c.bodySrc,
+    call: {
+      model: input.model,
+      effort: sql`${input.effort}`,
+      tier: sql`${input.tier}`,
+      promptVersion: sql`${input.promptVersion}`,
+      usage: input.usage,
+    },
+  });
   const row = await getRow<{ articleId: string }>(
     db,
     // バッチの印も同じ文で外す（あとで返ったバッチの結果を捨てる。docs/decisions/translation.md の 5）
     sql`update article_translations set status = 'translated', title = ${c.title},
         summary = ${c.summary}, content = ${c.content}, content_source = ${c.contentSource},
-        model = ${input.model}, translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0,
+        ${conditions}, translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0,
         retranslated = ${retranslated}, body_hash = ${input.bodyHash}, ${CLEAR_BATCH},
         ${CLEAR_FAILURE}
       where ${stillTranslating(input.articleId, input.startedAt)}
@@ -453,8 +562,13 @@ export async function finishCopiedTranslating(
     db,
     sql`update article_translations set status = 'translated', title = ${c.title},
         summary = ${c.summary}, content = ${c.content}, content_source = ${c.contentSource},
-        model = coalesce(${columnOf("model", c.bodySrc)}, ${columnOf("model", titleSourceId)},
-          ${columnOf("model", summarySourceId)}),
+        ${conditionColumns({
+          copies: input.copies,
+          hasTitle: hasTitle(input.originalTitle),
+          sentContent: false,
+          bodySrc: c.bodySrc,
+          call: null,
+        })},
         retranslated = ${c.retranslated}, body_hash = ${input.bodyHash},
         translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH},
         ${CLEAR_FAILURE}
@@ -515,10 +629,23 @@ export async function listRetranslationTargets(
 }
 
 /**
+ * 訳し直しを広げるときに、写した部分に書く写した元（決定の 18）。写す元（s）がその部分を写した行なら、
+ * その写した元（訳し直した記事）、そうでなければ写す元。写す先（t）自身に戻るとき（写す先の訳を、ほかの
+ * 行を通して写し戻した）は、文字は変わらないので、写す先の写した元のまま
+ */
+const spreadOrigin = (column: string) => {
+  const origin = sql`coalesce(s.${sql.raw(column)}, s.article_id)`;
+  return sql`case when ${origin} = t.article_id then t.${sql.raw(column)} else ${origin} end`;
+};
+
+/**
  * 1 つの行に、同じ元記事の訳し直した訳を写す（決定の 16）。写す元（同じ正規化した URL で本文の指紋が
  * 同じ、訳し直した行。原文の要約が同じもの、次に新しく訳したものを先に）と写す先（translated で
  * 訳し直しの印がない）を、この文の中で確かめる。タイトルと本文を写し、原文の要約が同じなら要約も
- * 写して、訳した時刻・モデル・訳し直しの印を写す元と同じにする。写す元が訳していない部分（原文と
+ * 写して、訳した時刻・モデル・訳したときの条件（決定の 18）・訳し直しの印を写す元と同じにする。
+ * 写した部分には訳し直した記事の ID を書き（写す元が、訳し直しを写した行なら、その行がその部分を写した
+ * 元）、トークン数は 0、呼び出しのモデルは null にする（呼んでいない）。写さなかった部分の写した元は
+ * 変えない。写す元が訳していない部分（原文と
  * 同じ文字、本文がない）と、原文にタイトルのない記事のタイトルは写さない。本文（本文がなければ
  * タイトル）を置き換えられない行には写さない。容量が足りなければ、トリガーが書かない
  *
@@ -534,7 +661,16 @@ export async function copyRetranslation(db: Database, articleId: string): Promis
         content = coalesce(s.content, t.content),
         content_source = case when s.content is null then t.content_source
           else coalesce(t.content_source, s.content_source) end,
-        model = s.model, translated_at = s.translated_at, retranslated = 1
+        title_copied_from = case when ${titleCopyable("s", "sa", sql`ta.title`)}
+          then ${spreadOrigin("title_copied_from")} else t.title_copied_from end,
+        summary_copied_from = case when sa.summary = ta.summary and s.summary is not null
+          and s.summary is not sa.summary then ${spreadOrigin("summary_copied_from")}
+          else t.summary_copied_from end,
+        content_copied_from = case when s.content is null then t.content_copied_from
+          else ${spreadOrigin("content_copied_from")} end,
+        model = s.model, effort = s.effort, tier = s.tier, prompt_version = s.prompt_version,
+        input_tokens = 0, output_tokens = 0, call_model = null,
+        translated_at = s.translated_at, retranslated = 1
       from article_translations s
         join articles sa on sa.id = s.article_id
         join articles ta on ta.id = ${articleId}
@@ -685,16 +821,28 @@ export async function markForBatch(
   return rows.map((row) => row.articleId);
 }
 
-/** バッチで送る本文の出どころと、送る断片の指紋を書き留める（印が同じ行だけ） */
+/**
+ * バッチで送る本文の出どころと、送る断片の指紋、送る条件（段階・思考量・プロンプトの版。決定の 9、
+ * 18）を書き留める（印が同じ行だけ）。送る条件は、結果を書く文で訳したときの条件に写す（送ってから
+ * 結果が返るまでに設定が変わっても、送った条件を残す）
+ */
 export async function setBatchBody(
   db: Database,
   articleId: string,
   key: string,
-  body: { source: "feed" | "page" | null; hash: string | null; copies: number },
+  body: {
+    source: "feed" | "page" | null;
+    hash: string | null;
+    copies: number;
+    tier: BatchTier;
+    effort: TranslationEffort;
+    promptVersion: number;
+  },
 ): Promise<void> {
   await db.run(sql`update article_translations
     set batch_content_source = ${body.source}, batch_body_hash = ${body.hash},
-      batch_copies = ${body.copies}
+      batch_copies = ${body.copies}, batch_tier = ${body.tier}, batch_effort = ${body.effort},
+      batch_prompt_version = ${body.promptVersion}
     where article_id = ${articleId} and batch_key = ${key}`);
 }
 
@@ -724,8 +872,13 @@ export async function finishCopiedBatchArticle(
     db,
     sql`update article_translations set status = 'translated', title = ${c.title},
         summary = ${c.summary}, content = ${c.content}, content_source = ${c.contentSource},
-        model = coalesce(${columnOf("model", c.bodySrc)}, ${columnOf("model", titleSourceId)},
-          ${columnOf("model", summarySourceId)}),
+        ${conditionColumns({
+          copies: input.copies,
+          hasTitle: hasTitle(input.originalTitle),
+          sentContent: false,
+          bodySrc: c.bodySrc,
+          call: null,
+        })},
         retranslated = ${c.retranslated}, body_hash = ${input.bodyHash},
         translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH},
         ${CLEAR_FAILURE}
@@ -785,6 +938,9 @@ export function listBatchRows(
     contentSource: "feed" | "page" | null;
     bodyHash: string | null;
     copies: number;
+    tier: BatchTier | null;
+    effort: TranslationEffort | null;
+    promptVersion: number | null;
   }[]
 > {
   return db
@@ -793,6 +949,9 @@ export function listBatchRows(
       contentSource: articleTranslations.batchContentSource,
       bodyHash: articleTranslations.batchBodyHash,
       copies: articleTranslations.batchCopies,
+      tier: articleTranslations.batchTier,
+      effort: articleTranslations.batchEffort,
+      promptVersion: articleTranslations.batchPromptVersion,
     })
     .from(articleTranslations)
     .where(eq(articleTranslations.batchId, batchId))
@@ -814,7 +973,10 @@ export async function finishBatchTranslation(
     title: string | null;
     summary: string | null;
     content: { html: string; source: "feed" | "page" } | null;
+    /** 応答が返したモデル */
     model: string;
+    /** 応答のトークン数（決定の 18）。条件は、送る印と一緒に行に書いた送った条件を写す */
+    usage: TranslationUsage;
     /** 送らずに同じ元記事から写す部分（決定の 16）。写す元はこの文の中で選び直す */
     copies: number;
     originalTitle: string | null;
@@ -825,11 +987,19 @@ export async function finishBatchTranslation(
   },
 ): Promise<boolean> {
   const c = translatedColumns(input);
+  // 送った条件は、この文の右辺では書く前の値（CLEAR_BATCH で外す前）を読む
+  const conditions = conditionColumns({
+    copies: input.copies,
+    hasTitle: hasTitle(input.originalTitle),
+    sentContent: input.content !== null,
+    bodySrc: c.bodySrc,
+    call: batchCall(input.model, input.usage),
+  });
   const row = await getRow<{ articleId: string }>(
     db,
     sql`update article_translations set status = 'translated', title = ${c.title},
         summary = ${c.summary}, content = ${c.content}, content_source = ${c.contentSource},
-        model = ${input.model}, retranslated = ${c.retranslated}, body_hash = ${input.bodyHash},
+        ${conditions}, retranslated = ${c.retranslated}, body_hash = ${input.bodyHash},
         translated_at = ${DB_NOW_MS}, started_at = null, attempts = 0, ${CLEAR_BATCH},
         ${CLEAR_FAILURE}
       where article_id = ${input.articleId} and batch_id = ${input.batchId}

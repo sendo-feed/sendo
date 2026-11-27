@@ -15,7 +15,7 @@
 | 01 | コンテナだけで動かす | Node ＋ SQLite のコンテナで動かし、CPU を多く使う機能も含めてすべてを載せる。重い処理は Rust。実行環境の入出力は緩衝層（`src/platform/`）にまとめる（[decisions/tech-stack.md](decisions/tech-stack.md)、[decisions/container.md](decisions/container.md)） |
 | 02 | API を土台に、3つの入口 | REST API を正とし、CLI・Skill とリモート MCP を薄く乗せる。記事本文は信頼できないデータとして扱う |
 | 03 | ローカルファーストのクライアント | 画面はネットワークを待たない。起動時に差分を1回で同期する |
-| 04 | 既存のリーダーとつながる | Google Reader API 互換で Reeder Classic や NetNewsWire から読める |
+| 04 | 公式 Reader で日常的に読む | 他のリーダーの優れた操作や読み方も公式 Reader に取り込む（[Google Reader 互換 API の廃止](decisions/greader.md)） |
 | 05 | LLM はオプション | 設定しなくても、普通の RSS サーバーとして完結する |
 | 06 | 中核は UI から切り離す | 同期エンジンとローカル DB（SQLite）を共通にし、Web とネイティブで使い回す |
 
@@ -25,24 +25,26 @@
 
 ## 2. 全体像
 
+図は Google Reader 互換 API の廃止後の接続構成を示す。
+
 ```mermaid
 flowchart LR
   subgraph Clients["クライアント"]
     R["sendo-reader（PWA）"]
     M["モバイル（Capacitor・後から）"]
-    X["Reeder Classic ／ NetNewsWire"]
+    X["自作ツール（REST API）"]
     A["AI エージェント（MCP）"]
   end
 
   subgraph Host["コンテナ（Docker Compose）"]
     RW["sendo-reader<br/>画面 / sendo のパスの中継"]
-    SW["sendo（Node）<br/>REST API / Google Reader API / MCP<br/>ジョブの表 / タイマー / SQLite / Rust の重い処理"]
+    SW["sendo（Node）<br/>REST API / MCP<br/>ジョブの表 / タイマー / SQLite / Rust の重い処理"]
   end
 
   subgraph Ext["外部"]
     F["フィードの提供元"]
     L["LLM プロバイダ"]
-    N["通知（APNs ／ FCM ／ Web Push）"]
+    N["通知（Web Push のプッシュサービス）"]
   end
 
   R --> RW
@@ -55,7 +57,7 @@ flowchart LR
   SW --> N
 ```
 
-> reader のコンテナが画面を返し、sendo のパスをすべて中継する（[decisions/container.md](decisions/container.md)）。外に出るのは reader のオリジン 1 つで、外部のリーダーや AI エージェントも reader のコンテナを通って sendo につながる。TLS は手前のリバースプロキシや Cloudflare Tunnel に任せる。
+> reader のコンテナが画面を返し、sendo のパスをすべて中継する（[decisions/container.md](decisions/container.md)）。外に出るのは reader のオリジン 1 つで、自作ツールや AI エージェントも reader のコンテナを通って sendo につながる。TLS は手前のリバースプロキシや Cloudflare Tunnel に任せる。
 
 ---
 
@@ -90,7 +92,7 @@ flowchart LR
 | 同期 | packages/core | 起動時に差分を1リクエストで取得、楽観的更新 |
 | API クライアント | openapi-typescript ＋ openapi-fetch | sendo の OpenAPI から型を生成 |
 | ネイティブ | Capacitor（後から） | バックグラウンド更新・共有拡張・APNs（[decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md)） |
-| 通知 | Web Push（VAPID） | 送信は sendo 側。APNs ／ FCM に差し替え可 |
+| 通知 | Web Push（VAPID） | 送信は sendo 側。出口は Web Push だけ。APNs ／ FCM は Capacitor で包むときに見直す（[decisions/notifications.md](decisions/notifications.md)、[decisions/web-push.md](decisions/web-push.md)） |
 | 品質の関所 | Playwright ＋ Lighthouse CI | JS は gzip 後 100KB 以下、操作の反応 100ms 以内 |
 
 > 最優先は「サクサク動く」こと。iOS ではバックグラウンドで同期できないので、起動時の1回の同期の速さが体感を決める。
@@ -101,7 +103,7 @@ flowchart LR
 
 | リポジトリ | 役割 |
 |---|---|
-| `sendo` | サーバー本体。REST API、Google Reader API 互換、MCP、取得ジョブ。OpenAPI を生成して `spec/` に置く |
+| `sendo` | サーバー本体。REST API、MCP、取得ジョブ。OpenAPI を生成して `spec/` に置く |
 | `sendo-reader` | 公式リーダー。`packages/core` と `apps/web`・`apps/mobile` のモノレポ。型は sendo の OpenAPI から生成 |
 | `.github` | Organization のプロフィール README、共通の CONTRIBUTING.md（コミット規約など）、Issue・PR テンプレート |
 
@@ -128,15 +130,14 @@ sendo/
 ├── src/
 │   ├── api/                   # REST API
 │   ├── auth/                  # ログイン（OpenID Connect の提供元）
-│   ├── greader/               # Google Reader API 互換
-│   ├── feeds/                 # 購読の手続き（REST API・Google Reader API・MCP で共通）
+│   ├── feeds/                 # 購読の手続き（REST API や MCP で共通）
 │   ├── mcp/                   # ツール・リソース
 │   ├── oauth/                 # MCP 用の OAuth の認可サーバー
 │   ├── jobs/                  # 定期実行・仕事の表で動く処理
 │   ├── fetcher/               # 取得・解析・全文抽出
 │   ├── search/                # FTS5・意味検索
 │   ├── llm/                   # 要約・分類（任意）
-│   ├── notify/                # Web Push・APNs・FCM
+│   ├── notify/                # Web Push
 │   ├── db/                    # Drizzle スキーマ
 │   ├── platform/              # 緩衝層（実行環境の入出力）のインターフェース
 │   │   └── node/              # 緩衝層の実装と入口（SQLite・ジョブの表・ファイル。Rust のモジュールを読み込む）

@@ -2,6 +2,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app";
 import { insertArticles } from "../../src/db/articles";
+import { addBell, listBells, MAX_BELLS } from "../../src/db/bells";
 import { createFolder, deleteFolder, listFolders } from "../../src/db/folders";
 import { setArticlesState } from "../../src/db/inbox";
 import { getSubscription } from "../../src/db/subscriptions";
@@ -18,6 +19,7 @@ import {
   requestApp,
   statementHook,
   subscribeFeed,
+  uniqueUrl,
 } from "../helpers";
 
 const MCP_URL = "https://sendo.example.com/mcp";
@@ -75,6 +77,14 @@ async function createFolderTool(client: Client, name: string) {
   }>;
   if (!res.structuredContent) throw new Error(`create_folder failed: ${name}`);
   return res.structuredContent.folder;
+}
+
+async function workspaceIdFromList(client: Client, name = "default") {
+  const response = await client.callTool({ name: "list_workspaces", arguments: {} });
+  const listed = response.structuredContent as { workspaces: { id: string; name: string }[] };
+  const workspace = listed.workspaces.find((item) => item.name === name);
+  if (!workspace) throw new Error(`workspace missing: ${name}`);
+  return workspace.id;
 }
 
 async function setup(scopes: McpScope[] = ["read"]) {
@@ -145,6 +155,82 @@ async function timedArticles(platform: Platform, userId: string, feedId: string,
   return rows.map((row) => row.id);
 }
 
+async function setupWorkspaceMove(era: Era) {
+  const fixture = await setup(["read", "write"]);
+  const { platform, token, user } = fixture;
+  const { client } = await connect(platform, token, era);
+  const api = (path: string, method = "GET", json?: unknown) =>
+    requestApp(platform, `/api/v1${path}`, { method, json, token: user.token });
+  async function addWorkspace(name: string) {
+    const response = await client.callTool({ name: "create_workspace", arguments: { name } });
+    if (!response.structuredContent) throw new Error(`create_workspace failed: ${name}`);
+    return (response.structuredContent as { workspace: { id: string } }).workspace.id;
+  }
+  await addWorkspace("Personal");
+  const response = await client.callTool({ name: "list_workspaces", arguments: {} });
+  const { workspaces } = response.structuredContent as {
+    workspaces: { id: string; name: string }[];
+  };
+  const initial = workspaces.find((item) => item.name === "default");
+  const personal = workspaces.find((item) => item.name === "Personal");
+  if (!initial || !personal) throw new Error("workspaces are missing");
+  await createFolderTool(client, "技術");
+  await createFolderTool(client, "ニュース");
+  const listed = await client.callTool({ name: "list_folders", arguments: {} });
+  const { folders } = listed.structuredContent as { folders: { id: string; name: string }[] };
+  const tech = folders.find((item) => item.name === "技術");
+  const news = folders.find((item) => item.name === "ニュース");
+  if (!tech || !news) throw new Error("folders are missing");
+  const scope = {
+    fromWorkspaceId: initial.id,
+    toWorkspaceId: personal.id,
+    folderIds: [tech.id, news.id],
+  };
+
+  async function place(feedId: string, workspaceId: string | null, folderId: string | null) {
+    const subscription = await getSubscription(platform.db, { userId: user.id, feedId });
+    if (!subscription) throw new Error("subscription is missing");
+    const response = await api(`/feeds/${feedId}`, "PATCH", {
+      subscriptionId: subscription.id,
+      workspaceId,
+      folderId,
+    });
+    expect(response.status).toBe(200);
+    return subscription.id;
+  }
+
+  async function newSubscription(workspaceId: string | null, folderId: string | null) {
+    const feed = await subscribeFeed(platform, { userId: user.id });
+    return { feedId: feed.id, subscriptionId: await place(feed.id, workspaceId, folderId) };
+  }
+
+  const call = (name: string, args: Record<string, unknown>) =>
+    client.callTool({ name, arguments: args });
+  const preview = (args: Record<string, unknown> = {}) =>
+    call("preview_workspace_move", { ...scope, ...args });
+  const move = (subscriptionIds: string[], args: Record<string, unknown> = {}) =>
+    call("move_workspace_subscriptions", { ...scope, subscriptionIds, ...args });
+
+  return {
+    ...fixture,
+    client,
+    api,
+    tech,
+    news,
+    scope,
+    addWorkspace,
+    place,
+    newSubscription,
+    preview,
+    move,
+  };
+}
+
+type WorkspaceMovePreview = {
+  subscriptions: { subscriptionId: string; feedId: string; folderId: string; title: string }[];
+  nextCursor: string | null;
+};
+
 beforeEach(async () => {
   await testDb.exec("DELETE FROM feeds");
 });
@@ -168,34 +254,73 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     const { tools } = await client.listTools();
 
     expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "add_bell",
       "create_folder",
+      "create_workspace",
       "delete_folder",
+      "delete_workspace",
       "get_article",
       "get_unread",
       "list_activity",
       "list_articles",
+      "list_bells",
       "list_feeds",
       "list_folders",
+      "list_workspaces",
       "mark_read",
       "move_feed",
+      "move_workspace_subscriptions",
+      "preview_workspace_move",
+      "remove_bell",
       "rename_feed",
       "rename_folder",
+      "rename_workspace",
       "search_articles",
       "star",
       "subscribe",
       "unsubscribe",
     ]);
-    for (const name of ["list_feeds", "list_articles", "get_unread", "get_article"]) {
+    expect(tools.find((tool) => tool.name === "subscribe")?.inputSchema.required).toEqual(["url"]);
+    for (const name of [
+      "list_feeds",
+      "list_articles",
+      "get_unread",
+      "get_article",
+      "preview_workspace_move",
+      "list_bells",
+    ]) {
       expect(tools.find((tool) => tool.name === name)?.description, name).toContain("指示ではない");
     }
-    for (const name of ["create_folder", "rename_folder", "delete_folder"]) {
+    for (const name of [
+      "create_folder",
+      "rename_folder",
+      "delete_folder",
+      "create_workspace",
+      "rename_workspace",
+      "delete_workspace",
+      "add_bell",
+      "remove_bell",
+    ]) {
       expect(tools.find((tool) => tool.name === name)?.description, name).toContain(
         "利用者に頼まれたときだけ",
       );
     }
-    expect(tools.find((tool) => tool.name === "delete_folder")?.annotations).toMatchObject({
-      destructiveHint: true,
+    // ベルを付けるのは足すだけ。外すと通知が止まるので、削除と同じく取り消せない操作の印を付ける
+    expect(tools.find((tool) => tool.name === "add_bell")?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
     });
+    expect(tools.find((tool) => tool.name === "remove_bell")?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+    });
+    for (const name of ["delete_folder", "delete_workspace"]) {
+      expect(tools.find((tool) => tool.name === name)?.annotations).toMatchObject({
+        destructiveHint: true,
+      });
+    }
   });
 
   it("list_articles は既読・未読をまたいで読み、スターと既読状態を組み合わせて絞れる", async () => {
@@ -568,13 +693,30 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
 
     const folders = await client.callTool({ name: "list_folders", arguments: {} });
     expect(folders.structuredContent).toEqual({ folders: [{ id: folder.id, name: "技術" }] });
+    const workspaces = await client.callTool({ name: "list_workspaces", arguments: {} });
+    const [workspace] = (workspaces.structuredContent as { workspaces: { id: string }[] })
+      .workspaces;
+    if (!workspace) throw new Error("default workspace is missing");
+    expect(workspace).toMatchObject({ name: "default" });
     for (const call of [
+      {
+        name: "subscribe",
+        arguments: {
+          url: "https://www.apple.com/newsroom/rss-feed.rss",
+          workspaceId: workspace.id,
+        },
+      },
+      { name: "create_workspace", arguments: { name: "Personal" } },
+      { name: "rename_workspace", arguments: { workspaceId: workspace.id, name: "News" } },
+      { name: "delete_workspace", arguments: { workspaceId: workspace.id } },
       { name: "mark_read", arguments: { ids: [a1] } },
       { name: "move_feed", arguments: { feedId: feed.id, folderId: folder.id } },
       { name: "rename_feed", arguments: { feedId: feed.id, displayName: "ニュース" } },
       { name: "create_folder", arguments: { name: "経済" } },
       { name: "rename_folder", arguments: { folderId: folder.id, name: "経済" } },
       { name: "delete_folder", arguments: { folderId: folder.id } },
+      { name: "add_bell", arguments: { feedId: feed.id } },
+      { name: "remove_bell", arguments: { bellId: crypto.randomUUID() } },
     ]) {
       await expect(client.callTool(call)).rejects.toThrow();
       const res = last();
@@ -583,6 +725,12 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       expect(challenge).toContain('error="insufficient_scope"');
       expect(challenge).toContain('scope="read write"');
     }
+    expect(
+      (await client.callTool({ name: "list_workspaces", arguments: {} })).structuredContent,
+    ).toEqual(workspaces.structuredContent);
+    expect(
+      (await client.callTool({ name: "list_bells", arguments: {} })).structuredContent,
+    ).toEqual({ bells: [] });
     expect(await state(user.id, a1)).toEqual({ read: 0, starred: 0 });
     expect(await getSubscription(platform.db, { userId: user.id, feedId: feed.id })).toMatchObject({
       folderId: null,
@@ -600,7 +748,10 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
 
     const res = await client.callTool({
       name: "subscribe",
-      arguments: { url: "https://hnrss.org/newest?q=Claude" },
+      arguments: {
+        url: "https://hnrss.org/newest?q=Claude",
+        workspaceId: await workspaceIdFromList(client),
+      },
     });
 
     expect(res).toMatchObject({
@@ -642,7 +793,11 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
 
     const subscribed = (await client.callTool({
       name: "subscribe",
-      arguments: { url: "https://new.example.com/feed.xml", folderId: folder.id },
+      arguments: {
+        url: "https://new.example.com/feed.xml",
+        folderId: folder.id,
+        workspaceId: await workspaceIdFromList(client),
+      },
     })) as Structured<{ feed: { id: string; title: string }; created: boolean }>;
     expect(subscribed.structuredContent).toMatchObject({ feed: { title: "New" }, created: true });
 
@@ -836,16 +991,162 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     expect(moved.structuredContent).toEqual({
       feed: { id: feed.id, folderId: techId, folder: "技術" },
     });
+    const workspaceId = await workspaceIdFromList(client);
+    const args = { url: "https://new.example.com/feed.xml", folderId: techId, workspaceId };
     const subscribed = (await client.callTool({
       name: "subscribe",
-      arguments: { url: "https://new.example.com/feed.xml", folderId: techId },
-    })) as Structured<{ feed: { id: string } }>;
+      arguments: args,
+    })) as Structured<{
+      feed: { id: string };
+      created: boolean;
+    }>;
+    const firstId = subscribed.structuredContent?.feed.id;
+    if (!firstId) throw new Error("subscription missing");
+    expect(subscribed.structuredContent?.created).toBe(true);
+    const first = await getSubscription(platform.db, { userId: user.id, feedId: firstId });
+    expect(first).toMatchObject({ folderId: techId, workspaceId });
+
+    await client.callTool({ name: "create_workspace", arguments: { name: "personal" } });
+    const personal = await workspaceIdFromList(client, "personal");
+    const repeated = await client.callTool({
+      name: "subscribe",
+      arguments: { url: args.url, workspaceId: personal },
+    });
+    expect(repeated.structuredContent).toMatchObject({ feed: { id: firstId }, created: false });
+    expect(await getSubscription(platform.db, { userId: user.id, feedId: firstId })).toEqual(first);
+  });
+
+  it("subscribe は無効な ID を断り、省略と null ではデフォルトに追加する", async () => {
+    const { user, token, feed } = await setup(["read", "write"]);
+    const other = await createUser();
+    const { fetch, calls } = fakeFetch(
+      () =>
+        new Response(
+          '<rss version="2.0"><channel><title>Apple Newsroom</title><link>https://www.apple.com/newsroom/</link></channel></rss>',
+        ),
+    );
+    const { platform } = createTestPlatform({ fetch });
+    const { client } = await connect(platform, token, era);
+    const initial = await workspaceIdFromList(client);
+    await client.callTool({ name: "create_workspace", arguments: { name: "Temporary" } });
+    const original = await workspaceIdFromList(client, "Temporary");
     expect(
-      await getSubscription(platform.db, {
-        userId: user.id,
-        feedId: subscribed.structuredContent?.feed.id ?? "",
-      }),
-    ).toMatchObject({ folderId: techId, folderName: "技術" });
+      (
+        await client.callTool({
+          name: "delete_workspace",
+          arguments: { workspaceId: original },
+        })
+      ).structuredContent,
+    ).toEqual({ deleted: true });
+    const { client: otherClient } = await connect(
+      platform,
+      await mcpToken(other.id, ["read"]),
+      era,
+    );
+    const foreign = await workspaceIdFromList(otherClient);
+    const args = { url: "https://www.apple.com/newsroom/rss-feed.rss" };
+    for (const [arguments_, error] of [
+      [{ ...args, workspaceId: "" }, /Input validation error.*[\s\S]*workspaceId/],
+      [{ ...args, workspaceId: "missing" }, /workspace_not_found/],
+      [{ ...args, workspaceId: original }, /workspace_not_found/],
+      [{ ...args, workspaceId: foreign }, /workspace_not_found/],
+    ] as const) {
+      const result = await client.callTool({ name: "subscribe", arguments: arguments_ });
+      expect(result).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: expect.stringMatching(error) }],
+      });
+      expect(result.content).toEqual([
+        { type: "text", text: expect.stringContaining("list_workspaces") },
+      ]);
+    }
+    expect(calls).toHaveLength(0);
+    const feeds = await requestApp(platform, "/api/v1/feeds", { token: user.token });
+    expect(await feeds.json()).toMatchObject({ items: [{ id: feed.id, workspaceId: initial }] });
+
+    await client.callTool({ name: "create_workspace", arguments: { name: "personal" } });
+    const workspaceId = await workspaceIdFromList(client, "personal");
+    const switched = await requestApp(platform, `/api/v1/workspaces/${workspaceId}`, {
+      method: "PATCH",
+      token: user.token,
+      json: { isDefault: true },
+    });
+    expect(switched.status).toBe(200);
+    const folder = await createFolderTool(client, "仕事関連");
+    const sync = async (cursor?: string) => {
+      const query = new URLSearchParams({ includeWorkspaces: "true" });
+      if (cursor) query.set("cursor", cursor);
+      const response = await requestApp(platform, `/api/v1/sync?${query}`, { token: user.token });
+      expect(response.status).toBe(200);
+      return (await response.json()) as { cursor: string; feeds: unknown[]; hasMore: boolean };
+    };
+    const before = await sync();
+    expect(before.hasMore).toBe(false);
+    const expected = [];
+    for (const [arguments_, destination] of [
+      [args, workspaceId],
+      [{ url: "https://github.blog/feed/", workspaceId: null }, workspaceId],
+      [{ url: "https://www.w3.org/blog/feed/", workspaceId: initial }, initial],
+    ] as const) {
+      const subscribed = (await client.callTool({
+        name: "subscribe",
+        arguments: { ...arguments_, folderId: folder.id },
+      })) as Structured<{ feed: { id: string }; created: boolean }>;
+      expect(subscribed.structuredContent).toEqual({
+        feed: { id: expect.any(String), title: "Apple Newsroom", url: arguments_.url },
+        created: true,
+      });
+      expected.push(
+        expect.objectContaining({
+          id: subscribed.structuredContent?.feed.id,
+          workspaceId: destination,
+          folderId: folder.id,
+        }),
+      );
+    }
+    const synced = await sync(before.cursor);
+    expect(synced.feeds).toHaveLength(3);
+    expect(synced.feeds).toEqual(expect.arrayContaining(expected));
+  });
+
+  it("subscribe の書き込み直前に所属先が削除されたら、購読を作らず選び直せる", async () => {
+    const { user, token, feed } = await setup(["read", "write"]);
+    const { fetch } = fakeFetch(
+      () =>
+        new Response(
+          '<rss version="2.0"><channel><title>Apple Newsroom</title><link>https://www.apple.com/newsroom/</link></channel></rss>',
+        ),
+    );
+    const { platform, enqueued } = createTestPlatform({ fetch });
+    const { client } = await connect(platform, token, era);
+    await client.callTool({ name: "create_workspace", arguments: { name: "Temporary" } });
+    const workspaceId = await workspaceIdFromList(client, "Temporary");
+    const hook = statementHook(/^\s*insert into "subscriptions"/i, async () => {
+      expect(
+        (await client.callTool({ name: "delete_workspace", arguments: { workspaceId } }))
+          .structuredContent,
+      ).toEqual({ deleted: true });
+    });
+    const { client: subscribingClient } = await connect({ ...platform, db: hook.db }, token, era);
+    const url = uniqueUrl("rss-feed.rss");
+    expect(
+      await subscribingClient.callTool({ name: "subscribe", arguments: { url, workspaceId } }),
+    ).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("workspace_not_found") }],
+    });
+    expect(hook.fired()).toBe(true);
+    const feeds = await requestApp(platform, "/api/v1/feeds", { token: user.token });
+    expect(await feeds.json()).toMatchObject({ items: [{ id: feed.id }] });
+    expect(enqueued).toEqual([]);
+
+    await client.callTool({ name: "create_workspace", arguments: { name: "personal" } });
+    const personal = await workspaceIdFromList(client, "personal");
+    expect(
+      (await client.callTool({ name: "subscribe", arguments: { url, workspaceId: personal } }))
+        .structuredContent,
+    ).toMatchObject({ feed: { url }, created: true });
+    expect(enqueued).toMatchObject([{ type: "fetch-feed" }]);
   });
 
   it("create_folder は、切り詰めた位置の直前が空白の名前でも、2 回目に同じフォルダを返す", async () => {
@@ -1086,6 +1387,120 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     ).toMatchObject({ isError: true, content: [{ type: "text", text: "folder not found" }] });
   });
 
+  it("ワークスペースの一覧で ID を確認し、作成、改名、空のワークスペースの削除ができる", async () => {
+    const { platform, token, user } = await setup(["read", "write"]);
+    await createUser();
+    const recording = recordingSyncUpdates();
+    platform.syncUpdates = recording.syncUpdates;
+    const { client } = await connect(platform, token, era);
+    const call = (name: string, args: Record<string, unknown> = {}) =>
+      client.callTool({ name, arguments: args });
+    const initial = await call("list_workspaces");
+    expect(initial.structuredContent).toEqual({
+      workspaces: [
+        { id: expect.any(String), name: "default", createdAt: expect.any(String), isDefault: true },
+      ],
+    });
+
+    const created = await call("create_workspace", { name: " Personal " });
+    const { workspace: personal } = created.structuredContent as {
+      workspace: { id: string; name: string; createdAt: string; isDefault: boolean };
+    };
+    expect(personal).toEqual({
+      id: expect.any(String),
+      name: "Personal",
+      createdAt: expect.any(String),
+      isDefault: false,
+    });
+    expect((await call("list_workspaces")).structuredContent).toEqual({
+      workspaces: [
+        personal,
+        ...(initial.structuredContent as { workspaces: unknown[] }).workspaces,
+      ],
+    });
+    expect(await call("create_workspace", { name: "Personal" })).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("workspace_exists") }],
+    });
+    expect(
+      await call("rename_workspace", { workspaceId: personal.id, name: "default" }),
+    ).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("workspace_exists") }],
+    });
+    expect(recording.notified).toEqual([user.id]);
+
+    const rename = () => call("rename_workspace", { workspaceId: personal.id, name: "Private" });
+    const renamed = await rename();
+    expect(renamed.structuredContent).toEqual({ workspace: { ...personal, name: "Private" } });
+    expect((await rename()).structuredContent).toEqual(renamed.structuredContent);
+    expect(recording.notified).toEqual([user.id, user.id]);
+    const remove = () => call("delete_workspace", { workspaceId: personal.id });
+    expect((await remove()).structuredContent).toEqual({ deleted: true });
+    expect((await remove()).structuredContent).toEqual({ deleted: true });
+    expect(recording.notified).toEqual([user.id, user.id, user.id]);
+    expect((await call("list_workspaces")).structuredContent).toEqual(initial.structuredContent);
+  });
+
+  it("MCP でもデフォルトや有効な購読があるワークスペースは削除できない", async () => {
+    const { platform, token, user, feed } = await setup(["read", "write"]);
+    const other = await createUser();
+    const { client } = await connect(platform, token, era);
+    const call = (name: string, args: Record<string, unknown> = {}) =>
+      client.callTool({ name, arguments: args });
+    const listed = await call("list_workspaces");
+    const [initial] = (listed.structuredContent as { workspaces: { id: string }[] }).workspaces;
+    if (!initial) throw new Error("default workspace is missing");
+    expect(await call("delete_workspace", { workspaceId: initial.id })).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("workspace_is_default") }],
+    });
+    const others = await requestApp(platform, "/api/v1/workspaces", { token: other.token });
+    const [foreign] = ((await others.json()) as { items: { id: string }[] }).items;
+    if (!foreign) throw new Error("other user's default workspace is missing");
+    const subscription = await getSubscription(platform.db, { userId: user.id, feedId: feed.id });
+    expect(subscription).toBeDefined();
+    const move = await requestApp(platform, `/api/v1/feeds/${feed.id}`, {
+      method: "PATCH",
+      token: user.token,
+      json: { subscriptionId: subscription?.id, workspaceId: initial.id },
+    });
+    expect(move.status).toBe(200);
+    await call("create_workspace", { name: "Personal" });
+    const personal = await workspaceIdFromList(client, "Personal");
+    expect(
+      (
+        await requestApp(platform, `/api/v1/workspaces/${personal}`, {
+          method: "PATCH",
+          token: user.token,
+          json: { isDefault: true },
+        })
+      ).status,
+    ).toBe(200);
+    expect(await call("delete_workspace", { workspaceId: initial.id })).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("workspace_not_empty") }],
+    });
+
+    for (const [name, args] of [
+      ["rename_workspace", { name: "Private" }],
+      ["delete_workspace", {}],
+    ] as const) {
+      const unknown = await call(name, { ...args, workspaceId: "unknown-workspace" });
+      expect(unknown).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining("workspace_not_found") }],
+      });
+      expect(await call(name, { ...args, workspaceId: foreign.id })).toEqual(unknown);
+    }
+    expect((await call("list_workspaces")).structuredContent).toMatchObject({
+      workspaces: [
+        { id: personal, isDefault: true },
+        { id: initial.id, isDefault: false },
+      ],
+    });
+  });
+
   it("フォルダを変えるツールは、データを変えたときだけ開いている画面に知らせる", async () => {
     const { platform, token, user } = await setup(["read", "write"]);
     const recording = recordingSyncUpdates();
@@ -1115,13 +1530,412 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     expect(recording.notified).toEqual([user.id, user.id, user.id, user.id]);
   });
 
+  it("複数フォルダで確認した購読だけを移し、既読・スターと差分同期を保つ", async () => {
+    const {
+      platform,
+      user,
+      feed,
+      a1,
+      client,
+      api,
+      tech,
+      news,
+      scope,
+      addWorkspace,
+      place,
+      newSubscription,
+      preview,
+      move,
+    } = await setupWorkspaceMove(era);
+    const firstId = await place(feed.id, scope.fromWorkspaceId, tech.id);
+    const second = await newSubscription(scope.fromWorkspaceId, news.id);
+    const side = await createFolderTool(client, "その他");
+    const otherWorkspaceId = await addWorkspace("Shared");
+    const untouched = [
+      { workspaceId: scope.fromWorkspaceId, folderId: side.id },
+      { workspaceId: otherWorkspaceId, folderId: tech.id },
+      { workspaceId: null, folderId: news.id },
+    ];
+    const excluded = await Promise.all(
+      untouched.map(async (value) => ({
+        ...value,
+        ...(await newSubscription(value.workspaceId, value.folderId)),
+      })),
+    );
+    await client.callTool({
+      name: "rename_feed",
+      arguments: { feedId: feed.id, displayName: "購読名" },
+    });
+    await client.callTool({ name: "mark_read", arguments: { ids: [a1] } });
+    await client.callTool({ name: "star", arguments: { ids: [a1] } });
+    const getArticle = () => client.callTool({ name: "get_article", arguments: { id: a1 } });
+    const beforeArticle = (await getArticle()).structuredContent;
+    expect(beforeArticle).toMatchObject({ article: { id: a1, read: true, starred: true } });
+
+    const listed = (await preview({ folderIds: [...scope.folderIds, tech.id] }))
+      .structuredContent as WorkspaceMovePreview;
+    expect(listed.subscriptions).toHaveLength(2);
+    expect(listed.subscriptions).toEqual(
+      expect.arrayContaining([
+        { subscriptionId: firstId, feedId: feed.id, folderId: tech.id, title: "購読名" },
+        { ...second, folderId: news.id, title: expect.any(String) },
+      ]),
+    );
+    expect(listed.nextCursor).toBeNull();
+    const late = await newSubscription(scope.fromWorkspaceId, tech.id);
+    const before = await api("/sync?includeWorkspaces=true");
+    const { cursor } = (await before.json()) as { cursor: string };
+    const recording = recordingSyncUpdates();
+    platform.syncUpdates = recording.syncUpdates;
+
+    const confirmed = listed.subscriptions.map((item) => item.subscriptionId);
+    expect((await move([...confirmed, firstId])).structuredContent).toEqual({ moved: 2 });
+    const delta = await api(`/sync?includeWorkspaces=true&cursor=${encodeURIComponent(cursor)}`);
+    const after = (await delta.json()) as { feeds: unknown[]; cursor: string };
+    expect(after.feeds).toHaveLength(2);
+    expect(after.feeds).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: feed.id,
+          subscriptionId: firstId,
+          folderId: tech.id,
+          workspaceId: scope.toWorkspaceId,
+        }),
+        expect.objectContaining({
+          id: second.feedId,
+          subscriptionId: second.subscriptionId,
+          folderId: news.id,
+          workspaceId: scope.toWorkspaceId,
+        }),
+      ]),
+    );
+    expect((await getArticle()).structuredContent).toEqual(beforeArticle);
+    for (const item of [
+      ...excluded,
+      { ...late, workspaceId: scope.fromWorkspaceId, folderId: tech.id },
+    ]) {
+      expect(
+        await getSubscription(platform.db, { userId: user.id, feedId: item.feedId }),
+      ).toMatchObject({
+        id: item.subscriptionId,
+        workspaceId: item.workspaceId,
+        folderId: item.folderId,
+      });
+    }
+    expect((await move(confirmed)).structuredContent).toEqual({ moved: 0 });
+    expect((await move(excluded.map((item) => item.subscriptionId))).structuredContent).toEqual({
+      moved: 0,
+    });
+    expect(recording.notified).toEqual([user.id]);
+    const retryDelta = await api(
+      `/sync?includeWorkspaces=true&cursor=${encodeURIComponent(after.cursor)}`,
+    );
+    expect(await retryDelta.json()).toMatchObject({ feeds: [] });
+  });
+
+  it("移動時に所属とフォルダを確かめ直し、削除された移動先やフォルダを指定しても一件も移さない", async () => {
+    const { platform, user, token, feed, api, tech, news, scope, place, newSubscription, preview } =
+      await setupWorkspaceMove(era);
+    const firstId = await place(feed.id, scope.fromWorkspaceId, tech.id);
+    const second = await newSubscription(scope.fromWorkspaceId, tech.id);
+    const third = await newSubscription(scope.fromWorkspaceId, tech.id);
+    const listed = (await preview()).structuredContent as WorkspaceMovePreview;
+    const subscriptionIds = listed.subscriptions.map((item) => item.subscriptionId);
+    expect(subscriptionIds).toEqual(
+      expect.arrayContaining([firstId, second.subscriptionId, third.subscriptionId]),
+    );
+    expect(subscriptionIds).toHaveLength(3);
+    const hooked = statementHook(/^update "subscriptions" set "workspace_id"/, async () => {
+      await place(second.feedId, null, tech.id);
+      await place(third.feedId, scope.fromWorkspaceId, null);
+    });
+    const { client } = await connect({ ...platform, db: hooked.db }, token, era);
+    const response = await client.callTool({
+      name: "move_workspace_subscriptions",
+      arguments: { ...scope, subscriptionIds },
+    });
+    expect(hooked.fired()).toBe(true);
+    expect(response.structuredContent).toEqual({ moved: 1 });
+    expect(
+      await getSubscription(platform.db, { userId: user.id, feedId: second.feedId }),
+    ).toMatchObject({ workspaceId: null, folderId: tech.id });
+    expect(
+      await getSubscription(platform.db, { userId: user.id, feedId: third.feedId }),
+    ).toMatchObject({ workspaceId: scope.fromWorkspaceId, folderId: null });
+    expect((await preview()).structuredContent).toEqual({ subscriptions: [], nextCursor: null });
+
+    await place(second.feedId, scope.fromWorkspaceId, tech.id);
+    const toDelete = await api("/workspaces", "POST", { name: "Temporary" });
+    const { workspace } = (await toDelete.json()) as { workspace: { id: string } };
+    const beforeDelete = await getSubscription(platform.db, {
+      userId: user.id,
+      feedId: second.feedId,
+    });
+    for (const invalidation of [
+      {
+        path: `/workspaces/${workspace.id}`,
+        toWorkspaceId: workspace.id,
+        error: "workspace_not_found",
+      },
+      {
+        path: `/folders/${news.id}`,
+        toWorkspaceId: scope.toWorkspaceId,
+        error: "folder_not_found",
+      },
+    ]) {
+      const deleted = statementHook(/^update "subscriptions" set "workspace_id"/, async () => {
+        expect((await api(invalidation.path, "DELETE")).status).toBe(204);
+      });
+      const { client: deletingClient } = await connect({ ...platform, db: deleted.db }, token, era);
+      const afterDelete = await deletingClient.callTool({
+        name: "move_workspace_subscriptions",
+        arguments: {
+          ...scope,
+          toWorkspaceId: invalidation.toWorkspaceId,
+          subscriptionIds: [second.subscriptionId],
+        },
+      });
+      expect(deleted.fired()).toBe(true);
+      expect(afterDelete).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining(invalidation.error) }],
+      });
+      expect(
+        await getSubscription(platform.db, { userId: user.id, feedId: second.feedId }),
+      ).toEqual(beforeDelete);
+    }
+  });
+
+  it("プレビューだけは read で使え、無効なワークスペースやフォルダでは移さない", async () => {
+    const { platform, user, feed, tech, scope, place, preview, move } =
+      await setupWorkspaceMove(era);
+    const subscriptionId = await place(feed.id, scope.fromWorkspaceId, tech.id);
+    const other = await createUser();
+    const res = await requestApp(platform, "/api/v1/workspaces", { token: other.token });
+    const [foreign] = ((await res.json()) as { items: { id: string }[] }).items;
+    if (!foreign) throw new Error("other user's default workspace is missing");
+    const readToken = await mcpToken(user.id, ["read"]);
+    const { client, last } = await connect(platform, readToken, era);
+    expect(
+      (
+        await client.callTool({
+          name: "preview_workspace_move",
+          arguments: scope,
+        })
+      ).structuredContent,
+    ).toMatchObject({ subscriptions: [{ subscriptionId }] });
+    await expect(
+      client.callTool({
+        name: "move_workspace_subscriptions",
+        arguments: { ...scope, subscriptionIds: [subscriptionId] },
+      }),
+    ).rejects.toThrow();
+    expect(last()?.status).toBe(403);
+    expect(last()?.headers.get("www-authenticate")).toContain('scope="read write"');
+
+    for (const [args, error] of [
+      [{ fromWorkspaceId: "unknown-source" }, "workspace_not_found"],
+      [{ toWorkspaceId: "unknown-destination" }, "workspace_not_found"],
+      [{ toWorkspaceId: foreign.id }, "workspace_not_found"],
+      [{ folderIds: [tech.id, "unknown-folder"] }, "folder_not_found"],
+    ] as const) {
+      const expected = {
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining(error) }],
+      };
+      expect(await preview(args)).toMatchObject(expected);
+      expect(await move([subscriptionId], args)).toMatchObject(expected);
+    }
+    expect(await getSubscription(platform.db, { userId: user.id, feedId: feed.id })).toMatchObject({
+      workspaceId: scope.fromWorkspaceId,
+      folderId: tech.id,
+    });
+  });
+
+  it("list_bells・add_bell・remove_bell でベルを付け外しし、変えたときだけ知らせる", async () => {
+    const { user, feed, platform: base } = await setup();
+    const recording = recordingSyncUpdates();
+    const platform = { ...base, syncUpdates: recording.syncUpdates };
+    const { client } = await connect(platform, await mcpToken(user.id, ["read", "write"]), era);
+    type Bell = {
+      id: string;
+      subscriptionId: string | null;
+      feedId: string | null;
+      words: string | null;
+      createdAt: string;
+    };
+    const call = async <T>(name: string, args: Record<string, unknown>) =>
+      (await client.callTool({ name, arguments: args })) as Structured<T> & {
+        content: { type: string; text: string }[];
+      };
+    const subscription = await getSubscription(platform.db, { userId: user.id, feedId: feed.id });
+
+    const added = await call<{ bell: Bell; created: boolean }>("add_bell", { feedId: feed.id });
+    expect(added.structuredContent).toEqual({
+      bell: {
+        id: expect.any(String),
+        subscriptionId: subscription?.id,
+        feedId: feed.id,
+        words: null,
+        createdAt: expect.any(String),
+      },
+      created: true,
+    });
+    expect(recording.notified).toEqual([user.id]);
+    const bell = added.structuredContent?.bell;
+    const again = await call("add_bell", { feedId: feed.id });
+    expect(again.structuredContent).toEqual({ bell, created: false });
+    expect(recording.notified).toEqual([user.id]);
+
+    // 表示用のフィード名は、購読の表示名、フィードの名前、フィードの URL の順
+    const listed = async () =>
+      (await call<{ bells: (Bell & { feedTitle: string })[] }>("list_bells", {})).structuredContent
+        ?.bells;
+    expect(await listed()).toEqual([{ ...bell, feedTitle: feed.url }]);
+    await testDb.prepare("UPDATE feeds SET title = ? WHERE id = ?").bind("配信元", feed.id).run();
+    expect(await listed()).toEqual([{ ...bell, feedTitle: "配信元" }]);
+    await call("rename_feed", { feedId: feed.id, displayName: "ニュース" });
+    expect(await listed()).toEqual([{ ...bell, feedTitle: "ニュース" }]);
+    recording.notified.length = 0;
+
+    const other = await createUser();
+    const othersFeed = await subscribeFeed(platform, { userId: other.id });
+    for (const feedId of [othersFeed.id, crypto.randomUUID()]) {
+      const missing = await call("add_bell", { feedId });
+      expect(missing.isError).toBe(true);
+      expect(missing.content[0]?.text).toMatch(/^feed_not_found:/);
+    }
+    const empty = await call("add_bell", {});
+    expect(empty.isError).toBe(true);
+    expect(empty.content[0]?.text).toMatch(/^invalid_request:/);
+    // 知らない項目は黙って捨てない（捨てると、頼まれたのと違うベルになる）
+    expect((await call("add_bell", { feedId: feed.id, unknown: true })).isError).toBe(true);
+    expect(await listed()).toHaveLength(1);
+    expect(recording.notified).toEqual([]);
+
+    const remove = (bellId: string) => call<{ removed: boolean }>("remove_bell", { bellId });
+    expect((await remove(bell?.id ?? "")).structuredContent).toEqual({ removed: true });
+    expect((await remove(bell?.id ?? "")).structuredContent).toEqual({ removed: true });
+    expect(await listed()).toEqual([]);
+    const othersBell = await addBell(platform.db, {
+      userId: other.id,
+      id: crypto.randomUUID(),
+      feedId: othersFeed.id,
+      words: null,
+    });
+    if (typeof othersBell === "string") throw new Error(othersBell);
+    for (const bellId of [othersBell.bell.id, crypto.randomUUID()]) {
+      expect((await remove(bellId)).structuredContent).toEqual({ removed: false });
+    }
+    expect(await listBells(platform.db, other.id)).toHaveLength(1);
+    expect(recording.notified).toEqual([user.id]);
+  });
+
+  it("add_bell の words で言葉のベルを付け、list_bells では言葉だけのベルに feedTitle を付けない", async () => {
+    const { user, feed, platform: base } = await setup();
+    const recording = recordingSyncUpdates();
+    const platform = { ...base, syncUpdates: recording.syncUpdates };
+    const { client } = await connect(platform, await mcpToken(user.id, ["read", "write"]), era);
+    type Bell = {
+      id: string;
+      subscriptionId: string | null;
+      feedId: string | null;
+      words: string | null;
+      createdAt: string;
+    };
+    const call = async <T>(name: string, args: Record<string, unknown>) =>
+      (await client.callTool({ name, arguments: args })) as Structured<T> & {
+        content: { type: string; text: string }[];
+      };
+    const subscription = await getSubscription(platform.db, { userId: user.id, feedId: feed.id });
+
+    const wordsOnly = await call<{ bell: Bell; created: boolean }>("add_bell", {
+      words: "Ａｚｕｒｅ\u3000障害",
+    });
+    expect(wordsOnly.structuredContent).toEqual({
+      bell: {
+        id: expect.any(String),
+        subscriptionId: null,
+        feedId: null,
+        words: "Azure 障害",
+        createdAt: expect.any(String),
+      },
+      created: true,
+    });
+    const both = await call<{ bell: Bell; created: boolean }>("add_bell", {
+      feedId: feed.id,
+      words: "Rust",
+    });
+    expect(both.structuredContent).toMatchObject({
+      bell: { subscriptionId: subscription?.id, feedId: feed.id, words: "Rust" },
+      created: true,
+    });
+    expect(recording.notified).toEqual([user.id, user.id]);
+
+    // 並びや大文字と小文字の違う同じ言葉は、作らずに今のベルを返す
+    const again = await call("add_bell", { words: "障害 azure" });
+    expect(again.structuredContent).toEqual({
+      bell: wordsOnly.structuredContent?.bell,
+      created: false,
+    });
+    expect(recording.notified).toEqual([user.id, user.id]);
+
+    const listed = (await call<{ bells: (Bell & { feedTitle?: string })[] }>("list_bells", {}))
+      .structuredContent?.bells;
+    expect(listed).toHaveLength(2);
+    expect(listed?.find((bell) => bell.feedId === null)).toEqual(wordsOnly.structuredContent?.bell);
+    expect(listed?.find((bell) => bell.feedId === feed.id)).toEqual({
+      ...both.structuredContent?.bell,
+      feedTitle: feed.url,
+    });
+
+    // 言葉が上限などに合わなければ invalid_words。ベルは作らない
+    const eight = Array.from({ length: 8 }, (_, i) => `w${i}`).join(" ");
+    for (const words of ["", " \u3000", `${eight} w8`, "あ".repeat(65), "障害\u0000"]) {
+      for (const args of [{ words }, { feedId: feed.id, words }]) {
+        const invalid = await call("add_bell", args);
+        expect(invalid.isError, JSON.stringify(args)).toBe(true);
+        expect(invalid.content[0]?.text).toMatch(/^invalid_words:/);
+      }
+    }
+    // 購読していないフィードと言葉の組は feed_not_found
+    const missing = await call("add_bell", { feedId: crypto.randomUUID(), words: "Rust" });
+    expect(missing.content[0]?.text).toMatch(/^feed_not_found:/);
+    expect((await call<{ bells: Bell[] }>("list_bells", {})).structuredContent?.bells).toHaveLength(
+      2,
+    );
+  });
+
+  it("add_bell は、有効なベルが上限に達していれば bell_limit_reached を返す", async () => {
+    const { user, feed, platform } = await setup();
+    const { client } = await connect(platform, await mcpToken(user.id, ["read", "write"]), era);
+    // 上限まで、購読してベルを付ける（REST API と同じく、本番の操作で作る）
+    for (let i = 0; i < MAX_BELLS; i++) {
+      const subscribed = await subscribeFeed(platform, { userId: user.id });
+      const added = await addBell(platform.db, {
+        userId: user.id,
+        id: crypto.randomUUID(),
+        feedId: subscribed.id,
+        words: null,
+      });
+      if (typeof added === "string") throw new Error(added);
+    }
+
+    const full = (await client.callTool({ name: "add_bell", arguments: { feedId: feed.id } })) as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    expect(full.isError).toBe(true);
+    expect(full.content[0]?.text).toMatch(/^bell_limit_reached:/);
+  });
+
   it("取得してはいけない URL は購読せず、エラーの結果を返す", async () => {
     const { platform, token } = await setup(["read", "write"]);
     const { client } = await connect(platform, token, era);
 
     const res = (await client.callTool({
       name: "subscribe",
-      arguments: { url: "http://127.0.0.1/feed" },
+      arguments: { url: "http://127.0.0.1/feed", workspaceId: await workspaceIdFromList(client) },
     })) as Structured<unknown>;
 
     expect(res.isError).toBe(true);
@@ -1158,7 +1972,7 @@ describe("/mcp の認証", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
 
-  it("トークンがない ／ アプリ用パスワード（リーダーアプリ用）は 401", async () => {
+  it("トークンがない ／ REST API 用のトークンは 401", async () => {
     const { platform, user } = await setup();
 
     for (const headers of [{}, { authorization: `Bearer ${user.token}` }]) {
@@ -1168,17 +1982,10 @@ describe("/mcp の認証", () => {
     }
   });
 
-  it("MCP 用のトークンは、REST API と Google Reader API では使えない", async () => {
+  it("MCP 用のトークンは REST API では使えない", async () => {
     const { platform, token } = await setup(["read", "write"]);
 
     expect((await requestApp(platform, "/api/v1/feeds", { token })).status).toBe(401);
-    const reader = await createApp(platform).request(
-      "https://sendo.example.com/reader/api/0/user-info",
-      {
-        headers: { authorization: `GoogleLogin auth=${token}` },
-      },
-    );
-    expect(reader.status).toBe(401);
   });
 
   it("ほかのサイトのページからのリクエスト（Origin が違う）は 403", async () => {
@@ -1232,4 +2039,29 @@ describe("MCP 用のトークンの発行", () => {
       ]),
     );
   });
+});
+
+it("一括移動のプレビューは 90 件でページを分け、確認した各ページを実行できる", {
+  timeout: 30_000,
+}, async () => {
+  const { scope, tech, newSubscription, preview, move } = await setupWorkspaceMove("legacy");
+  const subscribed = await Promise.all(
+    Array.from({ length: 91 }, () => newSubscription(scope.fromWorkspaceId, tech.id)),
+  );
+
+  const first = (await preview()).structuredContent as WorkspaceMovePreview;
+  expect(first.subscriptions).toHaveLength(90);
+  expect(first.nextCursor).toBe(first.subscriptions.at(-1)?.subscriptionId);
+  const second = (await preview({ cursor: first.nextCursor }))
+    .structuredContent as WorkspaceMovePreview;
+  expect(second.subscriptions).toHaveLength(1);
+  expect(second.nextCursor).toBeNull();
+  const firstIds = first.subscriptions.map((item) => item.subscriptionId);
+  const secondIds = second.subscriptions.map((item) => item.subscriptionId);
+  expect([...firstIds, ...secondIds]).toEqual(subscribed.map((item) => item.subscriptionId).sort());
+
+  expect(await move([...firstIds, ...secondIds])).toMatchObject({ isError: true });
+  expect((await move(firstIds)).structuredContent).toEqual({ moved: 90 });
+  expect((await move(secondIds)).structuredContent).toEqual({ moved: 1 });
+  expect((await preview()).structuredContent).toEqual({ subscriptions: [], nextCursor: null });
 });

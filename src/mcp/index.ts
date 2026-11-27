@@ -77,7 +77,7 @@ async function authenticate(platform: Platform, token: string): Promise<AuthInfo
     }
   }
 
-  // MCP 用のトークンだけを受ける。アプリ用パスワード（リーダーアプリ用）は受けない（決定の 2）
+  // MCP 用のトークンだけを受ける。REST API 用は受けない（決定の 2）
   const auth = await authenticateToken(platform.db, { token, now, purpose: "mcp" });
   if (!auth) return undefined;
   return {

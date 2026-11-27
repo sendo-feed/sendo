@@ -3,7 +3,7 @@ import { runJob } from "../../src/jobs";
 import { readOpml } from "../../src/opml";
 import { testDb } from "../db";
 import { FEEDLY_OPML } from "../fixtures/opml";
-import { createTestPlatform, requestApp } from "../helpers";
+import { createTestPlatform, requestApp, statementHook } from "../helpers";
 
 type Json = Record<string, unknown>;
 
@@ -37,10 +37,28 @@ describe("OPML の API", () => {
       ],
     });
 
+    const groups = await requestApp(platform, "/api/v1/workspaces");
+    const { items } = (await groups.json()) as { items: { id: string; isDefault: boolean }[] };
+    const workspace = items.find((item) => item.isDefault);
+    if (!workspace) throw new Error("default is missing");
+    const created = await requestApp(platform, "/api/v1/workspaces", {
+      method: "POST",
+      json: { name: "Personal" },
+    });
+    const { workspace: personal } = (await created.json()) as { workspace: { id: string } };
+    const hook = statementHook(/^\s*insert into "subscriptions"/i, async () => {
+      const switched = await requestApp(platform, `/api/v1/workspaces/${personal.id}`, {
+        method: "PATCH",
+        json: { isDefault: true },
+      });
+      expect(switched.status).toBe(200);
+    });
+
     // キューに積まれたインポートのジョブを実行する（取得のジョブは外部に出るので実行しない）
     for (const job of [...enqueued]) {
-      if (job.type === "import-feeds") await runJob(platform, job);
+      if (job.type === "import-feeds") await runJob({ ...platform, db: hook.db }, job);
     }
+    expect(hook.fired()).toBe(true);
 
     const folders = (await (await requestApp(platform, "/api/v1/folders")).json()) as {
       items: { id: string; name: string }[];
@@ -48,23 +66,76 @@ describe("OPML の API", () => {
     expect(folders.items.map((folder) => folder.name)).toEqual(["Tech", "セキュリティ"]);
 
     const feeds = (await (await requestApp(platform, "/api/v1/feeds")).json()) as {
-      items: { url: string; folderId: string | null }[];
+      items: {
+        id: string;
+        url: string;
+        folderId: string | null;
+        workspaceId: string | null;
+        subscriptionId: string;
+      }[];
     };
     expect(feeds.items).toHaveLength(4);
+    expect(feeds.items.map((feed) => feed.workspaceId)).toEqual(Array(4).fill(personal.id));
     const tech = folders.items.find((folder) => folder.name === "Tech")?.id;
     expect(
       feeds.items.find((feed) => feed.url === "https://blog.cloudflare.com/rss/"),
     ).toMatchObject({ folderId: tech });
 
+    const assigned = feeds.items.find((feed) => feed.url === "https://blog.cloudflare.com/rss/");
+    if (!assigned) throw new Error("subscription missing");
+    const move = await requestApp(platform, `/api/v1/feeds/${assigned.id}`, {
+      method: "PATCH",
+      json: { subscriptionId: assigned.subscriptionId, workspaceId: workspace.id, folderId: null },
+    });
+    expect(move.status).toBe(200);
+    const retained = feeds.items.find((feed) => feed.url === "https://example.com/feed.xml");
+    if (!retained) throw new Error("second subscription missing");
+    const folderResult = await requestApp(platform, "/api/v1/folders", {
+      method: "POST",
+      json: { name: "Reading" },
+    });
+    const { folder } = (await folderResult.json()) as { folder: { id: string } };
+    expect(
+      (
+        await requestApp(platform, `/api/v1/feeds/${retained.id}`, {
+          method: "PATCH",
+          json: { folderId: folder.id },
+        })
+      ).status,
+    ).toBe(200);
+
+    const start = enqueued.length;
+    expect((await postOpml(platform, FEEDLY_OPML)).status).toBe(202);
+    const retries = enqueued.slice(start).filter((job) => job.type === "import-feeds");
+    expect(retries.length).toBeGreaterThan(0);
+    for (const job of retries) await runJob(platform, job);
+    const after = (await (await requestApp(platform, "/api/v1/feeds")).json()) as typeof feeds;
+    expect(after.items).toHaveLength(4);
+    expect(after.items.find((feed) => feed.id === assigned.id)).toMatchObject({
+      workspaceId: workspace.id,
+      folderId: tech,
+      subscriptionId: assigned.subscriptionId,
+    });
+
+    expect(after.items.find((feed) => feed.id === retained.id)).toMatchObject({
+      folderId: folder.id,
+      workspaceId: personal.id,
+    });
+
     const exported = await requestApp(platform, "/api/v1/opml");
     expect(exported.status).toBe(200);
     expect(exported.headers.get("content-type")).toContain("text/x-opml");
     expect(exported.headers.get("content-disposition")).toContain("attachment");
-    expect(readOpml(await exported.text()).entries).toEqual(
+    const entries = readOpml(await exported.text()).entries;
+    expect(entries.map((entry) => entry.url).sort()).toEqual(
+      feeds.items.map((feed) => feed.url).sort(),
+    );
+    expect(entries).toEqual(
       expect.arrayContaining([
         { url: "https://blog.cloudflare.com/rss/", folder: "Tech" },
         { url: "https://jvndb.jvn.jp/ja/rss/jvndb_new.rdf", folder: "セキュリティ" },
         { url: "https://top.example/atom.xml", folder: null },
+        { url: retained.url, folder: "Reading" },
       ]),
     );
   });

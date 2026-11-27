@@ -1,10 +1,10 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import { type Database, getRow } from ".";
-import { randomItemId } from "./articles";
 import { DB_NOW_MS } from "./clock";
 import { discordConnections, type Feed, feeds, subscriptions } from "./schema";
 import { nextSeq } from "./seq";
 import { activeFolderId, getSubscription } from "./subscriptions";
+import { defaultWorkspaceId } from "./workspaces";
 
 export async function getDiscordConnection(db: Database, userId: string) {
   return db.select().from(discordConnections).where(eq(discordConnections.userId, userId)).get();
@@ -42,6 +42,30 @@ export async function listDiscordSubscriptions(db: Database, userId: string) {
     .all();
 }
 
+/** 有効な Discord の購読だけを、小分けに取得ジョブへ渡す。 */
+export async function listDiscordFetchTargets(
+  db: Database,
+  input: { url: string | undefined; after: string | undefined; limit: number },
+) {
+  return db
+    .select({ feedId: feeds.id })
+    .from(feeds)
+    .innerJoin(discordConnections, eq(feeds.discordConnectionId, discordConnections.id))
+    .innerJoin(subscriptions, eq(subscriptions.feedId, feeds.id))
+    .where(
+      and(
+        isNotNull(feeds.discordConnectionId),
+        eq(subscriptions.userId, discordConnections.userId),
+        isNull(subscriptions.deletedAt),
+        input.url === undefined ? undefined : eq(feeds.url, input.url),
+        input.after === undefined ? undefined : gt(feeds.id, input.after),
+      ),
+    )
+    .orderBy(asc(feeds.id))
+    .limit(input.limit)
+    .all();
+}
+
 export async function addDiscordSubscription(
   db: Database,
   input: {
@@ -76,9 +100,9 @@ export async function addDiscordSubscription(
   const subscription = await getRow<{ id: string }>(
     db,
     sql`
-    insert into subscriptions (id, user_id, feed_id, folder_id, created_at, backfilled_at, seq)
+    insert into subscriptions (id, user_id, feed_id, folder_id, workspace_id, created_at, backfilled_at, seq)
     select ${crypto.randomUUID()}, ${userId}, ${feeds.id}, ${activeFolderId(userId, folderId)},
-      ${now.getTime()}, ${now.getTime()}, ${nextSeq(subscriptions)}
+      ${defaultWorkspaceId(userId)}, ${now.getTime()}, ${now.getTime()}, ${nextSeq(subscriptions)}
     from ${feeds}
     where ${feeds.id} = ${feed.feed.id} and ${feeds.discordConnectionId} = ${connectionId}
     on conflict do nothing
@@ -128,25 +152,28 @@ export type DiscordArticle = {
   contentKey: string | null;
 };
 
-/** 取得中に連携や購読が解除されたら、保存しない。メッセージ ID で重複を防ぐ */
+/**
+ * 取得中に連携や購読が解除されたら、保存しない。メッセージ ID で重複を防ぐ
+ *
+ * @returns 新しく入った記事の ID
+ */
 export async function insertDiscordArticles(
   db: Database,
   feedId: string,
   connectionId: string,
   articles: readonly DiscordArticle[],
-) {
-  if (articles.length === 0) return 0;
-  const rows = articles.map((row) => ({ ...row, itemId: randomItemId() }));
+): Promise<string[]> {
+  if (articles.length === 0) return [];
   const inserted = await db.all<{ id: string }>(sql`
     insert into articles (
       id, feed_id, guid, url, title, summary, author, published_at, published_time_known, created_at,
-      item_id, in_current_feed, content_key
+      in_current_feed, content_key
     )
     select
       value ->> '$.id', ${feedId}, value ->> '$.guid', value ->> '$.url',
       value ->> '$.title', value ->> '$.summary', value ->> '$.author',
-      value ->> '$.publishedAt', 1, ${DB_NOW_MS}, value ->> '$.itemId', 0, value ->> '$.contentKey'
-    from json_each(${JSON.stringify(rows)})
+      value ->> '$.publishedAt', 1, ${DB_NOW_MS}, 0, value ->> '$.contentKey'
+    from json_each(${JSON.stringify(articles)})
     where exists (
       select 1 from feeds inner join subscriptions on subscriptions.feed_id = feeds.id
       where feeds.id = ${feedId} and feeds.discord_connection_id = ${connectionId}
@@ -155,5 +182,5 @@ export async function insertDiscordArticles(
     on conflict (feed_id, guid) do nothing
     returning id
   `);
-  return inserted.length;
+  return inserted.map((row) => row.id);
 }

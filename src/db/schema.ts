@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnySQLiteColumn,
   check,
   index,
   integer,
@@ -50,8 +51,7 @@ export const identities = sqliteTable(
 );
 
 /**
- * アクセストークン（アプリ用パスワード）。REST API の Bearer と、リーダーアプリの
- * パスワード欄に使う。中身は持たず、SHA-256 のハッシュだけを置く。
+ * REST API と MCP のアクセストークン。中身は持たず、SHA-256 のハッシュだけを置く。
  */
 export const accessTokens = sqliteTable(
   "access_tokens",
@@ -60,14 +60,14 @@ export const accessTokens = sqliteTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    /** 用途の名前（「Reeder」「CLI」など） */
+    /** 用途の名前（「CLI」「Claude Code」など） */
     name: text("name").notNull(),
     tokenHash: text("token_hash").notNull().unique(),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     /** 最後に使った時刻。書き込みを減らすため、1 時間に 1 回だけ更新する */
     lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
     /**
-     * 用途（docs/decisions/mcp.md の 2）。reader はリーダーアプリと REST API 用（アプリ用パスワード）、
+     * 用途（docs/decisions/mcp.md の 2）。reader は REST API 用、
      * mcp は /mcp 用。用途の違う入口では使えない
      */
     purpose: text("purpose", { enum: ["reader", "mcp"] })
@@ -223,6 +223,32 @@ export const folders = sqliteTable(
   ],
 );
 
+/** ユーザーが、購読の表示範囲を分けるためのワークスペース。 */
+export const workspaces = sqliteTable(
+  "workspaces",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    seq: seq(),
+  },
+  (t) => [
+    uniqueIndex("workspaces_user_id_name_idx")
+      .on(t.userId, t.name)
+      .where(sql`${t.deletedAt} is null`),
+    uniqueIndex("workspaces_user_id_default_idx")
+      .on(t.userId)
+      .where(sql`${t.isDefault} = 1 and ${t.deletedAt} is null`),
+    index("workspaces_user_id_seq_idx").on(t.userId, t.seq),
+    index("workspaces_seq_idx").on(t.seq),
+  ],
+);
+
 export type FeedErrorCode = FetchFeedErrorCode | "invalid_feed";
 
 /** Discord OAuth で確認した、Sendo のユーザーと Discord のアカウントの結び付き */
@@ -256,6 +282,8 @@ export const feeds = sqliteTable(
     lastSuccessfulFetchAt: integer("last_successful_fetch_at", { mode: "timestamp_ms" }),
     /** この時刻を過ぎたら、定期実行で取得のキューに積む（購読している人がいるときだけ） */
     nextFetchAt: integer("next_fetch_at", { mode: "timestamp_ms" }).notNull(),
+    /** 通常の取得予定と別に覚える Discord REST の再開期限（仕事の流し方の 8） */
+    discordRetryAt: integer("discord_retry_at", { mode: "timestamp_ms" }),
     /**
      * 取得の間隔（ミリ秒。docs/decisions/jobs.md の 7、11）。取得に成功するたびに、記事の出るペースか
      * 時刻の癖（枠）から決め直した、次の取得までの長さ。null なら、まだ決めていない（設定の間隔を使う）。書くのは取得の記録の UPDATE の中だけ
@@ -293,6 +321,7 @@ export const feeds = sqliteTable(
     index("feeds_next_fetch_at_idx").on(t.nextFetchAt),
     uniqueIndex("feeds_public_url_idx").on(t.url).where(sql`${t.discordCursor} is null`),
     uniqueIndex("feeds_discord_connection_url_idx").on(t.discordConnectionId, t.url),
+    index("feeds_discord_url_idx").on(t.url, t.id).where(sql`${t.discordConnectionId} is not null`),
   ],
 );
 
@@ -309,6 +338,7 @@ export const subscriptions = sqliteTable(
       .references(() => feeds.id, { onDelete: "cascade" }),
     /** 入っているフォルダ。フォルダを消すときは、先にこの列を null に戻す */
     folderId: text("folder_id").references(() => folders.id),
+    workspaceId: text("workspace_id").references(() => workspaces.id),
     displayName: text("display_name"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     /**
@@ -326,6 +356,9 @@ export const subscriptions = sqliteTable(
       .on(t.userId, t.feedId)
       .where(sql`${t.deletedAt} is null`),
     index("subscriptions_feed_id_idx").on(t.feedId),
+    index("subscriptions_active_workspace_idx")
+      .on(t.userId, t.workspaceId)
+      .where(sql`${t.deletedAt} is null`),
     index("subscriptions_user_id_seq_idx").on(t.userId, t.seq),
     index("subscriptions_seq_idx").on(t.seq),
   ],
@@ -366,12 +399,6 @@ export const articles = sqliteTable(
     /** 取り込んだ時刻（DB の時計）。受信箱に配る範囲を決めるのに使う */
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     /**
-     * Google Reader API のアイテムの ID（docs/decisions/greader.md の 3）。1 以上 2^53 未満の乱数で、
-     * 取り込むときに db/articles.ts の insertArticles が振る。順に振らないのは、ID の飛びから
-     * ほかの人が購読しているフィードの記事の数が分からないようにするため
-     */
-    itemId: integer("item_id").notNull().default(0),
-    /**
      * フィードに入っていた本文の、置き場での名前（docs/decisions/content.md の 3）。本文がなければ
      * null。取り込むときに決まり、あとから変えない。名前は置くたびに乱数で決め、二度使わない。
      * API には、名前ではなく、本文があるかどうかだけを出す
@@ -386,7 +413,6 @@ export const articles = sqliteTable(
     // 本文のある記事だけを索引に入れる（片付けが、名前から記事の行があるかを引く）
     uniqueIndex("articles_content_key_idx").on(t.contentKey).where(sql`content_key is not null`),
     uniqueIndex("articles_feed_id_guid_idx").on(t.feedId, t.guid),
-    uniqueIndex("articles_item_id_idx").on(t.itemId),
     index("articles_feed_id_created_at_idx").on(t.feedId, t.createdAt),
     index("articles_feed_id_published_at_idx").on(t.feedId, t.publishedAt),
     index("articles_created_at_id_idx").on(t.createdAt, t.id),
@@ -526,6 +552,37 @@ export const articleTranslations = sqliteTable(
     failureCategory: text("failure_category"),
     /** どこで訳せなかったか（バッチか、その場の翻訳か。同じく 17） */
     failureStage: text("failure_stage", { enum: ["batch", "on_demand"] }),
+    /**
+     * 訳したときの条件（docs/decisions/translation.md の 18）。訳文の代表の部分（本文、本文がなければ
+     * タイトル、それもなければ要約）を作ったものの、思考量・段階・プロンプトの版。送って訳したなら
+     * その呼び出しの条件、同じ元記事から写したなら写した元の行の条件。モデルは model。訳文を書く文で
+     * 一緒に書き、訳せなかったときは書き換えない。18 より前に訳した行は、思考量が low でほかは null。
+     * モデルと思考量は差分同期で配り、GET でも返す。段階とプロンプトの版は配らない（同じく 14、18）
+     */
+    effort: text("effort", { enum: ["low", "medium", "high", "xhigh", "max"] }),
+    tier: text("tier", { enum: ["normal", "long", "quality"] }),
+    promptVersion: integer("prompt_version"),
+    /**
+     * 訳文を書いた呼び出しの入力・出力のトークン数と、その呼び出しのモデル（同じく 18）。送らずにすべて
+     * 写した行と、訳し直しを広げた行は 0 で、呼び出しのモデルは null
+     */
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    callModel: text("call_model"),
+    /**
+     * タイトル・要約・本文のそれぞれを、同じ元記事から写したときの、写した元の記事の ID（同じく 16、
+     * 18）。送って訳した部分は null。写した元の記事が消えても残す（外部キーにしない）
+     */
+    titleCopiedFrom: text("title_copied_from"),
+    summaryCopiedFrom: text("summary_copied_from"),
+    contentCopiedFrom: text("content_copied_from"),
+    /**
+     * バッチで送った条件（段階・思考量・プロンプトの版。同じく 9）。送る印を付けるときに書き、結果を
+     * 書く文で上の条件に写す。送る印と一緒に外す。差分同期では配らない
+     */
+    batchTier: text("batch_tier", { enum: ["normal", "long"] }),
+    batchEffort: text("batch_effort", { enum: ["low", "medium", "high", "xhigh", "max"] }),
+    batchPromptVersion: integer("batch_prompt_version"),
   },
   (t) => [
     index("article_translations_translating_idx")
@@ -816,13 +873,163 @@ export const savedPageHorizons = sqliteTable("saved_page_horizons", {
   seq: integer("seq").notNull(),
 });
 
+/** null を空文字にそろえる式（coalesce(列, '') と同じ）。カンマを含まない形で書く */
+const orEmpty = (column: AnySQLiteColumn) =>
+  sql`(case when ${column} is null then '' else ${column} end)`;
+
 /**
- * sendo が自分で作って持つ秘密（docs/decisions/images.md の 2）。今は、画像の URL の署名の鍵だけ。
- * 初めて使うときに作る（db/secrets.ts）。行を消すと、次に使うときに作り直す
+ * 通知のベル（docs/decisions/notifications.md の 1〜7）。購読と言葉の組で表す。購読だけ、言葉だけ、
+ * 購読 AND 言葉の 3 つの種類は、2 つの列の有無で決まる。購読も言葉もない行は作らない。
+ *
+ * 外すと、行は残して消した印と新しい変更番号を付ける。付け直すと新しい行を作る。購読に消した印が
+ * 付くと、トリガーが同じ文の中でその購読のベルにも印と番号を付ける。印の行は 30 日たったら
+ * 物理的に消し、トリガーが人ごとの回収の下限を記録する（migrations/0071_bells-triggers.sql）
+ */
+export const bells = sqliteTable(
+  "bells",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** 鳴らす購読。言葉だけのベルは null */
+    subscriptionId: text("subscription_id").references(() => subscriptions.id, {
+      onDelete: "cascade",
+    }),
+    /**
+     * 当てる言葉。NFKC にして区切った言葉を、半角の空白 1 つでつないだもの（大文字と小文字は
+     * 入れたまま）。言葉のないベルは null
+     */
+    words: text("words"),
+    /**
+     * 照合用の言葉。words の言葉を小文字にし、コードポイントの順に並べてつないだもの。言葉の並びに
+     * よらず同じになる。言葉のないベルは null
+     */
+    matchKey: text("match_key"),
+    /** 作った時刻。書く文の中の DB の時計（db/clock.ts の DB_NOW_MS）で決める */
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    seq: seq(),
+  },
+  (t) => [
+    // 同じ人で、購読と言葉の組が同じ有効なベルは 1 つ。付ける文はこれにぶつけて止める。SQLite の
+    // 一意索引は null どうしを別の値とみなすので、空文字にそろえる。coalesce(列, '') と同じ式を
+    // case で書くのは、drizzle-kit が索引の式をカンマで切ってしまい、正しい SQL を作れないため
+    uniqueIndex("bells_user_id_subscription_id_match_key_idx")
+      .on(t.userId, orEmpty(t.subscriptionId), orEmpty(t.matchKey))
+      .where(sql`${t.deletedAt} is null`),
+    // 購読をやめたときのトリガーと、外部キーの削除で使う
+    index("bells_subscription_id_idx").on(t.subscriptionId),
+    index("bells_user_id_seq_idx").on(t.userId, t.seq),
+    index("bells_seq_idx").on(t.seq),
+    index("bells_deleted_at_idx").on(t.deletedAt).where(sql`${t.deletedAt} is not null`),
+  ],
+);
+
+/**
+ * ベルの消した印の行を、人ごとにどこまで回収したか。行を消すトリガーが、消した行の番号まで
+ * 引き上げる。その人のカーソルの位置がこれより前なら、最初から同期し直してもらう
+ */
+export const bellHorizons = sqliteTable("bell_horizons", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  seq: integer("seq").notNull(),
+});
+
+/**
+ * 端末の Web Push の登録（docs/decisions/web-push.md の 4）。ブラウザのセッションに結ぶ。
+ *
+ * 1 つのセッションに 1 つ、1 つのエンドポイントに 1 つ。登録し直して中身が変わると、新しい ID の
+ * 行に置き換える（db/push-registrations.ts）。セッションの行が消えると（ログアウト、別の人のログイン）、
+ * 同じ文の中でこの行も消える。エンドポイントと鍵は秘密として扱い、ログと応答に出さない
+ */
+export const pushRegistrations = sqliteTable(
+  "push_registrations",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    /** プッシュサービスの URL（toFetchableUrl で正規化した https の URL） */
+    endpoint: text("endpoint").notNull(),
+    /** 端末の公開鍵（P-256 の非圧縮の点 65 バイト）の base64url */
+    p256dh: text("p256dh").notNull(),
+    /** 認証の秘密（16 バイト）の base64url */
+    auth: text("auth").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("push_registrations_session_id_idx").on(t.sessionId),
+    uniqueIndex("push_registrations_endpoint_idx").on(t.endpoint),
+    index("push_registrations_user_id_idx").on(t.userId),
+  ],
+);
+
+/** 通知の行の状態（docs/decisions/notifications.md の 10） */
+export const BELL_NOTIFICATION_STATES = ["sent", "limited", "bundled"] as const;
+
+/**
+ * ベルの通知の行（docs/decisions/notifications.md の 10〜13）。10 分の窓と 1 時間の上限を数える
+ * ためだけに持ち、同期しない。1 日たった行は、1 日 1 回の片付けで消す。
+ *
+ * - 通知の記事の行（article_id あり）：当たった記事ごとに 1 つ。ユーザーと記事で一意（1 人 × 1 記事に
+ *   1 通）
+ * - 通知のまとめの行（article_id が null）：まとめた窓ごとに 1 つ。(ユーザー, ベル, 窓の始まり) で一意
+ * - 状態：sent（送る）、limited（上限で送らない）、bundled（まとめに入れる。通知の記事の行だけ）。
+ *   通知のまとめの行がまだない窓の bundled が、まとめ待ち
+ * - 時刻は、書く文の中の DB の時計（db/clock.ts の DB_NOW_MS）で決める
+ */
+export const bellNotifications = sqliteTable(
+  "bell_notifications",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    bellId: text("bell_id")
+      .notNull()
+      .references(() => bells.id, { onDelete: "cascade" }),
+    /** 当たった記事。通知のまとめの行は null */
+    articleId: text("article_id").references(() => articles.id, { onDelete: "cascade" }),
+    /** 入った窓の始まり。窓を開いた通知の記事の行の、作った時刻 */
+    windowStart: integer("window_start", { mode: "timestamp_ms" }).notNull(),
+    /** 作った時刻。通知の記事の行では、当たった時刻 */
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    state: text("state", { enum: BELL_NOTIFICATION_STATES }).notNull(),
+  },
+  (t) => [
+    // 1 人 × 1 記事に 1 つ。記事（articles）の行が消えたときの連鎖でも引く
+    uniqueIndex("bell_notifications_article_id_user_id_idx").on(t.articleId, t.userId),
+    // 通知のまとめの行は 1 つの窓に 1 つ
+    uniqueIndex("bell_notifications_bundle_idx")
+      .on(t.userId, t.bellId, t.windowStart)
+      .where(sql`${t.articleId} is null`),
+    // 窓と何件目かを数え、まとめの仕事が窓の行を読む。ベルの行が消えたときの連鎖でも引く
+    index("bell_notifications_bell_id_window_start_idx").on(t.bellId, t.windowStart),
+    // 1 時間の上限を数える
+    index("bell_notifications_user_id_created_at_idx").on(t.userId, t.createdAt),
+    // 1 日たった行を片付ける
+    index("bell_notifications_created_at_idx").on(t.createdAt),
+    check(
+      "bell_notifications_state_check",
+      sql`${t.state} in ('sent', 'limited', 'bundled')
+        and (${t.state} <> 'bundled' or ${t.articleId} is not null)`,
+    ),
+  ],
+);
+
+/**
+ * sendo が自分で作って持つ秘密（docs/decisions/images.md の 2）。画像の URL の署名の鍵と、VAPID の
+ * 鍵の組（docs/decisions/web-push.md の 1）。初めて使うときに作る（db/secrets.ts）。行を消すと、
+ * 次に使うときに作り直す
  */
 export const appSecrets = sqliteTable("app_secrets", {
   name: text("name").primaryKey(),
-  /** 乱数を base64url にしたもの */
+  /** 署名の鍵は乱数を base64url にしたもの、VAPID の鍵の組は秘密の JWK の JSON */
   value: text("value").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
@@ -839,12 +1046,18 @@ export const jobQueue = sqliteTable(
     id: text("id").primaryKey(),
     /** 仕事（src/jobs/job.ts の Job）の JSON。取り出したあとで確かめる */
     job: text("job").notNull(),
+    /** Discord の取得だけが持つ、直列に動かす単位 */
+    discordFeedId: text("discord_feed_id"),
     /** 取り出した回数 */
     attempts: integer("attempts").notNull().default(0),
     /** この時刻を過ぎたら取り出してよい */
     runAt: integer("run_at", { mode: "timestamp_ms" }).notNull(),
   },
-  (table) => [index("job_queue_run_at_idx").on(table.runAt)],
+  (table) => [
+    index("job_queue_run_at_idx").on(table.runAt),
+    // Discord の購読ごとに未着手の仕事 1 つと、着手済みの仕事 1 つを持てる。
+    uniqueIndex("job_queue_discord_slot_idx").on(table.discordFeedId, sql`(${table.attempts} > 0)`),
+  ],
 );
 
 export type User = typeof users.$inferSelect;
@@ -857,6 +1070,8 @@ export type OAuthGrant = typeof oauthGrants.$inferSelect;
 export type OAuthCode = typeof oauthCodes.$inferSelect;
 export type OAuthToken = typeof oauthTokens.$inferSelect;
 export type Folder = typeof folders.$inferSelect;
+export type Workspace = typeof workspaces.$inferSelect;
+export type Bell = typeof bells.$inferSelect;
 export type Feed = typeof feeds.$inferSelect;
 export type NewFeed = typeof feeds.$inferInsert;
 export type Subscription = typeof subscriptions.$inferSelect;

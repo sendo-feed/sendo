@@ -33,6 +33,7 @@ import { FetchFeedError } from "../fetcher/fetch-feed";
 import { findFeedIcon, ICON_CHECK_INTERVAL_MS } from "../fetcher/find-icon";
 import { sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
+import { notifyBells } from "./bell-notifications";
 import type { FetchFeedOutcome } from "./fetch-feed";
 import { nextFetchInterval } from "./fetch-slots";
 import { reportStorageFull } from "./storage";
@@ -48,6 +49,7 @@ export async function runFetchDiscord(
     | "retentionConfig"
     | "jobs"
     | "syncUpdates"
+    | "push"
   >,
   feed: Feed,
   startedAt: Date,
@@ -121,21 +123,43 @@ export async function runFetchDiscord(
     messages.every((message) => BigInt(message.id) > BigInt(subscribedAt));
   if (mayHaveOlder || (first && messages.length === 0)) cursor = subscribedAt;
 
-  let inserted = 0;
+  let insertedIds = new Set<string>();
   if (canStore) {
     // 本文を、記事の行を入れる前に置く（docs/decisions/content.md の 4）
     const stored = await storeDiscordContents(platform, feed.id, articles, htmls);
-    inserted = await insertDiscordArticles(
-      db,
-      feed.id,
-      discordConnectionId,
-      articles.filter((article) => !stored.deferred.has(article.guid)),
+    insertedIds = new Set(
+      await insertDiscordArticles(
+        db,
+        feed.id,
+        discordConnectionId,
+        articles.filter((article) => !stored.deferred.has(article.guid)),
+      ),
     );
     // 行に入った名前の書き留めを消す。入らなかった名前は残り、1 日 1 回の片付けが本文を消す
     await clearUsedContentNotes(db, stored.keys);
   }
+  const inserted = insertedIds.size;
   // 記事を入れ終えてから配り、配り終えてから次に取得する位置を記録する。
   await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
+  // この回に行を入れた投稿を、ベルで判定する（docs/decisions/notifications.md の 8）
+  await notifyBells(platform, {
+    previousSuccessAt: feed.lastSuccessfulFetchAt,
+    articles: articles
+      .filter((article) => insertedIds.has(article.id))
+      .map((article) => {
+        // 置いたかどうか（大きすぎる本文は置かない）によらず、サニタイズした本文で判定する。判定の
+        // 前にもう一度サニタイズするが、サニタイズした HTML の文字は変わらない
+        const html = htmls.get(article.guid);
+        return {
+          id: article.id,
+          publishedAt: new Date(article.publishedAt),
+          dated: true,
+          title: article.title,
+          summary: article.summary,
+          body: html === undefined ? null : { html, baseUrl: article.url },
+        };
+      }),
+  });
   const usage = await readStorageUsage(db);
   if (inserted !== articles.length) {
     // 容量のトリガーで一部だけ入らなかった場合は、次回も同じ範囲を取り直す。
@@ -152,16 +176,16 @@ export async function runFetchDiscord(
     await platform.jobs.enqueue([{ type: "clean-up" }]);
   }
 
+  const hasMore = mayHaveOlder || (!first && messages.length === DISCORD_PAGE_SIZE);
   const minMs = platform.fetchConfig.intervalMs;
-  const interval =
-    mayHaveOlder || (!first && messages.length === DISCORD_PAGE_SIZE)
-      ? minMs
-      : await nextFetchInterval(db, {
-          feedId: feed.id,
-          now: startedAt,
-          minMs,
-          feedCreatedAt: feed.createdAt,
-        });
+  const interval = hasMore
+    ? minMs
+    : await nextFetchInterval(db, {
+        feedId: feed.id,
+        now: startedAt,
+        minMs,
+        feedCreatedAt: feed.createdAt,
+      });
   const recorded = await recordFetchSuccess(db, feed.id, {
     now: startedAt,
     nextFetchAt: new Date(startedAt.getTime() + interval),
@@ -173,8 +197,16 @@ export async function runFetchDiscord(
     // ここでは変えない（docs/decisions/discord.md の 7）。アイコンが変わると、購読の変更番号は
     // トリガーが進める（docs/decisions/images.md の 8）
     iconUrl: channel.iconUrl ?? undefined,
-    discord: { cursor, connectionId: discordConnectionId },
+    discord: {
+      cursor,
+      connectionId: discordConnectionId,
+      previousCursor: discordCursor,
+      previousFetchedAt: feed.lastFetchedAt,
+    },
   });
+  if (recorded && hasMore) {
+    await platform.jobs.enqueue([{ type: "fetch-discord", feedId: feed.id }]);
+  }
   if (recorded && channel.iconUrl === null) {
     await refreshDiscordSiteIcon(platform, {
       feedId: feed.id,

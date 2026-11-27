@@ -10,6 +10,7 @@ import {
   type FetchConfig,
   MIN_FETCH_INTERVAL_MINUTES,
   type OAuthServerConfig,
+  type PushConfig,
   parseEmailList,
   parseFetchIntervalMinutes,
   parseOrigin,
@@ -86,26 +87,171 @@ function readOAuthServerConfig(
   }
 }
 
+/** 翻訳の思考量（docs/decisions/translation.md の 9） */
+export const TRANSLATION_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type TranslationEffort = (typeof TRANSLATION_EFFORTS)[number];
+
+/** 系列の名前（その系列の最新を選ぶ。同じく 9） */
+export const TRANSLATION_MODEL_FAMILIES = ["sonnet", "haiku", "opus"] as const;
+export type TranslationModelFamily = (typeof TRANSLATION_MODEL_FAMILIES)[number];
+
+/** 段階のモデル。系列の名前ならその系列の最新、ID ならそのモデルに固定する */
+export type TranslationModelChoice = { family: TranslationModelFamily } | { id: string };
+
+/** 1 つの段階のモデルと思考量 */
+export interface TranslationTierConfig {
+  model: TranslationModelChoice;
+  effort: TranslationEffort;
+}
+
 export interface TranslationConfig {
   apiKey: string;
-  /** その場の翻訳とバッチの固定のモデル（TRANSLATION_MODEL）。なければ Models API の一覧から選ぶ */
-  model?: string;
-  /** 訳し直しの固定のモデル（RETRANSLATION_MODEL）。なければ Models API の一覧から選ぶ */
-  retranslationModel?: string;
+  /** 通常の段階（その場の翻訳と、閾値より短い自動の翻訳） */
+  normal: TranslationTierConfig;
+  /** 長文の段階（送る本文が閾値以上の自動の翻訳） */
+  long: TranslationTierConfig;
+  /** 品質優先の段階（訳し直し） */
+  quality: TranslationTierConfig;
+  /** 長文とみなす、送る本文の文字数（これ以上が長文） */
+  longThresholdChars: number;
 }
+
+/** 段階の既定（docs/decisions/translation.md の 9） */
+export const DEFAULT_TRANSLATION_TIERS: Readonly<
+  Record<"normal" | "long" | "quality", TranslationTierConfig>
+> = {
+  normal: { model: { family: "sonnet" }, effort: "medium" },
+  long: { model: { family: "haiku" }, effort: "low" },
+  quality: { model: { family: "opus" }, effort: "medium" },
+};
+
+/** 長文の閾値の既定と範囲（同じく 9） */
+export const DEFAULT_LONG_THRESHOLD_CHARS = 3_000;
+export const MAX_LONG_THRESHOLD_CHARS = 60_000;
+
+export type TranslationEnvName =
+  | "ANTHROPIC_API_KEY"
+  | "TRANSLATION_MODEL"
+  | "TRANSLATION_EFFORT"
+  | "TRANSLATION_LONG_MODEL"
+  | "TRANSLATION_LONG_EFFORT"
+  | "TRANSLATION_LONG_THRESHOLD_CHARS"
+  | "RETRANSLATION_MODEL"
+  | "RETRANSLATION_EFFORT";
 
 /**
  * 記事の翻訳の設定を読む（docs/decisions/translation.md の 9、15）。API キーがなければ翻訳は動かない。
- * TRANSLATION_MODEL ／ RETRANSLATION_MODEL があれば、そのモデルに固定する
+ * 段階ごとのモデル（系列の名前かモデルの ID）、思考量、長文の閾値を読む。知らない系列の名前、知らない
+ * 思考量、範囲の外の閾値は、エラーをログに出して、その項目だけ既定で動く（空の値は書いていないものとする）
  */
 export function readTranslationConfig(
-  env: Partial<Record<"ANTHROPIC_API_KEY" | "TRANSLATION_MODEL" | "RETRANSLATION_MODEL", string>>,
+  env: Partial<Record<TranslationEnvName, string>>,
 ): TranslationConfig | undefined {
   const apiKey = env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) return undefined;
-  const model = env.TRANSLATION_MODEL?.trim();
-  const retranslationModel = env.RETRANSLATION_MODEL?.trim();
-  return { apiKey, ...(model && { model }), ...(retranslationModel && { retranslationModel }) };
+  const tier = (
+    name: "normal" | "long" | "quality",
+    modelEnv: TranslationEnvName,
+    effortEnv: TranslationEnvName,
+  ): TranslationTierConfig => {
+    const fallback = DEFAULT_TRANSLATION_TIERS[name];
+    return {
+      model: readModelChoice(modelEnv, env[modelEnv]) ?? fallback.model,
+      effort: readEffort(effortEnv, env[effortEnv]) ?? fallback.effort,
+    };
+  };
+  return {
+    apiKey,
+    normal: tier("normal", "TRANSLATION_MODEL", "TRANSLATION_EFFORT"),
+    long: tier("long", "TRANSLATION_LONG_MODEL", "TRANSLATION_LONG_EFFORT"),
+    quality: tier("quality", "RETRANSLATION_MODEL", "RETRANSLATION_EFFORT"),
+    longThresholdChars:
+      readThreshold(env.TRANSLATION_LONG_THRESHOLD_CHARS) ?? DEFAULT_LONG_THRESHOLD_CHARS,
+  };
+}
+
+/** `claude-` で始まればモデルの ID、それ以外は系列の名前（大文字と小文字は区別しない） */
+function readModelChoice(
+  name: TranslationEnvName,
+  raw: string | undefined,
+): TranslationModelChoice | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  if (value.startsWith("claude-")) return { id: value };
+  const family = TRANSLATION_MODEL_FAMILIES.find((f) => f === value.toLowerCase());
+  if (family !== undefined) return { family };
+  console.error(
+    `${name} is not a model family (sonnet, haiku, opus) or a model ID; using the default`,
+  );
+  return undefined;
+}
+
+function readEffort(name: TranslationEnvName, raw: string | undefined) {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  const effort = TRANSLATION_EFFORTS.find((e) => e === value.toLowerCase());
+  if (effort !== undefined) return effort;
+  console.error(`${name} must be one of ${TRANSLATION_EFFORTS.join(", ")}; using the default`);
+  return undefined;
+}
+
+function readThreshold(raw: string | undefined): number | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  const chars = /^[0-9]+$/.test(value) ? Number(value) : Number.NaN;
+  if (chars >= 1 && chars <= MAX_LONG_THRESHOLD_CHARS) return chars;
+  console.error(
+    `TRANSLATION_LONG_THRESHOLD_CHARS must be an integer from 1 to ${MAX_LONG_THRESHOLD_CHARS}; using the default`,
+  );
+  return undefined;
+}
+
+export type PushEnvName = "VAPID_SUBJECT" | "READER_URL";
+
+/**
+ * Web Push の設定を読む（docs/decisions/web-push.md の 2、3）。VAPID_SUBJECT と READER_URL が
+ * そろっているときだけ使える。形が正しくなければ、エラーをログに出して使わない。VAPID_SUBJECT だけが
+ * あるときは、Web Push を使うつもりで入れたとみて、READER_URL がないことを警告に出す
+ */
+export function readPushConfig(env: Partial<Record<PushEnvName, string>>): PushConfig | undefined {
+  const text = env.VAPID_SUBJECT?.trim();
+  if (!text) return undefined;
+  const subject = parseVapidSubject(text);
+  if (subject === undefined) {
+    console.error("Web Push is disabled: VAPID_SUBJECT must be a mailto: address or an https: URL");
+    return undefined;
+  }
+  let readerOrigin: string | undefined;
+  try {
+    readerOrigin = parseOrigin(env.READER_URL);
+  } catch (error) {
+    console.error("Web Push is disabled: READER_URL must be an https origin", error);
+    return undefined;
+  }
+  if (readerOrigin === undefined) {
+    console.warn("Web Push is disabled: READER_URL is not set");
+    return undefined;
+  }
+  return { subject, readerOrigin };
+}
+
+/** 宛先 1 つの mailto:（local@domain）。パーセントの符号化、`?`・`#`、宛先の区切りの `,` は使わせない */
+const MAILTO_SUBJECT = /^mailto:[A-Za-z0-9.!$&'*+/=^_{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$/i;
+
+/**
+ * 宛先 1 つの mailto: か、https: の URL だけを受ける。プッシュサービスが送り手に連絡する先。
+ * 断る文字を並べると漏れるので、生の文字列に許す形の式を当てる。https: は空白と制御文字のない
+ * ASCII で、URL として読めるものだけ
+ */
+function parseVapidSubject(text: string): string | undefined {
+  if (MAILTO_SUBJECT.test(text)) return new URL(text).href;
+  if (!/^https:[\x21-\x7e]+$/i.test(text)) return undefined;
+  try {
+    const url = new URL(text);
+    return url.protocol === "https:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export type DiscordEnvName =

@@ -138,6 +138,9 @@ describe("記事を取り込んだとき", () => {
       fetch: fetched.fetch,
       languageDetection: detector(),
       jobs: {
+        async enqueueDueDiscordFetches() {
+          return 0;
+        },
         async enqueue(jobs) {
           if (jobs.some((job) => job.type === "detect-article-languages")) {
             throw new Error("queue is busy");

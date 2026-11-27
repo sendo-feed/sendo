@@ -46,6 +46,9 @@ const Channel = z.object({
     )
     .optional(),
 });
+const readChannel = permissionReader(Channel);
+const readGuild = permissionReader(Guild);
+const readMember = permissionReader(Member);
 const Message = z.object({
   id: Snowflake,
   channel_id: Snowflake,
@@ -130,6 +133,27 @@ export async function identifyDiscordUser(
   return user.id;
 }
 
+/** セッションを作る前に、再起動をまたいで Discord が持つ Bot ごとの残り回数を確認する。 */
+export async function getDiscordGatewayInfo(fetch: typeof globalThis.fetch, config: DiscordConfig) {
+  const info = await requestBot(
+    fetch,
+    config,
+    "/gateway/bot",
+    z.object({
+      url: z.string(),
+      session_start_limit: z.object({
+        remaining: z.int().nonnegative(),
+        reset_after: z.int().nonnegative(),
+      }),
+    }),
+  );
+  return {
+    url: info.url,
+    remaining: info.session_start_limit.remaining,
+    resetAfterMs: info.session_start_limit.reset_after,
+  };
+}
+
 /** 本人と Bot の両方が読める、通常のテキストチャンネルかアナウンスチャンネルだけを扱う */
 export async function getReadableChannel(
   fetch: typeof globalThis.fetch,
@@ -138,12 +162,11 @@ export async function getReadableChannel(
   userId: string,
 ): Promise<{ name: string; iconUrl: string | null | undefined } | null> {
   const { guildId, channelId } = address;
-  const bot = { headers: { authorization: `Bot ${config.botToken}` } };
   const [channel, guild, user, botMember] = await Promise.all([
-    request(fetch, `/channels/${channelId}`, Channel, bot),
-    request(fetch, `/guilds/${guildId}`, Guild, bot),
-    request(fetch, `/guilds/${guildId}/members/${userId}`, Member, bot),
-    request(fetch, `/guilds/${guildId}/members/${config.clientId}`, Member, bot),
+    readChannel(fetch, config, `/channels/${channelId}`),
+    readGuild(fetch, config, `/guilds/${guildId}`),
+    readMember(fetch, config, `/guilds/${guildId}/members/${userId}`),
+    readMember(fetch, config, `/guilds/${guildId}/members/${config.clientId}`),
   ]).catch((error: unknown) => {
     if (isDiscordAccessDenied(error)) return [null, null, null, null] as const;
     throw error;
@@ -162,6 +185,26 @@ export async function getReadableChannel(
   )
     return null;
   return { name: channel.name, iconUrl: discordGuildIconUrl(guildId, guild.icon) };
+}
+
+/** 応答が確定したあとに始まる権限確認は、改めて Discord に問い合わせる。 */
+function permissionReader<T>(schema: z.ZodType<T>) {
+  const pendingByFetch = new WeakMap<typeof globalThis.fetch, Map<string, Promise<T>>>();
+  return (fetch: typeof globalThis.fetch, config: DiscordConfig, path: string): Promise<T> => {
+    const transport = config.botFetch ?? fetch;
+    let pending = pendingByFetch.get(transport);
+    if (!pending) {
+      pending = new Map();
+      pendingByFetch.set(transport, pending);
+    }
+    const key = JSON.stringify([config.botToken, path]);
+    const existing = pending.get(key);
+    if (existing) return existing;
+    const requests = pending;
+    const reading = requestBot(fetch, config, path, schema).finally(() => requests.delete(key));
+    requests.set(key, reading);
+    return reading;
+  };
 }
 
 /** サーバーにアイコンがないときに、Discord のアイコンを探すサイト（docs/decisions/discord.md の 7） */
@@ -263,11 +306,11 @@ export async function getDiscordMessages(
     after === DISCORD_CURSOR_START
       ? `limit=${DISCORD_INITIAL_MESSAGES}`
       : `after=${after}&limit=${DISCORD_PAGE_SIZE}`;
-  const messages = await request(
+  const messages = await requestBot(
     fetch,
+    config,
     `/channels/${channelId}/messages?${range}`,
     z.array(Message).max(DISCORD_PAGE_SIZE),
-    { headers: { authorization: `Bot ${config.botToken}` } },
   );
   if (
     messages.some(
@@ -279,11 +322,27 @@ export async function getDiscordMessages(
   return messages;
 }
 
+function requestBot<T>(
+  fetch: typeof globalThis.fetch,
+  config: DiscordConfig,
+  path: string,
+  schema: z.ZodType<T>,
+) {
+  return request(
+    config.botFetch ?? fetch,
+    path,
+    schema,
+    { headers: { authorization: `Bot ${config.botToken}` } },
+    config.botFetch === undefined,
+  );
+}
+
 async function request<T>(
   fetch: typeof globalThis.fetch,
   path: string,
   schema: z.ZodType<T>,
   init: RequestInit,
+  applyTimeout = true,
 ): Promise<T> {
   try {
     const url = toFetchableUrl(DISCORD_API + path);
@@ -293,13 +352,13 @@ async function request<T>(
       ...init,
       headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(10_000),
+      ...(applyTimeout && { signal: AbortSignal.timeout(10_000) }),
     });
     if (!res.ok) {
       const retryHeader = res.headers.get("retry-after")?.trim() ?? null;
       // Discord のレート制限は、秒数に小数が入る場合がある。
       const retryAfter =
-        res.status === 429 && retryHeader && /^\d{1,15}\.\d+$/.test(retryHeader)
+        res.status === 429 && retryHeader && /^\d{1,15}(?:\.\d+)?$/.test(retryHeader)
           ? Math.ceil(Number(retryHeader) * 1000)
           : parseRetryAfter(retryHeader, { date: res.headers.get("date"), now: new Date() });
       const discordCode =

@@ -17,6 +17,7 @@ import {
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import { type Database, getRow } from ".";
+import { type ActiveBell, readBellHorizon } from "./bells";
 import type { InboxArticle } from "./inbox";
 import { readRemovalHorizon } from "./retention";
 import { readSavedPageHorizon, type SavedPage, toSavedPage } from "./saved";
@@ -24,6 +25,8 @@ import {
   type ArticleTranslation,
   articles,
   articleTranslations,
+  bellHorizons,
+  bells,
   clientSettings,
   type Feed,
   type Folder,
@@ -37,6 +40,8 @@ import {
   subscriptions,
   userArticleRemovals,
   userArticles,
+  type Workspace,
+  workspaces,
 } from "./schema";
 import { readSettingHorizon } from "./settings";
 import type { TranslationFailure } from "./translations";
@@ -66,6 +71,8 @@ export type SyncCursor = {
   articles: SyncPosition;
   settings: SyncPosition;
   savedPages?: SyncPosition | undefined;
+  workspaces?: SyncPosition | undefined;
+  bells?: SyncPosition | undefined;
 };
 
 /** 最初の同期の始まり。upTo は、最初のページで決める（-1 は「まだ決めていない」） */
@@ -74,6 +81,9 @@ const START: SyncPosition = { seq: 0, id: null, upTo: -1, done: false };
 /** カーソルなしで来たとき（最初の同期の始まり） */
 /** 最初の同期の始まりの位置。設定の位置を持たない古いカーソルを、設定だけ最初から送るのにも使う */
 export const INITIAL_POSITION = START;
+
+/** 既存のクライアントに所属を補うとき、変更と削除の印を番号0から読む。 */
+export const START_OF_CHANGES: SyncPosition = { ...START, upTo: null };
 
 export const INITIAL_CURSOR: SyncCursor = {
   folders: START,
@@ -89,6 +99,8 @@ export const SYNC_LIMITS = {
   articles: 300,
   settings: 500,
   savedPages: 100,
+  workspaces: 500,
+  bells: 500,
 } as const;
 
 /** 最初の同期で送る、既読の記事の範囲（受信箱に入ってからの日数） */
@@ -120,6 +132,12 @@ export type SyncTranslation = {
    * では、行に残っていても付けない（untranslated のときだけ意味を持つ）
    */
   failure: TranslationFailure | null;
+  /**
+   * 訳したときのモデルと思考量（docs/decisions/translation.md の 18）。訳文のある行（訳した時刻のある行。
+   * 訳し直しの最中も、もとの訳文の条件）だけ。訳文のない行と、思考量を残していない行は null
+   */
+  model: string | null;
+  effort: string | null;
 };
 
 const t = articleTranslations;
@@ -135,6 +153,8 @@ const translationColumns = {
   translationFailureKind: t.failureKind,
   translationFailureCategory: t.failureCategory,
   translationFailureStage: t.failureStage,
+  translationModel: t.model,
+  translationEffort: t.effort,
 };
 
 /** 配る翻訳だけを結ぶ条件（skipped の行は付けない） */
@@ -151,9 +171,13 @@ function toSyncTranslation(row: {
   translationFailureKind: TranslationFailure["kind"] | null;
   translationFailureCategory: string | null;
   translationFailureStage: TranslationFailure["stage"] | null;
+  translationModel: string | null;
+  translationEffort: string | null;
 }): SyncTranslation | null {
   const status = row.translationStatus;
   if (status === null || status === "skipped" || row.translationLanguage === null) return null;
+  // 条件は訳文のある行だけで意味を持つ（訳文のない行に残っていても付けない）
+  const translated = row.translationTranslatedAt !== null;
   return {
     language: row.translationLanguage,
     status,
@@ -171,6 +195,8 @@ function toSyncTranslation(row: {
             stage: row.translationFailureStage,
           }
         : null,
+    model: translated ? row.translationModel : null,
+    effort: translated ? row.translationEffort : null,
   };
 }
 
@@ -182,12 +208,16 @@ export type SyncSetting = { deviceType: string; name: string } & (
 
 export type SyncSavedPage = (SavedPage & { deleted: false }) | { id: string; deleted: true };
 
+export type SyncBell = (ActiveBell & { deleted: false }) | { id: string; deleted: true };
+
 export type SyncChanges = {
   folders: Folder[];
   subscriptions: (Subscription & { feed: Feed })[];
   articles: SyncArticle[];
   settings: SyncSetting[];
   savedPages?: SyncSavedPage[];
+  workspaces?: Workspace[];
+  bells?: SyncBell[];
   cursor: SyncCursor;
   hasMore: boolean;
 };
@@ -290,7 +320,7 @@ export async function readChanges(
   const ua = userArticles;
   const removals = userArticleRemovals;
   const since = new Date(input.now.getTime() - INITIAL_SYNC_DAYS * 24 * 60 * 60 * 1000);
-  const maxSeqOf = async (table: typeof folders | typeof subscriptions) => {
+  const maxSeqOf = async (table: typeof folders | typeof subscriptions | typeof workspaces) => {
     const row = await db
       .select({ value: max(table.seq) })
       .from(table)
@@ -318,6 +348,28 @@ export async function readChanges(
     }),
     cursor.folders,
   );
+
+  const w =
+    cursor.workspaces &&
+    (await readTable(
+      singleTable({
+        seq: workspaces.seq,
+        id: workspaces.id,
+        initialFilter: isNull(workspaces.deletedAt),
+        limit: SYNC_LIMITS.workspaces,
+        read: (where, limit) =>
+          db
+            .select()
+            .from(workspaces)
+            .where(and(eq(workspaces.userId, userId), where))
+            .orderBy(asc(workspaces.seq), asc(workspaces.id))
+            .limit(limit)
+            .all(),
+        position: (row) => ({ seq: row.seq, id: row.id }),
+        maxSeq: () => maxSeqOf(workspaces),
+      }),
+      cursor.workspaces,
+    ));
 
   const current = alias(subscriptions, "current");
   const s = await readTable(
@@ -404,6 +456,8 @@ export async function readChanges(
         translationFailureKind,
         translationFailureCategory,
         translationFailureStage,
+        translationModel,
+        translationEffort,
         ...article
       }) => ({
         seq,
@@ -421,6 +475,8 @@ export async function readChanges(
             translationFailureKind,
             translationFailureCategory,
             translationFailureStage,
+            translationModel,
+            translationEffort,
           }),
         },
       }),
@@ -480,14 +536,13 @@ export async function readChanges(
       const { seq, changedId: id } = row;
       if (row.removed) return { seq, id, item: { deleted: true, id } };
       // 同じ文で読むので、受信箱の行には必ず受信箱の状態と記事がある（外部キー）
-      const { feedId, guid, publishedAt, createdAt, receivedAt, itemId } = row;
+      const { feedId, guid, publishedAt, createdAt, receivedAt } = row;
       if (
         feedId === null ||
         guid === null ||
         publishedAt === null ||
         createdAt === null ||
-        receivedAt === null ||
-        itemId === null
+        receivedAt === null
       ) {
         throw new Error(`inbox row without its article: ${id}`);
       }
@@ -502,7 +557,6 @@ export async function readChanges(
         thumbnailUrl: row.thumbnailUrl,
         publishedAt,
         createdAt,
-        itemId,
         contentKey: row.contentKey,
         readAt: row.readAt,
         starredAt: row.starredAt,
@@ -598,8 +652,51 @@ export async function readChanges(
       cursor.savedPages,
     ));
 
+  const b =
+    cursor.bells &&
+    (await readTable(
+      singleTable({
+        seq: bells.seq,
+        id: bells.id,
+        initialFilter: isNull(bells.deletedAt),
+        limit: SYNC_LIMITS.bells,
+        read: (where, limit) =>
+          db
+            .select({
+              id: bells.id,
+              subscriptionId: bells.subscriptionId,
+              feedId: subscriptions.feedId,
+              words: bells.words,
+              createdAt: bells.createdAt,
+              deletedAt: bells.deletedAt,
+              seq: bells.seq,
+            })
+            .from(bells)
+            // 言葉だけのベルは購読を持たないので、落とさないよう左結合にする
+            .leftJoin(subscriptions, eq(subscriptions.id, bells.subscriptionId))
+            .where(and(eq(bells.userId, userId), where))
+            .orderBy(asc(bells.seq), asc(bells.id))
+            .limit(limit)
+            .all(),
+        position: (row) => ({ seq: row.seq, id: row.id }),
+        // 消した印の行を回収した下限も含める（記事の maxSeq と同じ理由）
+        maxSeq: async () => {
+          const row = await getRow<{ value: number }>(
+            db,
+            sql`select max(
+          coalesce((select max(${bells.seq}) from ${bells} where ${bells.userId} = ${userId}), 0),
+          coalesce((select ${bellHorizons.seq} from ${bellHorizons} where ${bellHorizons.userId} = ${userId}), 0)
+        ) as value`,
+          );
+          return row?.value ?? 0;
+        },
+      }),
+      cursor.bells,
+    ));
+
   return {
     folders: f.items,
+    ...(w && { workspaces: w.items }),
     subscriptions: s.items.map((row) => ({ ...row.subscription, feed: row.feed })),
     articles: a.items.map((row) => row.item),
     settings: c.items.map((row): SyncSetting => {
@@ -616,20 +713,44 @@ export async function readChanges(
             : { id: row.id, deleted: true },
       ),
     }),
+    ...(b && {
+      bells: b.items.map(
+        ({ id, subscriptionId, feedId, words, createdAt, deletedAt }): SyncBell =>
+          deletedAt === null
+            ? { id, subscriptionId, feedId, words, createdAt, deleted: false }
+            : { id, deleted: true },
+      ),
+    }),
     cursor: {
       folders: f.next,
       subscriptions: s.next,
       articles: a.next,
       settings: c.next,
       savedPages: p?.next,
+      workspaces: w?.next,
+      bells: b?.next,
     },
-    hasMore: f.more || s.more || a.more || c.more || (p?.more ?? false),
+    hasMore:
+      f.more ||
+      s.more ||
+      a.more ||
+      c.more ||
+      (p?.more ?? false) ||
+      (w?.more ?? false) ||
+      (b?.more ?? false),
   };
 }
 
 /**
- * カーソルの位置より後の、その人の消した記録（受信箱）か消した印の行（設定）が、回収されている
- * かもしれないか（docs/decisions/retention.md の 5、settings.md の 3）。そうなら、クライアントには
+ * 最初の同期の途中なら、送り終えたあと upTo から差分を取るので、upTo を位置として見る。
+ * 始めたばかり（upTo を決めていない、-1）なら、消した記録は要らない
+ */
+const positionOf = (at: SyncPosition) => (at.upTo === null ? at.seq : at.upTo);
+
+/**
+ * カーソルの位置より後の、その人の消した記録（受信箱）か消した印の行（保存、設定、ベル）が、
+ * 回収されているかもしれないか（docs/decisions/retention.md の 5、settings.md の 3、
+ * notifications.md の 3）。そうなら、クライアントには
  * 最初から同期し直してもらう。
  *
  * 変更を読んだ「あと」に呼ぶ。片付けは、回収の下限を引き上げてから記録を消すので、読んだときに
@@ -640,9 +761,6 @@ export async function isCursorExpired(
   db: Database,
   input: { userId: string; cursor: SyncCursor },
 ): Promise<boolean> {
-  // 最初の同期の途中なら、送り終えたあと upTo から差分を取るので、upTo を位置として見る。
-  // 始めたばかり（upTo を決めていない）なら、消した記録は要らない
-  const positionOf = (at: SyncPosition) => (at.upTo === null ? at.seq : at.upTo);
   const articlesAt = positionOf(input.cursor.articles);
   if (articlesAt >= 0 && articlesAt < (await readRemovalHorizon(db, input.userId))) return true;
 
@@ -655,14 +773,30 @@ export async function isCursorExpired(
     return true;
   }
 
-  const { settings: at } = input.cursor;
-  const settingsAt = positionOf(at);
-  if (settingsAt < 0) return false;
-  const horizon = await readSettingHorizon(db, input.userId);
-  // 設定は、1 回のリクエストで消した項目が同じ番号になる（受信箱の消した記録は、1 つずつ別の番号）。
-  // 差分の位置がその番号の途中かもしれず（続きのあるページの終わり）、その番号まで回収されて
-  // いたら、続きの消した印の行はもうない。送り切った位置（done）なら、同じ番号の行は 1 つの文で
-  // 書かれているので、すべて送ってある
+  if (await isCollectedAfter(input.cursor.settings, () => readSettingHorizon(db, input.userId))) {
+    return true;
+  }
+  return (
+    input.cursor.bells !== undefined &&
+    (await isCollectedAfter(input.cursor.bells, () => readBellHorizon(db, input.userId)))
+  );
+}
+
+/**
+ * 位置より後の消した印の行（設定、ベル）が、回収されているかもしれないか。
+ *
+ * 1 つの文で消した印を付けた行は、同じ番号になる（設定は、1 回のリクエストで消した項目。受信箱の
+ * 消した記録は、1 つずつ別の番号）。差分の位置がその番号の途中かもしれず
+ * （続きのあるページの終わり）、その番号まで回収されていたら、続きの消した印の行はもうない。
+ * 送り切った位置（done）なら、同じ番号の行は 1 つの文で書かれているので、すべて送ってある
+ */
+async function isCollectedAfter(
+  at: SyncPosition,
+  readHorizon: () => Promise<number>,
+): Promise<boolean> {
+  const position = positionOf(at);
+  if (position < 0) return false;
+  const horizon = await readHorizon();
   const midway = at.upTo === null && at.id !== null && !at.done;
-  return settingsAt < horizon || (midway && settingsAt === horizon);
+  return position < horizon || (midway && position === horizon);
 }

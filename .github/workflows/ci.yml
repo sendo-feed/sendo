@@ -55,6 +55,28 @@ jobs:
       - name: Check decision docs
         run: node scripts/check-decisions.mjs
 
+      - name: Check Reader environment in Compose
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          directory=$(mktemp -d)
+          cp compose.yaml "$directory/"
+          cd "$directory"
+          unset X_EMBED_ORIGIN
+          printf 'GOOGLE_CLIENT_SECRET=compose-test\n' > .env
+          for origin in '' 'https://x-embed.example.net'; do
+            if [[ -n "$origin" ]]; then
+              printf 'X_EMBED_ORIGIN=%s\n' "$origin" >> .env
+            fi
+            docker compose config --format json | node --input-type=module -e '
+              import assert from "node:assert/strict";
+              import { readFileSync } from "node:fs";
+              const { sendo, reader } = JSON.parse(readFileSync(0, "utf8")).services;
+              assert.equal(reader.environment?.X_EMBED_ORIGIN, process.argv[1]);
+              assert.equal(sendo.environment.GOOGLE_CLIENT_SECRET, "compose-test");
+              assert.ok(!Object.hasOwn(reader.environment, "GOOGLE_CLIENT_SECRET"));
+            ' "$origin"
+          done
+
       - name: Install
         if: steps.changes.outputs.docs_only != 'true'
         run: pnpm install --frozen-lockfile

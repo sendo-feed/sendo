@@ -3,7 +3,7 @@ import { isDiscordArticle } from "../db/articles";
 import { dbNow } from "../db/clock";
 import {
   type ArticleCursor,
-  countUnreadByFeed,
+  countUnread,
   getInboxArticle,
   listInbox,
   MAX_MARK_READ_IDS,
@@ -182,6 +182,14 @@ const MarkReadBodySchema = z
     feedId: z.string().min(1).max(64).optional(),
     folderId: z.string().min(1).max(64).optional(),
     all: z.literal(true).optional(),
+    subscriptionIds: z
+      .array(z.string().min(1).max(64))
+      .min(1)
+      .max(MAX_MARK_READ_IDS)
+      .optional()
+      .openapi({
+        description: "操作時の有効な購読の ID。cursor と組み合わせ、他の範囲指定とは併用しない",
+      }),
     until: z.iso.datetime().optional().openapi({
       description:
         "この時刻より前に受信箱に入った記事だけを既読にする。記事の一覧の最初のページの asOf を渡す。クライアントの時計の時刻は使わない（サーバーとずれていると、一覧に出ていなかった記事まで既読になる）",
@@ -192,12 +200,24 @@ const MarkReadBodySchema = z
     }),
   })
   .superRefine((body, ctx) => {
-    const scopes = [body.ids, body.feedId, body.folderId, body.all].filter((v) => v !== undefined);
+    const scopes = [body.ids, body.feedId, body.folderId, body.all, body.subscriptionIds].filter(
+      (v) => v !== undefined,
+    );
     if (scopes.length !== 1) {
       ctx.addIssue({
         code: "custom",
-        message: "ids ／ feedId ／ folderId ／ all のどれか 1 つを指定する",
+        message: "ids ／ feedId ／ folderId ／ all ／ subscriptionIds のどれか 1 つを指定する",
       });
+    }
+    if (body.subscriptionIds !== undefined) {
+      if (body.cursor === undefined || body.until !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["cursor"],
+          message: "subscriptionIds には cursor を指定し、until は指定しない",
+        });
+      }
+      return;
     }
     const boundaries = [body.until, body.cursor].filter((v) => v !== undefined);
     if (body.ids === undefined && boundaries.length !== 1) {
@@ -214,7 +234,7 @@ const markReadRoute = createRoute({
   method: "post",
   path: "/articles/mark-read",
   summary: "まとめて既読にする",
-  description: "ID を並べるか、フィード ／ フォルダ ／ すべてを指定する。",
+  description: "記事 ID、操作時の購読 ID、フィード、フォルダ、またはすべてを指定する。",
   request: {
     body: { required: true, content: { "application/json": { schema: MarkReadBodySchema } } },
   },
@@ -322,6 +342,17 @@ export function articlesApi(platform: Platform) {
         }
         boundary = { synced: { seq: cursor.articles.seq, id: cursor.articles.id } };
       }
+      if (body.subscriptionIds !== undefined) {
+        if (!boundary || !("synced" in boundary)) {
+          return c.json(errorBody("invalid_request", "subscriptionIds requires a cursor"), 400);
+        }
+        const updated = await markArticlesRead(db, {
+          userId: c.get("user").id,
+          scope: { subscriptionIds: body.subscriptionIds, ...boundary },
+          now: platform.now(),
+        });
+        return c.json({ updated }, 200);
+      }
       const scope: MarkReadScope | undefined =
         body.ids !== undefined
           ? { ids: body.ids }
@@ -345,8 +376,8 @@ export function articlesApi(platform: Platform) {
     })
     .openapi(unreadCountsRoute, async (c) => {
       const userId = c.get("user").id;
-      const [byFeed, subscriptions] = [
-        await countUnreadByFeed(db, userId),
+      const [{ total, byFeed }, subscriptions] = [
+        await countUnread(db, userId),
         await listSubscriptions(db, userId),
       ];
       const byFolder = new Map<string, number>();
@@ -357,7 +388,7 @@ export function articlesApi(platform: Platform) {
       }
       return c.json(
         {
-          total: [...byFeed.values()].reduce((sum, n) => sum + n, 0),
+          total,
           feeds: [...byFeed].map(([feedId, unread]) => ({ feedId, unread })),
           folders: [...byFolder].map(([folderId, unread]) => ({ folderId, unread })),
         },

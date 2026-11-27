@@ -65,8 +65,10 @@ export interface BodySegments {
   /** 送る文の長さの合計（Unicode の文字） */
   length: number;
   /** 受け取った訳（ID → 訳）から本文を組み立てる。使えない訳の断片は原文のまま */
-  assemble(translated: ReadonlyMap<string, string>): string;
+  assemble(translated: ReadonlyMap<string, string>): { html: string; counts: BodySegmentCounts };
 }
+
+export type BodySegmentCounts = { sent: number; missing: number; invalidMarkers: number };
 
 /** サニタイズした本文を、送る断片に分ける */
 export function splitBody(sanitized: string): BodySegments {
@@ -110,6 +112,7 @@ export function splitBody(sanitized: string): BodySegments {
     segments,
     length: segments.reduce((sum, segment) => sum + [...segment.text].length, 0),
     assemble(translated) {
+      const counts = { sent: segments.length, missing: 0, invalidMarkers: 0 };
       const serializeChildren = (children: Node[]): string => {
         let out = "";
         let pending: Node[] = [];
@@ -119,6 +122,10 @@ export function splitBody(sanitized: string): BodySegments {
           const run = first === undefined ? undefined : runs.get(first);
           const text = run === undefined ? undefined : translated.get(run.id);
           const rebuilt = run !== undefined && text !== undefined ? rebuild(run, text) : null;
+          if (run !== undefined) {
+            if (text === undefined) counts.missing++;
+            else if (rebuilt === null) counts.invalidMarkers++;
+          }
           out += rebuilt ?? pending.map(serialize).join("");
           pending = [];
         };
@@ -135,7 +142,7 @@ export function splitBody(sanitized: string): BodySegments {
         flush();
         return out;
       };
-      return serializeChildren(root);
+      return { html: serializeChildren(root), counts };
     },
   };
 }

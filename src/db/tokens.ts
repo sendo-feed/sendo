@@ -30,8 +30,7 @@ export function hashToken(token: string): Promise<string> {
 }
 
 /**
- * トークンの用途（docs/decisions/mcp.md の 2）。reader はリーダーアプリと REST API 用
- * （アプリ用パスワード）、mcp は /mcp 用。用途の違う入口では使えない
+ * トークンの用途（docs/decisions/mcp.md の 2）。reader は REST API 用、mcp は /mcp 用。用途の違う入口では使えない
  */
 export type TokenPurpose = AccessToken["purpose"];
 

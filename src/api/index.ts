@@ -4,6 +4,7 @@ import type { Platform } from "../platform";
 import { activityApi } from "./activity";
 import { articlesApi } from "./articles";
 import { authenticate, SESSION_COOKIE } from "./auth";
+import { bellsApi } from "./bells";
 import { discordApi } from "./discord";
 import { feedsApi } from "./feeds";
 import { foldersApi } from "./folders";
@@ -14,12 +15,14 @@ import { meApi } from "./me";
 import { notifyChanges } from "./notify-changes";
 import { oauthApi } from "./oauth";
 import { opmlApi } from "./opml";
+import { pushApi } from "./push";
 import { savedApi } from "./saved";
 import { settingsApi } from "./settings";
 import { syncApi } from "./sync";
 import { syncUpdatesApi } from "./sync-updates";
 import { tokensApi } from "./tokens";
 import { translationsApi } from "./translations";
+import { workspacesApi } from "./workspaces";
 
 /** OpenAPI の定義の、paths 以外の部分。/api/v1/openapi.json と spec/openapi.json で同じものを使う */
 export const OPENAPI_CONFIG = {
@@ -90,9 +93,12 @@ export function createApi(platform: Platform) {
   protectedApi.route("/", translationsApi(platform));
   protectedApi.route("/", activityApi(platform));
   protectedApi.route("/", foldersApi(platform));
+  protectedApi.route("/", workspacesApi(platform));
   protectedApi.route("/", imagesApi(platform));
   protectedApi.route("/", opmlApi(platform));
   protectedApi.route("/", savedApi(platform));
+  protectedApi.route("/", bellsApi(platform));
+  protectedApi.route("/", pushApi(platform));
   protectedApi.route("/", settingsApi(platform));
   protectedApi.route("/", syncApi(platform));
   protectedApi.route("/", tokensApi(platform));

@@ -3,7 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import { createApi } from "./api";
 import { errorBody } from "./api/schemas";
 import { isStorageLimitError } from "./db/storage";
-import { greaderApp } from "./greader";
+import { loggableError } from "./lib/log-error";
 import { mcpApp } from "./mcp";
 import { oauthApp } from "./oauth";
 import type { Platform } from "./platform";
@@ -18,8 +18,6 @@ export function createApp(platform: Platform) {
 
   app.get("/healthz", (c) => c.json({ status: "ok" }));
   app.route("/api/v1", createApi(platform));
-  // Google Reader API 互換（/accounts/ClientLogin と /reader/api/0。docs/decisions/greader.md）
-  app.route("/", greaderApp(platform));
   // リモート MCP サーバー（/mcp。docs/decisions/mcp.md）
   app.route("/", mcpApp(platform));
   // OAuth の認可サーバー（メタデータ、トークン、動的登録。docs/decisions/mcp.md の 3、5）
@@ -40,7 +38,7 @@ export function createApp(platform: Platform) {
       console.warn("storage_limit_reached");
       return c.json(errorBody("storage_full", "Storage capacity reached"), 503);
     }
-    console.error(err);
+    console.error(loggableError(err));
     return c.json(errorBody("internal_error", "Internal Server Error"), 500);
   });
 

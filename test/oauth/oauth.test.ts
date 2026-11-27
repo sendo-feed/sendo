@@ -918,7 +918,7 @@ describe("トークンのエンドポイント（/oauth/token）", () => {
     expect(((await expired.json()) as Json).error).toBe("invalid_grant");
   });
 
-  it("OAuth のトークンは、REST API と Google Reader API では使えない", async () => {
+  it("OAuth のトークンは REST API では使えない", async () => {
     const { platform } = setup();
     const { headers } = await session();
     const tokens = await authorizeAndExchange(platform, headers, "read write");
@@ -928,10 +928,6 @@ describe("トークンのエンドポイント（/oauth/token）", () => {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(rest.status).toBe(401);
-      const greader = await sendo(platform, "/reader/api/0/user-info", {
-        headers: { authorization: `GoogleLogin auth=${token}` },
-      });
-      expect(greader.status).toBe(401);
     }
     expect((await mcp(platform, tokens.refresh_token)).status).toBe(401);
   });
