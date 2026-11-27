@@ -1,11 +1,11 @@
 ---
 name: review-loop
-description: 下書きの PR に Codex のレビューを回し、指摘を判定して直し、終了の条件を満たすまで繰り返す。PR を出すとき、または「レビューを回して」と言われたときに使う。
+description: 自己レビュー後に下書きを外して Codex の自動レビューを始め、指摘を判定して直し、終了の条件を満たすまで繰り返す。PR を出すとき、または「レビューを回して」と言われたときに使う。
 ---
 
 # Codex レビューのループ
 
-規約の全文は CONTRIBUTING.md の「レビューの進め方」（https://github.com/sendo-feed/.github/blob/main/CONTRIBUTING.md ）。この手順はそれを回すためのもの。手順 1 の自己レビューは、このリポジトリで試している決まりで、CONTRIBUTING.md にはまだない。
+規約の全文は CONTRIBUTING.md の「レビューの進め方」（https://github.com/sendo-feed/.github/blob/main/CONTRIBUTING.md ）。この手順はそれを回すためのもの。手順 1 の自己レビューの方法は、このリポジトリで試している。
 
 ## 終了の条件
 
@@ -26,7 +26,7 @@ description: 下書きの PR に Codex のレビューを回し、指摘を判�
 
 ### 1. Codex に出す前に自己レビューする
 
-この PR でまだ Codex にレビューを頼んでいなければ（PR がまだないときも）、1 回目を頼む前に自己レビューをする。Codex は 1 回に挙げる指摘が少ないので、出す時点で不具合がいくつも残っていると、3 回では終わらない。自己レビューはラウンドに数えない（`@codex review` のコメントを付けないので、手順 3 の数え方にも入らない）。
+下書きの PR を作る前に自己レビューをする。作成済みでまだ自己レビューをしていなければ、最初のレビューを始める前に行う。Codex は 1 回に挙げる指摘が少ないので、出す時点で不具合がいくつも残っていると、3 回では終わらない。自己レビューはラウンドに数えない。
 
 - **書いた側の考えを渡さない**：自分で読み返すのではなく、サブエージェントに見直させる。読ませる材料は次の 2 つだけにする（ほかに渡すのは、下の観点と返してもらう形）。
   - 差分（`git fetch origin main` のあと、`git diff origin/main...HEAD` をファイルに書き出して、その場所を渡す）
@@ -61,51 +61,47 @@ git push -u origin HEAD
 gh pr create --draft --title "<type>(<scope>): <件名>" --body-file <本文のファイル>
 ```
 
-### 3. ラウンドを始める
+### 3. ラウンドを記録して始める
 
-- 今のラウンド数は「この PR に付いている `@codex review` のコメントの数 ＋ 1」。状態はファイルに持たず、毎回 GitHub から数える。
+- 最初は、自己レビューを終えた下書きの PR を `gh pr ready <番号>` でレビュー待ちにする。次のラウンドは、レビュー待ちのまま修正コミットを push する。自動レビューを起動する操作はラウンドごとに一度行い、結果を確かめてから次に進む。
+- 要約は最新のレビューで上書きされるため、解除・push・手動依頼の前に、PR のコメントにラウンド番号、対象 SHA、起動する操作を 1 件記録する。本文の先頭に `<!-- review-loop-round -->` を付ける。たとえば「1 回目・`<SHA>`・下書き解除」と書く。
+- 作業を引き継ぐときは、PR のコメントと要約を照合する。解除なら PR の状態とタイムライン、push なら PR の HEAD、手動依頼ならラウンド記録の後に付いた依頼コメントを調べる。操作が済んでいれば手順 4 で結果を確認し、済んでいなければその回の操作から再開する。打ち切りの記録があれば、手順 6 の打ち切りの残りから再開する。既存の手動依頼や自動レビューがある PR は、その履歴も確認し、回数を確定できないときは新しいレビューを始めず報告する。4 回目は始めない。
 
 ```sh
 gh api "repos/{owner}/{repo}/issues/<番号>/comments" --paginate \
-  --jq '.[] | select(.body | test("^@codex review")) | .id' | wc -l
+  --jq '.[] | select(.body | startswith("<!-- review-loop-round -->") or startswith("<!-- review-loop-stopped -->")) | {id, created_at, body}'
 ```
 
-- `--paginate` のとき `--jq` はページごとに適用されるので、件数は jq の中で数えず、1件ずつ出して `wc -l` で数える。
-- 4 回目になる場合は始めない（3 回目で必ず止まっているはず）。
-- レビューを依頼する：`gh pr comment <番号> --body "@codex review"`
+- 同じ SHA で次のラウンドが必要なら、要約の `Code Review` 行を控え、`gh pr comment <番号> --body "@codex review"` で依頼する。依頼コメントの作成時刻を GitHub で確かめる。対象 SHA の自動レビューが進行中なら、その結果を待つ。
 
 ### 4. Codex のレビューを待つ
 
-Codex のアカウントは `chatgpt-codex-connector[bot]`。依頼すると、次の順に反応する。
-
-1. すぐに「Codex Review Summary」の要約コメントが付く（レビュー中は依頼コメントに 👀）。このコメントは、レビューが進むと同じコメントが書き換えられる。**要約コメントが付いただけでは、まだ終わっていない。**
-2. 終わると、要約コメントの中の `<!-- codex-review-state:v1 {...} -->` の JSON が更新される。
-3. 指摘がなければ「Codex Review: Didn't find any major issues」のコメントと 👍 が付く。指摘があれば、レビューと行ごとのコメントが付く。
-
-**完了の判定**は、要約コメントの JSON で行う。
-
-- `code_review.status` が `completed`
-- `code_review.commit_sha` が PR の今の HEAD（`gh api "repos/{owner}/{repo}/pulls/<番号>" --jq .head.sha`）と同じ
-- 前のラウンドから push していない（全部却下した）ときは commit_sha が変わらないので、加えて依頼コメントより後に Codex のレビューか「Didn't find any major issues」のコメントが付いたことも確かめる
+`chatgpt-codex-connector[bot]` が投稿する「Codex Review Summary」は、同じコメントに最新の状態を上書きする。PR の HEAD と要約を GitHub から読む。下書きを外した時刻は PR タイムラインの最新の `ready_for_review` で確認できる。
 
 ```sh
+gh api "repos/{owner}/{repo}/pulls/<番号>" --jq .head.sha
+gh api "repos/{owner}/{repo}/issues/<番号>/timeline" --paginate \
+  --jq '.[] | select(.event == "ready_for_review") | .created_at'
 gh api "repos/{owner}/{repo}/issues/<番号>/comments" --paginate \
-  --jq '.[] | select(.user.login | test("codex")) | .body' \
-  | grep -o 'codex-review-state:v1 {.*} -->'
+  --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]") | .body | select(contains("<!-- codex-pull-request-review-summary -->"))'
 ```
 
-- 指摘があるかどうかは、同じ JSON の `code_review.has_any_findings` で分かる。
-- 待つときはバックグラウンドで 60 秒おきに確かめ、30 分たっても終わらなければ止めて報告する。たいていは数分で終わる。
+- `<!-- codex-review-state:v1 {...} -->` の `code_review.status` が `completed` で、`code_review.commit_sha` が PR の最新 HEAD とラウンドに記録した SHA に一致したら、コードレビューは完了。待っている間に HEAD が変わったら、PR の最新 HEAD とラウンドの記録を確認し直す。
+- 自動レビューでは、要約の `Code Review` 行の起動理由が、下書き解除なら `Draft marked ready`、push なら `New commits` であることを確かめる。行の `relative-time` の `datetime` がラウンドを記録した時刻よりあとであることを確かめる。下書き解除のレビューはタイムラインの解除時刻とも照合する。
+- 同じ SHA を手動で再レビューする場合は、要約の `Code Review` 行が `Manual request` を示し、今回の依頼よりあとに完了したことを行の `relative-time` の `datetime` で確かめる。依頼前に控えた行が更新されるまで待つ。要約全体の更新時刻は、セキュリティレビューでも変わる。
+- 指摘ゼロの判定は `code_review.has_any_findings == false`。指摘ゼロの個別コメントが出ないこともある。👀 や 👍 は反応の目安として使う。
+- セキュリティレビューも動く場合は、`security_review` の `status` と `commit_sha` を別に確認し、実行状況や指摘を報告する。ラウンドの終了判定には `code_review` を使う。
+- 待つときはバックグラウンドで 60 秒おきに確かめ、30 分たっても終わらなければ止めて報告する。
 
-指摘の中身は次で読む。今回のラウンドの指摘は、依頼コメントより後に付いたものだけ。
+指摘があれば、次でレビューと行コメントを読む。今回のコードレビューは対象 SHA と投稿時刻で見分け、そのレビューの ID に結びついた行コメントを読む。コードレビューとセキュリティレビューが並行したときは、レビュー本体の表示で区別する。自動レビューの投稿時刻は今回の起動・完了時刻と照合する。要約に未解決の指摘が残っていれば、前のレビューのスレッドも確認する。
 
 ```sh
 # レビュー本体
 gh api "repos/{owner}/{repo}/pulls/<番号>/reviews" --paginate \
-  --jq '.[] | select(.user.login | test("codex")) | {id, submitted_at, body}'
+  --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]") | {id, commit_id, submitted_at, body}'
 # 行ごとの指摘
 gh api "repos/{owner}/{repo}/pulls/<番号>/comments" --paginate \
-  --jq '.[] | select(.user.login | test("codex")) | {id, path, line, created_at, body}'
+  --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]") | {id, pull_request_review_id, path, line, created_at, body}'
 ```
 
 ### 5. 指摘を判定する
@@ -116,7 +112,7 @@ gh api "repos/{owner}/{repo}/pulls/<番号>/comments" --paginate \
 - **受け入れ条件があるとき**：受け入れ条件の外の入力への指摘は、P0 でない限り P2 以下として扱う（Codex の表示が P1 でも下げ、返信に理由を書く）。「対象外」に書いたものへの指摘は、却下できる。
 - 指摘に応えるために受け入れ条件や範囲を変える必要が出たら、PR の説明ではなく、先に Issue を直して理由を添える。1 本の PR に収まらなくなったら、直さずに止めて報告する。
 - **有効かどうか**：Codex の指摘をそのまま信じない。コードと `docs/decisions/` を読んで確かめる。判断に迷う P0・P1 は有効として扱う。
-- **有効なもの**：直してコミットし（Conventional Commits）、push する。
+- **有効なもの**：手順 6 の終了判定を先に行う。続けるか打ち切る場合は、修正をコミットする（Conventional Commits）。3 回目に P3 だけが残って終了できるときは、そのまま報告する。
 - **却下するもの**：その指摘に理由を返信する。
 
 ```sh
@@ -129,16 +125,15 @@ gh api -X POST "repos/{owner}/{repo}/pulls/<番号>/comments/<コメントID>/re
 
 上の表で判定する。
 
-- **続ける**：手順 3 に戻る。
-- **終了**：PR にまとめのコメント（ラウンド数、直した指摘、却下した指摘とその理由）を書き、`gh pr ready <番号>` で下書きを外して、2人に報告する。却下した指摘があれば、報告に含める。
-  - 下書きを外しても、Codex は同じコミットをレビューし直さない（Codex のコメントの案内には「Mark a draft as ready」で動くとあるが、レビュー済みのコミットでは動かない）。外したあとに Codex を待たない。
-- **マージ**：人間にマージを指示されたときだけ行う。自分の判断ではマージしない。指示されたら、PR のタイトルと説明をそのままコミットメッセージにしてスカッシュマージし、[マージ後の片付け](#マージ後の片付け)まで行う。
+- **続ける**：手順 3 に戻り、次のラウンドを記録してから修正を push する。同じ SHA なら手動で依頼する。
+- **終了**：最新 HEAD が終了条件を満たした SHA と一致することを確かめる。PR にまとめのコメント（ラウンド数、直した指摘、却下した指摘とその理由）を書き、レビュー待ちの状態で 2 人に報告する。
+- **3 回目で打ち切り**：打ち切りと、最後に push する修正の SHA（修正なしなら PR の HEAD）を、`<!-- review-loop-stopped -->` から始まる PR コメントに記録する。`gh pr view <番号> --json isDraft` で状態を確認し、レビュー待ちなら `gh pr ready <番号> --undo` で下書きに戻す。下書きに戻ったことを確かめ、記録した修正の SHA が PR にまだなければ push する。下書きのまま、残った指摘と[打ち切りのあと](#打ち切りのあと)の選択肢を 2 人に報告する。
+- **マージ**：人間にマージを指示されたときだけ行う。指示されたら最新 HEAD とレビューを再確認する。通常の終了後に、最新 HEAD のコードレビューが未確認か、新しい有効な指摘への対応が決まっていない場合は、人間に伝えてマージを保留する。打ち切り後に人間が受け入れる場合は[打ち切りのあと](#打ち切りのあと)に従う。確認済みの SHA を指定してスカッシュマージし、[マージ後の片付け](#マージ後の片付け)まで行う。
 
 ```sh
-gh pr merge <番号> --squash --subject "<PR のタイトル> (#<番号>)" --body "<PR の説明>"
+gh pr merge <番号> --squash --match-head-commit <確認済みのSHA> \
+  --subject "<PR のタイトル> (#<番号>)" --body "<PR の説明>"
 ```
-
-- **3 回目で打ち切り**：まとめのコメントを書き、下書きのまま止めて、残った指摘と一緒に2人に報告する。報告では、次の2つのどちらにするかを人間に選んでもらう。自分では選ばない。
 
 ## マージ後の片付け
 
@@ -151,7 +146,7 @@ gh pr merge <番号> --squash --subject "<PR のタイトル> (#<番号>)" --bod
 
 ## 打ち切りのあと
 
-- **そのまま受け入れる**：残った指摘を人間が判定し（却下する、または別の課題に回す）、マージする。コードはもう直さない。マージ後は[片付け](#マージ後の片付け)を行う。
+- **そのまま受け入れる**：最新 HEAD を確認し、残った指摘を人間が却下するか別の課題に回してマージする。この時点でコードの修正は終える。人間の指示でマージする場合も、その SHA が承認されたことを確かめ、下書きを外して SHA を指定する。マージのための下書き解除で自動レビューが始まる場合がある。対応は人間に委ね、ループは再開しない。マージ後は[片付け](#マージ後の片付け)を行う。
 - **捨ててやり直す**：PR を閉じて Issue に戻り、下の準備をしてから、`main` から新しく作る。
   - コードは引き継がない。cherry-pick しない。前のブランチは消さずに残し、読むだけにする。
   - 実在の入力の fixture は使ってよい。指摘ごとに足した合成のテストは持ち込まない。
