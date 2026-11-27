@@ -7,7 +7,7 @@ import { createAccessToken } from "../../src/db/tokens";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import { openDatabase } from "../../src/platform/node/database";
 import { MIGRATIONS_DIR } from "../db";
-import { createTestPlatform, fakeFetch, requestApp, subscribeFeed } from "../helpers";
+import { createTestPlatform, fakeFetch, requestApp } from "../helpers";
 
 it("起動時の移行で互換用 ID を削除し、記事と受信箱を使い続けられる", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "sendo-greader-migration-"));
@@ -44,7 +44,11 @@ it("起動時の移行で互換用 ID を削除し、記事と受信箱を使い
       await old.db.run(sql`insert into users (id, email, created_at) values
         (${userId}, 'reader@example.com', ${now.getTime()})`);
       ({ token } = await createAccessToken(old.db, { userId, name: "旧トークン", now }));
-      await subscribeFeed(platform, { userId, feedId, url: feedUrl, now });
+      // デフォルトの印を持たない旧 Sendo の DB に、当時の所属なしの購読を置く。
+      await old.db.run(sql`insert into feeds (id, url, created_at, next_fetch_at)
+        values (${feedId}, ${feedUrl}, ${now.getTime()}, ${now.getTime()})`);
+      await old.db.run(sql`insert into subscriptions (id, user_id, feed_id, created_at, seq)
+        values (${crypto.randomUUID()}, ${userId}, ${feedId}, ${now.getTime()}, 1)`);
       await old.db.run(sql`insert into articles (id, feed_id, guid, item_id, title, published_at, created_at)
         values (${articleId}, ${feedId}, 'old', 15, '移行前の記事', ${now.getTime()}, ${now.getTime()})`);
       await old.db.run(sql`insert into user_articles
