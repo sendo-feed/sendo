@@ -138,7 +138,7 @@ export async function runCleanUp(
     }),
   );
 
-  // 期限の切れたセッションの端末には送らない（docs/decisions/notifications.md の 20）
+  // 期限の切れたセッションの端末には送らない（docs/decisions/web-push.md の 4）
   const pushRegistrations = await repeat(SWEEP_ROUNDS.pushRegistrations, () =>
     collectExpiredPushRegistrations(db, { now: new Date(now), limit: SWEEP_BATCH }),
   );

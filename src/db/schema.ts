@@ -923,7 +923,7 @@ export const bellHorizons = sqliteTable("bell_horizons", {
 });
 
 /**
- * 端末の Web Push の登録（docs/decisions/notifications.md の 20）。ブラウザのセッションに結ぶ。
+ * 端末の Web Push の登録（docs/decisions/web-push.md の 4）。ブラウザのセッションに結ぶ。
  *
  * 1 つのセッションに 1 つ、1 つのエンドポイントに 1 つ。登録し直して中身が変わると、新しい ID の
  * 行に置き換える（db/push-registrations.ts）。セッションの行が消えると（ログアウト、別の人のログイン）、
@@ -1009,7 +1009,7 @@ export const bellNotifications = sqliteTable(
 
 /**
  * sendo が自分で作って持つ秘密（docs/decisions/images.md の 2）。画像の URL の署名の鍵と、VAPID の
- * 鍵の組（docs/decisions/notifications.md の 17）。初めて使うときに作る（db/secrets.ts）。行を消すと、
+ * 鍵の組（docs/decisions/web-push.md の 1）。初めて使うときに作る（db/secrets.ts）。行を消すと、
  * 次に使うときに作り直す
  */
 export const appSecrets = sqliteTable("app_secrets", {

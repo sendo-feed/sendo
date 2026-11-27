@@ -4,7 +4,7 @@ import { DB_NOW_MS } from "./clock";
 import { pushRegistrations, sessions } from "./schema";
 
 /*
- * 端末の Web Push の登録（docs/decisions/notifications.md の 20）。ブラウザのセッションに結ぶ。
+ * 端末の Web Push の登録（docs/decisions/web-push.md の 4）。ブラウザのセッションに結ぶ。
  */
 
 /** 確かめた登録（notify/registration.ts の parsePushRegistration が作る） */

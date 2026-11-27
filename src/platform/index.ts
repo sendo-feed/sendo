@@ -52,7 +52,7 @@ export interface OAuthServerConfig {
   readerOrigin: string;
 }
 
-/** Web Push の設定（docs/decisions/notifications.md の 18、19）。両方そろったときだけ使える */
+/** Web Push の設定（docs/decisions/web-push.md の 2、3）。両方そろったときだけ使える */
 export interface PushConfig {
   /** VAPID の JWT の sub（mailto: か https: の URL） */
   subject: string;
@@ -339,7 +339,7 @@ export interface Platform {
   now: () => Date;
   auth: AuthConfig;
   discord?: DiscordConfig;
-  /** Web Push。設定がそろっていなければない（docs/decisions/notifications.md の 19） */
+  /** Web Push。設定がそろっていなければない（docs/decisions/web-push.md の 3） */
   push?: PushConfig;
   fetchConfig: FetchConfig;
   retentionConfig: RetentionConfig;
