@@ -172,6 +172,7 @@ describe("splitBody", () => {
     expect(body.assemble(new Map([["b2", "二"]]))).toEqual({
       html: "<p>One</p><p>二</p>",
       counts: { sent: 2, missing: 1, invalidMarkers: 0 },
+      rejected: [{ id: "b1", text: "One" }],
     });
   });
 

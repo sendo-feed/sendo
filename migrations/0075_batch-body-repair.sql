@@ -1,0 +1,1 @@
+ALTER TABLE `article_translations` ADD `batch_body_repair_started_at` integer;

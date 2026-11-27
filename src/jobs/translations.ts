@@ -4,9 +4,11 @@ import { articles } from "../db/schema";
 import { configureStorage, readStorageUsage } from "../db/storage";
 import {
   ARTICLE_TRANSLATION_BYTES,
+  BATCH_BODY_REPAIR_TIMEOUT_MS,
   COPY_BODY,
   COPY_SUMMARY,
   COPY_TITLE,
+  claimBatchBodyRepair,
   copyRetranslation,
   countTranslateFailure,
   decideTranslations,
@@ -42,7 +44,6 @@ import {
   type Platform,
   type TranslationSegment,
   type TranslationTier,
-  type TranslationUsage,
   type Translator,
   TranslatorError,
 } from "../platform";
@@ -55,6 +56,19 @@ export const MAX_TRANSLATED_BODY_CHARS = 60_000;
 
 /** 訳した本文（サニタイズしたあと）の大きさの上限（同じく 3） */
 export const MAX_TRANSLATED_BODY_BYTES = 256 * 1024;
+
+/** 本文の補完に送る量の上限（docs/decisions/translation.md の 4） */
+const MAX_BATCH_REPAIRS = 2;
+const MAX_REPAIR_SEGMENTS = 4;
+const MAX_REPAIR_CHARS = 4_000;
+
+type BatchRow = Awaited<ReturnType<typeof listBatchRows>>[number];
+type TranslatedBatchResult = Extract<BatchTranslationResult, { status: "translated" }>;
+
+interface BatchRepairBudget {
+  translator: Translator;
+  remaining: number;
+}
 
 /**
  * 記事の翻訳が変わったことを、その記事を受信箱に持つ人に知らせる（docs/decisions/sync.md の 9、10）。
@@ -297,7 +311,7 @@ async function sendBatch(platform: MaintainPlatform, translator: Translator): Pr
 /**
  * 送ったバッチを、古い順に見にいき、終わっていれば結果を書く（docs/decisions/translation.md の 4）。
  * 見にいけなければ印を残す。訳せなかった記事と、結果のない記事は、印を外して待ちに戻す。容量が
- * 足りずに書けなかった記事は、印を残して次の定期実行で書き直す
+ * 足りなかった記事やまだ補完中の記事は、印を残して次の定期実行で見直す
  *
  * @returns 訳文を書いた記事の数
  */
@@ -306,9 +320,10 @@ async function checkBatches(platform: MaintainPlatform, translator: Translator):
   // 書く文の容量のトリガーが、今の上限で確かめるようにする（docs/decisions/translation.md の 12）
   await configureStorage(db, platform.retentionConfig.maxBytes);
   let count = 0;
+  const repairBudget = { translator, remaining: MAX_BATCH_REPAIRS };
   for (const batchId of await listBatchesToCheck(db)) {
     try {
-      count += await checkBatch(platform, translator, batchId);
+      count += await checkBatch(platform, repairBudget, batchId);
     } catch (error) {
       // 1 つのバッチで落ちても、ほかのバッチと、送るほうを止めない（印は残り、次に見直す）
       console.warn("could not write a translation batch", {
@@ -323,13 +338,13 @@ async function checkBatches(platform: MaintainPlatform, translator: Translator):
 /** 1 つのバッチを見にいき、終わっていれば結果を書く。訳文を書いた記事の数を返す */
 async function checkBatch(
   platform: MaintainPlatform,
-  translator: Translator,
+  repairBudget: BatchRepairBudget,
   batchId: string,
 ): Promise<number> {
   const { db } = platform;
   let status: Awaited<ReturnType<Translator["checkBatch"]>>;
   try {
-    status = await translator.checkBatch(batchId);
+    status = await repairBudget.translator.checkBatch(batchId);
   } catch (error) {
     console.warn("could not check a translation batch", {
       batchId,
@@ -362,7 +377,7 @@ async function checkBatch(
       continue;
     }
     try {
-      const outcome = await writeBatchResult(platform, batchId, row, result);
+      const outcome = await writeBatchResult(platform, batchId, row, result, repairBudget);
       if (outcome === "written") written.push(result.id);
       else if (outcome === "keep") keep.push(result.id);
     } catch (error) {
@@ -417,14 +432,15 @@ const UNCOUNTED_BATCH_ERRORS = new Set([
 ]);
 
 /**
- * バッチの 1 件の訳を書く。written は書いた、keep は容量が足りずに書けなかった（印を残して次に書き直す）、
+ * バッチの 1 件の訳を書く。written は書いた、keep は容量不足または補完中で書けなかった、
  * requeue は書かずに待ちに戻す（記事が消えた、送ったときと分け方が違う。ほかの書き込みで訳文が入った）
  */
 async function writeBatchResult(
   platform: MaintainPlatform,
   batchId: string,
-  row: Awaited<ReturnType<typeof listBatchRows>>[number],
-  result: { id: string; segments: TranslationSegment[]; model: string; usage: TranslationUsage },
+  row: BatchRow,
+  result: TranslatedBatchResult,
+  repairBudget: BatchRepairBudget,
 ): Promise<"written" | "keep" | "requeue"> {
   const { db } = platform;
   const article = await readArticle(platform, result.id);
@@ -442,17 +458,14 @@ async function writeBatchResult(
     });
     return "requeue";
   }
-  // 送った断片の訳だけを使う。返ってこなかった断片は、原文のまま残す（決定の 10）
-  const sent = new Set([
-    ...segmentsOf(article, copies).map((segment) => segment.id),
-    ...((copies & COPY_BODY) === 0 ? (body?.segments.segments.map((s) => s.id) ?? []) : []),
-  ]);
+  // 送った断片の訳だけを使う。補完でも使えなかった断片は原文で残す（決定の 4、10）
+  const sent = new Set(sentSegments(article, body, copies).map((segment) => segment.id));
   const translated = new Map(
     result.segments.filter((s) => sent.has(s.id)).map((s) => [s.id, s.text]),
   );
   const assembly =
     body === null || (copies & COPY_BODY) !== 0 ? null : assembleBody(body, translated);
-  const ok = await finishBatchTranslation(db, {
+  const save = {
     articleId: result.id,
     batchId,
     title: article.title == null ? null : (translated.get("title") ?? article.title),
@@ -465,8 +478,35 @@ async function writeBatchResult(
     originalSummary: article.summary,
     bodySource: body?.source ?? null,
     bodyHash: await bodyFingerprint(body),
-  });
-  if (ok) {
+  };
+  const repair =
+    body !== null && assembly?.content != null
+      ? await tryBatchBodyRepair(db, repairBudget, {
+          save,
+          row,
+          body,
+          rejected: assembly.rejected,
+          translated,
+        })
+      : null;
+  const ownedSave = repair === null ? save : { ...save, repairStartedAt: repair.startedAt };
+  let adopted = 0;
+  let saved: Awaited<ReturnType<typeof finishBatchTranslation>>;
+  if (repair !== null && repair.result !== null) {
+    saved = await finishBatchTranslation(db, {
+      ...ownedSave,
+      content: repair.result.content,
+      usage: {
+        inputTokens: save.usage.inputTokens + (repair.usage?.inputTokens ?? 0),
+        outputTokens: save.usage.outputTokens + (repair.usage?.outputTokens ?? 0),
+      },
+      repaired: true,
+    });
+    if (saved !== undefined) adopted = repair.result.adopted;
+  }
+  // 補った訳を期限・容量・競合で書けなければ、バッチの結果で保存を試す（決定の 4）
+  saved ??= await finishBatchTranslation(db, ownedSave);
+  if (saved !== undefined) {
     if ((copies & COPY_BODY) === 0) {
       // 送った本文を復元できなかった場合は、本文を送らなかった場合（0 件）と分ける。
       logBodyTranslation(
@@ -480,13 +520,88 @@ async function writeBatchResult(
           bodyStored: assembly?.content != null,
         },
         assembly?.counts ?? (row.contentSource === null ? NO_BODY_SEGMENTS : null),
+        {
+          repairSentBodySegments: repair?.sent ?? (saved.repairStartedAt === null ? 0 : null),
+          repairAdoptedBodySegments: adopted,
+          repairInputTokens: repair?.usage?.inputTokens ?? null,
+          repairOutputTokens: repair?.usage?.outputTokens ?? null,
+        },
       );
     }
     return "written";
   }
-  // 行がまだそのバッチの印を持ち訳文がないなら、容量のトリガーが書かなかった。次に書き直す
+  // 行がまだそのバッチの印を持ち訳文がないなら、容量不足かほかの処理が補完中。次に書き直す
   const current = await getTranslation(db, result.id);
   return current?.batchId === batchId && current.translatedAt === null ? "keep" : "requeue";
+}
+
+/** バッチの結果を保ったまま、今回用に補えた本文を組み立てる（決定の 4、10） */
+async function tryBatchBodyRepair(
+  db: Platform["db"],
+  budget: BatchRepairBudget,
+  input: {
+    save: Parameters<typeof finishBatchTranslation>[1];
+    row: BatchRow;
+    body: Body;
+    rejected: readonly TranslationSegment[];
+    translated: ReadonlyMap<string, string>;
+  },
+) {
+  const { row, rejected, save } = input;
+  const { translator } = budget;
+  if (
+    budget.remaining === 0 ||
+    row.repairStartedAt !== null ||
+    row.tier === null ||
+    row.effort === null ||
+    row.promptVersion !== translator.conditions(row.tier).promptVersion ||
+    rejected.length === 0 ||
+    rejected.length > MAX_REPAIR_SEGMENTS ||
+    rejected.reduce((length, segment) => length + [...segment.text].length, 0) > MAX_REPAIR_CHARS
+  ) {
+    return null;
+  }
+  const encoder = new TextEncoder();
+  const batchBytes = [save.title, save.summary, save.model, save.content?.html].reduce(
+    (bytes, value) => bytes + encoder.encode(value ?? "").length,
+    0,
+  );
+  // 訳文の行そのものは計上済みなので、書くときに増える分を見積もる
+  const estimatedBytes = estimateTranslationBytes(rejected, batchBytes) - ARTICLE_TRANSLATION_BYTES;
+  // 試行時刻を書く前の時点から測り、DB の応答を待った時間も含めて送受信を打ち切る
+  const beforeClaim = performance.now();
+  const claim = await claimBatchBodyRepair(db, save.articleId, save.batchId, estimatedBytes);
+  if (claim === undefined) return null;
+  budget.remaining--;
+  const timeoutMs = BATCH_BODY_REPAIR_TIMEOUT_MS - Math.ceil(performance.now() - beforeClaim);
+  if (timeoutMs <= 0) return { ...claim, sent: 0, usage: null, result: null };
+  let reply: Awaited<ReturnType<Translator["repairBatchBody"]>>;
+  try {
+    reply = await translator.repairBatchBody(rejected, {
+      model: save.model,
+      effort: row.effort,
+      timeoutMs,
+    });
+  } catch (error) {
+    // 受け付けずに断った応答があれば送った数が分かる。応答がなくても補完は繰り返さない
+    const sent = error instanceof TranslatorError && error.responded ? rejected.length : null;
+    return { ...claim, sent, usage: null, result: null };
+  }
+  const replacements = new Map(reply.segments.map(({ id, text }) => [id, text]));
+  const translated = new Map(input.translated);
+  for (const { id } of rejected) {
+    const text = replacements.get(id);
+    if (text !== undefined) translated.set(id, text);
+  }
+  const repaired = assembleBody(input.body, translated);
+  const adopted = rejected.length - repaired.rejected.length;
+  return {
+    ...claim,
+    sent: rejected.length,
+    usage: reply.usage,
+    result:
+      repaired.content === null || adopted === 0 ? null : { content: repaired.content, adopted },
+  };
 }
 
 /**
@@ -609,7 +724,7 @@ function assembleBody(body: Body, translated: ReadonlyMap<string, string>) {
     new TextEncoder().encode(html).length > MAX_TRANSLATED_BODY_BYTES
       ? null
       : { html, source: body.source };
-  return { content, counts: assembled.counts };
+  return { content, counts: assembled.counts, rejected: assembled.rejected };
 }
 
 const NO_BODY_SEGMENTS: BodySegmentCounts = { sent: 0, missing: 0, invalidMarkers: 0 };
@@ -625,6 +740,12 @@ function logBodyTranslation(
     bodyStored: boolean;
   },
   counts: BodySegmentCounts | null,
+  repair?: {
+    repairSentBodySegments: number | null;
+    repairAdoptedBodySegments: number;
+    repairInputTokens: number | null;
+    repairOutputTokens: number | null;
+  },
 ): void {
   console.info(
     "saved article translation body segment counts",
@@ -633,6 +754,7 @@ function logBodyTranslation(
       sentBodySegments: counts?.sent ?? null,
       missingBodySegments: counts?.missing ?? null,
       invalidMarkerBodySegments: counts?.invalidMarkers ?? null,
+      ...repair,
     }),
   );
 }
