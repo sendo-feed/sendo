@@ -9,7 +9,7 @@ import { defaultHook } from "./hook";
 import { ErrorSchema, errorBody } from "./schemas";
 
 /*
- * Web Push の有無と VAPID の公開鍵、端末の登録（docs/decisions/notifications.md の 19、20）。
+ * Web Push の有無と VAPID の公開鍵、端末の登録（docs/decisions/web-push.md の 3、4）。
  *
  * 有無と公開鍵は、アクセストークンでもセッションでも読める。登録の置き外しは、ブラウザのセッションで
  * だけ使える。登録は端末（セッション）に結ぶもので、アクセストークンは端末に結び付かない。状態を変える

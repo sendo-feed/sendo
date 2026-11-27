@@ -209,7 +209,7 @@ function readThreshold(raw: string | undefined): number | undefined {
 export type PushEnvName = "VAPID_SUBJECT" | "READER_URL";
 
 /**
- * Web Push の設定を読む（docs/decisions/notifications.md の 18、19）。VAPID_SUBJECT と READER_URL が
+ * Web Push の設定を読む（docs/decisions/web-push.md の 2、3）。VAPID_SUBJECT と READER_URL が
  * そろっているときだけ使える。形が正しくなければ、エラーをログに出して使わない。VAPID_SUBJECT だけが
  * あるときは、Web Push を使うつもりで入れたとみて、READER_URL がないことを警告に出す
  */

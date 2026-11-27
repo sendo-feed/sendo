@@ -3,7 +3,7 @@ import { getOrCreateSecret, VAPID_KEY } from "../db/secrets";
 import { base64UrlEncode } from "../lib/crypto";
 
 /*
- * VAPID の鍵の組（docs/decisions/notifications.md の 17）。sendo が初めて要るときに作り、秘密の JWK
+ * VAPID の鍵の組（docs/decisions/web-push.md の 1）。sendo が初めて要るときに作り、秘密の JWK
  * （公開鍵の x・y を含む）を app_secrets の 1 行に置く。自動では作り直さない。ブラウザの登録は公開鍵に
  * 結び付くので、作り直すと登録がすべて使えなくなる。
  */
