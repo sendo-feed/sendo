@@ -255,8 +255,8 @@ export async function readBundledArticles(
 
 /**
  * その人の受信箱に、その記事が未読であること（SQL の条件）。受信箱から消えた記事（購読をやめた、古い
- * 記事の片付け）と、ほかの端末で読んだ記事は知らせない（docs/decisions/notifications.md の 13、21）。
- * 言葉だけのベルは、購読をやめても外れないので、ベルが有効かだけでは代えられない
+ * 記事の片付け）と、ほかの端末で読んだ記事は知らせない（docs/decisions/notifications.md の 13、
+ * web-push.md の 5）。言葉だけのベルは、購読をやめても外れないので、ベルが有効かだけでは代えられない
  */
 function unreadInInbox(userId: SQL, articleId: SQL) {
   return sql`exists (select 1 from ${userArticles} as inbox
