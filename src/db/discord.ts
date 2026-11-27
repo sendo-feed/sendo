@@ -4,6 +4,7 @@ import { DB_NOW_MS } from "./clock";
 import { discordConnections, type Feed, feeds, subscriptions } from "./schema";
 import { nextSeq } from "./seq";
 import { activeFolderId, getSubscription } from "./subscriptions";
+import { defaultWorkspaceId } from "./workspaces";
 
 export async function getDiscordConnection(db: Database, userId: string) {
   return db.select().from(discordConnections).where(eq(discordConnections.userId, userId)).get();
@@ -99,9 +100,9 @@ export async function addDiscordSubscription(
   const subscription = await getRow<{ id: string }>(
     db,
     sql`
-    insert into subscriptions (id, user_id, feed_id, folder_id, created_at, backfilled_at, seq)
+    insert into subscriptions (id, user_id, feed_id, folder_id, workspace_id, created_at, backfilled_at, seq)
     select ${crypto.randomUUID()}, ${userId}, ${feeds.id}, ${activeFolderId(userId, folderId)},
-      ${now.getTime()}, ${now.getTime()}, ${nextSeq(subscriptions)}
+      ${defaultWorkspaceId(userId)}, ${now.getTime()}, ${now.getTime()}, ${nextSeq(subscriptions)}
     from ${feeds}
     where ${feeds.id} = ${feed.feed.id} and ${feeds.discordConnectionId} = ${connectionId}
     on conflict do nothing

@@ -280,10 +280,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       "subscribe",
       "unsubscribe",
     ]);
-    expect(tools.find((tool) => tool.name === "subscribe")?.inputSchema.required).toEqual([
-      "url",
-      "workspaceId",
-    ]);
+    expect(tools.find((tool) => tool.name === "subscribe")?.inputSchema.required).toEqual(["url"]);
     for (const name of [
       "list_feeds",
       "list_articles",
@@ -1019,7 +1016,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     expect(await getSubscription(platform.db, { userId: user.id, feedId: firstId })).toEqual(first);
   });
 
-  it("subscribe は所属先の省略、null、無効な ID を断り、一覧から選び直せる", async () => {
+  it("subscribe は無効な ID を断り、省略と null ではデフォルトに追加する", async () => {
     const { user, token, feed } = await setup(["read", "write"]);
     const other = await createUser();
     const { fetch, calls } = fakeFetch(
@@ -1030,6 +1027,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     );
     const { platform } = createTestPlatform({ fetch });
     const { client } = await connect(platform, token, era);
+    const initial = await workspaceIdFromList(client);
     await client.callTool({ name: "create_workspace", arguments: { name: "Temporary" } });
     const original = await workspaceIdFromList(client, "Temporary");
     expect(
@@ -1048,8 +1046,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     const foreign = await workspaceIdFromList(otherClient);
     const args = { url: "https://www.apple.com/newsroom/rss-feed.rss" };
     for (const [arguments_, error] of [
-      [args, /Input validation error.*[\s\S]*workspaceId/],
-      [{ ...args, workspaceId: null }, /Input validation error.*[\s\S]*workspaceId/],
+      [{ ...args, workspaceId: "" }, /Input validation error.*[\s\S]*workspaceId/],
       [{ ...args, workspaceId: "missing" }, /workspace_not_found/],
       [{ ...args, workspaceId: original }, /workspace_not_found/],
       [{ ...args, workspaceId: foreign }, /workspace_not_found/],
@@ -1065,10 +1062,16 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     }
     expect(calls).toHaveLength(0);
     const feeds = await requestApp(platform, "/api/v1/feeds", { token: user.token });
-    expect(await feeds.json()).toMatchObject({ items: [{ id: feed.id, workspaceId: null }] });
+    expect(await feeds.json()).toMatchObject({ items: [{ id: feed.id, workspaceId: initial }] });
 
     await client.callTool({ name: "create_workspace", arguments: { name: "personal" } });
     const workspaceId = await workspaceIdFromList(client, "personal");
+    const switched = await requestApp(platform, `/api/v1/workspaces/${workspaceId}`, {
+      method: "PATCH",
+      token: user.token,
+      json: { isDefault: true },
+    });
+    expect(switched.status).toBe(200);
     const folder = await createFolderTool(client, "仕事関連");
     const sync = async (cursor?: string) => {
       const query = new URLSearchParams({ includeWorkspaces: "true" });
@@ -1079,21 +1082,31 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     };
     const before = await sync();
     expect(before.hasMore).toBe(false);
-    const retry = (await client.callTool({
-      name: "subscribe",
-      arguments: { ...args, workspaceId, folderId: folder.id },
-    })) as Structured<{ feed: { id: string }; created: boolean }>;
-    expect(retry.structuredContent).toMatchObject({
-      feed: { id: expect.any(String) },
-      created: true,
-    });
-    expect((await sync(before.cursor)).feeds).toEqual([
-      expect.objectContaining({
-        id: retry.structuredContent?.feed.id,
-        workspaceId,
-        folderId: folder.id,
-      }),
-    ]);
+    const expected = [];
+    for (const [arguments_, destination] of [
+      [args, workspaceId],
+      [{ url: "https://github.blog/feed/", workspaceId: null }, workspaceId],
+      [{ url: "https://www.w3.org/blog/feed/", workspaceId: initial }, initial],
+    ] as const) {
+      const subscribed = (await client.callTool({
+        name: "subscribe",
+        arguments: { ...arguments_, folderId: folder.id },
+      })) as Structured<{ feed: { id: string }; created: boolean }>;
+      expect(subscribed.structuredContent).toEqual({
+        feed: { id: expect.any(String), title: "Apple Newsroom", url: arguments_.url },
+        created: true,
+      });
+      expected.push(
+        expect.objectContaining({
+          id: subscribed.structuredContent?.feed.id,
+          workspaceId: destination,
+          folderId: folder.id,
+        }),
+      );
+    }
+    const synced = await sync(before.cursor);
+    expect(synced.feeds).toHaveLength(3);
+    expect(synced.feeds).toEqual(expect.arrayContaining(expected));
   });
 
   it("subscribe の書き込み直前に所属先が削除されたら、購読を作らず選び直せる", async () => {
