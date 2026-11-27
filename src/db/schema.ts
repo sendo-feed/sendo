@@ -231,6 +231,7 @@ export const workspaces = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
     seq: seq(),
@@ -239,6 +240,9 @@ export const workspaces = sqliteTable(
     uniqueIndex("workspaces_user_id_name_idx")
       .on(t.userId, t.name)
       .where(sql`${t.deletedAt} is null`),
+    uniqueIndex("workspaces_user_id_default_idx")
+      .on(t.userId)
+      .where(sql`${t.isDefault} = 1 and ${t.deletedAt} is null`),
     index("workspaces_user_id_seq_idx").on(t.userId, t.seq),
     index("workspaces_seq_idx").on(t.seq),
   ],

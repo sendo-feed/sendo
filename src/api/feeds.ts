@@ -39,7 +39,13 @@ const SubscribeBodySchema = z
       description: "フィードの URL か、フィードを持つサイトの URL",
     }),
     folderId: z.string().min(1).max(64).nullable().optional(),
-    workspaceId: z.string().min(1).max(64).nullable().optional(),
+    workspaceId: z
+      .string()
+      .min(1)
+      .max(64)
+      .nullable()
+      .optional()
+      .openapi({ description: "購読の所属先。省略または null ならデフォルトに追加する" }),
   })
   .openapi("SubscribeRequest");
 

@@ -241,11 +241,17 @@ Google Reader 互換 API は[廃止しました](docs/decisions/greader.md)。�
 
 `/mcp` にリモート MCP サーバーがあります（[決定](docs/decisions/mcp.md)）。ツールは `list_feeds`、`list_folders`、`list_articles`、`get_unread`、`get_article`（読む）と、`subscribe`、`move_feed`、`unsubscribe`、`mark_read`、`star`（変える）です。
 
+`subscribe` はフィードかサイトの URL を受けます。購読先を指定するには、`list_workspaces` で調べた `workspaceId` を渡します。所属先の扱いは[ワークスペースの決定](docs/decisions/workspaces.md)に記載しています。
+
 `list_folders` は、空のフォルダも含めて名前と ID を返します。フォルダの ID を `subscribe` に渡すと、そこに新しく購読を追加できます。購読済みのフィードを移動するときは、`list_feeds` でフィードの ID を調べ、`move_feed` に `feedId` と `folderId` を渡します。`folderId` に `null` を指定すると未分類に戻せます。
+
+ワークスペース間で購読を移すときは、`list_workspaces` と `list_folders` で移動元・先とフォルダの ID を調べ、`preview_workspace_move` で対象を確認します。同じ条件と確認した購読 ID を `move_workspace_subscriptions` に渡すと、条件に合う購読を最大 90 件移し、移した件数を返します。フォルダ、記事、既読・スターは引き継がれます。
 
 `list_articles` は `state`（`all`、`unread`、`read`。既定は `all`）、`starred`、`feedId`、`folderId` で絞り込めます。フィードとフォルダの ID は `list_feeds` で分かります。`dateBy` で並び順と `since`・`until` の基準を選びます。既定は `publishedAt` で、最近既読にした記事を見るなら `readAt` を指定します。`readAt` は既読にした時刻で、まとめて既読にした場合も含みます。時刻の範囲は `since` 以上、`until` 未満です。続きは同じ条件を指定し、`nextCursor` を `cursor` に渡します。
 
 `get_unread` は `feedId`、`folderId`、`limit` に加え、公開日時の期間を `since`（含む）と `until`（含まない）で指定できます。日時はタイムゾーン付きの ISO 8601 形式です。たとえば日本時間の 11 月 17 日は、`since: "2026-11-17T00:00:00+09:00"`、`until: "2026-11-18T00:00:00+09:00"` とします。続きがあるときは、同じ絞り込みと `nextCursor` を `cursor` に渡します。REST API の `GET /api/v1/articles` でも、同じ `since` と `until` を使えます。
+
+ワークスペースの一覧は `list_workspaces` で確認できます。`create_workspace` に名前を、`rename_workspace` に ID と新しい名前を渡します。`delete_workspace` には削除するワークスペースの ID を渡します。削除できる条件は[ワークスペースの決定](docs/decisions/workspaces.md)に記載しています。作成・改名・削除には `write` が必要です。
 
 Resources からも、読むだけの範囲（`read`）でデータを取り出せます。
 

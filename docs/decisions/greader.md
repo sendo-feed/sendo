@@ -5,7 +5,7 @@
 
 ## 決定
 
-1. **Google Reader 互換 API を廃止する。** 対象は `/accounts/ClientLogin` と `/reader/api/0/...`。「好きなリーダーで読める」は製品の訴求から外す。
+1. **Google Reader 互換 API の提供は終了した。** `/accounts/ClientLogin` と `/reader/api/0/...` を撤去した。「好きなリーダーで読める」は製品の訴求から外す。
 2. **日常の閲覧には公式の sendo-reader を使う。** 自作クライアントやスクリプトは REST API、エージェントは MCP から Sendo を使う。
 3. **他のリーダーの優れた操作や読み方は、公式 Reader に取り込む。** 具体的な候補が見つかったら、sendo-reader の Issue で扱う。
 

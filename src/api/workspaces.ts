@@ -5,6 +5,7 @@ import {
   listWorkspaces,
   MAX_WORKSPACE_NAME_LENGTH,
   renameWorkspace,
+  setDefaultWorkspace,
 } from "../db/workspaces";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
@@ -20,14 +21,19 @@ const IdParamSchema = z.object({
 });
 
 const NameSchema = z.string().trim().min(1).max(MAX_WORKSPACE_NAME_LENGTH);
-const RenameBodySchema = z.object({ name: NameSchema }).openapi("RenameWorkspaceRequest");
-const CreateBodySchema = RenameBodySchema.extend({
-  id: z
-    .string()
-    .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
-    .optional()
-    .openapi({ description: "クライアントが決めた小文字の UUID。省略時は Sendo が決める" }),
-}).openapi("CreateWorkspaceRequest");
+const UpdateBodySchema = z
+  .union([z.strictObject({ name: NameSchema }), z.strictObject({ isDefault: z.literal(true) })])
+  .openapi("UpdateWorkspaceRequest");
+const CreateBodySchema = z
+  .object({
+    name: NameSchema,
+    id: z
+      .string()
+      .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+      .optional()
+      .openapi({ description: "クライアントが決めた小文字の UUID。省略時は Sendo が決める" }),
+  })
+  .openapi("CreateWorkspaceRequest");
 
 const error = (description: string) => ({
   description,
@@ -68,17 +74,17 @@ const createWorkspaceRoute = createRoute({
   },
 });
 
-const renameRoute = createRoute({
+const updateRoute = createRoute({
   method: "patch",
   path: "/workspaces/{id}",
-  summary: "ワークスペースの名前を変える",
+  summary: "ワークスペースを改名するか、デフォルトにする",
   request: {
     params: IdParamSchema,
-    body: { required: true, content: { "application/json": { schema: RenameBodySchema } } },
+    body: { required: true, content: { "application/json": { schema: UpdateBodySchema } } },
   },
   responses: {
-    200: workspaceResponse("名前を変えた"),
-    400: error("名前か ID が正しくない"),
+    200: workspaceResponse("指定された項目を更新した"),
+    400: error("入力が正しくない。名前かデフォルトの指定のどちらかが必要"),
     404: error("ワークスペースがない"),
     409: error("名前が使用済み（workspace_exists）"),
   },
@@ -87,12 +93,12 @@ const renameRoute = createRoute({
 const deleteRoute = createRoute({
   method: "delete",
   path: "/workspaces/{id}",
-  summary: "有効な購読が0件のワークスペースを削除する",
+  summary: "デフォルト以外で有効な購読が0件のワークスペースを削除する",
   request: { params: IdParamSchema },
   responses: {
     204: { description: "削除した、または削除済み" },
     404: error("ワークスペースがない"),
-    409: error("有効な購読がある（workspace_not_empty）"),
+    409: error("デフォルト（workspace_is_default）か有効な購読がある（workspace_not_empty）"),
   },
 });
 
@@ -122,17 +128,25 @@ export function workspacesApi(platform: Platform) {
         result.created ? 201 : 200,
       );
     })
-    .openapi(renameRoute, async (c) => {
+    .openapi(updateRoute, async (c) => {
       const { id } = c.req.valid("param");
-      const { name } = c.req.valid("json");
-      const result = await renameWorkspace(db, { userId: c.get("user").id, id, name });
+      const body = c.req.valid("json");
+      const userId = c.get("user").id;
+      if ("isDefault" in body) {
+        const workspace = await setDefaultWorkspace(db, { userId, id });
+        if (!workspace) {
+          return c.json(errorBody("not_found", "workspace does not exist"), 404);
+        }
+        return c.json({ workspace: toWorkspaceResponse(workspace) }, 200);
+      }
+      const result = await renameWorkspace(db, { userId, id, name: body.name });
       if (result === "name_taken") {
         return c.json(errorBody("workspace_exists", "workspace name is already used"), 409);
       }
       if (result === "not_found") {
         return c.json(errorBody("not_found", "workspace does not exist"), 404);
       }
-      return c.json({ workspace: toWorkspaceResponse(result) }, 200);
+      return c.json({ workspace: toWorkspaceResponse(result.workspace) }, 200);
     })
     .openapi(deleteRoute, async (c) => {
       const { id } = c.req.valid("param");
@@ -141,6 +155,9 @@ export function workspacesApi(platform: Platform) {
         id,
         now: platform.now(),
       });
+      if (result === "is_default") {
+        return c.json(errorBody("workspace_is_default", "workspace is the default"), 409);
+      }
       if (result === "not_empty") {
         return c.json(errorBody("workspace_not_empty", "workspace still has subscriptions"), 409);
       }

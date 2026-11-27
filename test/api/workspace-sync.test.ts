@@ -6,9 +6,9 @@ import { createTestPlatform, createUser, fakeFetch, requestApp } from "../helper
 const rss = `<rss version="2.0"><channel><title>Blog</title>
 <link>https://example.com/</link><item><title>Post</title></item></channel></rss>`;
 
-type ActiveWorkspace = { id: string; name: string };
+type ActiveWorkspace = { id: string; name: string; isDefault: boolean };
 type Feed = { id: string; subscriptionId: string; url: string };
-type Workspace = { id: string; deleted: true } | { id: string; name: string; deleted: false };
+type Workspace = { id: string; deleted: true } | (ActiveWorkspace & { deleted: false });
 type SyncPage = {
   cursor: string;
   hasMore: boolean;
@@ -21,6 +21,7 @@ type SyncPage = {
     subscriptionId?: string;
   }>;
   workspaces?: Workspace[];
+  defaultWorkspaceOnSubscribe?: true;
 };
 
 async function setup() {
@@ -71,13 +72,21 @@ it("初回・既存カーソルの同期で所属を返し、指定のない従�
   await move(feed, initial.id);
   const legacy = await sync(undefined, false);
   expect(legacy.workspaces).toBeUndefined();
+  expect(legacy.defaultWorkspaceOnSubscribe).toBeUndefined();
   expect(legacy.feeds[0]).not.toHaveProperty("workspaceId");
   expect(legacy.feeds[0]).not.toHaveProperty("subscriptionId");
 
   for (const cursor of [undefined, legacy.cursor]) {
     const page = await sync(cursor);
+    expect(page.defaultWorkspaceOnSubscribe).toBe(true);
     expect(page.workspaces).toEqual([
-      { id: initial.id, name: "default", createdAt: expect.any(String), deleted: false },
+      {
+        id: initial.id,
+        name: "default",
+        createdAt: expect.any(String),
+        isDefault: true,
+        deleted: false,
+      },
     ]);
     expect(page.feeds).toMatchObject([
       {
@@ -98,9 +107,16 @@ it("差分や指定を戻したときに削除の印と購読の移動が届く"
   const before = await sync();
   const next = await create("Personal");
   await move(feed, next.id);
+  expect((await request(`/workspaces/${next.id}`, "PATCH", { isDefault: true })).status).toBe(200);
   expect((await request(`/workspaces/${initial.id}`, "DELETE")).status).toBe(204);
   const expected = [
-    { id: next.id, name: "Personal", createdAt: expect.any(String), deleted: false },
+    {
+      id: next.id,
+      name: "Personal",
+      createdAt: expect.any(String),
+      isDefault: true,
+      deleted: false,
+    },
     { id: initial.id, deleted: true },
   ];
   const delta = await sync(before.cursor);
@@ -110,7 +126,13 @@ it("差分や指定を戻したときに削除の印と購読の移動が届く"
 
   expect((await request(`/workspaces/${next.id}`, "PATCH", { name: "Reading" })).status).toBe(200);
   const renamed = await sync(delta.cursor);
-  const current = { id: next.id, name: "Reading", createdAt: expect.any(String), deleted: false };
+  const current = {
+    id: next.id,
+    name: "Reading",
+    createdAt: expect.any(String),
+    isDefault: true,
+    deleted: false,
+  };
   expect(renamed.workspaces).toEqual([current]);
   expect(renamed.feeds).toEqual([]);
 
@@ -124,7 +146,43 @@ it("差分や指定を戻したときに削除の印と購読の移動が届く"
   expect(restored.articles).toEqual([]);
   const done = await sync(restored.cursor);
   expect(done.workspaces).toEqual([]);
+  expect(done.defaultWorkspaceOnSubscribe).toBe(true);
   expect(done.feeds).toEqual([]);
+});
+
+it("デフォルトの切り替えの両方の印をページをまたいで届け、再送で差分を増やさない", async () => {
+  const { create, initial, request, sync, user } = await setup();
+  const next = await create("Personal");
+  const before = await sync();
+  const position = decodeSyncCursor(before.cursor)?.workspaces;
+  if (!position) throw new Error("workspace position is missing");
+  // 先行する499件に旧・新デフォルトの2件を続け、500件の境界をまたぐ。
+  await testDb
+    .prepare(`
+    WITH RECURSIVE numbers(n) AS (
+      SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 499
+    )
+    INSERT INTO workspaces (id, user_id, name, created_at, seq)
+    SELECT printf('ahead-%04d', n), ?, printf('Group %04d', n), 0, ? FROM numbers
+  `)
+    .bind(user.id, position.seq + 1)
+    .run();
+  const setDefault = () => request(`/workspaces/${next.id}`, "PATCH", { isDefault: true });
+  expect((await setDefault()).status).toBe(200);
+  const first = await sync(before.cursor);
+  expect(first.hasMore).toBe(true);
+  expect(first.workspaces).toHaveLength(500);
+  const second = await sync(first.cursor);
+  expect(second.hasMore).toBe(false);
+  expect(second.workspaces).toHaveLength(1);
+  expect([first.workspaces?.at(-1), second.workspaces?.[0]]).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: initial.id, deleted: false, isDefault: false }),
+      expect.objectContaining({ id: next.id, deleted: false, isDefault: true }),
+    ]),
+  );
+  expect((await setDefault()).status).toBe(200);
+  expect((await sync(second.cursor)).workspaces).toEqual([]);
 });
 
 it("旧カーソルから購読を再送するとき、購読し直したフィードの古い削除印を返さない", async () => {

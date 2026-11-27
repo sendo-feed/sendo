@@ -1,7 +1,7 @@
 # コンテナ版
 
 - 状態：提案中
-- 関連：[テックスタック](tech-stack.md)（緩衝層、Rust）、[仕事の流し方](jobs.md)（仕事の動かし方）、sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)（画面のコンテナと中継）
+- 関連：[テックスタック](tech-stack.md)（緩衝層、Rust）、[仕事の流し方](jobs.md)（仕事の動かし方）、[Web Push](web-push.md)（3 の有無）、sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)（画面のコンテナと中継）
 
 Sendo は、コンテナ（Node ＋ SQLite）だけで動かす（[テックスタック](tech-stack.md)の 2）。Cloudflare（Workers・D1・Queues）で動かす版は持たない。
 
@@ -16,6 +16,7 @@ Sendo は、コンテナ（Node ＋ SQLite）だけで動かす（[テックス�
 3. **設定によって使えるかどうかが決まる機能は、その機能の API で有無を伝える。** 機能の有無をまとめて返す API（`GET /api/v1/features` など）は持たない。
    - [記事の翻訳](translation.md)は、Claude API のキー（`ANTHROPIC_API_KEY`）があるときだけ翻訳の行を作り、外へ送る。クライアントは、差分同期で配る記事ごとの翻訳の状態があるときに、翻訳の表示と操作を出す。キーを外したあとも残る行への翻訳の求めは 503（`translation_unavailable`）で断る（同じく 15）
    - [Discord チャンネルの購読](discord.md)には、`DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN` と、コールバック先に使う `READER_URL` の設定が要る。使える設定がそろっているかは `GET /api/v1/integrations/discord` の `available` で伝える。設定がそろっていなければ、接続・コールバック・新規購読の入口は 501（`feature_unavailable`）を返す
+   - ベルの[通知](notifications.md)を送る [Web Push](web-push.md) には、VAPID の `sub` に使う `VAPID_SUBJECT` と、通知から記事を開く URL に使う `READER_URL` の設定が要る。使える設定がそろっているかは `GET /api/v1/push` の `available` で伝える。設定がそろっていなければ、端末の登録（`PUT`）は 501（`feature_unavailable`）を返す（[Web Push](web-push.md)の 3）
    - 新しい機能に対応する前の Sendo と組み合わさる間は、その機能を呼んで失敗したら使わずに動き続ける形で扱う（例：[差分同期](sync.md)の 9 の通知）
 
 ### 動かし方
@@ -41,7 +42,7 @@ Sendo は、コンテナ（Node ＋ SQLite）だけで動かす（[テックス�
     - `main` に変更が入るたびに、`main` のタグと、コミットごとの `sha-<コミット>` のタグを付けて出す。版を切るようになったら、版のタグ（`1.2.3`、`1.2`）と `latest` も付ける
     - amd64 と arm64 の両方で作る。Rust のネイティブのモジュールも、それぞれの CPU 向けにビルドしてイメージに入れる
     - イメージは公開する。使う人は `docker login` せずに取ってこられる
-11. **設定は環境変数で渡す**（`PUBLIC_URL`、`READER_URL`、`ALLOWED_EMAILS`、`FETCH_INTERVAL_MINUTES`、`STORAGE_LIMIT_MIB`、`ANTHROPIC_API_KEY`、`TRANSLATION_MODEL`、`TRANSLATION_EFFORT`、`TRANSLATION_LONG_MODEL`、`TRANSLATION_LONG_EFFORT`、`TRANSLATION_LONG_THRESHOLD_CHARS`、`RETRANSLATION_MODEL`、`RETRANSLATION_EFFORT` など）。秘密も、`.env` から環境変数として渡す。何も入れなければ、コードの既定値で動く。
+11. **設定は環境変数で渡す**（`PUBLIC_URL`、`READER_URL`、`ALLOWED_EMAILS`、`FETCH_INTERVAL_MINUTES`、`STORAGE_LIMIT_MIB`、`ANTHROPIC_API_KEY`、`TRANSLATION_MODEL`、`TRANSLATION_EFFORT`、`TRANSLATION_LONG_MODEL`、`TRANSLATION_LONG_EFFORT`、`TRANSLATION_LONG_THRESHOLD_CHARS`、`RETRANSLATION_MODEL`、`RETRANSLATION_EFFORT`、`VAPID_SUBJECT` など）。秘密も、`.env` から環境変数として渡す。何も入れなければ、コードの既定値で動く。
 12. **テストは Node で動かす。Rust の処理は cargo test で確かめ、Node から呼べることは Node のテストで確かめる。** CI では、`main` への push と、Markdown 以外のファイルを変える PR で、すべてを通す。Markdown だけを変える PR では、決定の文書の検査だけを動かす。
 13. **自動で更新したい人には、上流に置いた更新のスクリプトの例を勧める。** 基本の手順は、手で `docker compose pull` するまま（10）にし、自動の更新を既定にしない。
     - 例は sendo のリポジトリに置き、README の更新の手順から案内する。使う人が、`compose.yaml` を置いたマシンで cron などから動かす。コンテナの中には更新の仕組みを入れない（Docker のソケットをコンテナに渡さない）。対象は sendo と sendo-reader を並べた構成（7）だけにし、sendo-reader のない構成では使わない
@@ -82,7 +83,7 @@ Sendo がほかの RSS リーダーと違う価値を出すのは、CPU を多�
 
 - **ネイティブのモジュールを必ず読み込む：** 機能を欠いたまま動くと、ページの本文や言語判定が静かに止まり、気づきにくい。イメージには必ず入っているので、読み込めないのは壊れたときだけ。起動を止めて知らせるほうがよい。
 - **設定による機能の有無は、その機能の API で伝える。**
-  - 配布するイメージは全機能を載せる。デプロイごとの設定で有無が分かれる翻訳と Discord は、画面がその機能のために読む応答で判断できる。翻訳の表示は記事ごとの状態、Discord の接続と新規購読の操作は連携状態の `available` で出すかどうかを決められる
+  - 配布するイメージは全機能を載せる。デプロイごとの設定で有無が分かれる翻訳、Discord、Web Push は、画面がその機能のために読む応答で判断できる。翻訳の表示は記事ごとの状態、Discord の接続と新規購読の操作は連携状態の `available`、通知の許可とベルの操作は Web Push の `available` で出すかどうかを決められる
   - Sendo と reader は compose で一緒に更新するので、新旧が混ざるのは更新の途中の短い間だけ。その間は、呼んで失敗したら使わない、で足りる。自動の更新の例で新しい reader を戻したときは、古い reader と新しい Sendo の組が上流が直すまで続くが、これも同じ扱いで足りる（13）
   - sendo-reader は、全文の取得を常に使える機能として扱う（sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)の 8）。古い版の画面（Service Worker に残った版）が `GET /api/v1/features` を呼んで 404 を受けても、全文の取得を出さないだけで動き続ける
 - **Node を使う：**
@@ -125,7 +126,7 @@ Sendo がほかの RSS リーダーと違う価値を出すのは、CPU を多�
 - **Cloudflare 版も残し、2 つの版を同じコードから作る：** サーバーを持たない人も無料で使える。ただ、Cloudflare 版に載るのは普通の RSS リーダーの範囲だけで、Sendo を選ぶ理由にならない。緩衝層の 2 つの実装、workerd と Node の 2 組のテスト、上限に合わせた作り、2 つのデプロイの手順を保つ手間が大きい。
 - **重い処理だけを、Cloudflare から別の場所に任せる（Cloudflare Containers、別のサーバー）：** Cloudflare Containers は Workers Paid が必要。別のサーバーを足すと、デプロイするものが 2 つになり、結局サーバーを持つことになる。
 - **ネイティブのモジュールがなくても、その機能なしで起動する：** 開発の手元で Rust を入れずに動かせる。ただ、本番で読み込みに失敗したときに、機能が黙って止まる。手元でも `pnpm build:native` で作れる。
-- **機能の有無と新しい機能への対応を `GET /api/v1/features` にまとめる。** 新旧の組み合わせを、機能を呼ぶ前に見分けられる。ただ、項目ごとにいつ消すかを決め続けることになる。翻訳と Discord の設定の有無はそれぞれの API で伝えられ、新旧の組み合わせは呼んで失敗したときに扱える。
+- **機能の有無と新しい機能への対応を `GET /api/v1/features` にまとめる。** 新旧の組み合わせを、機能を呼ぶ前に見分けられる。ただ、項目ごとにいつ消すかを決め続けることになる。翻訳、Discord、Web Push の設定の有無はそれぞれの API で伝えられ、新旧の組み合わせは呼んで失敗したときに扱える。
 - **コンテナ版も、各自が fork してビルドする：** コードを自分で変えたい人はそうすればよい。ただ、動かすだけなら要らない。
 - **Postgres を支える：** 大勢で使うなら要るが、今は個人で使う規模を想定している。SQLite の方言で書いたスキーマ（FTS5 など）を、もう 1 組持つことになる。
 - **自動の更新に、汎用の道具（Watchtower など）を勧める：** 設定だけで済む。ただ、上げる前のバックアップ、sendo のあとに sendo-reader を上げる順番、バックアップと組の戻しを守れない。多くはコンテナとして動き、Docker のソケットを渡すことになる。

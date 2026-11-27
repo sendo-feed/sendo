@@ -337,7 +337,8 @@
               "null"
             ],
             "minLength": 1,
-            "maxLength": 64
+            "maxLength": 64,
+            "description": "購読の所属先。省略または null ならデフォルトに追加する"
           }
         },
         "required": [
@@ -785,42 +786,68 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "アカウントのデフォルトか"
           }
         },
         "required": [
           "id",
           "name",
-          "createdAt"
+          "createdAt",
+          "isDefault"
         ]
       },
       "CreateWorkspaceRequest": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/RenameWorkspaceRequest"
-          },
-          {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                "description": "クライアントが決めた小文字の UUID。省略時は Sendo が決める"
-              }
-            }
-          }
-        ]
-      },
-      "RenameWorkspaceRequest": {
         "type": "object",
         "properties": {
           "name": {
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "クライアントが決めた小文字の UUID。省略時は Sendo が決める"
           }
         },
         "required": [
           "name"
+        ]
+      },
+      "UpdateWorkspaceRequest": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "isDefault": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              }
+            },
+            "required": [
+              "isDefault"
+            ],
+            "additionalProperties": false
+          }
         ]
       },
       "OpmlImportResult": {
@@ -992,6 +1019,13 @@
             "items": {
               "$ref": "#/components/schemas/SyncWorkspace"
             }
+          },
+          "defaultWorkspaceOnSubscribe": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "includeWorkspaces=true のとき付く。購読先の省略はデフォルトを使う"
           }
         },
         "required": [
@@ -3387,7 +3421,7 @@
     },
     "/workspaces/{id}": {
       "patch": {
-        "summary": "ワークスペースの名前を変える",
+        "summary": "ワークスペースを改名するか、デフォルトにする",
         "parameters": [
           {
             "schema": {
@@ -3405,14 +3439,14 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RenameWorkspaceRequest"
+                "$ref": "#/components/schemas/UpdateWorkspaceRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "名前を変えた",
+            "description": "指定された項目を更新した",
             "content": {
               "application/json": {
                 "schema": {
@@ -3430,7 +3464,7 @@
             }
           },
           "400": {
-            "description": "名前か ID が正しくない",
+            "description": "入力が正しくない。名前かデフォルトの指定のどちらかが必要",
             "content": {
               "application/json": {
                 "schema": {
@@ -3462,7 +3496,7 @@
         }
       },
       "delete": {
-        "summary": "有効な購読が0件のワークスペースを削除する",
+        "summary": "デフォルト以外で有効な購読が0件のワークスペースを削除する",
         "parameters": [
           {
             "schema": {
@@ -3490,7 +3524,7 @@
             }
           },
           "409": {
-            "description": "有効な購読がある（workspace_not_empty）",
+            "description": "デフォルト（workspace_is_default）か有効な購読がある（workspace_not_empty）",
             "content": {
               "application/json": {
                 "schema": {
@@ -3911,7 +3945,7 @@
     "/sync": {
       "get": {
         "summary": "前回の同期からの差分を取る",
-        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\nsettings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。\nincludeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。\nincludeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
+        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\nsettings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。\nincludeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。\nincludeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。差分の有無にかかわらず、購読先の省略に対応した印 defaultWorkspaceOnSubscribe を返す。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
         "parameters": [
           {
             "schema": {
