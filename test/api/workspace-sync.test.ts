@@ -21,6 +21,7 @@ type SyncPage = {
     subscriptionId?: string;
   }>;
   workspaces?: Workspace[];
+  defaultWorkspaceOnSubscribe?: true;
 };
 
 async function setup() {
@@ -71,11 +72,13 @@ it("初回・既存カーソルの同期で所属を返し、指定のない従�
   await move(feed, initial.id);
   const legacy = await sync(undefined, false);
   expect(legacy.workspaces).toBeUndefined();
+  expect(legacy.defaultWorkspaceOnSubscribe).toBeUndefined();
   expect(legacy.feeds[0]).not.toHaveProperty("workspaceId");
   expect(legacy.feeds[0]).not.toHaveProperty("subscriptionId");
 
   for (const cursor of [undefined, legacy.cursor]) {
     const page = await sync(cursor);
+    expect(page.defaultWorkspaceOnSubscribe).toBe(true);
     expect(page.workspaces).toEqual([
       {
         id: initial.id,
@@ -143,6 +146,7 @@ it("差分や指定を戻したときに削除の印と購読の移動が届く"
   expect(restored.articles).toEqual([]);
   const done = await sync(restored.cursor);
   expect(done.workspaces).toEqual([]);
+  expect(done.defaultWorkspaceOnSubscribe).toBe(true);
   expect(done.feeds).toEqual([]);
 });
 
