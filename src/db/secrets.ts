@@ -13,7 +13,7 @@ import { appSecrets } from "./schema";
 /** 画像の URL の署名の鍵の名前 */
 export const IMAGE_SIGNING_KEY = "image_signing_key";
 
-/** VAPID の鍵の組の名前（docs/decisions/notifications.md の 17） */
+/** VAPID の鍵の組の名前（docs/decisions/web-push.md の 1） */
 export const VAPID_KEY = "vapid_key";
 
 /**

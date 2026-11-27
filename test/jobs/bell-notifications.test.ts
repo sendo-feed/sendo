@@ -11,7 +11,7 @@ import { clockedDatabase, createTestPlatform, createUser, fakeFetch, requestApp 
 import { createDevice, createPushService, type Device, type PushService } from "../push-service";
 
 /*
- * ベルの記事を Web Push で送る（docs/decisions/notifications.md の 8〜16、21、22）。
+ * ベルの記事を Web Push で送る（docs/decisions/notifications.md の 8〜16、web-push.md の 5、6）。
  *
  * 購読、ベル、端末の登録は REST API で作り、記事は取得の仕事で取り込む。送る仕事は仕事の表
  * （本番と同じ SQLite の表）から動かす。プッシュサービスは偽物で、受けた本体を端末の秘密鍵で

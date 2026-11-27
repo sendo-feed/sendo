@@ -3,7 +3,7 @@ import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
 import { base64UrlDecode, base64UrlEncode } from "../lib/crypto";
 
 /*
- * ブラウザが返した Web Push の登録を確かめる（docs/decisions/notifications.md の 20、22）。
+ * ブラウザが返した Web Push の登録を確かめる（docs/decisions/web-push.md の 4、6）。
  * 壊れた鍵は、送るときの暗号化で失敗し、通知のたびに仕事が無駄になるので、受けるときに断る。
  */
 

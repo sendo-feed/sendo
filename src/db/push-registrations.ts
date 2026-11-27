@@ -4,7 +4,7 @@ import { DB_NOW_MS } from "./clock";
 import { pushRegistrations, sessions } from "./schema";
 
 /*
- * 端末の Web Push の登録（docs/decisions/notifications.md の 20）。ブラウザのセッションに結ぶ。
+ * 端末の Web Push の登録（docs/decisions/web-push.md の 4）。ブラウザのセッションに結ぶ。
  */
 
 /** 確かめた登録（notify/registration.ts の parsePushRegistration が作る） */
@@ -78,7 +78,7 @@ export async function listPushRegistrations(
 }
 
 /**
- * 登録を行の ID で消す（docs/decisions/notifications.md の 21、22）。プッシュサービスが 404 ／ 410 を
+ * 登録を行の ID で消す（docs/decisions/web-push.md の 5、6）。プッシュサービスが 404 ／ 410 を
  * 返したときと、エンドポイントが内部のアドレスに解決されたとき。エンドポイントで消すと、同じ
  * エンドポイントで登録し直した新しい行まで消してしまう
  */
