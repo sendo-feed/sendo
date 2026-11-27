@@ -1808,8 +1808,8 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     const empty = await call("add_bell", {});
     expect(empty.isError).toBe(true);
     expect(empty.content[0]?.text).toMatch(/^invalid_request:/);
-    // 言葉はまだ受けない（黙って捨てると、頼まれたのと違うベルになる）
-    expect((await call("add_bell", { feedId: feed.id, words: "障害" })).isError).toBe(true);
+    // 知らない項目は黙って捨てない（捨てると、頼まれたのと違うベルになる）
+    expect((await call("add_bell", { feedId: feed.id, unknown: true })).isError).toBe(true);
     expect(await listed()).toHaveLength(1);
     expect(recording.notified).toEqual([]);
 
@@ -1821,6 +1821,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
       userId: other.id,
       id: crypto.randomUUID(),
       feedId: othersFeed.id,
+      words: null,
     });
     if (typeof othersBell === "string") throw new Error(othersBell);
     for (const bellId of [othersBell.bell.id, crypto.randomUUID()]) {
@@ -1828,6 +1829,81 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
     }
     expect(await listBells(platform.db, other.id)).toHaveLength(1);
     expect(recording.notified).toEqual([user.id]);
+  });
+
+  it("add_bell の words で言葉のベルを付け、list_bells では言葉だけのベルに feedTitle を付けない", async () => {
+    const { user, feed, platform: base } = await setup();
+    const recording = recordingSyncUpdates();
+    const platform = { ...base, syncUpdates: recording.syncUpdates };
+    const { client } = await connect(platform, await mcpToken(user.id, ["read", "write"]), era);
+    type Bell = {
+      id: string;
+      subscriptionId: string | null;
+      feedId: string | null;
+      words: string | null;
+      createdAt: string;
+    };
+    const call = async <T>(name: string, args: Record<string, unknown>) =>
+      (await client.callTool({ name, arguments: args })) as Structured<T> & {
+        content: { type: string; text: string }[];
+      };
+    const subscription = await getSubscription(platform.db, { userId: user.id, feedId: feed.id });
+
+    const wordsOnly = await call<{ bell: Bell; created: boolean }>("add_bell", {
+      words: "Ａｚｕｒｅ\u3000障害",
+    });
+    expect(wordsOnly.structuredContent).toEqual({
+      bell: {
+        id: expect.any(String),
+        subscriptionId: null,
+        feedId: null,
+        words: "Azure 障害",
+        createdAt: expect.any(String),
+      },
+      created: true,
+    });
+    const both = await call<{ bell: Bell; created: boolean }>("add_bell", {
+      feedId: feed.id,
+      words: "Rust",
+    });
+    expect(both.structuredContent).toMatchObject({
+      bell: { subscriptionId: subscription?.id, feedId: feed.id, words: "Rust" },
+      created: true,
+    });
+    expect(recording.notified).toEqual([user.id, user.id]);
+
+    // 並びや大文字と小文字の違う同じ言葉は、作らずに今のベルを返す
+    const again = await call("add_bell", { words: "障害 azure" });
+    expect(again.structuredContent).toEqual({
+      bell: wordsOnly.structuredContent?.bell,
+      created: false,
+    });
+    expect(recording.notified).toEqual([user.id, user.id]);
+
+    const listed = (await call<{ bells: (Bell & { feedTitle?: string })[] }>("list_bells", {}))
+      .structuredContent?.bells;
+    expect(listed).toHaveLength(2);
+    expect(listed?.find((bell) => bell.feedId === null)).toEqual(wordsOnly.structuredContent?.bell);
+    expect(listed?.find((bell) => bell.feedId === feed.id)).toEqual({
+      ...both.structuredContent?.bell,
+      feedTitle: feed.url,
+    });
+
+    // 言葉が上限などに合わなければ invalid_words。ベルは作らない
+    const eight = Array.from({ length: 8 }, (_, i) => `w${i}`).join(" ");
+    for (const words of ["", " \u3000", `${eight} w8`, "あ".repeat(65), "障害\u0000"]) {
+      for (const args of [{ words }, { feedId: feed.id, words }]) {
+        const invalid = await call("add_bell", args);
+        expect(invalid.isError, JSON.stringify(args)).toBe(true);
+        expect(invalid.content[0]?.text).toMatch(/^invalid_words:/);
+      }
+    }
+    // 購読していないフィードと言葉の組は feed_not_found
+    const missing = await call("add_bell", { feedId: crypto.randomUUID(), words: "Rust" });
+    expect(missing.content[0]?.text).toMatch(/^feed_not_found:/);
+    expect((await call<{ bells: Bell[] }>("list_bells", {})).structuredContent?.bells).toHaveLength(
+      2,
+    );
   });
 
   it("add_bell は、有効なベルが上限に達していれば bell_limit_reached を返す", async () => {
@@ -1840,6 +1916,7 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
         userId: user.id,
         id: crypto.randomUUID(),
         feedId: subscribed.id,
+        words: null,
       });
       if (typeof added === "string") throw new Error(added);
     }

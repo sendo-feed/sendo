@@ -159,7 +159,8 @@ export const BellSchema = z
       .nullable()
       .openapi({ description: "鳴らす購読のフィードの ID。購読のないベルは null" }),
     words: z.string().nullable().openapi({
-      description: "当てる言葉（半角の空白区切り）。言葉のないベルは null。今は常に null",
+      description:
+        "当てる言葉（NFKC にして区切った言葉を、半角の空白 1 つでつないだもの）。言葉のないベルは null",
     }),
     createdAt: dateTime,
   })
@@ -170,7 +171,7 @@ export function toBellResponse(bell: ActiveBell): z.infer<typeof BellSchema> {
     id: bell.id,
     subscriptionId: bell.subscriptionId,
     feedId: bell.feedId,
-    words: null,
+    words: bell.words,
     createdAt: bell.createdAt.toISOString(),
   };
 }

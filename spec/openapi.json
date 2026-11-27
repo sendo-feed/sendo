@@ -947,7 +947,7 @@
               "string",
               "null"
             ],
-            "description": "当てる言葉（半角の空白区切り）。言葉のないベルは null。今は常に null"
+            "description": "当てる言葉（NFKC にして区切った言葉を、半角の空白 1 つでつないだもの）。言葉のないベルは null"
           },
           "createdAt": {
             "type": "string",
@@ -974,12 +974,13 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 64,
-            "description": "ベルを付ける購読のフィードの ID"
+            "description": "鳴らす購読のフィードの ID。言葉だけのベルは省く。feedId と words の少なくとも一方が要る"
+          },
+          "words": {
+            "type": "string",
+            "description": "当てる言葉。空白で区切った言葉をすべて含む記事に当てる（AND）。NFKC にしてから区切り、重なりを除いた形で 1〜8 個、全体で 64 文字まで。購読だけのベルは省く"
           }
         },
-        "required": [
-          "feedId"
-        ],
         "additionalProperties": false
       },
       "PushStatus": {
@@ -4012,8 +4013,8 @@
         }
       },
       "post": {
-        "summary": "購読にベルを付ける",
-        "description": "有効なベルは 100 個まで。クライアントは応答の id を正とする。",
+        "summary": "ベルを付ける",
+        "description": "購読だけ、言葉だけ、購読 AND 言葉のベルを付ける。有効なベルは 100 個まで。クライアントは応答の id を正とする。",
         "requestBody": {
           "required": true,
           "content": {
@@ -4026,7 +4027,7 @@
         },
         "responses": {
           "200": {
-            "description": "同じ購読の有効なベルがある。送った id によらず、そのベルを返す",
+            "description": "同じ組（購読と言葉）の有効なベルがある。送った id と言葉の並びによらず、そのベルを返す",
             "content": {
               "application/json": {
                 "schema": {
@@ -4062,7 +4063,7 @@
             }
           },
           "400": {
-            "description": "入力が正しくない",
+            "description": "入力が正しくない。feedId も words もないか、言葉が上限などに合わない",
             "content": {
               "application/json": {
                 "schema": {
@@ -4072,7 +4073,7 @@
             }
           },
           "404": {
-            "description": "そのフィードの有効な購読がない",
+            "description": "feedId のフィードの有効な購読がない",
             "content": {
               "application/json": {
                 "schema": {

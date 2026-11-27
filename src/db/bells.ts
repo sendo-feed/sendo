@@ -5,7 +5,8 @@ import { bellHorizons, bells, feeds, subscriptions } from "./schema";
 import { nextSeq } from "./seq";
 
 /*
- * 通知のベル（docs/decisions/notifications.md の 1〜5）。今は購読のベルだけを扱う。
+ * 通知のベル（docs/decisions/notifications.md の 1〜7）。購読だけ、言葉だけ、購読 AND 言葉の 3 つを、
+ * 購読と言葉の組で表す。言葉の正規化と当て方は notify/words.ts。
  */
 
 /** 1 人が持てる有効なベルの数 */
@@ -14,8 +15,30 @@ export const MAX_BELLS = 100;
 /** 外したベルの行を、同期のために残しておく長さ */
 export const BELL_REMOVAL_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** 有効なベル。REST API、MCP、差分同期で返す形の元 */
-export type ActiveBell = { id: string; subscriptionId: string; feedId: string; createdAt: Date };
+/** 保存する言葉の形（notify/words.ts の parseBellWords が作る） */
+export type BellWords = {
+  /** 区切った言葉を半角の空白 1 つでつないだもの。大文字と小文字は入れたまま */
+  words: string;
+  /** 照合用。言葉を小文字にし、コードポイントの順に並べてつないだもの */
+  matchKey: string;
+};
+
+/** 付けるベルの組。購読も言葉もないベルは作らない */
+export type BellTarget =
+  | { feedId: string; words: BellWords | null }
+  | { feedId: null; words: BellWords };
+
+/**
+ * 有効なベル。REST API、MCP、差分同期で返す形の元。購読のないベルは subscriptionId と feedId が
+ * null、言葉のないベルは words が null
+ */
+export type ActiveBell = {
+  id: string;
+  subscriptionId: string | null;
+  feedId: string | null;
+  words: string | null;
+  createdAt: Date;
+};
 
 export type AddBellResult =
   | { created: boolean; bell: ActiveBell }
@@ -28,7 +51,7 @@ const ADD_ATTEMPTS = 2;
 
 /**
  * その人の有効なベルを、作った順で返す。feedTitle は表示用のフィード名（購読の表示名、フィードの
- * 名前、フィードの URL の順。docs/decisions/mcp.md の 11）
+ * 名前、フィードの URL の順。docs/decisions/mcp.md の 11）。購読のないベルは null
  *
  * 順は変更番号で決める。有効なベルの番号は付けたときに振ったまま変わらない（変わるのは外すときだけ）
  * ので、同じミリ秒に作ったベルどうしでも、作った順と最初の同期の順にそろう
@@ -36,45 +59,55 @@ const ADD_ATTEMPTS = 2;
 export async function listBells(
   db: Database,
   userId: string,
-): Promise<(ActiveBell & { feedTitle: string })[]> {
+): Promise<(ActiveBell & { feedTitle: string | null })[]> {
   return db
     .select({
       id: bells.id,
-      subscriptionId: subscriptions.id,
+      subscriptionId: bells.subscriptionId,
       feedId: subscriptions.feedId,
+      words: bells.words,
       createdAt: bells.createdAt,
-      feedTitle: sql<string>`coalesce(${subscriptions.displayName}, ${feeds.title}, ${feeds.url})`,
+      feedTitle: sql<
+        string | null
+      >`coalesce(${subscriptions.displayName}, ${feeds.title}, ${feeds.url})`,
     })
     .from(bells)
-    .innerJoin(subscriptions, eq(subscriptions.id, bells.subscriptionId))
-    .innerJoin(feeds, eq(feeds.id, subscriptions.feedId))
+    .leftJoin(subscriptions, eq(subscriptions.id, bells.subscriptionId))
+    .leftJoin(feeds, eq(feeds.id, subscriptions.feedId))
     .where(and(eq(bells.userId, userId), isNull(bells.deletedAt)))
     .orderBy(asc(bells.seq))
     .all();
 }
 
 /**
- * その人の、そのフィードの有効な購読にベルを付ける。
+ * その人にベルを付ける。feedId があれば、そのフィードの有効な購読に付ける。
  *
- * 購読を引き当てるのも、有効なベルの数を数えるのも、付ける文の中で行う。同じ組の有効なベルと
- * ID の重なりは、一意索引にぶつけて止める（先に読んで確かめると、同時に付けた 2 つが 2 行になる）。
- * 入らなければ、理由を 1 つの文で読み直す。どれにも当たらなければ（読み直す前に、同じ組のベルが
- * 外された）、付ける文をもう一度だけ流す
+ * 購読を引き当てるのも、有効なベルの数を数えるのも、付ける文の中で行う。同じ組（購読と照合用の
+ * 言葉）の有効なベルと ID の重なりは、一意索引にぶつけて止める（先に読んで確かめると、同時に付けた
+ * 2 つが 2 行になる）。入らなければ、理由を 1 つの文で読み直す。どれにも当たらなければ（読み直す
+ * 前に、同じ組のベルが外された）、付ける文をもう一度だけ流す
  */
 export async function addBell(
   db: Database,
-  input: { userId: string; id: string; feedId: string },
+  input: { userId: string; id: string } & BellTarget,
 ): Promise<AddBellResult> {
   const { userId, id, feedId } = input;
+  const words = input.words?.words ?? null;
+  const matchKey = input.words?.matchKey ?? null;
+  // 付ける購読。言葉だけのベルは、購読の ID が null の 1 行
+  const subscription =
+    feedId === null
+      ? sql`select null as id`
+      : sql`select id from ${subscriptions}
+        where user_id = ${userId} and feed_id = ${feedId} and deleted_at is null`;
   for (let attempt = 0; attempt < ADD_ATTEMPTS; attempt++) {
-    const inserted = await getRow<{ subscriptionId: string; createdAt: number }>(
+    const inserted = await getRow<{ subscriptionId: string | null; createdAt: number }>(
       db,
-      sql`insert into ${bells} (id, user_id, subscription_id, created_at, seq)
-      select ${id}, ${userId}, ${subscriptions.id}, ${DB_NOW_MS}, ${nextSeq(bells)}
-      from ${subscriptions}
-      where ${subscriptions.userId} = ${userId} and ${subscriptions.feedId} = ${feedId}
-        and ${subscriptions.deletedAt} is null
-        and (select count(*) from ${bells} as counted
+      sql`insert into ${bells} (id, user_id, subscription_id, words, match_key, created_at, seq)
+      select ${id}, ${userId}, subscription.id, ${words}, ${matchKey}, ${DB_NOW_MS},
+        ${nextSeq(bells)}
+      from (${subscription}) as subscription
+      where (select count(*) from ${bells} as counted
           where counted.user_id = ${userId} and counted.deleted_at is null) < ${MAX_BELLS}
       on conflict do nothing
       returning subscription_id as "subscriptionId", created_at as "createdAt"`,
@@ -86,35 +119,36 @@ export async function addBell(
           id,
           subscriptionId: inserted.subscriptionId,
           feedId,
+          words,
           createdAt: new Date(inserted.createdAt),
         },
       };
     }
 
+    // 同じ組の有効なベルは、一意索引と同じく、null どうしも同じとみなして探す（is で比べる）
     const found = await getRow<{
       subscriptionId: string | null;
       bellId: string | null;
+      words: string | null;
       createdAt: number | null;
       full: number;
       idTaken: number;
     }>(
       db,
-      sql`with subscription as (
-        select id from ${subscriptions}
-        where user_id = ${userId} and feed_id = ${feedId} and deleted_at is null
-      )
+      sql`with subscription as (${subscription})
       select (select id from subscription) as "subscriptionId",
-        existing.id as "bellId", existing.created_at as "createdAt",
+        existing.id as "bellId", existing.words, existing.created_at as "createdAt",
         (select count(*) from ${bells} where user_id = ${userId} and deleted_at is null)
           >= ${MAX_BELLS} as "full",
         exists (select 1 from ${bells} where id = ${id}) as "idTaken"
       from (select 1)
       left join ${bells} as existing
         on existing.user_id = ${userId} and existing.deleted_at is null
-        and existing.subscription_id = (select id from subscription)`,
+        and existing.subscription_id is (select id from subscription)
+        and existing.match_key is ${matchKey}`,
     );
     if (!found) throw new Error("could not read the bell back");
-    if (found.subscriptionId === null) return "feed_not_found";
+    if (feedId !== null && found.subscriptionId === null) return "feed_not_found";
     if (found.bellId !== null && found.createdAt !== null) {
       return {
         created: false,
@@ -122,6 +156,7 @@ export async function addBell(
           id: found.bellId,
           subscriptionId: found.subscriptionId,
           feedId,
+          words: found.words,
           createdAt: new Date(found.createdAt),
         },
       };

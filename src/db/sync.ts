@@ -664,14 +664,16 @@ export async function readChanges(
           db
             .select({
               id: bells.id,
-              subscriptionId: subscriptions.id,
+              subscriptionId: bells.subscriptionId,
               feedId: subscriptions.feedId,
+              words: bells.words,
               createdAt: bells.createdAt,
               deletedAt: bells.deletedAt,
               seq: bells.seq,
             })
             .from(bells)
-            .innerJoin(subscriptions, eq(subscriptions.id, bells.subscriptionId))
+            // 言葉だけのベルは購読を持たないので、落とさないよう左結合にする
+            .leftJoin(subscriptions, eq(subscriptions.id, bells.subscriptionId))
             .where(and(eq(bells.userId, userId), where))
             .orderBy(asc(bells.seq), asc(bells.id))
             .limit(limit)
@@ -713,9 +715,9 @@ export async function readChanges(
     }),
     ...(b && {
       bells: b.items.map(
-        ({ id, subscriptionId, feedId, createdAt, deletedAt }): SyncBell =>
+        ({ id, subscriptionId, feedId, words, createdAt, deletedAt }): SyncBell =>
           deletedAt === null
-            ? { id, subscriptionId, feedId, createdAt, deleted: false }
+            ? { id, subscriptionId, feedId, words, createdAt, deleted: false }
             : { id, deleted: true },
       ),
     }),

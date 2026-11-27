@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type BellNotification, buildNotificationPayload } from "../../src/notify/payload";
+import { MAX_BELL_WORDS_LENGTH, parseBellWords } from "../../src/notify/words";
 
 const READER = "https://reader.example.com";
 const BELL = "8d1c5c6e-2f5e-4c4f-9a59-0c6c3ad1f7a1";
@@ -153,6 +154,34 @@ describe("3993 バイトに収める", () => {
     expect(bytesOf(result.json)).toBe(bytes);
     return result;
   }
+
+  it("言葉は切らない。4 バイトの文字 64 個の言葉でも、上限の長さのフィード名と 3 件のタイトルと一緒に収まる", () => {
+    // 保存できるいちばん長い言葉（UTF-8 で 256 バイト）
+    const parsed = parseBellWords("𠮷".repeat(MAX_BELL_WORDS_LENGTH));
+    if (typeof parsed === "string") throw new Error(parsed);
+    const feedName = "𠮷".repeat(80);
+    const titles = ["😀", "😁", "😂"].map((char) => char.repeat(200));
+    const articles = titles.map((title, i) => article(9 - i, title));
+
+    const payload = build({
+      words: parsed.words,
+      feedName,
+      articles,
+      count: 99_999,
+      unread: 99_999,
+    });
+
+    expect(bytesOf(payload)).toBeLessThanOrEqual(3993);
+    expect(JSON.parse(payload)).toEqual(
+      expected({
+        title: `${parsed.words} · ${feedName}`,
+        body: `${titles.join("\n")}\nほか 99996 件`,
+        articleId: ids[9] ?? "",
+        count: 99_999,
+        unread: 99_999,
+      }),
+    );
+  });
 
   it("ちょうど 3993 バイトなら、何も減らさない", () => {
     const { feedName, articles, json } = sized(3993);

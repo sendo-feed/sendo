@@ -1,9 +1,9 @@
 import {
   BELL_WINDOW_MS,
-  type BellHit,
+  type BellCandidate,
   type BellWindow,
   type CreatedNotification,
-  findBellHits,
+  findBellCandidates,
   insertArticleNotifications,
   insertBundleNotification,
   type PushDelivery,
@@ -13,11 +13,14 @@ import {
 import { countUnread } from "../db/inbox";
 import { deletePushRegistrationById, listPushRegistrations } from "../db/push-registrations";
 import { parseRetryAfter } from "../fetcher/fetch-feed";
+import { htmlToText } from "../fetcher/parse-feed";
 import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
 import { loggableError } from "../lib/log-error";
+import { sanitizeHtml } from "../lib/sanitize-html";
 import { type BellNotification, BUNDLE_LINES, buildNotificationPayload } from "../notify/payload";
 import { discardRefusedVapidToken, vapidAuthorization } from "../notify/vapid";
 import { encryptPushMessage } from "../notify/web-push";
+import { matchesBellWords, toMatchText } from "../notify/words";
 import type { Platform } from "../platform";
 
 /*
@@ -29,6 +32,9 @@ import type { Platform } from "../platform";
 
 /** 1 回の取得の仕事で判定する記事の数。公開日時の新しい順に選ぶ */
 const MAX_JUDGED_ARTICLES = 50;
+
+/** 判定に使うフィードの本文の長さ（プレーンテキストの先頭のコードポイントの数） */
+const MAX_JUDGED_BODY_LENGTH = 20_000;
 
 /** 送るときの時間切れ（応答を受け終えるまで。docs/decisions/images.md の 3 と同じ） */
 const PUSH_TIMEOUT_MS = 15_000;
@@ -46,6 +52,15 @@ export type IngestedArticle = {
   publishedAt: Date;
   /** フィードに日付があったか。なければ、取り込んだ時刻を公開日時とみなす */
   dated: boolean;
+  /** 言葉で判定する欄。記事の行と同じタイトルと要約 */
+  title: string | null;
+  summary: string | null;
+  /**
+   * フィードの本文の HTML と、その URL の基準。置き場に置いたかどうかによらない。判定するときにだけ
+   * サニタイズしてプレーンテキストにし（サニタイズで中身ごと落とす要素の文字は、読者に見えないので
+   * 当てない）、保存も返しもしない。本文がなければ null
+   */
+  body: { html: string; baseUrl: string } | null;
 };
 
 /**
@@ -54,6 +69,8 @@ export type IngestedArticle = {
  *
  * - Web Push が使えない設定なら、何もしない
  * - 判定する記事は、公開日時の新しい順に 50 件まで。行は、公開日時の古い順に 1 件ずつ作る
+ * - 言葉のあるベルは、言葉ごとに、タイトル、要約、フィードの本文（プレーンテキストにした先頭
+ *   20,000 文字）のどれかにあれば当たる（docs/decisions/notifications.md の 6、8）
  * - 窓の最初の bundled の行を作ったら、窓が閉じる時刻に、その窓のまとめの仕事を積む
  * - 判定や積むのに失敗しても、取得の仕事は失敗にしない（その回の通知は出ないことがある。まとめの
  *   仕事を積む前に落ちたら、その窓のまとめは出ない）。行を作るか積むのに失敗した記事は飛ばし、
@@ -71,9 +88,9 @@ export async function notifyBells(
     .sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime())
     .slice(0, MAX_JUDGED_ARTICLES)
     .reverse();
-  let hits: BellHit[];
+  let candidates: BellCandidate[];
   try {
-    hits = await findBellHits(platform.db, {
+    candidates = await findBellCandidates(platform.db, {
       articleIds: judged.map((article) => article.id),
       previousSuccessAt,
     });
@@ -83,9 +100,12 @@ export async function notifyBells(
   }
   // 1 件の失敗で、残りの記事の通知を捨てない
   for (const article of judged) {
-    const found = hits.filter((hit) => hit.articleId === article.id);
-    if (found.length === 0) continue;
     try {
+      const found = matchWords(
+        article,
+        candidates.filter((candidate) => candidate.articleId === article.id),
+      );
+      if (found.length === 0) continue;
       const { created, bundles } = await insertArticleNotifications(platform.db, {
         articleId: article.id,
         publishedAt: article.dated ? article.publishedAt : null,
@@ -104,6 +124,43 @@ export async function notifyBells(
       });
     }
   }
+}
+
+/**
+ * 候補のベルのうち、記事に当たるものを返す。言葉のないベルはそのまま当たり、言葉のあるベルは、
+ * すべての言葉が記事の文字にあれば当たる。記事の文字は、言葉のあるベルがあるときだけ作る
+ */
+function matchWords(
+  article: IngestedArticle,
+  candidates: readonly BellCandidate[],
+): BellCandidate[] {
+  let judged: { text: string; end: number } | undefined;
+  return candidates.filter(({ matchKey }) => {
+    if (matchKey === null) return true;
+    judged ??= judgedText(article);
+    return matchesBellWords(judged.text, matchKey, judged.end);
+  });
+}
+
+/**
+ * 言葉と比べる記事の文字（toMatchText にしたもの）。タイトル、要約、フィードの本文を、空でないもの
+ * だけ改行でつなぐ。本文は、空白をまとめたプレーンテキストを、コードポイントでちょうど 20,000 文字に
+ * 切る。切った印は付けない（「…」は NFKC で「...」になり、言葉の文字に当たる）。
+ *
+ * 切った位置のすぐあとの 1 文字は残し、当てる範囲の終わり（end）をその前に置く。その文字は、言葉の
+ * すぐあとに英数字があるかを見るためだけに使う（「Go|ogle」で切っても「Go」に当てない）
+ */
+function judgedText(article: IngestedArticle): { text: string; end: number } {
+  const { body } = article;
+  const plain =
+    body === null
+      ? null
+      : htmlToText(sanitizeHtml(body.html, body.baseUrl), Number.POSITIVE_INFINITY);
+  // 先頭の 20,001 コードポイントは、UTF-16 で 40,002 単位までに収まる
+  const chars = plain ? Array.from(plain.slice(0, 2 * (MAX_JUDGED_BODY_LENGTH + 1))) : [];
+  const cut = chars.slice(0, MAX_JUDGED_BODY_LENGTH).join("");
+  const text = toMatchText([article.title, article.summary, cut].filter(Boolean).join("\n"));
+  return { text: text + toMatchText(chars[MAX_JUDGED_BODY_LENGTH] ?? ""), end: text.length };
 }
 
 /**
@@ -249,8 +306,8 @@ async function loadContent(
   const { total: unread } = await countUnread(db, delivery.userId);
   return {
     bellId: delivery.bellId,
-    words: null,
-    feedName: feedName(delivery.feed),
+    words: delivery.words,
+    feedName: delivery.feed === null ? null : feedName(delivery.feed),
     articles,
     count,
     unread,
@@ -258,7 +315,7 @@ async function loadContent(
 }
 
 /** フィード名。購読の表示名、フィードの名前、フィードの URL のホストの順に、空でないものを使う */
-function feedName(feed: PushDelivery["feed"]): string {
+function feedName(feed: NonNullable<PushDelivery["feed"]>): string {
   const named = [feed.displayName, feed.title].find((name) => name && name.trim() !== "");
   return named ?? new URL(feed.url).host;
 }

@@ -171,17 +171,23 @@ export async function runFetchFeed(
     const insertedIds = new Set(insertedArticles.map((article) => article.id));
     await notifyBells(platform, {
       previousSuccessAt: feed.lastSuccessfulFetchAt,
-      articles: rows.flatMap((row, index) =>
-        insertedIds.has(row.id)
-          ? [
-              {
-                id: row.id,
-                publishedAt: row.publishedAt,
-                dated: parsed.items[index]?.publishedAt != null,
-              },
-            ]
-          : [],
-      ),
+      articles: rows.flatMap((row, index) => {
+        if (!insertedIds.has(row.id)) return [];
+        const item = parsed.items[index];
+        // 置いたかどうかによらず、フィードの HTML を、置く本文と同じ基準（storeContents）で
+        // サニタイズして判定する
+        const html = item?.contentHtml;
+        return [
+          {
+            id: row.id,
+            publishedAt: row.publishedAt,
+            dated: item?.publishedAt != null,
+            title: row.title ?? null,
+            summary: row.summary ?? null,
+            body: html ? { html, baseUrl: row.url ?? result.url } : null,
+          },
+        ];
+      }),
     });
     // 新しい記事ごとに、ページから本文を抜く仕事を積む（docs/decisions/content.md の 10）。ここで落ちて積めなくても、読者が開いたときに抜く
     await enqueuePageContents(platform, insertedArticles);

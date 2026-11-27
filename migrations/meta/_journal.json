@@ -519,6 +519,13 @@
       "when": 1795734548587,
       "tag": "0073_bell-notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "6",
+      "when": 1795735146193,
+      "tag": "0074_bell-words",
+      "breakpoints": true
     }
   ]
 }
