@@ -1,7 +1,7 @@
 # コンテナ版
 
 - 状態：提案中
-- 関連：[テックスタック](tech-stack.md)（緩衝層、Rust）、[仕事の流し方](jobs.md)（仕事の動かし方）、[通知](notifications.md)（Web Push の有無）、sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)（画面のコンテナと中継）
+- 関連：[テックスタック](tech-stack.md)（緩衝層、Rust）、[仕事の流し方](jobs.md)（仕事の動かし方）、[Web Push](web-push.md)（3 の有無）、sendo-reader の[コンテナ版](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)（画面のコンテナと中継）
 
 Sendo は、コンテナ（Node ＋ SQLite）だけで動かす（[テックスタック](tech-stack.md)の 2）。Cloudflare（Workers・D1・Queues）で動かす版は持たない。
 
@@ -16,7 +16,7 @@ Sendo は、コンテナ（Node ＋ SQLite）だけで動かす（[テックス�
 3. **設定によって使えるかどうかが決まる機能は、その機能の API で有無を伝える。** 機能の有無をまとめて返す API（`GET /api/v1/features` など）は持たない。
    - [記事の翻訳](translation.md)は、Claude API のキー（`ANTHROPIC_API_KEY`）があるときだけ翻訳の行を作り、外へ送る。クライアントは、差分同期で配る記事ごとの翻訳の状態があるときに、翻訳の表示と操作を出す。キーを外したあとも残る行への翻訳の求めは 503（`translation_unavailable`）で断る（同じく 15）
    - [Discord チャンネルの購読](discord.md)には、`DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET`、`DISCORD_BOT_TOKEN` と、コールバック先に使う `READER_URL` の設定が要る。使える設定がそろっているかは `GET /api/v1/integrations/discord` の `available` で伝える。設定がそろっていなければ、接続・コールバック・新規購読の入口は 501（`feature_unavailable`）を返す
-   - [通知](notifications.md)の Web Push には、VAPID の `sub` に使う `VAPID_SUBJECT` と、通知から記事を開く URL に使う `READER_URL` の設定が要る。使える設定がそろっているかは `GET /api/v1/push` の `available` で伝える。設定がそろっていなければ、端末の登録（`PUT`）は 501（`feature_unavailable`）を返す（[通知](notifications.md)の 19）
+   - ベルの[通知](notifications.md)を送る [Web Push](web-push.md) には、VAPID の `sub` に使う `VAPID_SUBJECT` と、通知から記事を開く URL に使う `READER_URL` の設定が要る。使える設定がそろっているかは `GET /api/v1/push` の `available` で伝える。設定がそろっていなければ、端末の登録（`PUT`）は 501（`feature_unavailable`）を返す（[Web Push](web-push.md)の 3）
    - 新しい機能に対応する前の Sendo と組み合わさる間は、その機能を呼んで失敗したら使わずに動き続ける形で扱う（例：[差分同期](sync.md)の 9 の通知）
 
 ### 動かし方
