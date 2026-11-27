@@ -78,7 +78,7 @@ export async function listPushRegistrations(
 }
 
 /**
- * 登録を行の ID で消す（docs/decisions/notifications.md の 21、22）。プッシュサービスが 404 ／ 410 を
+ * 登録を行の ID で消す（docs/decisions/web-push.md の 5、6）。プッシュサービスが 404 ／ 410 を
  * 返したときと、エンドポイントが内部のアドレスに解決されたとき。エンドポイントで消すと、同じ
  * エンドポイントで登録し直した新しい行まで消してしまう
  */

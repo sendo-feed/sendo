@@ -61,7 +61,7 @@ export const jobSchema = z.discriminatedUnion("type", [
     retranslation: z.boolean().optional(),
   }),
   /**
-   * ベルの通知の行 1 つを、端末 1 つに送る（docs/decisions/notifications.md の 21）。取得の仕事が、
+   * ベルの通知の行 1 つを、端末 1 つに送る（docs/decisions/web-push.md の 5）。取得の仕事が、
    * 送る行を作ったときに積む。中身は送るときに組み立てる
    */
   z.object({

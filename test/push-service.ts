@@ -1,7 +1,7 @@
 /**
- * 偽の端末とプッシュサービス（docs/decisions/notifications.md の 16、18、21）。端末は本物の P-256 の
- * 鍵の組と auth を持ち、受けた本体を自分の秘密鍵で復号する（RFC 8291 の受け手の側）。プッシュ
- * サービスは、VAPID の JWT を確かめてから、本体を端末に渡す。
+ * 偽の端末とプッシュサービス（docs/decisions/notifications.md の 16、web-push.md の 2、5）。端末は
+ * 本物の P-256 の鍵の組と auth を持ち、受けた本体を自分の秘密鍵で復号する（RFC 8291 の受け手の
+ * 側）。プッシュサービスは、VAPID の JWT を確かめてから、本体を端末に渡す。
  */
 import type { webcrypto } from "node:crypto";
 import { base64UrlDecode, base64UrlEncode } from "../src/lib/crypto";

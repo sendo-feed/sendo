@@ -3,7 +3,7 @@ import { getOrCreateSecret, VAPID_KEY } from "../db/secrets";
 import { base64UrlEncode, type WebCryptoKey } from "../lib/crypto";
 
 /*
- * VAPID（RFC 8292。docs/decisions/notifications.md の 17、18）。
+ * VAPID（RFC 8292。docs/decisions/web-push.md の 1、2）。
  *
  * 鍵の組は、sendo が初めて要るときに作り、秘密の JWK（公開鍵の x・y を含む）を app_secrets の 1 行に
  * 置く。自動では作り直さない。ブラウザの登録は公開鍵に結び付くので、作り直すと登録がすべて使えなく
@@ -97,7 +97,7 @@ export async function vapidAuthorization(db: Database, input: VapidTarget): Prom
 
 /**
  * プッシュサービスが 401 ／ 403 を返したときに呼ぶ。その送り先の JWT が、作ってから 1 時間以上たって
- * いれば、メモリから捨てる。次に送るときに作り直す（docs/decisions/notifications.md の 18）
+ * いれば、メモリから捨てる。次に送るときに作り直す（docs/decisions/web-push.md の 2）
  */
 export async function discardRefusedVapidToken(db: Database, input: VapidTarget): Promise<void> {
   const id = tokenId(await loadVapidKey(db), input);

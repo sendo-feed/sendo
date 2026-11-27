@@ -21,10 +21,10 @@ import { encryptPushMessage } from "../notify/web-push";
 import type { Platform } from "../platform";
 
 /*
- * ベルの通知（docs/decisions/notifications.md の 8〜13、21、22）。取得の仕事が、取り込んだ記事を
- * 判定して通知の記事の行を作り、送る行なら端末ごとに送る仕事を積む。窓の 4 件目（最初の bundled）
- * の行を作ったら、窓が閉じる時刻を指定して、まとめの仕事を積む。送る仕事は、送るときに中身を
- * 組み立てて、Web Push で送る。
+ * ベルの通知（docs/decisions/notifications.md の 8〜13、web-push.md の 5、6）。取得の仕事が、
+ * 取り込んだ記事を判定して通知の記事の行を作り、送る行なら端末ごとに送る仕事を積む。窓の 4 件目
+ * （最初の bundled）の行を作ったら、窓が閉じる時刻を指定して、まとめの仕事を積む。送る仕事は、
+ * 送るときに中身を組み立てて、Web Push で送る。
  */
 
 /** 1 回の取得の仕事で判定する記事の数。公開日時の新しい順に選ぶ */
