@@ -1203,6 +1203,49 @@ describe("送る前の取り消しと失敗", () => {
     expect(titles(world.service, fresh.endpoint)).toEqual(["新しい記事"]);
   });
 
+  it("期限の切れたセッションの登録しかない人には、通知の行を作らず、上限も使わない。期限の 1 ミリ秒前なら作って送る", async () => {
+    const world = createWorld();
+    const { source, feedId, bellId, endpoint } = await belledReader(world);
+    const expiresAt = world.clock.ms - SECOND + SESSION_TTL_MS;
+    const rows = () =>
+      testDb
+        .prepare("SELECT count(*) AS n FROM bell_notifications WHERE bell_id = ?")
+        .bind(bellId)
+        .first<number>("n");
+
+    world.clock.ms = expiresAt - 1;
+    source.items.push(world.item("期限の 1 ミリ秒前の記事"));
+    await world.fetchFeed(feedId);
+    expect(await rows()).toBe(1);
+
+    // 同じ窓の 2 件目なので、期限が切れていなければ 1 件で送る
+    world.clock.ms = expiresAt;
+    source.items.push(world.item("期限ちょうどの記事"));
+    await world.fetchFeed(feedId);
+
+    expect(await rows()).toBe(1);
+    expect(titles(world.service, endpoint)).toEqual(["期限の 1 ミリ秒前の記事"]);
+  });
+
+  it("期限の切れた間に当たった記事は、窓が閉じる前に登録し直しても、まとめて送らない", async () => {
+    const world = createWorld();
+    const { user, source, feedId } = await belledReader(world);
+    world.clock.ms = world.clock.ms - SECOND + SESSION_TTL_MS;
+    for (let i = 1; i <= 4; i++) {
+      source.items.push(world.item(`期限の切れた間の記事 ${i}`, (5 - i) * MINUTE));
+    }
+    await world.fetchFeed(feedId);
+    const fresh = await user.register();
+    world.advance(MINUTE);
+    source.items.push(world.item("登録し直したあとの記事"));
+    await world.fetchFeed(feedId);
+
+    world.advance(10 * MINUTE);
+    await world.drain();
+
+    expect(titles(world.service, fresh.endpoint)).toEqual(["登録し直したあとの記事"]);
+  });
+
   it("送る仕事を積んだあと、送る前にその端末でログアウトしたら、その端末には送らない", async () => {
     const world = createWorld();
     const { user, source, feedId, endpoint, headers } = await belledReader(world);

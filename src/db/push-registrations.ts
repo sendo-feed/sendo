@@ -55,7 +55,10 @@ export async function deletePushRegistration(
     .run();
 }
 
-/** その人たちの登録（端末）。送る仕事を端末ごとに積むのに使う */
+/**
+ * その人たちの、期限の切れていないセッションの登録（端末）。送る仕事を端末ごとに積むのに使う。
+ * 期限は、ベルの判定（bell-notifications.ts の findBellHits）と同じ DB の時計で比べる
+ */
 export async function listPushRegistrations(
   db: Database,
   userIds: readonly string[],
@@ -64,7 +67,13 @@ export async function listPushRegistrations(
   return db
     .select({ id: pushRegistrations.id, userId: pushRegistrations.userId })
     .from(pushRegistrations)
-    .where(inArray(pushRegistrations.userId, [...userIds]))
+    .innerJoin(sessions, eq(sessions.id, pushRegistrations.sessionId))
+    .where(
+      and(
+        inArray(pushRegistrations.userId, [...userIds]),
+        sql`${sessions.expiresAt} > ${DB_NOW_MS}`,
+      ),
+    )
     .all();
 }
 
