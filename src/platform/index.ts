@@ -15,7 +15,11 @@ import type { TranslationEffort } from "./config";
 
 /** 重い処理を、API の応答と切り離して後で実行する */
 export interface JobQueue {
-  enqueue(jobs: readonly Job[]): Promise<void>;
+  /**
+   * 仕事を積む。runAt を指定すると、その時刻になるまで取り出さない。指定しなければ、すぐに取り出せる
+   * （docs/decisions/jobs.md の 1）
+   */
+  enqueue(jobs: readonly Job[], options?: { runAt?: Date }): Promise<void>;
   enqueueDueDiscordFetches(now: Date, limit: number): Promise<number>;
 }
 

@@ -45,6 +45,21 @@ describe("仕事の表", () => {
     expect(await rows()).toEqual([]);
   });
 
+  it("時刻を指定して積んだ仕事は、その時刻ちょうどから取り出し、1 ミリ秒前には取り出さない", async () => {
+    const runAt = new Date(clock.getTime() + 10 * 60 * 1000);
+    await queue.enqueue([CLEAN_UP], { runAt });
+    const seen: Job[] = [];
+    const run = async (job: Job) => void seen.push(job);
+
+    clock = new Date(runAt.getTime() - 1);
+    expect(await queue.runDue(run)).toBe(0);
+    clock = runAt;
+    expect(await queue.runDue(run)).toBe(1);
+
+    expect(seen).toEqual([CLEAN_UP]);
+    expect(await rows()).toEqual([]);
+  });
+
   it("同じプロセスで Discord の取得が長引いても、並行して取り出さない", async () => {
     const discord: Job = { type: "fetch-discord", feedId: "channel-1" };
     let release = () => {};

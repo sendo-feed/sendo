@@ -3,6 +3,9 @@
  * Web Crypto だけを使う（docs/decisions/tech-stack.md）。
  */
 
+/** Web Crypto の鍵。lib に DOM を入れていないので、グローバルの CryptoKey から型を取る */
+export type WebCryptoKey = InstanceType<typeof CryptoKey>;
+
 /** バイト列を base64url（パディングなし）にする */
 export function base64UrlEncode(bytes: Uint8Array): string {
   let binary = "";

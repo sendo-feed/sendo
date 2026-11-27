@@ -1,8 +1,10 @@
 import path from "node:path";
 import type { Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
+import { SQLiteSyncDialect } from "drizzle-orm/sqlite-core";
 import { createApp } from "../src/app";
 import type { Database } from "../src/db";
+import { DB_NOW_MS } from "../src/db/clock";
 import { insertFeed } from "../src/db/feeds";
 import * as schema from "../src/db/schema";
 import { nextSeq } from "../src/db/seq";
@@ -53,6 +55,49 @@ function wrapClient(client: Client, onExecute: (sql: string) => void | Promise<v
       return value.bind(target);
     },
   });
+}
+
+/**
+ * libsql のクライアントを包み、実行する SQL の中の DB の時計（db/clock.ts の DB_NOW_MS）を、
+ * clock.ms の値に置き換える。drizzle は文を execute と batch で投げる
+ */
+function withClock(client: Client, clock: { ms: number }): Client {
+  const now = new SQLiteSyncDialect().sqlToQuery(DB_NOW_MS).sql;
+  const rewrite = (statement: unknown) => {
+    if (typeof statement === "string") return statement.replaceAll(now, String(clock.ms));
+    if (typeof statement === "object" && statement !== null && "sql" in statement) {
+      return { ...statement, sql: String(statement.sql).replaceAll(now, String(clock.ms)) };
+    }
+    return statement;
+  };
+  return new Proxy(client, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (typeof value !== "function") return value;
+      const call = value as (...a: unknown[]) => unknown;
+      if (prop === "execute") {
+        return (statement: unknown, ...rest: unknown[]) =>
+          call.apply(target, [rewrite(statement), ...rest]);
+      }
+      if (prop === "batch") {
+        return (statements: unknown[], ...rest: unknown[]) =>
+          call.apply(target, [statements.map(rewrite), ...rest]);
+      }
+      return value.bind(target);
+    },
+  });
+}
+
+/**
+ * DB の時計を止めた DB。文の中の「今」（db/clock.ts の DB_NOW_MS）は clock.ms になり、テストが
+ * 進める（本物の DB の時計は止められず、窓や上限のちょうどの時刻を作れないため）。onExecute は、
+ * 文を実行する直前に、置き換える前の SQL を渡して呼ぶ（statementHook と同じ）
+ */
+export function clockedDatabase(
+  clock: { ms: number },
+  onExecute: (sql: string) => void | Promise<void> = () => {},
+): Database {
+  return databaseOf(wrapClient(withClock(testDatabase.client, clock), onExecute));
 }
 
 /** 包んだクライアントで、アプリが使うのと同じ形の DB を作る */

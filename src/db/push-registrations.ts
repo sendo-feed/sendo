@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from ".";
 import { DB_NOW_MS } from "./clock";
 import { pushRegistrations, sessions } from "./schema";
@@ -53,6 +53,37 @@ export async function deletePushRegistration(
       ),
     )
     .run();
+}
+
+/**
+ * その人たちの、期限の切れていないセッションの登録（端末）。送る仕事を端末ごとに積むのに使う。
+ * 期限は、ベルの判定（bell-notifications.ts の findBellHits）と同じ DB の時計で比べる
+ */
+export async function listPushRegistrations(
+  db: Database,
+  userIds: readonly string[],
+): Promise<{ id: string; userId: string }[]> {
+  if (userIds.length === 0) return [];
+  return db
+    .select({ id: pushRegistrations.id, userId: pushRegistrations.userId })
+    .from(pushRegistrations)
+    .innerJoin(sessions, eq(sessions.id, pushRegistrations.sessionId))
+    .where(
+      and(
+        inArray(pushRegistrations.userId, [...userIds]),
+        sql`${sessions.expiresAt} > ${DB_NOW_MS}`,
+      ),
+    )
+    .all();
+}
+
+/**
+ * 登録を行の ID で消す（docs/decisions/web-push.md の 5、6）。プッシュサービスが 404 ／ 410 を
+ * 返したときと、エンドポイントが内部のアドレスに解決されたとき。エンドポイントで消すと、同じ
+ * エンドポイントで登録し直した新しい行まで消してしまう
+ */
+export async function deletePushRegistrationById(db: Database, id: string): Promise<void> {
+  await db.delete(pushRegistrations).where(eq(pushRegistrations.id, id)).run();
 }
 
 /**

@@ -954,6 +954,59 @@ export const pushRegistrations = sqliteTable(
   ],
 );
 
+/** 通知の行の状態（docs/decisions/notifications.md の 10） */
+export const BELL_NOTIFICATION_STATES = ["sent", "limited", "bundled"] as const;
+
+/**
+ * ベルの通知の行（docs/decisions/notifications.md の 10〜13）。10 分の窓と 1 時間の上限を数える
+ * ためだけに持ち、同期しない。1 日たった行は、1 日 1 回の片付けで消す。
+ *
+ * - 通知の記事の行（article_id あり）：当たった記事ごとに 1 つ。ユーザーと記事で一意（1 人 × 1 記事に
+ *   1 通）
+ * - 通知のまとめの行（article_id が null）：まとめた窓ごとに 1 つ。(ユーザー, ベル, 窓の始まり) で一意
+ * - 状態：sent（送る）、limited（上限で送らない）、bundled（まとめに入れる。通知の記事の行だけ）。
+ *   通知のまとめの行がまだない窓の bundled が、まとめ待ち
+ * - 時刻は、書く文の中の DB の時計（db/clock.ts の DB_NOW_MS）で決める
+ */
+export const bellNotifications = sqliteTable(
+  "bell_notifications",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    bellId: text("bell_id")
+      .notNull()
+      .references(() => bells.id, { onDelete: "cascade" }),
+    /** 当たった記事。通知のまとめの行は null */
+    articleId: text("article_id").references(() => articles.id, { onDelete: "cascade" }),
+    /** 入った窓の始まり。窓を開いた通知の記事の行の、作った時刻 */
+    windowStart: integer("window_start", { mode: "timestamp_ms" }).notNull(),
+    /** 作った時刻。通知の記事の行では、当たった時刻 */
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    state: text("state", { enum: BELL_NOTIFICATION_STATES }).notNull(),
+  },
+  (t) => [
+    // 1 人 × 1 記事に 1 つ。記事（articles）の行が消えたときの連鎖でも引く
+    uniqueIndex("bell_notifications_article_id_user_id_idx").on(t.articleId, t.userId),
+    // 通知のまとめの行は 1 つの窓に 1 つ
+    uniqueIndex("bell_notifications_bundle_idx")
+      .on(t.userId, t.bellId, t.windowStart)
+      .where(sql`${t.articleId} is null`),
+    // 窓と何件目かを数え、まとめの仕事が窓の行を読む。ベルの行が消えたときの連鎖でも引く
+    index("bell_notifications_bell_id_window_start_idx").on(t.bellId, t.windowStart),
+    // 1 時間の上限を数える
+    index("bell_notifications_user_id_created_at_idx").on(t.userId, t.createdAt),
+    // 1 日たった行を片付ける
+    index("bell_notifications_created_at_idx").on(t.createdAt),
+    check(
+      "bell_notifications_state_check",
+      sql`${t.state} in ('sent', 'limited', 'bundled')
+        and (${t.state} <> 'bundled' or ${t.articleId} is not null)`,
+    ),
+  ],
+);
+
 /**
  * sendo が自分で作って持つ秘密（docs/decisions/images.md の 2）。画像の URL の署名の鍵と、VAPID の
  * 鍵の組（docs/decisions/web-push.md の 1）。初めて使うときに作る（db/secrets.ts）。行を消すと、

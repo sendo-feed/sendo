@@ -152,14 +152,18 @@ export type DiscordArticle = {
   contentKey: string | null;
 };
 
-/** 取得中に連携や購読が解除されたら、保存しない。メッセージ ID で重複を防ぐ */
+/**
+ * 取得中に連携や購読が解除されたら、保存しない。メッセージ ID で重複を防ぐ
+ *
+ * @returns 新しく入った記事の ID
+ */
 export async function insertDiscordArticles(
   db: Database,
   feedId: string,
   connectionId: string,
   articles: readonly DiscordArticle[],
-) {
-  if (articles.length === 0) return 0;
+): Promise<string[]> {
+  if (articles.length === 0) return [];
   const inserted = await db.all<{ id: string }>(sql`
     insert into articles (
       id, feed_id, guid, url, title, summary, author, published_at, published_time_known, created_at,
@@ -178,5 +182,5 @@ export async function insertDiscordArticles(
     on conflict (feed_id, guid) do nothing
     returning id
   `);
-  return inserted.length;
+  return inserted.map((row) => row.id);
 }

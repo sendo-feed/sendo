@@ -1,4 +1,5 @@
 import { ACTIVITY_RETENTION_MS, collectExpiredArticleActivity } from "../db/activity";
+import { collectOldBellNotifications } from "../db/bell-notifications";
 import { BELL_REMOVAL_RETENTION_MS, collectRemovedBells } from "../db/bells";
 import {
   CONTENT_NOTE_GRACE_MS,
@@ -23,7 +24,8 @@ export const SWEEP_BATCH = 500;
 
 /**
  * 1 回の片付けで、それぞれを消す文の数の上限。受信箱の行は、1 行消すのに 5 行書く（消した記録を
- * 含む）ので少なめにする。1 つの仕事が扱う量を抑え、残りは翌日に回す（docs/decisions/jobs.md の 4）
+ * 含む）ので少なめにする。1 つの仕事が扱う量を抑え、残りは翌日に回す（docs/decisions/jobs.md の 4）。
+ * 通知の行だけは、残りを続きの仕事に回す（sweepBellNotifications）
  */
 export const SWEEP_ROUNDS = {
   removals: 3,
@@ -32,6 +34,7 @@ export const SWEEP_ROUNDS = {
   bells: 1,
   activity: 1,
   pushRegistrations: 1,
+  bellNotifications: 4,
   contents: 2,
 } as const;
 
@@ -45,6 +48,8 @@ export type CleanUpOutcome = {
   activity: number;
   /** 期限の切れたセッションの Web Push の登録 */
   pushRegistrations: number;
+  /** 作ってから 1 日たったベルの通知の行 */
+  bellNotifications: number;
   /** 置き場から消した本文の数 */
   contents: number;
 };
@@ -58,6 +63,26 @@ async function repeat(rounds: number, step: () => Promise<number>): Promise<numb
     if (removed < SWEEP_BATCH) break;
   }
   return total;
+}
+
+/**
+ * 作ってから 1 日たった通知の行を消す（docs/decisions/notifications.md の 10）。行は取得の仕事ごとに
+ * できるので、残りを翌日に回すと流入に追いつかないことがある。最後の文まで満杯に消したら、まだ残って
+ * いるかもしれないので、通知の行だけを消す続きの仕事を積む。続きの仕事も同じように続け、満杯でない
+ * 文が出たら止まる
+ *
+ * @returns 消した行の数
+ */
+export async function sweepBellNotifications(
+  platform: Pick<Platform, "db" | "jobs">,
+): Promise<number> {
+  const removed = await repeat(SWEEP_ROUNDS.bellNotifications, () =>
+    collectOldBellNotifications(platform.db, { limit: SWEEP_BATCH }),
+  );
+  if (removed === SWEEP_ROUNDS.bellNotifications * SWEEP_BATCH) {
+    await platform.jobs.enqueue([{ type: "clean-up-bell-notifications" }]);
+  }
+  return removed;
 }
 
 /**
@@ -94,7 +119,7 @@ async function sweepContents(
 }
 
 export async function runCleanUp(
-  platform: Pick<Platform, "db" | "content" | "now" | "retentionConfig">,
+  platform: Pick<Platform, "db" | "content" | "jobs" | "now" | "retentionConfig">,
 ): Promise<CleanUpOutcome> {
   const { db } = platform;
   const now = platform.now().getTime();
@@ -139,6 +164,9 @@ export async function runCleanUp(
     collectExpiredPushRegistrations(db, { now: new Date(now), limit: SWEEP_BATCH }),
   );
 
+  // 窓と上限を数え終えた通知の行。消しきれなければ、続きの仕事を積む
+  const bellNotifications = await sweepBellNotifications(platform);
+
   // 行のない本文を、書き留めから片付ける（docs/decisions/content.md の 4）。上で消した記事の本文は、
   // トリガーが今書き留めたばかりなので、次の日に片付く
   const contents = await sweepContents(platform, new Date(now - CONTENT_NOTE_GRACE_MS));
@@ -152,6 +180,7 @@ export async function runCleanUp(
     bells,
     activity,
     pushRegistrations,
+    bellNotifications,
     contents,
   };
 }

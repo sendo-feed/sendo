@@ -22,6 +22,7 @@ import { htmlToText, type ParsedItem, ParseFeedError, parseFeed } from "../fetch
 import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
 import { enqueueArticleLanguages } from "./article-languages";
+import { notifyBells } from "./bell-notifications";
 import { runFetchDiscord } from "./fetch-discord";
 import {
   backoffInterval,
@@ -74,6 +75,7 @@ export async function runFetchFeed(
     | "jobs"
     | "discord"
     | "syncUpdates"
+    | "push"
   >,
   feedId: string,
   jobType?: "fetch-feed" | "fetch-discord",
@@ -164,6 +166,23 @@ export async function runFetchFeed(
     await clearUsedContentNotes(db, storedContents.keys);
     // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
     await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
+    // この回に行を入れた記事を、ベルで判定する（docs/decisions/notifications.md の 8）。失敗しても、
+    // 取得は失敗にしない
+    const insertedIds = new Set(insertedArticles.map((article) => article.id));
+    await notifyBells(platform, {
+      previousSuccessAt: feed.lastSuccessfulFetchAt,
+      articles: rows.flatMap((row, index) =>
+        insertedIds.has(row.id)
+          ? [
+              {
+                id: row.id,
+                publishedAt: row.publishedAt,
+                dated: parsed.items[index]?.publishedAt != null,
+              },
+            ]
+          : [],
+      ),
+    });
     // 新しい記事ごとに、ページから本文を抜く仕事を積む（docs/decisions/content.md の 10）。ここで落ちて積めなくても、読者が開いたときに抜く
     await enqueuePageContents(platform, insertedArticles);
     // 新しい記事の言語の判定も積む（docs/decisions/jobs.md の 13）。積めなければ定期実行が拾う
