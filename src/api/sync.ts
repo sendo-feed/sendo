@@ -15,6 +15,7 @@ import { defaultHook } from "./hook";
 import { SavedPageIdSchema, SavedPageSchema, toSavedPageResponse } from "./saved";
 import {
   ArticleSchema,
+  BellSchema,
   ErrorSchema,
   errorBody,
   FeedDisplayNameSchema,
@@ -25,6 +26,7 @@ import {
   SettingValueSchema,
   TRANSLATION_MODEL_DESCRIPTION,
   toArticleResponse,
+  toBellResponse,
   toFeedHealthResponse,
   toWorkspaceResponse,
   translationEffortSchema,
@@ -54,6 +56,7 @@ const CursorSchema = z.object({
   c: PositionSchema.optional(),
   p: PositionSchema.optional(),
   w: PositionSchema.optional(),
+  b: PositionSchema.optional(),
 });
 
 const toTuple = (p: SyncPosition) => [p.seq, p.id, p.upTo, p.done] as const;
@@ -74,6 +77,7 @@ export function encodeSyncCursor(cursor: SyncCursor): string {
     c: toTuple(cursor.settings),
     ...(cursor.savedPages && { p: toTuple(cursor.savedPages) }),
     ...(cursor.workspaces && { w: toTuple(cursor.workspaces) }),
+    ...(cursor.bells && { b: toTuple(cursor.bells) }),
   });
   const bytes = new TextEncoder().encode(json);
   return btoa(String.fromCharCode(...bytes))
@@ -96,6 +100,7 @@ export function decodeSyncCursor(value: string): SyncCursor | null {
       settings: parsed.data.c ? fromTuple(parsed.data.c) : INITIAL_POSITION,
       ...(parsed.data.p && { savedPages: fromTuple(parsed.data.p) }),
       ...(parsed.data.w && { workspaces: fromTuple(parsed.data.w) }),
+      ...(parsed.data.b && { bells: fromTuple(parsed.data.b) }),
     };
   } catch {
     return null;
@@ -142,6 +147,13 @@ const SyncWorkspaceSchema = z
     z.object({ id: z.string(), deleted: z.literal(true) }),
   ])
   .openapi("SyncWorkspace");
+
+const SyncBellSchema = z
+  .discriminatedUnion("deleted", [
+    BellSchema.extend({ deleted: z.literal(false) }),
+    z.object({ id: z.string(), deleted: z.literal(true) }),
+  ])
+  .openapi("SyncBell");
 
 const SyncTranslationFailureSchema = z
   .object({
@@ -260,12 +272,14 @@ const syncRoute = createRoute({
     "settings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。",
     "includeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。",
     "includeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。差分の有無にかかわらず、購読先の省略に対応した印 defaultWorkspaceOnSubscribe を返す。",
+    "includeBells=true なら、通知のベルの付けたものと外したものも bells に載せる。ベルの位置がない既存のカーソルでは、ベルだけを最初から送る。購読をやめると、その購読のベルも deleted で届く。",
     "cursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
   ].join("\n"),
   request: {
     query: z.object({
       includeSaved: z.enum(["true", "false"]).optional(),
       includeWorkspaces: z.enum(["true", "false"]).optional(),
+      includeBells: z.enum(["true", "false"]).optional(),
       cursor: z.string().max(1024).optional().openapi({ description: "前回の応答の cursor" }),
     }),
   },
@@ -284,6 +298,7 @@ const syncRoute = createRoute({
               settings: z.array(SyncSettingSchema),
               savedPages: z.array(SyncSavedPageSchema).optional(),
               workspaces: z.array(SyncWorkspaceSchema).optional(),
+              bells: z.array(SyncBellSchema).optional(),
               defaultWorkspaceOnSubscribe: z.literal(true).optional().openapi({
                 description: "includeWorkspaces=true のとき付く。購読先の省略はデフォルトを使う",
               }),
@@ -303,7 +318,7 @@ export function syncApi(platform: Platform) {
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook }).openapi(
     syncRoute,
     async (c) => {
-      const { cursor: raw, includeSaved, includeWorkspaces } = c.req.valid("query");
+      const { cursor: raw, includeSaved, includeWorkspaces, includeBells } = c.req.valid("query");
       const decoded = raw === undefined ? INITIAL_CURSOR : decodeSyncCursor(raw);
       if (decoded === null) {
         return c.json(errorBody("invalid_cursor", "cursor is invalid; start over without it"), 400);
@@ -318,6 +333,7 @@ export function syncApi(platform: Platform) {
         workspaces: withWorkspaces
           ? (decoded.workspaces ?? (backfillMembership ? START_OF_CHANGES : INITIAL_POSITION))
           : undefined,
+        bells: includeBells === "true" ? (decoded.bells ?? INITIAL_POSITION) : undefined,
       };
       const userId = c.get("user").id;
       const changes = await readChanges(platform.db, {
@@ -384,6 +400,11 @@ export function syncApi(platform: Platform) {
                   },
             ),
           ),
+          ...(changes.bells && {
+            bells: changes.bells.map((item) =>
+              item.deleted ? item : { ...toBellResponse(item), deleted: false as const },
+            ),
+          }),
           ...(changes.savedPages && {
             savedPages: changes.savedPages.map((item) =>
               item.deleted ? item : { ...toSavedPageResponse(item), deleted: false as const },

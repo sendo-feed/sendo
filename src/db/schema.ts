@@ -873,6 +873,56 @@ export const savedPageHorizons = sqliteTable("saved_page_horizons", {
 });
 
 /**
+ * 通知のベル（docs/decisions/notifications.md の 1〜5）。今は購読のベルだけを持つ。
+ *
+ * 外すと、行は残して消した印と新しい変更番号を付ける。付け直すと新しい行を作る。購読に消した印が
+ * 付くと、トリガーが同じ文の中でその購読のベルにも印と番号を付ける。印の行は 30 日たったら
+ * 物理的に消し、トリガーが人ごとの回収の下限を記録する（migrations/0071_bells-triggers.sql）
+ */
+export const bells = sqliteTable(
+  "bells",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /**
+     * 鳴らす購読。言葉だけのベルを足すときに null を使うので、列は null を許す（作り直さずに列を
+     * 足せるようにする。今のベルは、書く文が必ず購読を入れる）
+     */
+    subscriptionId: text("subscription_id").references(() => subscriptions.id, {
+      onDelete: "cascade",
+    }),
+    /** 作った時刻。書く文の中の DB の時計（db/clock.ts の DB_NOW_MS）で決める */
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    seq: seq(),
+  },
+  (t) => [
+    // 同じ人・同じ購読の有効なベルは 1 つ。付ける文はこれにぶつけて止める
+    uniqueIndex("bells_user_id_subscription_id_idx")
+      .on(t.userId, t.subscriptionId)
+      .where(sql`${t.deletedAt} is null`),
+    // 購読をやめたときのトリガーと、外部キーの削除で使う
+    index("bells_subscription_id_idx").on(t.subscriptionId),
+    index("bells_user_id_seq_idx").on(t.userId, t.seq),
+    index("bells_seq_idx").on(t.seq),
+    index("bells_deleted_at_idx").on(t.deletedAt).where(sql`${t.deletedAt} is not null`),
+  ],
+);
+
+/**
+ * ベルの消した印の行を、人ごとにどこまで回収したか。行を消すトリガーが、消した行の番号まで
+ * 引き上げる。その人のカーソルの位置がこれより前なら、最初から同期し直してもらう
+ */
+export const bellHorizons = sqliteTable("bell_horizons", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  seq: integer("seq").notNull(),
+});
+
+/**
  * sendo が自分で作って持つ秘密（docs/decisions/images.md の 2）。今は、画像の URL の署名の鍵だけ。
  * 初めて使うときに作る（db/secrets.ts）。行を消すと、次に使うときに作り直す
  */
@@ -920,6 +970,7 @@ export type OAuthCode = typeof oauthCodes.$inferSelect;
 export type OAuthToken = typeof oauthTokens.$inferSelect;
 export type Folder = typeof folders.$inferSelect;
 export type Workspace = typeof workspaces.$inferSelect;
+export type Bell = typeof bells.$inferSelect;
 export type Feed = typeof feeds.$inferSelect;
 export type NewFeed = typeof feeds.$inferInsert;
 export type Subscription = typeof subscriptions.$inferSelect;

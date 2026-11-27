@@ -4,6 +4,7 @@ import type { Platform } from "../platform";
 import { activityApi } from "./activity";
 import { articlesApi } from "./articles";
 import { authenticate, SESSION_COOKIE } from "./auth";
+import { bellsApi } from "./bells";
 import { discordApi } from "./discord";
 import { feedsApi } from "./feeds";
 import { foldersApi } from "./folders";
@@ -95,6 +96,7 @@ export function createApi(platform: Platform) {
   protectedApi.route("/", imagesApi(platform));
   protectedApi.route("/", opmlApi(platform));
   protectedApi.route("/", savedApi(platform));
+  protectedApi.route("/", bellsApi(platform));
   protectedApi.route("/", settingsApi(platform));
   protectedApi.route("/", syncApi(platform));
   protectedApi.route("/", tokensApi(platform));

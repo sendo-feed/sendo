@@ -1,4 +1,5 @@
 import { z } from "@hono/zod-openapi";
+import type { ActiveBell } from "../db/bells";
 import type { InboxArticle } from "../db/inbox";
 import type { Feed, Folder, Workspace } from "../db/schema";
 import type { SubscriptionWithFeed } from "../db/subscriptions";
@@ -143,6 +144,34 @@ export function toWorkspaceResponse(
     name: workspace.name,
     createdAt: workspace.createdAt.toISOString(),
     isDefault: workspace.isDefault,
+  };
+}
+
+export const BellSchema = z
+  .object({
+    id: z.string(),
+    subscriptionId: z
+      .string()
+      .nullable()
+      .openapi({ description: "鳴らす購読の ID。購読し直すと変わる。購読のないベルは null" }),
+    feedId: z
+      .string()
+      .nullable()
+      .openapi({ description: "鳴らす購読のフィードの ID。購読のないベルは null" }),
+    words: z.string().nullable().openapi({
+      description: "当てる言葉（半角の空白区切り）。言葉のないベルは null。今は常に null",
+    }),
+    createdAt: dateTime,
+  })
+  .openapi("Bell");
+
+export function toBellResponse(bell: ActiveBell): z.infer<typeof BellSchema> {
+  return {
+    id: bell.id,
+    subscriptionId: bell.subscriptionId,
+    feedId: bell.feedId,
+    words: null,
+    createdAt: bell.createdAt.toISOString(),
   };
 }
 
