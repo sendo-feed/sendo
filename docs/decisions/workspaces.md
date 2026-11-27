@@ -1,7 +1,7 @@
 # ワークスペース
 
 - 状態：提案中
-- 関連：[ユーザーと認証](accounts.md)、[差分同期](sync.md)、[あとで読むページ](saved.md)、[Google Reader 互換 API の廃止](greader.md)、[MCP サーバー](mcp.md)
+- 関連：[ユーザーと認証](accounts.md)、[差分同期](sync.md)、[あとで読むページ](saved.md)、[MCP サーバー](mcp.md)
 
 ## 決定
 

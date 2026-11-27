@@ -23,7 +23,6 @@
    |---|---|
    | ブラウザ（sendo-reader） | OpenID Connect でログインし、セッションのクッキー（HttpOnly・Secure・SameSite=Lax）を使う。セッションは DB に置き、取り消せる |
    | 自作クライアントやスクリプト（REST API） | ユーザーが発行するアクセストークン（`Authorization: Bearer`） |
-   | [廃止予定の Google Reader 互換 API](greader.md) | 廃止までは、REST API 用のアクセストークンをアプリ用パスワードとして使う |
    | AI エージェント（リモート MCP） | MCP の OAuth で認可する。ログインはここの OpenID Connect を使う。細かい形は [MCP サーバー](mcp.md)で決める |
 
 7. **アクセストークンの扱い**
