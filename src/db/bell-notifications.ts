@@ -67,7 +67,8 @@ export type BellWindow = { userId: string; bellId: string; windowStart: number }
  * 記事を受信箱に持つ人の、判定の候補のベルを引く。その記事の購読のベル（購読だけ、購読 AND
  * 言葉）と、言葉だけのベル。言葉はまだ当てない。次の人と記事は除く。
  *
- * - 登録した端末のない人
+ * - 登録した端末のない人。期限の切れたセッションの登録は数えない（日次の片付けまで行は残るが、
+ *   送れない。行を作ると 1 時間の上限を使い、窓に溜めた記事を、登録し直した端末へまとめて送る）
  * - 取り込んだ時刻（記事の行を作った時刻）が、ベルを作った時刻より前の記事
  * - 購読を作ってから、そのフィードの取得が 1 度も成功していないうちに入った記事。今回より前に
  *   取得に最後に成功した時刻（previousSuccessAt。その試行の開始時刻）が、購読を作った時刻より前なら
@@ -92,6 +93,8 @@ export async function findBellCandidates(
     where article.created_at >= bell.created_at
       and subscription.created_at <= ${input.previousSuccessAt.getTime()}
       and exists (select 1 from ${pushRegistrations} as registration
+        join ${sessions} as session on session.id = registration.session_id
+          and session.expires_at > ${DB_NOW_MS}
         where registration.user_id = inbox.user_id)
   `);
 }
