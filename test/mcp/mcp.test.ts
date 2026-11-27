@@ -308,14 +308,17 @@ describe.each<Era>(["legacy", "2026-07-28"])("MCP サーバー（/mcp、%s の�
         "利用者に頼まれたときだけ",
       );
     }
-    // 外したベルは付け直せるので、取り消せない操作の印は付けない
-    for (const name of ["add_bell", "remove_bell"]) {
-      expect(tools.find((tool) => tool.name === name)?.annotations).toMatchObject({
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
-      });
-    }
+    // ベルを付けるのは足すだけ。外すと通知が止まるので、削除と同じく取り消せない操作の印を付ける
+    expect(tools.find((tool) => tool.name === "add_bell")?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+    });
+    expect(tools.find((tool) => tool.name === "remove_bell")?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+    });
     for (const name of ["delete_folder", "delete_workspace"]) {
       expect(tools.find((tool) => tool.name === name)?.annotations).toMatchObject({
         destructiveHint: true,
