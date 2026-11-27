@@ -44,7 +44,7 @@ flowchart LR
   subgraph Ext["外部"]
     F["フィードの提供元"]
     L["LLM プロバイダ"]
-    N["通知（APNs ／ FCM ／ Web Push）"]
+    N["通知（Web Push のプッシュサービス）"]
   end
 
   R --> RW
@@ -92,7 +92,7 @@ flowchart LR
 | 同期 | packages/core | 起動時に差分を1リクエストで取得、楽観的更新 |
 | API クライアント | openapi-typescript ＋ openapi-fetch | sendo の OpenAPI から型を生成 |
 | ネイティブ | Capacitor（後から） | バックグラウンド更新・共有拡張・APNs（[decisions/ui.md](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/ui.md)） |
-| 通知 | Web Push（VAPID） | 送信は sendo 側。APNs ／ FCM に差し替え可 |
+| 通知 | Web Push（VAPID） | 送信は sendo 側。出口は Web Push だけ。APNs ／ FCM は Capacitor で包むときに見直す（[decisions/notifications.md](decisions/notifications.md)、[decisions/web-push.md](decisions/web-push.md)） |
 | 品質の関所 | Playwright ＋ Lighthouse CI | JS は gzip 後 100KB 以下、操作の反応 100ms 以内 |
 
 > 最優先は「サクサク動く」こと。iOS ではバックグラウンドで同期できないので、起動時の1回の同期の速さが体感を決める。
@@ -137,7 +137,7 @@ sendo/
 │   ├── fetcher/               # 取得・解析・全文抽出
 │   ├── search/                # FTS5・意味検索
 │   ├── llm/                   # 要約・分類（任意）
-│   ├── notify/                # Web Push・APNs・FCM
+│   ├── notify/                # Web Push
 │   ├── db/                    # Drizzle スキーマ
 │   ├── platform/              # 緩衝層（実行環境の入出力）のインターフェース
 │   │   └── node/              # 緩衝層の実装と入口（SQLite・ジョブの表・ファイル。Rust のモジュールを読み込む）

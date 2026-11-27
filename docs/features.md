@@ -11,7 +11,7 @@
 | フェーズ | 状態 | 達成済み・残っているもの |
 |---|---|---|
 | Phase 1：MVP | 完了 | 基本機能と MCP の期間指定・Resources を実装。Feedly からの移行と sendo-reader での日常利用も達成 |
-| Phase 2：Feedly のプレミアム機能に当たるもの | 進行中 | 全文検索、フィルタとルール、通知、RSS がないサイトのフィード化。全文抽出は実装済み |
+| Phase 2：Feedly のプレミアム機能に当たるもの | 進行中 | 全文検索、フィルタとルール、通知（ベルの Web Push）、RSS がないサイトのフィード化。全文抽出は実装済み |
 | Phase 3：LLM を使う部分 | 未着手 | 要約、翻訳、分類、関連度スコア、行動の記録、クラスタリング、意味検索、似た記事、LLM の差し替え |
 
 ## Phase 1：MVP
@@ -47,7 +47,7 @@ Google Reader 互換 API は[廃止](decisions/greader.md)済み。購読の取�
 | 全文の取得 | 要約だけのフィードでも、本文を抜き出して保存する（Readability のような処理）。LLM に渡すにはほぼ必須。フィードに入っている本文は、先に配っている。記事のページからは、取り込んだときに抜く（[記事の本文](decisions/content.md)）。サイト別の設定は持たず、ページ全体の DOM を候補として本文と不要なブロックを判定する。遅延画像を正規化し、本文中の画像ページも上限付きで調べ、同じ写真の拡大版を採る |
 | 全文検索 | まずは SQLite の FTS5 で十分。トークナイザーは trigram にする（既定のトークナイザーでは、分かち書きのない日本語を引けない）。trigram では 3 文字未満の語を引けないので、その引き方は作るときに決める |
 | フィルタとルール | キーワードや正規表現で、ミュート、自動タグ付け、自動スターを行う。「PR 記事は除外」「このフィードは 3 時間おきに更新、翻訳しない」のような自然文の指示は、エージェントが MCP 越しにルールと設定に書き換える。sendo の側は構造化したルールだけを持ち、LLM を持たない |
-| 通知 | Webhook、ntfy、Slack など。sendo-reader 向けには Web Push |
+| 通知 | 購読か言葉（空白区切りの AND）、またはその両方に「ベル」を付け、当たる新しい記事を sendo-reader に Web Push で知らせる。通知には当たった言葉、フィード名、記事のタイトルを出し、押すとその記事を開く。通知と一緒にアプリのバッジの数（未読の数）も送り、reader を閉じている間は、ベルの通知が届いたときにバッジが変わる。出口は今は Web Push だけで、Webhook、ntfy、Slack は持たない（[通知](decisions/notifications.md)、[Web Push](decisions/web-push.md)） |
 | RSS がないサイトのフィード化 | 下の表 |
 
 **RSS がないサイトのフィード化**
@@ -89,6 +89,7 @@ Google Reader 互換 API は[廃止](decisions/greader.md)済み。購読の取�
 | `create_folder` ／ `rename_folder` ／ `delete_folder` | フォルダを作る（同じ名前があればそれを返す）、名前を変える、消す（中のフィードは購読したまま未分類に戻す） |
 | `list_workspaces` ／ `create_workspace` ／ `rename_workspace` ／ `delete_workspace` | ワークスペースの一覧と管理 |
 | `preview_workspace_move` ／ `move_workspace_subscriptions` | 指定フォルダ内で移動元に属する購読を確認し、確認した購読を移す |
+| `list_bells` ／ `add_bell` ／ `remove_bell` | 通知のベルの一覧と付け外し。購読、言葉（空白区切りの AND）、またはその両方に付ける（[通知](decisions/notifications.md)） |
 | `list_articles` | 既読・未読を含む記事一覧。既読状態、スター、フィード、フォルダで絞り込み、公開日時か既読にした日時で期間の指定と並び替えができる |
 | `get_unread` | 未読の取得。フィード、フォルダ、件数、公開日時の期間（`since` 以上、`until` 未満）で絞り込む。日時はタイムゾーン付き ISO 8601。ページ送りでは期間も同じ値を渡す |
 | `list_activity` | reader で記事を開いた履歴を、期間・操作元・種類で絞って読む |
