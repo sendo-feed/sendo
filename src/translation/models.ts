@@ -1,14 +1,15 @@
 /**
- * 翻訳に使うモデルを、Models API の一覧から選ぶ（docs/decisions/translation.md の 9）。状態は
+ * 翻訳に使うモデルを、段階ごとに Models API の一覧から選ぶ（docs/decisions/translation.md の 9）。状態は
  * プロセスのメモリーにだけ持つ（外したモデルも、再起動で戻る）。
  *
- * - 一覧は起動時と 1 日 1 回取り（その場の翻訳と訳し直しで同じ一覧を使う）、ID が prefix で始まるもののうち、
- *   作られた日がいちばん新しいものを選ぶ
+ * - 一覧は起動時と 1 日 1 回取り（すべての段階で同じ一覧を使う）、ID が系列の頭で始まり、その段階の
+ *   思考量を受け付けるもののうち、作られた日がいちばん新しいものを選ぶ
  * - 一覧を取れなければ、前に選んだもの（なければコードの既定）を使う
- * - 固定のモデル（env）があれば、一覧を見ずにそれを使う
- * - 一覧から選んだモデルで、まだ 1 件も訳せていないうちに、要求の形の誤り（invalid_request_error。
- *   支払いの問題の billing_error などは数えない）が続けて MAX_INVALID_REQUESTS 件起きたら、そのモデルを
- *   外し、次に新しいものを使う。間にほかの結果が入ったら、数え直す
+ * - 固定のモデル（env のモデルの ID）があれば、一覧を見ずにそれを使う
+ * - モデルを外す判断はモデルごとに持ち、段階の間で分け合う（ModelHealth）。一覧から選んだモデルで、
+ *   まだ 1 件も訳せていないうちに、要求の形の誤り（invalid_request_error。支払いの問題の billing_error
+ *   などは数えない）が続けて MAX_INVALID_REQUESTS 件起きたら、そのモデルを外し、どの段階でも次に新しい
+ *   ものを使う。間にほかの結果が入ったら、数え直す
  */
 
 /** 一覧を取り直す間隔 */
@@ -24,6 +25,8 @@ export interface ModelInfo {
   id: string;
   /** 作られた日（ミリ秒） */
   createdAt: number;
+  /** 受け付ける思考量（一覧の capabilities。分からなければ空） */
+  efforts: readonly string[];
 }
 
 export interface ModelSelector {
@@ -33,8 +36,9 @@ export interface ModelSelector {
   succeeded(model: string): void;
   /**
    * そのモデルへの要求が、要求の形の誤り（400 の invalid_request_error）で断られた。外す判断に数えたら
-   * true（まだ 1 件も訳せていない、一覧から選んだモデルで、次の候補がある）。一度訳せたモデル、固定の
-   * モデル、既定のモデル、次の候補がないモデルは false（外せないので、記事の中身による誤りとみなす）
+   * true（まだ 1 件も訳せていない、この段階が一覧から選んだモデルで、この段階に次の候補がある）。一度
+   * 訳せたモデル、固定のモデル、既定のモデル、次の候補がないモデルは false（外せないので、記事の中身による
+   * 誤りとみなす）
    */
   invalidRequest(model: string): boolean;
   /** そのモデルへの要求が、ほかの形で終わった（拒否、読めない応答、ほかの失敗）。続けて数えない */
@@ -42,8 +46,8 @@ export interface ModelSelector {
 }
 
 /**
- * Models API の一覧を、決まった間隔で取り直して持つ。その場の翻訳（Sonnet）と訳し直し（Opus）の
- * モデル選びで使い回し、一覧は 1 回の取り直しで 1 度だけ取る
+ * Models API の一覧を、決まった間隔で取り直して持つ。すべての段階のモデル選びで使い回し、一覧は 1 回の
+ * 取り直しで 1 度だけ取る
  */
 export interface ModelCatalog {
   /** いま持っている一覧。取り直す時期なら、取ってから返す。一度も取れていなければ null */
@@ -85,22 +89,78 @@ export function createModelCatalog(input: {
   };
 }
 
+/**
+ * モデルごとの結果（訳せたか、続けて起きた要求の形の誤りの数、外したか）。同じモデルを 2 つの段階で
+ * 使っても 1 つに数える（docs/decisions/translation.md の 9）
+ */
+export interface ModelHealth {
+  readonly excluded: ReadonlySet<string>;
+  succeeded(model: string): void;
+  otherOutcome(model: string): void;
+  /**
+   * 要求の形の誤りを 1 つ数える（一度でも訳せたモデルは数えない）。続けて MAX_INVALID_REQUESTS 件に
+   * なって外したら true
+   */
+  invalidRequest(model: string): boolean;
+  /** 一度でも訳せたか */
+  hasSucceeded(model: string): boolean;
+}
+
+export function createModelHealth(): ModelHealth {
+  const excluded = new Set<string>();
+  const usage = new Map<string, { succeeded: boolean; invalid: number }>();
+  const stateOf = (model: string) => {
+    let state = usage.get(model);
+    if (state === undefined) {
+      state = { succeeded: false, invalid: 0 };
+      usage.set(model, state);
+    }
+    return state;
+  };
+  return {
+    excluded,
+    succeeded(model) {
+      const state = stateOf(model);
+      state.succeeded = true;
+      state.invalid = 0;
+    },
+    otherOutcome(model) {
+      const state = usage.get(model);
+      if (state !== undefined) state.invalid = 0;
+    },
+    invalidRequest(model) {
+      const state = stateOf(model);
+      if (state.succeeded) return false;
+      state.invalid += 1;
+      if (state.invalid < MAX_INVALID_REQUESTS || excluded.has(model)) return false;
+      excluded.add(model);
+      return true;
+    },
+    hasSucceeded: (model) => usage.get(model)?.succeeded ?? false,
+  };
+}
+
 export function createModelSelector(input: {
   /** 選ぶモデルの ID の頭（"claude-sonnet-" など） */
   prefix: string;
+  /** この段階の思考量。受け付けないモデルは選ばない */
+  effort: string;
   /** 一覧を一度も取れていないときのモデル */
   defaultModel: string;
   /** 固定のモデル（env）。あれば一覧を見ない */
   pinned?: string;
   catalog: ModelCatalog;
+  health: ModelHealth;
 }): ModelSelector {
+  const { health } = input;
   const pinned = input.pinned;
   if (pinned !== undefined) {
+    // 固定のモデルは外さない。要求の形の誤りは記事の中身によるものとみなし、外す判断にも数えない
     return {
       current: async () => pinned,
-      succeeded() {},
+      succeeded: (model) => health.succeeded(model),
       invalidRequest: () => false,
-      otherOutcome() {},
+      otherOutcome: (model) => health.otherOutcome(model),
     };
   }
   /** 一覧から選べるモデル（新しい順） */
@@ -109,13 +169,6 @@ export function createModelSelector(input: {
   let seen: readonly ModelInfo[] | null = null;
   /** 前に選んだもの */
   let chosen = input.defaultModel;
-  const excluded = new Set<string>();
-  const usage = new Map<string, { succeeded: boolean; invalid: number }>();
-
-  const choose = () => {
-    const next = candidates.find((id) => !excluded.has(id));
-    if (next !== undefined) chosen = next;
-  };
 
   return {
     async current() {
@@ -124,37 +177,41 @@ export function createModelSelector(input: {
         seen = models;
         candidates = models
           .filter((model) => model.id.startsWith(input.prefix))
+          .filter((model) => model.efforts.includes(input.effort))
           .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1))
           .map((model) => model.id);
-        choose();
+        if (candidates.length === 0) {
+          // 段階の思考量を受け付けるモデルがない（設定の誤りか、一覧の capabilities がない）。前に選んだ
+          // もの（なければコードの既定）を使い続ける
+          console.error("no translation model in the list matches the tier", {
+            prefix: input.prefix,
+            effort: input.effort,
+            using: chosen,
+          });
+        }
       }
+      // ほかの段階で外したモデルも避ける。候補がすべて外れていれば、前に選んだものを使い続ける
+      const next = candidates.find((id) => !health.excluded.has(id));
+      if (next !== undefined) chosen = next;
       return chosen;
     },
-    otherOutcome(model) {
-      const state = usage.get(model);
-      if (state !== undefined) state.invalid = 0;
-    },
-    succeeded(model) {
-      const state = usage.get(model) ?? { succeeded: false, invalid: 0 };
-      state.succeeded = true;
-      state.invalid = 0;
-      usage.set(model, state);
-    },
+    succeeded: (model) => health.succeeded(model),
+    otherOutcome: (model) => health.otherOutcome(model),
     invalidRequest(model) {
-      const state = usage.get(model) ?? { succeeded: false, invalid: 0 };
-      usage.set(model, state);
       // 一度でも訳せたモデルは、記事の中身による誤りとみなして外さない。一覧から選んだモデルだけを
-      // 外す（既定のモデルは外さない）。次に新しいものがなければ、外さずに使い続ける
-      const next = candidates.find((id) => id !== model && !excluded.has(id));
-      if (state.succeeded || !candidates.includes(model) || next === undefined) return false;
-      state.invalid += 1;
-      if (state.invalid < MAX_INVALID_REQUESTS || model !== chosen) return true;
-      excluded.add(model);
-      chosen = next;
-      console.warn("excluded a translation model after repeated invalid requests", {
-        model,
-        next,
-      });
+      // 外す（既定のモデルは外さない）。この段階に次に新しいものがなければ、外さずに使い続ける。
+      // 数えるのは、この段階で外せる誤りだけ（数えない誤りは記事の中身によるもので、モデルのせいに
+      // しない）。数えた誤りは、同じモデルを選ぶほかの段階の分と合わせて数える
+      const next = candidates.find((id) => id !== model && !health.excluded.has(id));
+      if (health.hasSucceeded(model) || !candidates.includes(model) || next === undefined) {
+        return false;
+      }
+      if (health.invalidRequest(model)) {
+        console.warn("excluded a translation model after repeated invalid requests", {
+          model,
+          next,
+        });
+      }
       return true;
     },
   };

@@ -241,6 +241,8 @@ export function normalizeText(value: string | undefined, maxLength: number): str
   if (value === undefined) return null;
   const text = value.replace(/\s+/g, " ").trim();
   if (text === "") return null;
+  // UTF-16 の単位で上限までなら、コードポイントでも上限まで。全文をコードポイントの配列に広げない
+  if (text.length <= maxLength) return text;
   const chars = [...text];
   return chars.length > maxLength ? `${chars.slice(0, maxLength - 1).join("")}…` : text;
 }

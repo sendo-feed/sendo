@@ -1,3 +1,5 @@
+import { inspect } from "node:util";
+import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jobQueue } from "../../../src/db/schema";
 import type { Job } from "../../../src/jobs/job";
@@ -43,6 +45,44 @@ describe("仕事の表", () => {
     expect(await rows()).toEqual([]);
   });
 
+  it("時刻を指定して積んだ仕事は、その時刻ちょうどから取り出し、1 ミリ秒前には取り出さない", async () => {
+    const runAt = new Date(clock.getTime() + 10 * 60 * 1000);
+    await queue.enqueue([CLEAN_UP], { runAt });
+    const seen: Job[] = [];
+    const run = async (job: Job) => void seen.push(job);
+
+    clock = new Date(runAt.getTime() - 1);
+    expect(await queue.runDue(run)).toBe(0);
+    clock = runAt;
+    expect(await queue.runDue(run)).toBe(1);
+
+    expect(seen).toEqual([CLEAN_UP]);
+    expect(await rows()).toEqual([]);
+  });
+
+  it("同じプロセスで Discord の取得が長引いても、並行して取り出さない", async () => {
+    const discord: Job = { type: "fetch-discord", feedId: "channel-1" };
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: Job[] = [];
+    queue.start(async (job) => {
+      seen.push(job);
+      if (seen.length === 1) await blocked;
+    });
+    try {
+      await queue.enqueue([discord]);
+      await vi.waitFor(() => expect(seen).toEqual([discord]));
+      advance(LEASE_MS);
+      await queue.enqueue([discord, discord, CLEAN_UP]);
+      await vi.waitFor(() => expect(seen).toEqual([discord, CLEAN_UP]));
+    } finally {
+      release();
+    }
+    await vi.waitFor(() => expect(seen).toEqual([discord, CLEAN_UP, discord]));
+  });
+
   it("失敗した仕事は、少し間を置いてやり直す。上限まで失敗したら諦める", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const failing = vi.fn(async () => {
@@ -59,6 +99,28 @@ describe("仕事の表", () => {
     expect(failing).toHaveBeenCalledTimes(MAX_ATTEMPTS);
     expect(await rows()).toEqual([]);
     expect(errors).toHaveBeenLastCalledWith("job failed; giving up", expect.anything());
+  });
+
+  it("仕事の中で文が失敗しても、文に渡した値はログに出さない", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const secret = `secret-${crypto.randomUUID()}`;
+    const failing = async () => {
+      await database.db.run(sql`insert into no_such_table (value) values (${secret})`);
+    };
+    await queue.enqueue([FETCH]);
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      expect(await queue.runDue(failing)).toBe(1);
+      advance(RETRY_DELAY_MS);
+    }
+
+    const logged = inspect(errors.mock.calls, { depth: 10 });
+    expect(logged).toContain("job failed; will retry");
+    expect(logged).toContain("job failed; giving up");
+    // 何の文が、なぜ失敗したかは残す
+    expect(logged).toContain("insert into no_such_table");
+    expect(logged).toContain("no such table");
+    expect(logged).not.toContain(secret);
   });
 
   it("取り出したまま落ちた仕事は、借りの期限が過ぎたらまた取り出す", async () => {

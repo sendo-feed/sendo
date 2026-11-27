@@ -1,11 +1,13 @@
 import { getTableName, type SQL, sql } from "drizzle-orm";
 import {
+  type bells,
   type clientSettings,
   type folders,
   type savedPages,
   seqFloors,
   type subscriptions,
   type userArticles,
+  type workspaces,
 } from "./schema";
 
 /** 変更番号を持つ表（docs/decisions/sync.md） */
@@ -14,7 +16,9 @@ export type SeqTable =
   | typeof subscriptions
   | typeof userArticles
   | typeof clientSettings
-  | typeof savedPages;
+  | typeof savedPages
+  | typeof workspaces
+  | typeof bells;
 
 /**
  * 次の変更番号を返す SQL の式。行を作る ／ 変える文の中で、seq の値として使う。

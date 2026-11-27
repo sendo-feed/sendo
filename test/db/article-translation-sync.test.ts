@@ -138,4 +138,115 @@ describe("訳文を差分同期で配るマイグレーション", () => {
       client.close();
     }
   });
+
+  it("モデルと思考量を配るトリガーに作り直しても、前からある行の番号は振り直さない。モデルか思考量が変わると振り、配らない条件や skipped の行では振らない", async () => {
+    const client = createClient({ url: ":memory:" });
+    try {
+      await client.execute("PRAGMA foreign_keys = ON");
+      const migrations = readMigrationFiles({ migrationsFolder: MIGRATIONS_DIR });
+      const index = migrations.findIndex((m) =>
+        m.sql.some((s) => s.includes("OLD.effort IS NOT NEW.effort")),
+      );
+      expect(index).toBeGreaterThan(0);
+      for (const migration of migrations.slice(0, index)) {
+        for (const statement of migration.sql) await client.execute(statement);
+      }
+
+      // 作り直す前の状態：訳した行（条件あり）、訳し直しの最中の行、待ちの行、skipped の行
+      await client.execute(
+        "INSERT INTO users (id, email, created_at) VALUES ('u', 'u@example.com', 0)",
+      );
+      await client.execute(
+        "INSERT INTO feeds (id, url, created_at, next_fetch_at) VALUES ('f', 'https://example.com/feed', 0, 0)",
+      );
+      const ids = ["translated", "translating", "queued", "skipped"];
+      for (const [i, id] of ids.entries()) {
+        await client.execute({
+          sql: "INSERT INTO articles (id, feed_id, guid, item_id, published_at, created_at) VALUES (?, 'f', ?, ?, 0, 0)",
+          args: [id, id, i + 1],
+        });
+        await client.execute({
+          sql: "INSERT INTO user_articles (user_id, article_id, feed_id, published_at, created_at, seq, read_seq) VALUES ('u', ?, 'f', 0, 0, ?, ?)",
+          args: [id, i + 1, i + 1],
+        });
+      }
+      for (const status of ["translated", "translating"]) {
+        await client.execute({
+          sql: "INSERT INTO article_translations (article_id, status, language, decided_at, title, model, effort, translated_at) VALUES (?, ?, 'en', 0, '訳', 'claude-sonnet-5-5', 'medium', 1)",
+          args: [status, status],
+        });
+      }
+      await client.execute(
+        "INSERT INTO article_translations (article_id, status, language, decided_at) VALUES ('queued', 'queued', 'en', 0)",
+      );
+      await client.execute(
+        "INSERT INTO article_translations (article_id, status, language, decided_at) VALUES ('skipped', 'skipped', 'ja', 0)",
+      );
+      const seq = async (id: string) =>
+        Number(
+          (
+            await client.execute({
+              sql: "SELECT seq FROM user_articles WHERE article_id = ?",
+              args: [id],
+            })
+          ).rows[0]?.seq,
+        );
+      const before = Object.fromEntries(
+        await Promise.all(ids.map(async (id) => [id, await seq(id)] as const)),
+      );
+
+      for (const migration of migrations.slice(index)) {
+        for (const statement of migration.sql) await client.execute(statement);
+      }
+      // 作り直すだけでは、どの行の番号も振り直さない
+      for (const id of ids) expect(await seq(id)).toBe(before[id]);
+
+      // モデルだけ、思考量だけが変わっても振る（null から値になるときも、値から null になるときも）
+      let last = await seq("translated");
+      for (const set of [
+        "model = 'claude-opus-5-5'",
+        "effort = 'high'",
+        "effort = NULL",
+        "effort = 'medium'",
+      ]) {
+        await client.execute(
+          `UPDATE article_translations SET ${set} WHERE article_id = 'translated'`,
+        );
+        const next = await seq("translated");
+        expect(next).toBeGreaterThan(last);
+        last = next;
+      }
+      // 同じ値を書いても振らない
+      await client.execute(
+        "UPDATE article_translations SET model = 'claude-opus-5-5', effort = 'medium' WHERE article_id = 'translated'",
+      );
+      expect(await seq("translated")).toBe(last);
+
+      // 配らない条件（段階、プロンプトの版、トークン数、呼び出しのモデル、写した元、バッチで送った条件）
+      // だけが変わっても振らない
+      for (const set of [
+        "tier = 'quality'",
+        "prompt_version = 2",
+        "input_tokens = 10, output_tokens = 20",
+        "call_model = 'claude-haiku-5-5'",
+        "title_copied_from = 'a', summary_copied_from = 'b', content_copied_from = 'c'",
+        "batch_tier = 'long', batch_effort = 'low', batch_prompt_version = 2",
+      ]) {
+        await client.execute(
+          `UPDATE article_translations SET ${set} WHERE article_id IN ('translated', 'translating', 'queued')`,
+        );
+      }
+      expect(await seq("translated")).toBe(last);
+      expect(await seq("translating")).toBe(before.translating);
+      expect(await seq("queued")).toBe(before.queued);
+
+      // skipped の行は、モデルと思考量が変わっても振らない
+      await client.execute(
+        "UPDATE article_translations SET model = 'claude-opus-5-5', effort = 'max' WHERE article_id = 'skipped'",
+      );
+      expect(await seq("skipped")).toBe(before.skipped);
+    } finally {
+      client.close();
+    }
+  });
 });

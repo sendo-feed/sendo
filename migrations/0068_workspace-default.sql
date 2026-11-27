@@ -1,0 +1,2 @@
+ALTER TABLE `workspaces` ADD `is_default` integer DEFAULT false NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX `workspaces_user_id_default_idx` ON `workspaces` (`user_id`) WHERE "workspaces"."is_default" = 1 and "workspaces"."deleted_at" is null;

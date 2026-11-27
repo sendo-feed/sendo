@@ -22,6 +22,7 @@ import { htmlToText, type ParsedItem, ParseFeedError, parseFeed } from "../fetch
 import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
 import { enqueueArticleLanguages } from "./article-languages";
+import { notifyBells } from "./bell-notifications";
 import { runFetchDiscord } from "./fetch-discord";
 import {
   backoffInterval,
@@ -50,6 +51,7 @@ export type FetchFeedOutcome =
   | { status: "fetched"; inserted: number }
   | { status: "not-modified" }
   | { status: "failed"; error: string }
+  | { status: "deferred" }
   | { status: "missing" }
   | { status: "storage-full" };
 
@@ -73,14 +75,22 @@ export async function runFetchFeed(
     | "jobs"
     | "discord"
     | "syncUpdates"
+    | "push"
   >,
   feedId: string,
+  jobType?: "fetch-feed" | "fetch-discord",
 ): Promise<FetchFeedOutcome> {
   const { db } = platform;
   const minIntervalMs = platform.fetchConfig.intervalMs;
   const feed = await getFeed(db, feedId);
   if (!feed || (feed.discordCursor !== null && feed.discordConnectionId === null))
     return { status: "missing" };
+  if (jobType === "fetch-discord" && feed.discordCursor === null) return { status: "missing" };
+  // 更新前にキューへ積まれた Discord の取得も、今の直列化を通す。
+  if (jobType === "fetch-feed" && feed.discordCursor !== null) {
+    await platform.jobs.enqueue([{ type: "fetch-discord", feedId }]);
+    return { status: "deferred" };
+  }
 
   const startedAt = platform.now();
   await measureExistingContents(platform);
@@ -156,6 +166,29 @@ export async function runFetchFeed(
     await clearUsedContentNotes(db, storedContents.keys);
     // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
     await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
+    // この回に行を入れた記事を、ベルで判定する（docs/decisions/notifications.md の 8）。失敗しても、
+    // 取得は失敗にしない
+    const insertedIds = new Set(insertedArticles.map((article) => article.id));
+    await notifyBells(platform, {
+      previousSuccessAt: feed.lastSuccessfulFetchAt,
+      articles: rows.flatMap((row, index) => {
+        if (!insertedIds.has(row.id)) return [];
+        const item = parsed.items[index];
+        // 置いたかどうかによらず、フィードの HTML を、置く本文と同じ基準（storeContents）で
+        // サニタイズして判定する
+        const html = item?.contentHtml;
+        return [
+          {
+            id: row.id,
+            publishedAt: row.publishedAt,
+            dated: item?.publishedAt != null,
+            title: row.title ?? null,
+            summary: row.summary ?? null,
+            body: html ? { html, baseUrl: row.url ?? result.url } : null,
+          },
+        ];
+      }),
+    });
     // 新しい記事ごとに、ページから本文を抜く仕事を積む（docs/decisions/content.md の 10）。ここで落ちて積めなくても、読者が開いたときに抜く
     await enqueuePageContents(platform, insertedArticles);
     // 新しい記事の言語の判定も積む（docs/decisions/jobs.md の 13）。積めなければ定期実行が拾う
@@ -223,20 +256,31 @@ export async function runFetchFeed(
     // Retry-After は、応答を受けた時刻から数える（docs/decisions/jobs.md の 8）
     const retryAfter =
       error instanceof FetchFeedError ? retryAfterWait(error.retryAfterMs, minIntervalMs) : 0;
-    const retryAt = platform.now().getTime() + retryAfter;
+    const failedAt = platform.now().getTime();
+    const retryAt = failedAt + retryAfter;
+    const discordRetryAt =
+      feed.discordCursor !== null &&
+      error instanceof FetchFeedError &&
+      error.status === 429 &&
+      error.retryAfterMs !== undefined
+        ? new Date(failedAt + Math.max(1000, error.retryAfterMs))
+        : undefined;
     const message = `${error.name}: ${error.message}`;
     const page = error instanceof FetchFeedError ? error.notFoundPage : fetchedPage;
     const relocationCandidate = page
       ? await findFeedRelocation(page, feed.url, platform.fetch)
       : undefined;
-    await recordFailedAttempt(db, feed, {
+    const retryDiscord = await recordFailedAttempt(db, feed, {
       startedAt,
       minIntervalMs,
       retryAt,
+      discordRetryAt:
+        discordRetryAt && Number.isFinite(discordRetryAt.getTime()) ? discordRetryAt : null,
       message,
       errorCode,
       relocationCandidate,
     });
+    if (retryDiscord) await platform.jobs.enqueue([{ type: "fetch-discord", feedId: feed.id }]);
     return { status: "failed", error: message };
   }
 }
@@ -248,19 +292,21 @@ async function recordFailedAttempt(
     startedAt: Date;
     minIntervalMs: number;
     retryAt: number;
+    discordRetryAt: Date | null;
     message: string;
     errorCode: FeedErrorCode;
     relocationCandidate: Feed["relocationCandidate"] | undefined;
   },
-): Promise<void> {
+): Promise<boolean> {
   const { startedAt, minIntervalMs, retryAt, message, errorCode, relocationCandidate } = input;
   const rateLimited = errorCode === "rate_limited";
+  const discord = feed.discordCursor !== null;
   let latest: Feed | undefined = feed;
   for (
     let retries = 0;
     latest &&
     latest.discordConnectionId === feed.discordConnectionId &&
-    (latest.lastFetchedAt === null || latest.lastFetchedAt < startedAt);
+    (discord || latest.lastFetchedAt === null || latest.lastFetchedAt < startedAt);
     retries++
   ) {
     // 先行した取得が書き込んだ場合は、その結果から間隔と状態を計算し直す。
@@ -280,9 +326,13 @@ async function recordFailedAttempt(
     const backoff = fetchStalled
       ? Math.max(STALLED_FETCH_INTERVAL_MS, minIntervalMs)
       : backoffInterval({ intervalMs, errorCount: Math.max(errorCount, 1), minMs: minIntervalMs });
+    const discordRetryAt = fetchStalled ? null : input.discordRetryAt;
     const recorded = await recordFetchFailure(db, latest, {
       now: startedAt,
-      nextFetchAt: new Date(Math.max(startedAt.getTime() + backoff, retryAt)),
+      nextFetchAt: discordRetryAt
+        ? latest.nextFetchAt
+        : new Date(Math.max(startedAt.getTime() + backoff, retryAt)),
+      discordRetryAt,
       errorCount,
       error: message,
       errorCode,
@@ -290,9 +340,11 @@ async function recordFailedAttempt(
       fetchStalled,
       relocationCandidate,
     });
-    if (recorded) return;
+    // Discord の失敗は、取得を始めたときのカーソルと記録が変わっていない場合だけ残す。
+    if (recorded || discord) return recorded && discordRetryAt !== null;
     latest = await getFeed(db, feed.id);
   }
+  return false;
 }
 
 /**

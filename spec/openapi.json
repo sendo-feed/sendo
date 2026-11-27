@@ -185,6 +185,17 @@
               "null"
             ]
           },
+          "workspaceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "購読の所属。未割り当てなら null"
+          },
+          "subscriptionId": {
+            "type": "string",
+            "description": "購読の ID。購読し直すと変わる"
+          },
           "lastFetchedAt": {
             "type": [
               "string",
@@ -290,6 +301,8 @@
           "siteUrl",
           "iconUrl",
           "folderId",
+          "workspaceId",
+          "subscriptionId",
           "lastFetchedAt",
           "lastSuccessfulFetchAt",
           "nextFetchAt",
@@ -317,6 +330,15 @@
             ],
             "minLength": 1,
             "maxLength": 64
+          },
+          "workspaceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "購読の所属先。省略または null ならデフォルトに追加する"
           }
         },
         "required": [
@@ -335,6 +357,21 @@
             "maxLength": 64,
             "description": "null ならフォルダなしにする"
           },
+          "workspaceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "null ならワークスペースから外す"
+          },
+          "subscriptionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "所属を変更するときは、変更対象の購読 ID を指定する"
+          },
           "displayName": {
             "type": [
               "string",
@@ -345,7 +382,33 @@
             "description": "前後の空白を除いた購読の表示名。null なら配信元の名前に戻す"
           }
         },
-        "minProperties": 1
+        "anyOf": [
+          {
+            "required": [
+              "workspaceId",
+              "subscriptionId"
+            ]
+          },
+          {
+            "not": {
+              "required": [
+                "workspaceId"
+              ]
+            },
+            "anyOf": [
+              {
+                "required": [
+                  "folderId"
+                ]
+              },
+              {
+                "required": [
+                  "displayName"
+                ]
+              }
+            ]
+          }
+        ]
       },
       "ArticleContent": {
         "type": "object",
@@ -497,6 +560,17 @@
               true
             ]
           },
+          "subscriptionIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "minItems": 1,
+            "maxItems": 90,
+            "description": "操作時の有効な購読の ID。cursor と組み合わせ、他の範囲指定とは併用しない"
+          },
           "until": {
             "type": "string",
             "format": "date-time",
@@ -599,7 +673,16 @@
           },
           "model": {
             "type": "string",
-            "description": "訳したモデル"
+            "description": "訳したモデル（Claude のモデルの ID。claude-sonnet-5-5 など）。応答が返したモデルで、拒否されて代わりのモデルに替わったときは代わりのモデル。同じ元記事から写した訳文は、写した元の訳文のモデル（docs/decisions/translation.md の 18）",
+            "example": "claude-sonnet-5-5"
+          },
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "訳したときの思考量（Claude API の effort。low ／ medium ／ high ／ xhigh ／ max）。Sendo の版によって値が増えることがあるので、読む側は知らない値もそのまま扱う。モデルと同じく、同じ元記事から写した訳文は写した元の訳文のもの（docs/decisions/translation.md の 18）。思考量を残していない訳文（思考量を残す前に送ったバッチの結果など）は null",
+            "example": "medium"
           },
           "translatedAt": {
             "type": "string",
@@ -613,6 +696,7 @@
           "content",
           "contentSource",
           "model",
+          "effort",
           "translatedAt"
         ]
       },
@@ -690,6 +774,82 @@
           "name"
         ]
       },
+      "Workspace": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "アカウントのデフォルトか"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "createdAt",
+          "isDefault"
+        ]
+      },
+      "CreateWorkspaceRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "クライアントが決めた小文字の UUID。省略時は Sendo が決める"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "UpdateWorkspaceRequest": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "isDefault": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              }
+            },
+            "required": [
+              "isDefault"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
       "OpmlImportResult": {
         "type": "object",
         "properties": {
@@ -760,6 +920,120 @@
           "url",
           "title",
           "savedAt"
+        ]
+      },
+      "Bell": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "subscriptionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "鳴らす購読の ID。購読し直すと変わる。購読のないベルは null"
+          },
+          "feedId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "鳴らす購読のフィードの ID。購読のないベルは null"
+          },
+          "words": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "当てる言葉（NFKC にして区切った言葉を、半角の空白 1 つでつないだもの）。言葉のないベルは null"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "subscriptionId",
+          "feedId",
+          "words",
+          "createdAt"
+        ]
+      },
+      "AddBellRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "クライアントが決めた小文字の UUID。省略時は Sendo が決める"
+          },
+          "feedId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "鳴らす購読のフィードの ID。言葉だけのベルは省く。feedId と words の少なくとも一方が要る"
+          },
+          "words": {
+            "type": "string",
+            "description": "当てる言葉。空白で区切った言葉をすべて含む記事に当てる（AND）。NFKC にしてから区切り、重なりを除いた形で 1〜8 個、全体で 64 文字まで。購読だけのベルは省く"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PushStatus": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "Web Push を使える設定（VAPID_SUBJECT と READER_URL）がそろっているか"
+          },
+          "publicKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "VAPID の公開鍵（P-256 の非圧縮の点 65 バイトの base64url）。PushManager.subscribe の applicationServerKey に渡す。手元の登録の鍵と違えば、登録し直す。使えなければ null"
+          }
+        },
+        "required": [
+          "available",
+          "publicKey"
+        ]
+      },
+      "PushRegistration": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "プッシュサービスの URL（https:、2048 文字まで）"
+          },
+          "keys": {
+            "type": "object",
+            "properties": {
+              "p256dh": {
+                "type": "string",
+                "maxLength": 256,
+                "description": "端末の公開鍵（P-256 の非圧縮の点 65 バイト）の base64url"
+              },
+              "auth": {
+                "type": "string",
+                "maxLength": 256,
+                "description": "認証の秘密（16 バイト）の base64url"
+              }
+            },
+            "required": [
+              "p256dh",
+              "auth"
+            ]
+          }
+        },
+        "required": [
+          "endpoint",
+          "keys"
         ]
       },
       "Setting": {
@@ -853,6 +1127,25 @@
             "items": {
               "$ref": "#/components/schemas/SyncSavedPage"
             }
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncWorkspace"
+            }
+          },
+          "bells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncBell"
+            }
+          },
+          "defaultWorkspaceOnSubscribe": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "includeWorkspaces=true のとき付く。購読先の省略はデフォルトを使う"
           }
         },
         "required": [
@@ -992,6 +1285,17 @@
               "null"
             ]
           },
+          "workspaceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "includeWorkspaces=true の有効な購読に付く。未割り当てなら null"
+          },
+          "subscriptionId": {
+            "type": "string",
+            "description": "includeWorkspaces=true の有効な購読に付く。購読し直すと変わる"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time",
@@ -1097,10 +1401,26 @@
           },
           "retranslated": {
             "type": "boolean",
-            "description": "Opus で訳し直したか（docs/decisions/translation.md の 6）。訳し直せるのは、translated で、これが false の記事だけ"
+            "description": "品質優先の段階で訳し直したか（docs/decisions/translation.md の 6）。訳し直せるのは、translated で、これが false の記事だけ"
           },
           "failure": {
             "$ref": "#/components/schemas/SyncArticleTranslationFailure"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "訳したモデル（Claude のモデルの ID。claude-sonnet-5-5 など）。応答が返したモデルで、拒否されて代わりのモデルに替わったときは代わりのモデル。同じ元記事から写した訳文は、写した元の訳文のモデル（docs/decisions/translation.md の 18）。訳文のない記事（translatedAt が null）は null。訳し直しの最中（translating）は、もとの訳文のモデル",
+            "example": "claude-sonnet-5-5"
+          },
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "訳したときの思考量（Claude API の effort。low ／ medium ／ high ／ xhigh ／ max）。Sendo の版によって値が増えることがあるので、読む側は知らない値もそのまま扱う。モデルと同じく、同じ元記事から写した訳文は写した元の訳文のもの（docs/decisions/translation.md の 18）。思考量を残していない訳文（思考量を残す前に送ったバッチの結果など）は null。訳文のない記事（translatedAt が null）も null。訳し直しの最中（translating）は、もとの訳文の思考量",
+            "example": "medium"
           }
         },
         "required": [
@@ -1110,7 +1430,9 @@
           "summary",
           "translatedAt",
           "retranslated",
-          "failure"
+          "failure",
+          "model",
+          "effort"
         ],
         "description": "Sendo の翻訳（docs/decisions/translation.md の 14）。訳さない記事（日本語の記事、Discord の投稿）と、訳すかどうかを決めていない記事（決める前の記事、取り込んでから 1 日のうちに決まらなかった記事、翻訳を使わない Sendo の記事）は null。翻訳が変わると、記事が差分としてもう一度届く"
       },
@@ -1282,6 +1604,92 @@
           "deleted"
         ]
       },
+      "SyncWorkspace": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Workspace"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "deleted": {
+                    "type": "boolean",
+                    "enum": [
+                      false
+                    ]
+                  }
+                },
+                "required": [
+                  "deleted"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "deleted": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "deleted"
+            ]
+          }
+        ]
+      },
+      "SyncBell": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Bell"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "deleted": {
+                    "type": "boolean",
+                    "enum": [
+                      false
+                    ]
+                  }
+                },
+                "required": [
+                  "deleted"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "deleted": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "deleted"
+            ]
+          }
+        ]
+      },
       "AccessToken": {
         "type": "object",
         "properties": {
@@ -1290,7 +1698,7 @@
           },
           "name": {
             "type": "string",
-            "example": "Reeder"
+            "example": "CLI"
           },
           "createdAt": {
             "type": "string",
@@ -1310,7 +1718,7 @@
               "reader",
               "mcp"
             ],
-            "description": "用途。reader はリーダーアプリ（Google Reader API）と REST API 用、mcp は /mcp（MCP サーバー）用。用途の違う入口では使えない"
+            "description": "用途。reader は REST API 用、mcp は /mcp（MCP サーバー）用。用途の違う入口では使えない"
           },
           "scopes": {
             "type": "array",
@@ -1340,7 +1748,7 @@
             "type": "string",
             "maxLength": 200,
             "description": "用途の名前（前後の空白を除いて 1〜100 文字）",
-            "example": "Reeder"
+            "example": "CLI"
           },
           "purpose": {
             "type": "string",
@@ -1348,7 +1756,7 @@
               "reader",
               "mcp"
             ],
-            "description": "用途。既定は reader（リーダーアプリと REST API 用）。mcp なら /mcp でだけ使える"
+            "description": "用途。既定は reader（REST API 用）。mcp なら /mcp でだけ使える"
           },
           "scopes": {
             "type": "array",
@@ -2115,7 +2523,7 @@
             }
           },
           "400": {
-            "description": "URL が正しくない、取得が許されていない、またはフォルダがない",
+            "description": "URL が正しくない、取得が許されていない、フォルダかワークスペースがない",
             "content": {
               "application/json": {
                 "schema": {
@@ -2240,7 +2648,7 @@
     },
     "/feeds/{id}": {
       "patch": {
-        "summary": "購読を変える（フォルダと表示名）",
+        "summary": "購読を変える（フォルダ、表示名、ワークスペース）",
         "parameters": [
           {
             "schema": {
@@ -2283,7 +2691,7 @@
             }
           },
           "400": {
-            "description": "フォルダがない",
+            "description": "フォルダかワークスペースがない",
             "content": {
               "application/json": {
                 "schema": {
@@ -2462,7 +2870,7 @@
     "/articles/mark-read": {
       "post": {
         "summary": "まとめて既読にする",
-        "description": "ID を並べるか、フィード ／ フォルダ ／ すべてを指定する。",
+        "description": "記事 ID、操作時の購読 ID、フィード、フォルダ、またはすべてを指定する。",
         "requestBody": {
           "required": true,
           "content": {
@@ -3075,6 +3483,222 @@
         }
       }
     },
+    "/workspaces": {
+      "get": {
+        "summary": "アカウントのワークスペースを名前順で返す",
+        "responses": {
+          "200": {
+            "description": "有効なワークスペースの一覧",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Workspace"
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "ワークスペースを作る",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkspaceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "同じ ID のワークスペースがある。現在の名前を返す",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspace": {
+                      "$ref": "#/components/schemas/Workspace"
+                    }
+                  },
+                  "required": [
+                    "workspace"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "作った",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspace": {
+                      "$ref": "#/components/schemas/Workspace"
+                    }
+                  },
+                  "required": [
+                    "workspace"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "名前か ID が正しくない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "名前が使用済み（workspace_exists）か、指定した ID は使えない（workspace_id_taken）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workspaces/{id}": {
+      "patch": {
+        "summary": "ワークスペースを改名するか、デフォルトにする",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWorkspaceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "指定された項目を更新した",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspace": {
+                      "$ref": "#/components/schemas/Workspace"
+                    }
+                  },
+                  "required": [
+                    "workspace"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "入力が正しくない。名前かデフォルトの指定のどちらかが必要",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ワークスペースがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "名前が使用済み（workspace_exists）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "デフォルト以外で有効な購読が0件のワークスペースを削除する",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "削除した、または削除済み"
+          },
+          "404": {
+            "description": "ワークスペースがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "デフォルト（workspace_is_default）か有効な購読がある（workspace_not_empty）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/images": {
       "get": {
         "summary": "画像を中継する",
@@ -3361,6 +3985,245 @@
         }
       }
     },
+    "/bells": {
+      "get": {
+        "summary": "有効なベルを作った順で返す",
+        "responses": {
+          "200": {
+            "description": "有効なベルの一覧",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Bell"
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "ベルを付ける",
+        "description": "購読だけ、言葉だけ、購読 AND 言葉のベルを付ける。有効なベルは 100 個まで。クライアントは応答の id を正とする。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddBellRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "同じ組（購読と言葉）の有効なベルがある。送った id と言葉の並びによらず、そのベルを返す",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "bell": {
+                      "$ref": "#/components/schemas/Bell"
+                    }
+                  },
+                  "required": [
+                    "bell"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "付けた",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "bell": {
+                      "$ref": "#/components/schemas/Bell"
+                    }
+                  },
+                  "required": [
+                    "bell"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "入力が正しくない。feedId も words もないか、言葉が上限などに合わない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "feedId のフィードの有効な購読がない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "有効なベルが 100 個ある（bell_limit_reached）か、指定した id はほかのベルに使われている（bell_id_taken）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bells/{id}": {
+      "delete": {
+        "summary": "ベルを外す",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "外した、または外してあった"
+          },
+          "404": {
+            "description": "ベルがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/push": {
+      "get": {
+        "summary": "Web Push の有無と VAPID の公開鍵",
+        "responses": {
+          "200": {
+            "description": "有無と公開鍵",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/push/registration": {
+      "put": {
+        "summary": "この端末の Web Push の登録を置く",
+        "description": "ブラウザが返した登録（PushSubscription.toJSON() の形）を、このセッションに結んで置く。同じ登録を何度送ってもよい。このセッションの前の登録と、ほかのセッションの同じエンドポイントの登録は外れる。ログアウトすると外れる。",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushRegistration"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "置いた"
+          },
+          "400": {
+            "description": "エンドポイントか鍵の形が正しくない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "ブラウザのセッションではない（アクセストークンでは使えない）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Web Push を使う設定（VAPID_SUBJECT と READER_URL）がない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "この端末の Web Push の登録を外す",
+        "description": "登録がなくても、Web Push を使えない設定でも 204 を返す。",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "外した、または登録がない"
+          },
+          "403": {
+            "description": "ブラウザのセッションではない（アクセストークンでは使えない）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/settings/{deviceType}": {
       "get": {
         "summary": "設定の項目の一覧",
@@ -3484,7 +4347,7 @@
     "/sync": {
       "get": {
         "summary": "前回の同期からの差分を取る",
-        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\nsettings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。\nincludeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
+        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\nsettings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。\nincludeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。\nincludeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。差分の有無にかかわらず、購読先の省略に対応した印 defaultWorkspaceOnSubscribe を返す。\nincludeBells=true なら、通知のベルの付けたものと外したものも bells に載せる。ベルの位置がない既存のカーソルでは、ベルだけを最初から送る。購読をやめると、その購読のベルも deleted で届く。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
         "parameters": [
           {
             "schema": {
@@ -3496,6 +4359,30 @@
             },
             "required": false,
             "name": "includeSaved",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "includeWorkspaces",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "includeBells",
             "in": "query"
           },
           {
@@ -3579,7 +4466,7 @@
       },
       "post": {
         "summary": "アクセストークンを発行する",
-        "description": "リーダーアプリ（Reeder、NetNewsWire など）のパスワード欄や、エージェント・スクリプトの Authorization: Bearer に使う。",
+        "description": "REST API または MCP のクライアントで Authorization: Bearer に使う。",
         "security": [
           {
             "sessionCookie": []

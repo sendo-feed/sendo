@@ -11,10 +11,16 @@ import type { ArticleCursor, ArticleListInput, InboxArticle } from "../db/inbox"
 import type { SessionIdentity } from "../db/sessions";
 import type { Job } from "../jobs/job";
 import type { SyncNotifier } from "../lib/sync-notify";
+import type { TranslationEffort } from "./config";
 
 /** 重い処理を、API の応答と切り離して後で実行する */
 export interface JobQueue {
-  enqueue(jobs: readonly Job[]): Promise<void>;
+  /**
+   * 仕事を積む。runAt を指定すると、その時刻になるまで取り出さない。指定しなければ、すぐに取り出せる
+   * （docs/decisions/jobs.md の 1）
+   */
+  enqueue(jobs: readonly Job[], options?: { runAt?: Date }): Promise<void>;
+  enqueueDueDiscordFetches(now: Date, limit: number): Promise<number>;
 }
 
 /** 提供元に登録した、OAuth のクライアント */
@@ -27,6 +33,8 @@ export interface OAuthClient {
 export interface DiscordConfig extends OAuthClient {
   botToken: string;
   redirectUri: string;
+  /** Bot の読み取りを枠に合わせて送る。通信の期限も送り始めるときに決める。 */
+  botFetch?: typeof fetch;
 }
 
 /**
@@ -41,6 +49,14 @@ export interface OAuthServerConfig {
    */
   issuer: string;
   /** 許可の画面（/oauth/authorize）を置く sendo-reader のオリジン */
+  readerOrigin: string;
+}
+
+/** Web Push の設定（docs/decisions/web-push.md の 2、3）。両方そろったときだけ使える */
+export interface PushConfig {
+  /** VAPID の JWT の sub（mailto: か https: の URL） */
+  subject: string;
+  /** 通知から記事を開く sendo-reader のオリジン */
   readerOrigin: string;
 }
 
@@ -183,9 +199,27 @@ export interface TranslationSegment {
   text: string;
 }
 
+/**
+ * 訳せた呼び出しのトークン数（応答の usage。docs/decisions/translation.md の 18）。代わりのモデルに
+ * 替わったときは、応答が返す合計
+ */
+export interface TranslationUsage {
+  /** 入力のトークン数（キャッシュに書いた・読んだ分も足す） */
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export type TranslationResult =
-  /** 訳せた。返ってこなかった断片は入らない */
-  | { status: "translated"; segments: TranslationSegment[]; model: string }
+  /**
+   * 訳せた。返ってこなかった断片は入らない。model は応答が返したモデル（代わりのモデルに替わったら、
+   * 代わりのモデル）
+   */
+  | {
+      status: "translated";
+      segments: TranslationSegment[];
+      model: string;
+      usage: TranslationUsage;
+    }
   /**
    * 拒否された（代わりのモデルでも訳せなかった）。category は拒否の応答の stop_details.category
    * （cyber など。なければ null。docs/decisions/translation.md の 17）
@@ -212,10 +246,33 @@ export class TranslatorError extends Error {
   }
 }
 
-/** バッチで訳してもらう 1 件（docs/decisions/translation.md の 4）。id は記事の ID */
+/** 翻訳の段階（docs/decisions/translation.md の 9）。通常 ／ 長文 ／ 品質優先 */
+export type TranslationTier = "normal" | "long" | "quality";
+
+/** バッチで送る記事の段階（docs/decisions/translation.md の 9。送る本文が閾値以上なら長文） */
+export type BatchTier = Exclude<TranslationTier, "quality">;
+
+/** その場で訳す段階（その場の翻訳は通常、訳し直しは品質優先。docs/decisions/translation.md の 9） */
+export type OnDemandTier = Exclude<TranslationTier, "long">;
+
+/**
+ * 段階で送るときの条件（思考量とプロンプトの版）。訳文の行に残す（docs/decisions/translation.md の 9、
+ * 18）
+ */
+export interface TranslationConditions {
+  effort: TranslationEffort;
+  /** プロンプトの版（システムプロンプトと送る形を変えるたびに上げる、コードに持つ番号） */
+  promptVersion: number;
+}
+
+/**
+ * バッチで訳してもらう 1 件（docs/decisions/translation.md の 4）。id は記事の ID。tier の段階の
+ * モデルと思考量で送る
+ */
 export interface BatchTranslationRequest {
   id: string;
   segments: readonly TranslationSegment[];
+  tier: BatchTier;
 }
 
 /**
@@ -244,12 +301,22 @@ export type BatchTranslationStatus =
 /** 記事を日本語に訳す（Claude API。docs/decisions/translation.md） */
 export interface Translator {
   /**
-   * その場で訳す（通常の Messages API）。retranslation なら、訳し直しのモデル（Opus）で訳す
+   * バッチで送る記事の段階。送る本文（写す本文と、タイトル・要約は数えない。本文を送らなければ 0）の
+   * Unicode の文字数が、設定の閾値以上なら長文（docs/decisions/translation.md の 9）
+   */
+  batchTier(sentBodyChars: number): BatchTier;
+  /**
+   * その段階で送るときの思考量とプロンプトの版（docs/decisions/translation.md の 18）。バッチは送る印を
+   * 付けるときに、その場の翻訳は結果を書くときに、行に書く
+   */
+  conditions(tier: TranslationTier): TranslationConditions;
+  /**
+   * その場で訳す（通常の Messages API）。その場の翻訳は通常の段階、訳し直しは品質優先の段階で訳す
    * （docs/decisions/translation.md の 6、9）。呼び出しが失敗したら TranslatorError を投げる
    */
   translate(
     segments: readonly TranslationSegment[],
-    options?: { retranslation?: boolean },
+    options: { tier: OnDemandTier },
   ): Promise<TranslationResult>;
   /**
    * バッチを作って送る（Message Batches API）。バッチの ID を返す。失敗したら TranslatorError を投げる
@@ -272,6 +339,8 @@ export interface Platform {
   now: () => Date;
   auth: AuthConfig;
   discord?: DiscordConfig;
+  /** Web Push。設定がそろっていなければない（docs/decisions/web-push.md の 3） */
+  push?: PushConfig;
   fetchConfig: FetchConfig;
   retentionConfig: RetentionConfig;
   /** 記事のページから本文を抜く（Rust） */

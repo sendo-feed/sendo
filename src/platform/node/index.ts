@@ -10,10 +10,12 @@ import {
   readAuthConfig,
   readDiscordConfig,
   readFetchConfig,
+  readPushConfig,
   readRetentionConfig,
   readTranslationConfig,
 } from "../config";
 import { createSqliteArticleSearch } from "../sqlite/article-search";
+import { createDiscordBotFetch } from "./discord-rest";
 import { createFileObjectStore } from "./file-store";
 import type { SqliteJobQueue } from "./job-queue";
 import { createSafeFetch } from "./safe-fetch";
@@ -52,9 +54,13 @@ export function createNodePlatform(input: {
   const discord = readDiscordConfig(settings);
   const fetch = input.fetch ?? createSafeFetch();
   const translation = readTranslationConfig(settings);
+  const push = readPushConfig(settings);
   const now = () => new Date();
   return {
-    ...(discord && { discord }),
+    ...(discord && {
+      discord: { ...discord, botFetch: createDiscordBotFetch(fetch, discord.botToken) },
+    }),
+    ...(push && { push }),
     ...(translation && { translator: createClaudeTranslator({ ...translation, fetch, now }) }),
     pageContent: input.pageContent,
     languageDetection: input.languageDetection,

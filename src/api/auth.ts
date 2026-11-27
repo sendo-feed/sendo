@@ -66,7 +66,7 @@ function unauthorized(c: Context) {
 /**
  * 次のどちらかで認証する（docs/decisions/accounts.md の 6）。認証したユーザーを c.set("user") に置く。
  *
- * - Authorization: Bearer <アクセストークン>：エージェントやスクリプト、リーダーアプリ
+ * - Authorization: Bearer <アクセストークン>：自作クライアントやスクリプト
  * - セッションのクッキー：ブラウザ（sendo-reader）。状態を変えるリクエストは、同じオリジンからだけ
  *
  * Authorization を付けたら、クッキーは見ない（トークンが正しくなければ 401）。

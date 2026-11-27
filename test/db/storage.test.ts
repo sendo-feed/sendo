@@ -496,8 +496,8 @@ describe("履歴が多いフィードの配布", () => {
     await testDb
       .prepare(`WITH RECURSIVE n(i) AS (
       SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000
-    ) INSERT INTO articles (id, feed_id, guid, published_at, created_at, item_id)
-      SELECT 'history-' || i, ?, 'history-' || i, 0, 0, i FROM n`)
+    ) INSERT INTO articles (id, feed_id, guid, published_at, created_at)
+      SELECT 'history-' || i, ?, 'history-' || i, 0, 0 FROM n`)
       .bind(feed.id)
       .run();
     await deliverNewArticles(platform.db, { feedId: feed.id });

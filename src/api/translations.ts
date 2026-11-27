@@ -12,7 +12,12 @@ import { sanitizeHtmlWithImages } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
-import { ErrorSchema, errorBody } from "./schemas";
+import {
+  ErrorSchema,
+  errorBody,
+  TRANSLATION_MODEL_DESCRIPTION,
+  translationEffortSchema,
+} from "./schemas";
 
 const params = z.object({
   id: z
@@ -55,7 +60,11 @@ const getRoute = createRoute({
                 description:
                   "訳した本文の出どころ。page は記事のページから抜いた本文、feed はフィードの本文。訳した本文がなければ null",
               }),
-              model: z.string().openapi({ description: "訳したモデル" }),
+              model: z.string().openapi({
+                description: TRANSLATION_MODEL_DESCRIPTION,
+                example: "claude-sonnet-5-5",
+              }),
+              effort: translationEffortSchema(),
               translatedAt: z.iso.datetime().openapi({ description: "訳した時刻" }),
             })
             .openapi("ArticleTranslation"),
@@ -141,6 +150,7 @@ export function translationsApi(platform: Platform) {
           content,
           contentSource: content === null ? null : row.contentSource,
           model: row.model,
+          effort: row.effort,
           translatedAt: row.translatedAt.toISOString(),
         },
         200,

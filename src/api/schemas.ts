@@ -1,6 +1,7 @@
 import { z } from "@hono/zod-openapi";
+import type { ActiveBell } from "../db/bells";
 import type { InboxArticle } from "../db/inbox";
-import type { Feed, Folder } from "../db/schema";
+import type { Feed, Folder, Workspace } from "../db/schema";
 import type { SubscriptionWithFeed } from "../db/subscriptions";
 import { FETCH_FEED_ERROR_CODES } from "../fetcher/fetch-feed";
 import type { ImageSigner } from "../lib/image-url";
@@ -31,6 +32,23 @@ const relayImageUrl = (what: string) =>
     });
 
 export const FeedIconUrlSchema = relayImageUrl("フィードのアイコン");
+
+/** 訳したモデルの説明（docs/decisions/translation.md の 18） */
+export const TRANSLATION_MODEL_DESCRIPTION =
+  "訳したモデル（Claude のモデルの ID。claude-sonnet-5-5 など）。応答が返したモデルで、拒否されて代わりのモデルに替わったときは代わりのモデル。同じ元記事から写した訳文は、写した元の訳文のモデル（docs/decisions/translation.md の 18）";
+
+/**
+ * 訳したときの思考量（docs/decisions/translation.md の 9、18）。Sendo の版で値が増えても読み手が
+ * 壊れないよう、enum にせず文字列で返し、値は説明に書く。note は、応答ごとに null になる場合を足す
+ */
+export const translationEffortSchema = (note?: string) =>
+  z
+    .string()
+    .nullable()
+    .openapi({
+      description: `訳したときの思考量（Claude API の effort。low ／ medium ／ high ／ xhigh ／ max）。Sendo の版によって値が増えることがあるので、読む側は知らない値もそのまま扱う。モデルと同じく、同じ元記事から写した訳文は写した元の訳文のもの（docs/decisions/translation.md の 18）。思考量を残していない訳文（思考量を残す前に送ったバッチの結果など）は null${note === undefined ? "" : `。${note}`}`,
+      example: "medium",
+    });
 
 /** 設定の値。JSON の値なら何でもよく、sendo は中身を解釈しない（docs/decisions/settings.md の 2） */
 export const SettingValueSchema = z.unknown().openapi({
@@ -85,6 +103,8 @@ export const FeedSchema = z
     siteUrl: z.string().nullable(),
     iconUrl: FeedIconUrlSchema,
     folderId: z.string().nullable(),
+    workspaceId: z.string().nullable().openapi({ description: "購読の所属。未割り当てなら null" }),
+    subscriptionId: z.string().openapi({ description: "購読の ID。購読し直すと変わる" }),
     lastFetchedAt: dateTime.nullable().openapi({ description: "最後に取得を試した時刻" }),
     lastSuccessfulFetchAt: dateTime.nullable().openapi({
       description: "最後に成功した取得（HTTP 304 を含む）を試した時刻。記録がなければ null",
@@ -105,6 +125,55 @@ export const FolderSchema = z
 
 export function toFolderResponse(folder: Folder): z.infer<typeof FolderSchema> {
   return { id: folder.id, name: folder.name, createdAt: folder.createdAt.toISOString() };
+}
+
+export const WorkspaceSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    createdAt: dateTime,
+    isDefault: z.boolean().openapi({ description: "アカウントのデフォルトか" }),
+  })
+  .openapi("Workspace");
+
+export function toWorkspaceResponse(
+  workspace: Pick<Workspace, "id" | "name" | "createdAt" | "isDefault">,
+): z.infer<typeof WorkspaceSchema> {
+  return {
+    id: workspace.id,
+    name: workspace.name,
+    createdAt: workspace.createdAt.toISOString(),
+    isDefault: workspace.isDefault,
+  };
+}
+
+export const BellSchema = z
+  .object({
+    id: z.string(),
+    subscriptionId: z
+      .string()
+      .nullable()
+      .openapi({ description: "鳴らす購読の ID。購読し直すと変わる。購読のないベルは null" }),
+    feedId: z
+      .string()
+      .nullable()
+      .openapi({ description: "鳴らす購読のフィードの ID。購読のないベルは null" }),
+    words: z.string().nullable().openapi({
+      description:
+        "当てる言葉（NFKC にして区切った言葉を、半角の空白 1 つでつないだもの）。言葉のないベルは null",
+    }),
+    createdAt: dateTime,
+  })
+  .openapi("Bell");
+
+export function toBellResponse(bell: ActiveBell): z.infer<typeof BellSchema> {
+  return {
+    id: bell.id,
+    subscriptionId: bell.subscriptionId,
+    feedId: bell.feedId,
+    words: bell.words,
+    createdAt: bell.createdAt.toISOString(),
+  };
 }
 
 export const ArticleSchema = z
@@ -146,6 +215,8 @@ export async function toFeedResponse(
     siteUrl: feed.siteUrl,
     iconUrl: await images.toRelayUrl(feed.iconUrl),
     folderId: subscription.folderId,
+    workspaceId: subscription.workspaceId,
+    subscriptionId: subscription.id,
     lastFetchedAt: feed.lastFetchedAt?.toISOString() ?? null,
     lastSuccessfulFetchAt: feed.lastSuccessfulFetchAt?.toISOString() ?? null,
     nextFetchAt: feed.nextFetchAt.toISOString(),

@@ -9,7 +9,7 @@
  */
 import { readPrefix } from "../lib/read-limited";
 import { USER_AGENT } from "./fetch-feed";
-import { toFetchableUrl } from "./url-guard";
+import { toFetchableUrl, UrlNotAllowedError } from "./url-guard";
 
 /** 照合に使う製品トークン（USER_AGENT の先頭） */
 export const PRODUCT_TOKEN = "Sendo";
@@ -24,7 +24,15 @@ export type RobotsTxt =
   /** ない（429 を除く 4xx、リダイレクトが多すぎる）。すべて許可 */
   | { status: "unavailable" }
   /** 届かない（429、5xx、時間切れ、接続できない、SSRF の守りで止めた）。すべて不許可（一時的） */
-  | { status: "unreachable"; reason: string };
+  | ({ status: "unreachable" } & RobotsFailure);
+
+type RobotsFailure =
+  | { reason: "http_status"; httpStatus: number }
+  | { reason: "redirect_without_location" | "blocked_url" | "timeout" | "network" };
+
+export type RobotsDenial =
+  | { code: "robots_disallowed"; reason: "rule" | "match_limit" | "aborted" }
+  | ({ code: "robots_unreachable" } & RobotsFailure);
 
 type Group = { agents: string[]; rules: RobotsRule[] };
 
@@ -107,7 +115,11 @@ class Budget {
  * 照合の手間が上限（MAX_MATCH_STEPS）を超えたら、許可しない（届かないときと同じ、控えめなほう）
  */
 export function isAllowedByRules(rules: readonly RobotsRule[], url: URL): boolean {
-  if (url.pathname === "/robots.txt") return true;
+  return ruleDenial(rules, url) === null;
+}
+
+function ruleDenial(rules: readonly RobotsRule[], url: URL): "rule" | "match_limit" | null {
+  if (url.pathname === "/robots.txt") return null;
   const target = normalizePath(`${url.pathname}${url.search}`);
   const budget = new Budget();
   let allow = -1;
@@ -125,9 +137,9 @@ export function isAllowedByRules(rules: readonly RobotsRule[], url: URL): boolea
     console.warn("robots.txt is too complex to match; treating as disallowed", {
       origin: url.origin,
     });
-    return false;
+    return "match_limit";
   }
-  return allow >= disallow;
+  return allow >= disallow ? null : "rule";
 }
 
 /**
@@ -255,7 +267,7 @@ export async function fetchRobotsTxt(
       if ([301, 302, 303, 307, 308].includes(res.status)) {
         await res.body?.cancel();
         const location = res.headers.get("location");
-        if (!location) return { status: "unreachable", reason: "redirect without location" };
+        if (!location) return { status: "unreachable", reason: "redirect_without_location" };
         if (redirects >= maxRedirects) return { status: "unavailable" };
         current = toFetchableUrl(new URL(location, current));
         continue;
@@ -268,18 +280,24 @@ export async function fetchRobotsTxt(
           text = text.slice(0, Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r"), 0));
         return { status: "fetched", rules: parseRobotsTxt(text) };
       }
-      await res.body?.cancel();
       if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+        await res.body?.cancel();
         return { status: "unavailable" };
       }
-      return { status: "unreachable", reason: `status ${res.status}` };
+      // 本文の破棄に失敗しても、この応答では取得を許可しない。
+      await res.body?.cancel().catch(() => {});
+      return { status: "unreachable", reason: "http_status", httpStatus: res.status };
     }
   } catch (error) {
-    if (signal.aborted) return { status: "unreachable", reason: `timed out after ${timeoutMs}ms` };
-    return {
-      status: "unreachable",
-      reason: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-    };
+    const cause = error instanceof TypeError ? error.cause : error;
+    const code = cause instanceof Error && "code" in cause ? cause.code : undefined;
+    if (signal.aborted || code === "UND_ERR_CONNECT_TIMEOUT" || code === "ETIMEDOUT") {
+      return { status: "unreachable", reason: "timeout" };
+    }
+    if (error instanceof UrlNotAllowedError || code === "ERR_PRIVATE_ADDRESS") {
+      return { status: "unreachable", reason: "blocked_url" };
+    }
+    return { status: "unreachable", reason: "network" };
   }
 }
 
@@ -311,17 +329,26 @@ export class RobotsCache {
 
   /** URL を取りにいってよいか。オリジンの結果がなければ（古ければ）取りにいく */
   async isAllowed(url: URL, context: RobotsContext): Promise<boolean> {
-    if (context.signal?.aborted) return false;
-    if (url.pathname === "/robots.txt") return true;
+    return (await this.denial(url, context)) === null;
+  }
+
+  /** 拒否または確認できなかった理由。取得してよければ null */
+  async denial(url: URL, context: RobotsContext): Promise<RobotsDenial | null> {
+    if (context.signal?.aborted) return { code: "robots_disallowed", reason: "aborted" };
+    if (url.pathname === "/robots.txt") return null;
     const result = await this.#get(url.origin, context);
-    if (context.signal?.aborted) return false;
+    if (context.signal?.aborted) return { code: "robots_disallowed", reason: "aborted" };
     switch (result.status) {
-      case "fetched":
-        return isAllowedByRules(result.rules, url);
+      case "fetched": {
+        const reason = ruleDenial(result.rules, url);
+        return reason === null ? null : { code: "robots_disallowed", reason };
+      }
       case "unavailable":
-        return true;
-      case "unreachable":
-        return false;
+        return null;
+      case "unreachable": {
+        const { status: _, ...failure } = result;
+        return { code: "robots_unreachable", ...failure };
+      }
     }
   }
 
@@ -338,9 +365,10 @@ export class RobotsCache {
         // 中断された画像探索の結果は、別の記事へ持ち越さない。
         if (context.signal?.aborted) return result;
         if (result.status === "unreachable") {
+          const { status: _, ...failure } = result;
           console.warn("could not fetch robots.txt; treating as disallowed", {
             origin,
-            reason: result.reason,
+            ...failure,
           });
         }
         this.#put(origin, result, context.now);

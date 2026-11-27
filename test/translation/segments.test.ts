@@ -34,7 +34,7 @@ describe("splitBody", () => {
     // リンクの開きタグ（サニタイズが付けた属性も）はそのまま戻す
     const link = /<a [^>]*>/.exec(source)?.[0];
     expect(link).toContain('href="https://example.com/a"');
-    expect(out).toBe(
+    expect(out.html).toBe(
       `<p>${link}<em>ガイド</em>を</a>読み、<code>npm i</code> を実行する。</p><pre>keep</pre>`,
     );
   });
@@ -47,7 +47,7 @@ describe("splitBody", () => {
     );
     expect(body.segments.map((s) => s.text)).toEqual(["One", "Two", "A", "B", "Q", "Cap"]);
     const translated = new Map(body.segments.map((s) => [s.id, `訳${s.text}`]));
-    expect(body.assemble(translated)).toBe(
+    expect(body.assemble(translated).html).toBe(
       '<ul><li>訳One<ul><li>訳Two</li></ul></li></ul><table><tr><th>訳A</th><td>訳B</td></tr></table><blockquote><p>訳Q</p></blockquote><figure><img src="https://example.com/x.png"><figcaption>訳Cap</figcaption></figure>',
     );
   });
@@ -69,7 +69,7 @@ describe("splitBody", () => {
         ["b2", "次"],
       ]),
     );
-    expect(out).toBe(source.replace("<p>Next</p>", "<p>次</p>"));
+    expect(out.html).toBe(source.replace("<p>Next</p>", "<p>次</p>"));
   });
 
   it("同じ入れ子の中で印の順が変わるのは、訳の語順として受け入れる", () => {
@@ -78,7 +78,7 @@ describe("splitBody", () => {
     expect(body.segments[0]?.text).toBe("⟦1⟧A⟦/1⟧ and ⟦2⟧B⟦/2⟧");
     const out = body.assemble(new Map([["b1", "⟦2⟧B⟦/2⟧と⟦1⟧A⟦/1⟧"]]));
     const link = /<a [^>]*>/.exec(source)?.[0];
-    expect(out).toBe(`<p><em>B</em>と${link}A</a></p>`);
+    expect(out.html).toBe(`<p><em>B</em>と${link}A</a></p>`);
   });
 
   it("文字が URL のリンクは、URL を送らず単独の印にする", () => {
@@ -90,7 +90,7 @@ describe("splitBody", () => {
     expect(sent).not.toContain("example.com");
     expect(sent).not.toContain("youtube");
     expect(body.segments[0]?.text).toBe("See ⟦1/⟧ and ⟦2/⟧");
-    expect(body.assemble(new Map([["b1", "⟦1/⟧ と ⟦2/⟧ を見る"]]))).toContain(
+    expect(body.assemble(new Map([["b1", "⟦1/⟧ と ⟦2/⟧ を見る"]])).html).toContain(
       "https://example.com/x</a> と ",
     );
   });
@@ -107,9 +107,9 @@ describe("splitBody", () => {
     );
     const translated = new Map(body.segments.map((s) => [s.id, `訳${s.text}`]));
     const out = body.assemble(translated);
-    expect(out).toContain("<pre>secret code</pre>");
-    expect(out).toContain("訳Title");
-    expect(out).toContain("<p>訳Inner</p>");
+    expect(out.html).toContain("<pre>secret code</pre>");
+    expect(out.html).toContain("訳Title");
+    expect(out.html).toContain("<p>訳Inner</p>");
   });
 
   it.each([
@@ -158,8 +158,8 @@ describe("splitBody", () => {
     const out = body.assemble(new Map(body.segments.map((s) => [s.id, `訳${s.text}`])));
     const link = /<a [^>]*>/.exec(source)?.[0];
     expect(link).toContain('href="https://example.com/a"');
-    expect(out).toContain(`${link}訳Title<p>訳Inner</p></a>`);
-    expect(out).toContain("<strong><em><p>訳Deep</p></em></strong>");
+    expect(out.html).toContain(`${link}訳Title<p>訳Inner</p></a>`);
+    expect(out.html).toContain("<strong><em><p>訳Deep</p></em></strong>");
   });
 
   it("中身のない要素は単独の印にする（落とされても断片を原文に戻さない）", () => {
@@ -169,13 +169,16 @@ describe("splitBody", () => {
 
   it("返ってこなかった断片は原文のまま残す", () => {
     const body = splitBody(html("<p>One</p><p>Two</p>"));
-    expect(body.assemble(new Map([["b2", "二"]]))).toBe("<p>One</p><p>二</p>");
+    expect(body.assemble(new Map([["b2", "二"]]))).toEqual({
+      html: "<p>One</p><p>二</p>",
+      counts: { sent: 2, missing: 1, invalidMarkers: 0 },
+    });
   });
 
   it("訳の中のタグの文字列は、要素にならず文字として残る", () => {
     const body = splitBody(html("<p>Hello</p>"));
     expect(
-      body.assemble(new Map([["b1", '<script>alert(1)</script><img src=x onerror="y">']])),
+      body.assemble(new Map([["b1", '<script>alert(1)</script><img src=x onerror="y">']])).html,
     ).toBe("<p>&lt;script&gt;alert(1)&lt;/script&gt;&lt;img src=x onerror=&quot;y&quot;&gt;</p>");
   });
 

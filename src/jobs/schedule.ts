@@ -21,7 +21,7 @@ export async function enqueueDueFeeds(
   platform: Pick<Platform, "db" | "jobs" | "now">,
 ): Promise<number> {
   const now = platform.now();
-  let total = 0;
+  let total = await platform.jobs.enqueueDueDiscordFetches(now, MAX_LEASE * MAX_LEASE_ROUNDS);
   // 一度に借りられる数には上限があるので、時期の来たものがなくなるまで繰り返す
   for (let round = 0; round < MAX_LEASE_ROUNDS; round++) {
     const ids = await leaseDueFeeds(platform.db, {

@@ -306,7 +306,7 @@ export function discordApi(platform: Platform) {
       if (!added)
         return c.json(errorBody("discord_not_connected", "Discord connection changed"), 409);
       if (added.created)
-        await platform.jobs.enqueue([{ type: "fetch-feed", feedId: added.feed.id }]);
+        await platform.jobs.enqueue([{ type: "fetch-discord", feedId: added.feed.id }]);
       return c.json(
         {
           feedId: added.feed.id,

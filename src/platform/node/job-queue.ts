@@ -2,6 +2,7 @@
  * 仕事の運び方（docs/decisions/container.md の 6、docs/decisions/jobs.md）。仕事を SQLite の表（job_queue）に
  * 積み、同じプロセスの中で取り出して動かす。
  *
+ * - 積むとき：run_at に、取り出してよい時刻を入れる。指定がなければ今
  * - 取り出すとき：1 つの文で、取り出した回数を増やし、run_at を借りの期限まで先へ送る
  * - 終わったら：行を消す
  * - 失敗したら：MAX_ATTEMPTS 回までは、run_at を少し先へ送ってやり直す。それ以上は諦めて消す
@@ -10,10 +11,25 @@
  *
  * jobs/ からは、仕事を 1 つずつ積み、1 つずつ受け取るように見える。
  */
-import { asc, eq, inArray, lte, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  notExists,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
 import type { Database } from "../../db";
-import { jobQueue } from "../../db/schema";
+import { discordConnections, feeds, jobQueue, subscriptions } from "../../db/schema";
 import { type Job, jobSchema } from "../../jobs/job";
+import { loggableError } from "../../lib/log-error";
 import type { JobQueue } from "..";
 
 /** 1 つの仕事を試す回数の上限（docs/decisions/jobs.md の 5） */
@@ -31,11 +47,12 @@ export const LEASE_MS = 15 * 60 * 1000;
 /** 同時に動かす仕事の数。取得の仕事はほとんど相手の応答を待っているので、少し重ねる */
 export const DEFAULT_CONCURRENCY = 4;
 
-/** 積まれた知らせがなくても、表を見に行く間隔（やり直しの時期が来た仕事を拾う） */
+/** 積まれた知らせがなくても、表を見に行く間隔（やり直しの時期や、指定した時刻が来た仕事を拾う） */
 const POLL_INTERVAL_MS = 5 * 1000;
 
 /** 1 つの文で積む仕事の数 */
 const ENQUEUE_CHUNK_SIZE = 100;
+const discordDueAt = sql`coalesce(${feeds.discordRetryAt}, ${feeds.nextFetchAt})`;
 
 export type JobRunner = (job: Job) => Promise<void>;
 
@@ -55,7 +72,9 @@ type JobRow = typeof jobQueue.$inferSelect;
 
 /** ログに出す仕事の情報。インポートの URL やユーザーの ID は出さない */
 function describeJob(job: Job) {
-  return job.type === "fetch-feed" ? { type: job.type, feedId: job.feedId } : { type: job.type };
+  return job.type === "fetch-feed" || job.type === "fetch-discord"
+    ? { type: job.type, feedId: job.feedId }
+    : { type: job.type };
 }
 
 export function createSqliteJobQueue(
@@ -80,10 +99,39 @@ export function createSqliteJobQueue(
   /** 時期の来た仕事を取り出す。取り出した回数を増やし、借りの期限まで先へ送る */
   async function claim(limit: number): Promise<JobRow[]> {
     const at = now();
+    // Discord の仕事は、同じプロセスで処理が長引いても借り直さない。
+    const inFlight = [...active.values()].flatMap((row) => (row.discordFeedId ? [row.id] : []));
+    const running = alias(jobQueue, "running");
+    const started = db
+      .select({ id: running.id })
+      .from(running)
+      .where(and(eq(running.discordFeedId, jobQueue.discordFeedId), gt(running.attempts, 0)));
+    const backingOff = db
+      .select({ id: feeds.id })
+      .from(feeds)
+      .where(
+        and(
+          eq(feeds.id, jobQueue.discordFeedId),
+          isNotNull(feeds.discordConnectionId),
+          isNotNull(feeds.lastErrorCode),
+          gt(discordDueAt, at.getTime()),
+        ),
+      );
+    // 再試行中の仕事は先に終える。失敗後の待機は、新着で予約した仕事にも効く。
+    const discordReady = and(
+      or(gt(jobQueue.attempts, 0), notExists(started)),
+      notExists(backingOff),
+    );
     const due = db
       .select({ id: jobQueue.id })
       .from(jobQueue)
-      .where(lte(jobQueue.runAt, at))
+      .where(
+        and(
+          lte(jobQueue.runAt, at),
+          or(isNull(jobQueue.discordFeedId), discordReady),
+          inFlight.length > 0 ? notInArray(jobQueue.id, inFlight) : undefined,
+        ),
+      )
       .orderBy(asc(jobQueue.runAt))
       .limit(limit);
     return db
@@ -128,11 +176,11 @@ export function createSqliteJobQueue(
       await run(job);
     } catch (error) {
       if (row.attempts >= MAX_ATTEMPTS) {
-        console.error("job failed; giving up", { ...detail, error });
+        console.error("job failed; giving up", { ...detail, error: loggableError(error) });
         await remove(row.id);
         return;
       }
-      console.error("job failed; will retry", { ...detail, error });
+      console.error("job failed; will retry", { ...detail, error: loggableError(error) });
       // 行の ID と、取り出した回数で絞る。借りの期限が過ぎて取り出し直された行は動かさない
       await db
         .update(jobQueue)
@@ -152,7 +200,7 @@ export function createSqliteJobQueue(
 
   let stopped = true;
   let loop: Promise<void> | undefined;
-  const active = new Set<Promise<void>>();
+  const active = new Map<Promise<void>, JobRow>();
 
   /** 知らせが来るか、間隔が過ぎるまで待つ */
   const sleep = () =>
@@ -184,15 +232,17 @@ export function createSqliteJobQueue(
           claimed = rows.length;
           for (const row of rows) {
             const task: Promise<void> = process(row, run)
-              .catch((error) => console.error("could not settle job", { id: row.id, error }))
+              .catch((error) =>
+                console.error("could not settle job", { id: row.id, error: loggableError(error) }),
+              )
               .finally(() => {
                 active.delete(task);
                 notify();
               });
-            active.add(task);
+            active.set(task, row);
           }
         } catch (error) {
-          console.error("could not claim jobs", error);
+          console.error("could not claim jobs", loggableError(error));
         }
       }
       // 取り出せるものがなかったか、手がいっぱいなら、知らせを待つ
@@ -201,8 +251,30 @@ export function createSqliteJobQueue(
   }
 
   return {
-    async enqueue(jobs) {
-      const at = now();
+    async enqueueDueDiscordFetches(at, limit) {
+      // 定期取得は期限を迎え、仕事がまだない購読に限る。選ぶのと積むのを同じ文で行う。
+      const inserted = await db.all<{ id: string }>(sql`
+        insert into ${jobQueue} ("id", "job", "discord_feed_id", "run_at")
+        select lower(hex(randomblob(16))), json_object('type', 'fetch-discord', 'feedId', ${feeds.id}),
+          ${feeds.id}, ${at.getTime()}
+        from ${feeds}
+        inner join ${discordConnections} on ${feeds.discordConnectionId} = ${discordConnections.id}
+        inner join ${subscriptions} on ${subscriptions.feedId} = ${feeds.id}
+          and ${subscriptions.userId} = ${discordConnections.userId}
+        where ${subscriptions.deletedAt} is null and ${discordDueAt} <= ${at.getTime()}
+          and not exists (
+            select 1 from ${jobQueue} where ${jobQueue.discordFeedId} = ${feeds.id}
+          )
+        order by ${discordDueAt}, ${feeds.id}
+        limit ${limit}
+        on conflict do nothing
+        returning id
+      `);
+      if (inserted.length > 0) notify();
+      return inserted.length;
+    },
+    async enqueue(jobs, options) {
+      const at = options?.runAt ?? now();
       for (let i = 0; i < jobs.length; i += ENQUEUE_CHUNK_SIZE) {
         await db
           .insert(jobQueue)
@@ -210,10 +282,12 @@ export function createSqliteJobQueue(
             jobs.slice(i, i + ENQUEUE_CHUNK_SIZE).map((job) => ({
               id: crypto.randomUUID(),
               job: JSON.stringify(job),
+              discordFeedId: job.type === "fetch-discord" ? job.feedId : null,
               attempts: 0,
               runAt: at,
             })),
           )
+          .onConflictDoNothing()
           .run();
       }
       notify();
@@ -228,7 +302,7 @@ export function createSqliteJobQueue(
       stopped = true;
       notify();
       await loop;
-      await Promise.allSettled([...active]);
+      await Promise.allSettled(active.keys());
     },
   };
 }

@@ -407,6 +407,125 @@
       "when": 1795398072841,
       "tag": "0057_article-translation-failure-sync",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "6",
+      "when": 1795424825923,
+      "tag": "0058_article-translation-conditions",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "6",
+      "when": 1795424827470,
+      "tag": "0059_article-translation-conditions-effort",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "6",
+      "when": 1795427883304,
+      "tag": "0060_article-translation-conditions-sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "6",
+      "when": 1795493916498,
+      "tag": "0061_discord-fetch-queue",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "6",
+      "when": 1795496611416,
+      "tag": "0062_discord-feed-url-index",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "6",
+      "when": 1795520165038,
+      "tag": "0063_discord-retry-at",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "6",
+      "when": 1795520564329,
+      "tag": "0064_clear-discord-retry-on-detach",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "6",
+      "when": 1795566928749,
+      "tag": "0065_workspaces",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "6",
+      "when": 1795566936527,
+      "tag": "0066_initialize-workspaces",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "6",
+      "when": 1795583211082,
+      "tag": "0067_remove-google-reader-item-id",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "6",
+      "when": 1795704282740,
+      "tag": "0068_workspace-default",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "6",
+      "when": 1795704304281,
+      "tag": "0069_initialize-workspace-default",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "6",
+      "when": 1795712889905,
+      "tag": "0070_bells",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "6",
+      "when": 1795712891265,
+      "tag": "0071_bells-triggers",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "6",
+      "when": 1795715886696,
+      "tag": "0072_push-registrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "6",
+      "when": 1795734548587,
+      "tag": "0073_bell-notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "6",
+      "when": 1795735146193,
+      "tag": "0074_bell-words",
+      "breakpoints": true
     }
   ]
 }

@@ -369,6 +369,7 @@ export type MarkReadBoundary = { until: Date } | { synced: { seq: number; id: st
 /** まとめて既読にする範囲 */
 export type MarkReadScope =
   | { ids: readonly string[] }
+  | ({ subscriptionIds: readonly string[] } & Extract<MarkReadBoundary, { synced: unknown }>)
   | ({ feedId: string } & MarkReadBoundary)
   | ({ folderId: string } & MarkReadBoundary)
   | ({ all: true } & MarkReadBoundary);
@@ -379,7 +380,9 @@ export const MAX_MARK_READ_IDS = 90;
 /**
  * 受信箱の未読の記事をまとめて既読にする。1 つの UPDATE 文なので、途中までで止まることはない。
  *
- * ID 以外で指定するときは、until より前に受信箱に入った記事だけを既読にする。一覧の応答の
+ * 購読 ID を指定したときは、その ID がまだ有効な購読だけを見る。現在の所属を見ないので、
+ * 押したあとに別の購読が同じワークスペースへ移っても既読にならない。
+ * until を指定するときは、その時刻より前に受信箱へ入った記事だけを既読にする。一覧の応答の
  * asOf（DB の時計）を渡せば、一覧に出ていなかった記事は未読のまま残る。
  * @returns 既読にした記事の数
  */
@@ -417,6 +420,24 @@ export async function markArticlesRead(
     if ("folderId" in scope) conditions.push(inFolder(input.userId, scope.folderId));
   }
 
+  if ("subscriptionIds" in scope) {
+    if (scope.subscriptionIds.length === 0) return 0;
+    if (scope.subscriptionIds.length > MAX_MARK_READ_IDS) {
+      throw new RangeError(`at most ${MAX_MARK_READ_IDS} subscription ids`);
+    }
+    const subscribedFeeds = db
+      .select({ feedId: subscriptions.feedId })
+      .from(subscriptions)
+      .where(
+        and(
+          eq(subscriptions.userId, input.userId),
+          isNull(subscriptions.deletedAt),
+          inArray(subscriptions.id, [...scope.subscriptionIds]),
+        ),
+      );
+    conditions.push(inArray(ua.feedId, subscribedFeeds));
+  }
+
   const updated = await db
     .update(ua)
     .set({ readAt: input.now, seq: nextSeq(ua), readSeq: nextSeq(ua) })
@@ -425,9 +446,6 @@ export async function markArticlesRead(
     .all();
   return updated.length;
 }
-
-/** まとめて状態を変える記事の指し方。REST API と MCP は記事の ID、Google Reader API はアイテムの ID */
-export type ArticleTarget = { articleIds: readonly string[] } | { itemIds: readonly number[] };
 
 /**
  * 指定した記事の既読とスターを、まとめて変える。指定しなかったほうは変えない。
@@ -439,7 +457,7 @@ export async function setArticlesState(
   db: Database,
   input: {
     userId: string;
-    target: ArticleTarget;
+    target: { articleIds: readonly string[] };
     read?: boolean | undefined;
     starred?: boolean | undefined;
     now: Date;
@@ -459,22 +477,12 @@ export async function setArticlesState(
     set.starredAt = input.starred ? sql`coalesce(${ua.starredAt}, ${now})` : null;
   }
 
-  const { target } = input;
-  const chunks: SQL[] =
-    "articleIds" in target
-      ? chunked(target.articleIds, null).map((chunk) => inArray(ua.articleId, [...chunk]))
-      : chunked(target.itemIds, null).map((chunk) =>
-          inArray(
-            ua.articleId,
-            db.select({ id: articles.id }).from(articles).where(inArray(articles.itemId, chunk)),
-          ),
-        );
   let updated = 0;
-  for (const match of chunks) {
+  for (const chunk of chunked(input.target.articleIds, null)) {
     const rows = await db
       .update(ua)
       .set(set)
-      .where(and(eq(ua.userId, input.userId), match))
+      .where(and(eq(ua.userId, input.userId), inArray(ua.articleId, [...chunk])))
       .returning({ articleId: ua.articleId })
       .all();
     updated += rows.length;
@@ -482,16 +490,23 @@ export async function setArticlesState(
   return updated;
 }
 
-/** フィードごとの未読の数。未読のないフィードは含まない */
-export async function countUnreadByFeed(
+/**
+ * 受信箱の未読の数。byFeed はフィードごとの数（未読のないフィードは含まない）、total はその合計。
+ * total は GET /api/v1/unread-counts の total と、ベルの通知の app_badge（docs/decisions/
+ * notifications.md の 14）で使い、どちらも同じ数え方にする
+ */
+export async function countUnread(
   db: Database,
   userId: string,
-): Promise<Map<string, number>> {
+): Promise<{ total: number; byFeed: Map<string, number> }> {
   const rows = await db
     .select({ feedId: ua.feedId, unread: count() })
     .from(ua)
     .where(and(eq(ua.userId, userId), isNull(ua.readAt)))
     .groupBy(ua.feedId)
     .all();
-  return new Map(rows.map((row) => [row.feedId, row.unread]));
+  return {
+    total: rows.reduce((sum, row) => sum + row.unread, 0),
+    byFeed: new Map(rows.map((row) => [row.feedId, row.unread])),
+  };
 }

@@ -19,8 +19,14 @@ export const IMPORT_CHUNK_SIZE = 10;
  */
 export const jobSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("fetch-feed"), feedId: z.string().min(1) }),
+  z.object({ type: z.literal("fetch-discord"), feedId: z.string().min(1) }),
   /** 1 日 1 回の片付け（docs/decisions/retention.md の 4、5）。定期実行が積む */
   z.object({ type: z.literal("clean-up") }),
+  /**
+   * 片付けで消しきれなかった通知の行の続き（docs/decisions/notifications.md の 10）。片付けと、この
+   * 仕事が、最後の文まで満杯に消したときに積む
+   */
+  z.object({ type: z.literal("clean-up-bell-notifications") }),
   z.object({ type: z.literal("index-article-search") }),
   /**
    * 未処理・古い版の言語判定を小分けに進める。定期実行と起動時に積む。articleIds があれば、その記事
@@ -58,6 +64,26 @@ export const jobSchema = z.discriminatedUnion("type", [
     articleId: z.string().min(1),
     startedAt: z.int().nonnegative(),
     retranslation: z.boolean().optional(),
+  }),
+  /**
+   * ベルの通知の行 1 つを、端末 1 つに送る（docs/decisions/web-push.md の 5）。取得の仕事が、
+   * 送る行を作ったときに積む。中身は送るときに組み立てる
+   */
+  z.object({
+    type: z.literal("send-bell-notification"),
+    notificationId: z.string().min(1),
+    registrationId: z.string().min(1),
+  }),
+  /**
+   * 1 つの窓のまとめを作って送る（docs/decisions/notifications.md の 13）。取得の仕事が、窓の最初の
+   * bundled の通知の記事の行を作ったときに、窓が閉じる時刻を指定して積む。windowStart は窓の
+   * 始まり（ミリ秒）
+   */
+  z.object({
+    type: z.literal("bundle-bell-notifications"),
+    userId: z.string().min(1),
+    bellId: z.string().min(1),
+    windowStart: z.int().nonnegative(),
   }),
   /** 記事のページから本文を抜く（docs/decisions/content.md の 10）。取得の仕事のあとで積む */
   z.object({ type: z.literal("extract-page"), articleId: z.string().min(1) }),

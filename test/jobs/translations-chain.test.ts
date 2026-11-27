@@ -4,6 +4,7 @@ import { articles, articleTranslations } from "../../src/db/schema";
 import { runJob } from "../../src/jobs";
 import { type Job, jobSchema } from "../../src/jobs/job";
 import type { LanguageDetectionResult, PageContentExtractor, Platform } from "../../src/platform";
+import { readTranslationConfig, type TranslationConfig } from "../../src/platform/config";
 import { createClaudeTranslator } from "../../src/translation/claude";
 import { testDb } from "../db";
 import {
@@ -86,13 +87,15 @@ async function setUp(
     languageDetection,
     pageContent,
     syncUpdates: recording.syncUpdates,
-    ...(options.enqueue !== undefined && { jobs: { enqueue: options.enqueue } }),
   });
   const platform: Platform = {
     ...created.platform,
+    ...(options.enqueue !== undefined && {
+      jobs: { ...created.platform.jobs, enqueue: options.enqueue },
+    }),
     ...(options.translator !== false && {
       translator: createClaudeTranslator({
-        apiKey: "sk-test-secret",
+        ...(readTranslationConfig({ ANTHROPIC_API_KEY: "sk-test-secret" }) as TranslationConfig),
         fetch: fetched.fetch,
         now: () => new Date(),
       }),
