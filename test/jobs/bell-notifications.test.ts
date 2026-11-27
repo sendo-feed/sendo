@@ -1144,7 +1144,14 @@ describe("プッシュサービスの応答", () => {
     },
   );
 
-  it("エンドポイントが内部の IP に解決されたら送らず、その登録を消す（SSRF）", async () => {
+  // 本物の createSafeFetch で https を通るのはこのテストだけで、プロセスで最初の TLS の準備に時間がかかる。
+  // NODE_USE_SYSTEM_CA=1 の macOS では、OS の証明書を読むのに 1 秒ほどかかり、テストを並べて回すと
+  // 10 秒を超えることもある。前もって 1 回呼んでも、その呼び出しが同じだけ待つので、時間切れを長くする
+  const SLOW_FIRST_TLS_MS = 30_000;
+
+  it("エンドポイントが内部の IP に解決されたら送らず、その登録を消す（SSRF）", {
+    timeout: SLOW_FIRST_TLS_MS,
+  }, async () => {
     const world = createWorld({ resolve: async () => [{ address: "10.0.0.1", family: 4 }] });
     const { source, feedId, endpoint } = await belledReader(world);
     source.items.push(world.item("新しい記事"));
