@@ -3,7 +3,7 @@ import type { Platform } from "../platform";
 import { detectArticleLanguages } from "./article-languages";
 import { indexArticleSearch } from "./article-search";
 import { runBundleBellNotification, runSendBellNotification } from "./bell-notifications";
-import { runCleanUp } from "./clean-up";
+import { runCleanUp, sweepBellNotifications } from "./clean-up";
 import { runFetchFeed } from "./fetch-feed";
 import { runImportFeeds } from "./import-feeds";
 import type { Job } from "./job";
@@ -30,6 +30,10 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
     }
     case "clean-up": {
       console.info("cleaned up", await runCleanUp(platform));
+      return;
+    }
+    case "clean-up-bell-notifications": {
+      console.info("cleaned up", { bellNotifications: await sweepBellNotifications(platform) });
       return;
     }
     case "maintain-translations": {

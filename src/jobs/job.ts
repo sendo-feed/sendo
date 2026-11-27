@@ -22,6 +22,11 @@ export const jobSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("fetch-discord"), feedId: z.string().min(1) }),
   /** 1 日 1 回の片付け（docs/decisions/retention.md の 4、5）。定期実行が積む */
   z.object({ type: z.literal("clean-up") }),
+  /**
+   * 片付けで消しきれなかった通知の行の続き（docs/decisions/notifications.md の 10）。片付けと、この
+   * 仕事が、最後の文まで満杯に消したときに積む
+   */
+  z.object({ type: z.literal("clean-up-bell-notifications") }),
   z.object({ type: z.literal("index-article-search") }),
   /**
    * 未処理・古い版の言語判定を小分けに進める。定期実行と起動時に積む。articleIds があれば、その記事
