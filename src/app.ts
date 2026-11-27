@@ -3,6 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import { createApi } from "./api";
 import { errorBody } from "./api/schemas";
 import { isStorageLimitError } from "./db/storage";
+import { loggableError } from "./lib/log-error";
 import { mcpApp } from "./mcp";
 import { oauthApp } from "./oauth";
 import type { Platform } from "./platform";
@@ -37,7 +38,7 @@ export function createApp(platform: Platform) {
       console.warn("storage_limit_reached");
       return c.json(errorBody("storage_full", "Storage capacity reached"), 503);
     }
-    console.error(err);
+    console.error(loggableError(err));
     return c.json(errorBody("internal_error", "Internal Server Error"), 500);
   });
 

@@ -923,12 +923,45 @@ export const bellHorizons = sqliteTable("bell_horizons", {
 });
 
 /**
- * sendo が自分で作って持つ秘密（docs/decisions/images.md の 2）。今は、画像の URL の署名の鍵だけ。
- * 初めて使うときに作る（db/secrets.ts）。行を消すと、次に使うときに作り直す
+ * 端末の Web Push の登録（docs/decisions/web-push.md の 4）。ブラウザのセッションに結ぶ。
+ *
+ * 1 つのセッションに 1 つ、1 つのエンドポイントに 1 つ。登録し直して中身が変わると、新しい ID の
+ * 行に置き換える（db/push-registrations.ts）。セッションの行が消えると（ログアウト、別の人のログイン）、
+ * 同じ文の中でこの行も消える。エンドポイントと鍵は秘密として扱い、ログと応答に出さない
+ */
+export const pushRegistrations = sqliteTable(
+  "push_registrations",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    /** プッシュサービスの URL（toFetchableUrl で正規化した https の URL） */
+    endpoint: text("endpoint").notNull(),
+    /** 端末の公開鍵（P-256 の非圧縮の点 65 バイト）の base64url */
+    p256dh: text("p256dh").notNull(),
+    /** 認証の秘密（16 バイト）の base64url */
+    auth: text("auth").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("push_registrations_session_id_idx").on(t.sessionId),
+    uniqueIndex("push_registrations_endpoint_idx").on(t.endpoint),
+    index("push_registrations_user_id_idx").on(t.userId),
+  ],
+);
+
+/**
+ * sendo が自分で作って持つ秘密（docs/decisions/images.md の 2）。画像の URL の署名の鍵と、VAPID の
+ * 鍵の組（docs/decisions/web-push.md の 1）。初めて使うときに作る（db/secrets.ts）。行を消すと、
+ * 次に使うときに作り直す
  */
 export const appSecrets = sqliteTable("app_secrets", {
   name: text("name").primaryKey(),
-  /** 乱数を base64url にしたもの */
+  /** 署名の鍵は乱数を base64url にしたもの、VAPID の鍵の組は秘密の JWK の JSON */
   value: text("value").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });

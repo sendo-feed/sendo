@@ -10,6 +10,7 @@ import {
   type FetchConfig,
   MIN_FETCH_INTERVAL_MINUTES,
   type OAuthServerConfig,
+  type PushConfig,
   parseEmailList,
   parseFetchIntervalMinutes,
   parseOrigin,
@@ -203,6 +204,54 @@ function readThreshold(raw: string | undefined): number | undefined {
     `TRANSLATION_LONG_THRESHOLD_CHARS must be an integer from 1 to ${MAX_LONG_THRESHOLD_CHARS}; using the default`,
   );
   return undefined;
+}
+
+export type PushEnvName = "VAPID_SUBJECT" | "READER_URL";
+
+/**
+ * Web Push の設定を読む（docs/decisions/web-push.md の 2、3）。VAPID_SUBJECT と READER_URL が
+ * そろっているときだけ使える。形が正しくなければ、エラーをログに出して使わない。VAPID_SUBJECT だけが
+ * あるときは、Web Push を使うつもりで入れたとみて、READER_URL がないことを警告に出す
+ */
+export function readPushConfig(env: Partial<Record<PushEnvName, string>>): PushConfig | undefined {
+  const text = env.VAPID_SUBJECT?.trim();
+  if (!text) return undefined;
+  const subject = parseVapidSubject(text);
+  if (subject === undefined) {
+    console.error("Web Push is disabled: VAPID_SUBJECT must be a mailto: address or an https: URL");
+    return undefined;
+  }
+  let readerOrigin: string | undefined;
+  try {
+    readerOrigin = parseOrigin(env.READER_URL);
+  } catch (error) {
+    console.error("Web Push is disabled: READER_URL must be an https origin", error);
+    return undefined;
+  }
+  if (readerOrigin === undefined) {
+    console.warn("Web Push is disabled: READER_URL is not set");
+    return undefined;
+  }
+  return { subject, readerOrigin };
+}
+
+/** 宛先 1 つの mailto:（local@domain）。パーセントの符号化、`?`・`#`、宛先の区切りの `,` は使わせない */
+const MAILTO_SUBJECT = /^mailto:[A-Za-z0-9.!$&'*+/=^_{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$/i;
+
+/**
+ * 宛先 1 つの mailto: か、https: の URL だけを受ける。プッシュサービスが送り手に連絡する先。
+ * 断る文字を並べると漏れるので、生の文字列に許す形の式を当てる。https: は空白と制御文字のない
+ * ASCII で、URL として読めるものだけ
+ */
+function parseVapidSubject(text: string): string | undefined {
+  if (MAILTO_SUBJECT.test(text)) return new URL(text).href;
+  if (!/^https:[\x21-\x7e]+$/i.test(text)) return undefined;
+  try {
+    const url = new URL(text);
+    return url.protocol === "https:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export type DiscordEnvName =

@@ -15,6 +15,7 @@ import { meApi } from "./me";
 import { notifyChanges } from "./notify-changes";
 import { oauthApi } from "./oauth";
 import { opmlApi } from "./opml";
+import { pushApi } from "./push";
 import { savedApi } from "./saved";
 import { settingsApi } from "./settings";
 import { syncApi } from "./sync";
@@ -97,6 +98,7 @@ export function createApi(platform: Platform) {
   protectedApi.route("/", opmlApi(platform));
   protectedApi.route("/", savedApi(platform));
   protectedApi.route("/", bellsApi(platform));
+  protectedApi.route("/", pushApi(platform));
   protectedApi.route("/", settingsApi(platform));
   protectedApi.route("/", syncApi(platform));
   protectedApi.route("/", tokensApi(platform));
