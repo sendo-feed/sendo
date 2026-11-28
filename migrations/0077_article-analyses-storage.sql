@@ -26,3 +26,18 @@ CREATE TRIGGER `article_candidates_storage_delete` AFTER DELETE ON `article_cand
   UPDATE `storage_usage` SET `bytes` = `bytes` - 128
     - length(cast(OLD.`key` AS blob)) - length(cast(OLD.`surface` AS blob)) WHERE `id` = 1;
 END;
+--> statement-breakpoint
+-- 上限を超える行は入れない（ほかの表と同じ受け入れの止め）。ふだんは書く文の中の 90% の確かめが先に止める
+CREATE TRIGGER `article_analyses_storage_admission` BEFORE INSERT ON `article_analyses`
+WHEN NOT EXISTS (SELECT 1 FROM `article_analyses` WHERE `article_id` = NEW.`article_id`)
+  AND (SELECT `bytes` + 256 + coalesce(length(NEW.`embedding`), 0) > `limit_bytes` FROM `storage_usage` WHERE `id` = 1)
+BEGIN
+  SELECT RAISE(IGNORE);
+END;
+--> statement-breakpoint
+CREATE TRIGGER `article_candidates_storage_admission` BEFORE INSERT ON `article_candidates`
+WHEN (SELECT `bytes` + 128 + length(cast(NEW.`key` AS blob)) + length(cast(NEW.`surface` AS blob)) > `limit_bytes`
+  FROM `storage_usage` WHERE `id` = 1)
+BEGIN
+  SELECT RAISE(IGNORE);
+END;

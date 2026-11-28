@@ -203,6 +203,25 @@ describe("記事を開いたとき", () => {
   });
 });
 
+describe("記事を開いたとき（抜けなかった）", () => {
+  it("リクエストの中で抜けなかったと記録したときも、解析の仕事を積む", async () => {
+    const t = await setUp([`https://${crypto.randomUUID()}.example.com/posts/0`], {
+      extracted: null,
+    });
+    const [id = ""] = t.ids;
+    t.enqueued.length = 0;
+
+    const res = await requestApp(t.platform, `/api/v1/articles/${id}/content?source=page`, {
+      token: t.user.token,
+    });
+    expect(res.status).not.toBe(500);
+    expect(await testDb.prepare("SELECT status FROM page_contents").first()).toEqual({
+      status: "failed",
+    });
+    expect(analysisJobs(t.enqueued)).toEqual([{ type: "analyze-articles", articleIds: [id] }]);
+  });
+});
+
 describe("重ねて積まれたとき", () => {
   it("同じ記事の 2 つ目の仕事は、解析し直さない", async () => {
     const t = await setUp([null]);

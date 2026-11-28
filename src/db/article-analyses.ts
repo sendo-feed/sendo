@@ -40,6 +40,8 @@ function fits(bytes: number, share: number) {
 
 export interface AnalysisVersions {
   candidateRevision: number | null;
+  /** 今の候補の世代 */
+  candidateGeneration: string | null;
   embeddingRevision: number | null;
 }
 
@@ -50,9 +52,28 @@ export function getAnalysisVersions(
 ): Promise<AnalysisVersions | undefined> {
   return getRow<AnalysisVersions>(
     db,
-    sql`select candidate_revision as candidateRevision, embedding_revision as embeddingRevision
+    sql`select candidate_revision as candidateRevision, candidate_generation as candidateGeneration,
+      embedding_revision as embeddingRevision
     from article_analyses where article_id = ${articleId}`,
   );
+}
+
+/**
+ * 解析の行の世代が入れ替わったあと、入れ替わる前の世代の候補の行を、記事の ID で消す。今の世代とは
+ * 違うことを同じ文で確かめる。実行中のほかの解析の行（まだ印のない世代）は消さない。候補の版を上げて
+ * 作り直したときに、古い世代の行を 1 日 1 回の片付けまで溜めないため
+ */
+export async function deleteReplacedCandidates(
+  db: Database,
+  input: { articleId: string; generation: string },
+): Promise<void> {
+  await db.run(sql`
+    delete from article_candidates
+    where article_id = ${input.articleId} and generation = ${input.generation}
+      and generation is not (
+        select candidate_generation from article_analyses where article_id = ${input.articleId}
+      )
+  `);
 }
 
 export interface AnalysisSource {

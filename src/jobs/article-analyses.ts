@@ -3,6 +3,7 @@ import {
   analysisRowBytes,
   CHAIN_STORAGE_SHARE,
   candidatesBytes,
+  deleteReplacedCandidates,
   getAnalysisVersions,
   hasSameSummary,
   insertCandidates,
@@ -99,6 +100,14 @@ async function analyzeArticle(
     result = null;
   }
 
+  if (result?.embedding && result.embedding.length !== analyzer.dimension) {
+    // 決めた次元でないベクトルは保存しない（決定の 7）
+    console.warn("article analysis returned an unexpected dimension", {
+      articleId,
+      dimension: result.embedding.length,
+    });
+    result = null;
+  }
   const vector = wantEmbedding && result?.embedding ? toLittleEndian(result.embedding) : null;
   const reservedBytes = analysisRowBytes(vector);
   let candidates:
@@ -142,7 +151,13 @@ async function analyzeArticle(
     ...(embedding && { embedding }),
     share,
   });
-  if (recorded) return "analyzed";
+  if (recorded) {
+    // 入れ替わった古い世代の候補の行を消す。落ちて残っても、1 日 1 回の片付けが消す
+    if (candidates && current?.candidateGeneration) {
+      await deleteReplacedCandidates(db, { articleId, generation: current.candidateGeneration });
+    }
+    return "analyzed";
+  }
   // 書けなかった：記事が消えたか、重なった解析が先に同じ版を書いたか、容量が足りない
   return (await hasRoom(platform, reservedBytes, share)) ? "skipped" : "capacity";
 }
@@ -154,7 +169,8 @@ async function hasRoom(
   share: number,
 ): Promise<boolean> {
   const usage = await readStorageUsage(platform.db);
-  return usage.bytes + bytes < usage.limitBytes * share;
+  // まだ大きさを測っていない本文があるうちは、使用量が少なく出るので書かない（取り込みと同じ）
+  return usage.unmeasured === 0 && usage.bytes + bytes < usage.limitBytes * share;
 }
 
 /**

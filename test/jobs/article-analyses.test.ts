@@ -179,6 +179,10 @@ describe("解析の行と候補の行", () => {
     });
     expect(second?.candidate_generation).not.toBe(first?.candidate_generation);
     expect(await readCandidates("a")).toEqual(["go"]);
+    // 入れ替わった古い世代の行は、片付けを待たずに消える
+    expect(await candidateRows("a")).toEqual([
+      { generation: second?.candidate_generation, key: "go" },
+    ]);
   });
 });
 
@@ -245,6 +249,36 @@ describe("重なりと途中の失敗", () => {
     expect(await usedBytes()).toBeLessThan(before + 2000);
   });
 
+  it("候補を入れたあと、印を書く前に記事が消えても、行は残らず、ほかの記事は解析する", async () => {
+    const articleAnalysis = fakeArticleAnalysis();
+    const hook = statementHook(/insert into article_analyses/, async () => {
+      await testDb.exec("DELETE FROM articles WHERE id = 'a'");
+    });
+    const { platform } = createTestPlatform({ db: hook.db, articleAnalysis });
+    await seed(platform, [{ id: "a" }, { id: "b" }]);
+    await analyze(platform, ["a", "b"]);
+    expect(hook.fired()).toBe(true);
+    expect(await analysisOf("a")).toBeNull();
+    expect(await candidateRows("a")).toEqual([]);
+    expect(await analysisOf("b")).toMatchObject({ candidate_status: "done" });
+  });
+
+  it("決めた次元でない埋め込みは保存せず、「失敗」と記録する", async () => {
+    const articleAnalysis = fakeArticleAnalysis();
+    articleAnalysis.analyze.mockResolvedValueOnce({
+      candidates: [{ surface: "Rust", key: "rust", source: "text" }],
+      embedding: new Float32Array(255),
+    });
+    const { platform } = createTestPlatform({ articleAnalysis });
+    await seed(platform, [{ id: "a" }]);
+    await analyze(platform, ["a"]);
+    expect(await analysisOf("a")).toMatchObject({
+      candidate_status: "failed",
+      embedding_status: "failed",
+      embedding_bytes: null,
+    });
+  });
+
   it("Rust が失敗した記事は「失敗」と記録し、同じ版では解析し直さない", async () => {
     const articleAnalysis = fakeArticleAnalysis();
     articleAnalysis.analyze.mockRejectedValueOnce(new Error("panicked"));
@@ -300,15 +334,17 @@ describe("同じ要約", () => {
       { id: "c", summary: boilerplate, feedId: "other" },
       { id: "d", summary: "" },
       { id: "e", summary: null },
+      { id: "f", summary: " \u3000\n " },
     ]);
-    await analyze(platform, ["a", "b", "c", "d", "e"]);
+    await analyze(platform, ["a", "b", "c", "d", "e", "f"]);
 
     const summaries = articleAnalysis.analyze.mock.calls.map(([input]) => input.summary);
     // 最初の 1 件と、別のフィードの記事は使う
-    expect(summaries).toEqual([boilerplate, "", boilerplate, "", ""]);
+    expect(summaries).toEqual([boilerplate, "", boilerplate, "", "", ""]);
     expect((await analysisOf("a"))?.summary_hash).toBe((await analysisOf("b"))?.summary_hash);
     expect(await analysisOf("d")).toMatchObject({ summary_hash: null });
     expect(await analysisOf("e")).toMatchObject({ summary_hash: null });
+    expect(await analysisOf("f")).toMatchObject({ summary_hash: null });
   });
 
   it("要約のハッシュは、状態によらず持つ（失敗した解析の行とも比べる）", async () => {
@@ -328,6 +364,7 @@ describe("同じ要約", () => {
 describe("容量", () => {
   it("解析・候補を保存容量に数え、記事が消えると連鎖で消えて戻る", async () => {
     const { platform } = createTestPlatform({ articleAnalysis: fakeArticleAnalysis() });
+    const initial = await usedBytes();
     await seed(platform, [{ id: "a" }]);
     const before = await usedBytes();
     await analyze(platform, ["a"]);
@@ -337,6 +374,7 @@ describe("容量", () => {
     await testDb.exec("DELETE FROM articles WHERE id = 'a'");
     expect(await analysisOf("a")).toBeNull();
     expect(await candidateRows("a")).toEqual([]);
+    expect(await usedBytes()).toBe(initial);
   });
 
   it("容量による片付けの見積もりに、解析と候補の行を含める", async () => {
@@ -377,6 +415,44 @@ describe("容量", () => {
     await analyze(platform, ["a"]);
     expect(await analysisOf("a")).toMatchObject({ candidate_status: "done" });
     expect(await usedBytes()).toBe(9_000 - 1);
+  });
+
+  it("候補がなく埋め込みだけを書くときも、書いたあとが 90% ちょうどなら書かない", async () => {
+    const articleAnalysis = fakeArticleAnalysis();
+    articleAnalysis.analyze.mockImplementation(async () => ({
+      candidates: [],
+      embedding: Float32Array.from({ length: 256 }, (_, i) => (i === 0 ? 1 : 0)),
+    }));
+    const { platform } = createTestPlatform({ articleAnalysis });
+    await seed(platform, [{ id: "a" }]);
+    const saved = await usedBytes();
+    onTestFinished(() => testDb.exec(`UPDATE storage_usage SET bytes = ${saved} WHERE id = 1`));
+    platform.retentionConfig = { maxBytes: 10_000 };
+    await testDb.exec(`UPDATE storage_usage SET bytes = ${9_000 - 1280} WHERE id = 1`);
+    await analyze(platform, ["a"]);
+    expect(articleAnalysis.analyze).toHaveBeenCalledTimes(1);
+    expect(await analysisOf("a")).toBeNull();
+
+    await testDb.exec(`UPDATE storage_usage SET bytes = ${9_000 - 1281} WHERE id = 1`);
+    await analyze(platform, ["a"]);
+    expect(await analysisOf("a")).toMatchObject({
+      candidate_status: "empty",
+      embedding_status: "done",
+    });
+  });
+
+  it("まだ大きさを測っていない本文があるうちは、解析しない", async () => {
+    const articleAnalysis = fakeArticleAnalysis();
+    const { platform } = createTestPlatform({ articleAnalysis });
+    await seed(platform, [{ id: "a" }]);
+    await testDb.exec(
+      "INSERT INTO content_sizes (key, bytes, article_bytes) VALUES ('feed/x', NULL, 0)",
+    );
+    await analyze(platform, ["a"]);
+    expect(articleAnalysis.analyze).not.toHaveBeenCalled();
+    await testDb.exec("DELETE FROM content_sizes");
+    await analyze(platform, ["a"]);
+    expect(await analysisOf("a")).toMatchObject({ candidate_status: "done" });
   });
 
   it("推論の前に使用量が上限の割合を超えていれば、計算しない", async () => {
