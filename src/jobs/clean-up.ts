@@ -1,6 +1,5 @@
 import { ACTIVITY_RETENTION_MS, collectExpiredArticleActivity } from "../db/activity";
 import { collectStaleCandidates, STALE_CANDIDATE_GRACE_MS } from "../db/article-analyses";
-import { rewindBackfill } from "../db/article-analysis-backfill";
 import { collectOldBellNotifications } from "../db/bell-notifications";
 import { BELL_REMOVAL_RETENTION_MS, collectRemovedBells } from "../db/bells";
 import {
@@ -175,10 +174,6 @@ export async function runCleanUp(
   // 行のない本文を、書き留めから片付ける（docs/decisions/content.md の 4）。上で消した記事の本文は、
   // トリガーが今書き留めたばかりなので、次の日に片付く
   const contents = await sweepContents(platform, new Date(now - CONTENT_NOTE_GRACE_MS));
-
-  // 記事の解析の遡及を先頭に戻す（docs/decisions/article-analysis.md の 2）。拾い直しの 1 日を過ぎて取り残
-  // された記事も、ここから拾う
-  await rewindBackfill(db);
 
   // 印を書く前に落ちた解析や、重なって負けた解析の候補の行（docs/decisions/article-analysis.md の 5）
   const candidates = await repeat(SWEEP_ROUNDS.candidates, () =>

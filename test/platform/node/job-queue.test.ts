@@ -92,6 +92,24 @@ describe("仕事の表", () => {
       await expect(queue.enqueue([CLEAN_UP], { onlyIfIdle: true })).rejects.toThrow("no slot");
     });
 
+    it("再起動のあと、借りの期限が切れた着手済みの仕事だけを借り直し、未着手の続きは取り出さない", async () => {
+      await queue.enqueue([BACKFILL]);
+      // 着手したまま落ちたプロセスの行と、その仕事が積んだ続き
+      await database.db.run(sql`update job_queue set attempts = 1`);
+      await queue.enqueue([BACKFILL]);
+      advance(LEASE_MS + 1);
+      const seen: number[] = [];
+      const restarted = createSqliteJobQueue(database.db, { now: () => clock, concurrency: 4 });
+      const claimed = await restarted.runDue(async () => {
+        seen.push((await rows()).filter((row) => row.attempts > 0).length);
+      });
+      expect(claimed).toBe(1);
+      // 動いていたのは着手済みの 1 本だけ
+      expect(seen).toEqual([1]);
+      expect(await rows()).toHaveLength(1);
+      expect((await rows())[0]?.attempts).toBe(0);
+    });
+
     it("枠のない仕事は、枠のある仕事と関係なく取り出す", async () => {
       await queue.enqueue([BACKFILL, FETCH, CLEAN_UP]);
       const seen: string[] = [];

@@ -1,3 +1,4 @@
+import { rewindBackfill } from "../db/article-analysis-backfill";
 import { leaseDueFeeds, MAX_LEASE } from "../db/feeds";
 import { type Platform, SCHEDULE_INTERVAL_MINUTES } from "../platform";
 import { enqueueAnalysisBackground } from "./article-analyses";
@@ -112,6 +113,13 @@ export async function runScheduled(
 ): Promise<void> {
   if (await enqueueDailyCleanUp(platform, scheduledTime)) {
     console.info("enqueued daily clean-up");
+    // 1 日 1 回の片付けのときに、記事の解析の遡及を先頭に戻す（docs/decisions/article-analysis.md の 2）。
+    // 拾い直しの 1 日を過ぎて取り残された記事も、ここから拾う。容量で積まれる片付けでは戻さない
+    try {
+      await rewindBackfill(platform.db);
+    } catch (error) {
+      console.warn("could not rewind article analysis backfill", { error });
+    }
   }
   const count = await enqueueDueFeeds(platform);
   if (count > 0) console.info("enqueued due feeds", { count });

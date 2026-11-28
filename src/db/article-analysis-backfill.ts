@@ -78,13 +78,16 @@ export async function readBackfill(db: Database): Promise<BackfillState | undefi
 
 /**
  * 遡及の位置の行を用意する。行がなければ先頭から作り、対象の版が今の版と違えば（版を上げた）、対象の版を
- * 書き換えて先頭に戻す（決定の 2）。同じ文で確かめるので、重なっても同じ結果になる
+ * 書き換えて先頭に戻す（決定の 2）。同じ文で確かめるので、重なっても同じ結果になる。行を作るときは、今の
+ * 埋め込みの版を完了した版として入れる（機能を入れたときの最初の遡及では、完了を記録しない。記録するのは、
+ * 埋め込みの版を上げたあとに初めてたどり終えたときだけ。docs/decisions/auto-tagging.md の 6）
  */
 export async function prepareBackfill(db: Database, revisions: AnalysisRevisions): Promise<void> {
   await db.run(sql`
     insert into article_analysis_backfill (id, cursor_created_at, cursor_id, candidate_revision,
-      embedding_revision, finished)
-    values (1, null, null, ${revisions.candidateRevision}, ${revisions.embeddingRevision}, 0)
+      embedding_revision, finished, completed_embedding_revision)
+    values (1, null, null, ${revisions.candidateRevision}, ${revisions.embeddingRevision}, 0,
+      ${revisions.embeddingRevision})
     on conflict (id) do update set cursor_created_at = null, cursor_id = null, finished = 0,
       epoch = article_analysis_backfill.epoch + 1,
       candidate_revision = excluded.candidate_revision, embedding_revision = excluded.embedding_revision

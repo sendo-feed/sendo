@@ -288,7 +288,9 @@ export async function runAnalysisBackfill(
       try {
         outcome = await analyzeArticle(platform, article.id, BACKGROUND_STORAGE_SHARE);
       } catch (error) {
-        // 1 件の失敗では止めない。この記事は、次に先頭からたどるとき（1 日 1 回）にまた試す
+        // 1 件の失敗では止めない（決定の 3）。この記事は、拾い直し（取り込んでから 1 日以内）か、次に先頭から
+        // たどるとき（1 日 1 回）にまた試す。古い版のまま位置を越えるので、この遡及が終わりと記録されても
+        // 残ることがある（受け入れる）
         console.warn("could not analyze article in backfill", { articleId: article.id, error });
         outcome = "skipped";
       }

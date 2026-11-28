@@ -4,7 +4,6 @@ import { insertArticles } from "../../src/db/articles";
 import { insertFeed } from "../../src/db/feeds";
 import { recordFailedPageContent } from "../../src/db/page-contents";
 import { runJob } from "../../src/jobs";
-import { runCleanUp } from "../../src/jobs/clean-up";
 import type { Job } from "../../src/jobs/job";
 import { runScheduled } from "../../src/jobs/schedule";
 import type { Platform } from "../../src/platform";
@@ -21,6 +20,15 @@ const DAY_MS = 24 * HOUR_MS;
 const BACKFILL: Job = { type: "backfill-article-analyses" };
 /** 10 分の区切りの定期実行の時刻 */
 const SLOT = new Date("2026-11-28T12:10:00Z");
+/** 1 日 1 回の片付けを積む定期実行の時刻（日本時間 3:00） */
+const DAILY = new Date("2026-11-28T18:00:00Z");
+
+/** 本番と同じく、定期実行が積んだ 1 日 1 回の片付けを動かす */
+async function runDailyCleanUp(platform: Platform, enqueued: Job[]) {
+  await runScheduled(platform, DAILY);
+  await runQueued(platform, enqueued, "clean-up");
+  enqueued.splice(0);
+}
 
 /** 記事を入れ、取り込みの時刻を ageMs だけ前にする（並びを決めるため、1 件ずつ 1 ミリ秒ずらす） */
 async function seed(
@@ -55,7 +63,7 @@ async function seed(
   // 番号の大きい記事ほど新しい
   const age = options.ageMs ?? 2 * HOUR_MS;
   await testDb.exec(`UPDATE articles SET created_at = cast(unixepoch('subsec') * 1000 as integer) - ${age}
-    - (100000 - cast(substr(id, 2) as integer)) WHERE id LIKE '${prefix}%'`);
+    - (${count - 1} - cast(substr(id, 2) as integer)) WHERE id LIKE '${prefix}%'`);
   return ids;
 }
 
@@ -185,7 +193,10 @@ describe("遡及", () => {
     await runJob(platform, BACKFILL);
     expect(await readBackfill(platform.db)).toMatchObject({ finished: true });
 
-    await runCleanUp(platform);
+    // 容量で積まれる片付けでは戻さない
+    await runJob(platform, { type: "clean-up" });
+    expect(await readBackfill(platform.db)).toMatchObject({ finished: true });
+    await runDailyCleanUp(platform, enqueued);
     expect(await readBackfill(platform.db)).toMatchObject({ cursor: null, finished: false });
     await runJob(platform, BACKFILL);
     // 解析済みの記事は飛ばすだけ
@@ -239,27 +250,75 @@ describe("遡及", () => {
 
   it("埋め込みの版を上げたあと、その版で初めて最後までたどり終えたら版と時刻を記録し、1 日 1 回の終わりでは書き換えない", async () => {
     const articleAnalysis = fakeArticleAnalysis();
-    const { platform } = createTestPlatform({ articleAnalysis });
+    const { platform, enqueued } = createTestPlatform({ articleAnalysis });
     await seed(platform, 2);
     await runJob(platform, BACKFILL);
-    const first = await readBackfill(platform.db);
-    expect(first).toMatchObject({ finished: true, completedEmbeddingRevision: 1 });
-    expect(first?.completedAt).toEqual(expect.any(Number));
-
-    await testDb.exec("UPDATE article_analysis_backfill SET completed_at = 1");
-    await runCleanUp(platform);
-    await runJob(platform, BACKFILL);
+    // 機能を入れたときの最初の遡及の終わりでは記録しない（docs/decisions/auto-tagging.md の 6）
     expect(await readBackfill(platform.db)).toMatchObject({
       finished: true,
       completedEmbeddingRevision: 1,
-      completedAt: 1,
+      completedAt: null,
     });
+
+    // 候補の版だけを上げても記録しない
+    articleAnalysis.candidateRevision = 2;
+    await runJob(platform, BACKFILL);
+    expect(await readBackfill(platform.db)).toMatchObject({ finished: true, completedAt: null });
 
     articleAnalysis.embeddingRevision = 2;
     await runJob(platform, BACKFILL);
     const bumped = await readBackfill(platform.db);
     expect(bumped).toMatchObject({ finished: true, completedEmbeddingRevision: 2 });
-    expect(bumped?.completedAt).toBeGreaterThan(1);
+    expect(bumped?.completedAt).toEqual(expect.any(Number));
+
+    // 1 日 1 回の遡及の終わりでは書き換えない
+    await testDb.exec("UPDATE article_analysis_backfill SET completed_at = 1");
+    await runDailyCleanUp(platform, enqueued);
+    await runJob(platform, BACKFILL);
+    expect(await readBackfill(platform.db)).toMatchObject({
+      finished: true,
+      completedEmbeddingRevision: 2,
+      completedAt: 1,
+    });
+  });
+
+  it("途中の記事の解析が例外を出しても、その記事を越えて続け、ほかの記事は解析する", async () => {
+    const articleAnalysis = fakeArticleAnalysis();
+    const hook = statementHook(/from articles a left join page_contents/, async () => {
+      throw new Error("database is busy");
+    });
+    const { platform } = createTestPlatform({ db: hook.db, articleAnalysis });
+    const ids = await seed(platform, 3);
+    await runJob(platform, BACKFILL);
+    expect(hook.fired()).toBe(true);
+    // 最初にたどった（いちばん新しい）記事が失敗し、残りの 2 件は解析する
+    expect((await analyzedIds()).sort()).toEqual([ids[0], ids[1]].sort());
+    expect(await readBackfill(platform.db)).toMatchObject({ finished: true });
+  });
+
+  it("取り込みの時刻が同じ記事が仕事の切れ目をまたいでも、重ねず漏らさず解析する", async () => {
+    const articleAnalysis = fakeArticleAnalysis();
+    const { platform, enqueued } = createTestPlatform({ articleAnalysis });
+    const ids = await seed(platform, 150);
+    await testDb.exec("UPDATE articles SET created_at = 1700000000000");
+    await runJob(platform, BACKFILL);
+    await runQueued(platform, enqueued, "backfill-article-analyses");
+    expect(articleAnalysis.analyze).toHaveBeenCalledTimes(150);
+    expect(await analyzedIds()).toEqual([...ids].sort());
+    expect(await readBackfill(platform.db)).toMatchObject({ finished: true });
+  });
+
+  it("定期実行は、遡及の仕事がないときだけ積む", async () => {
+    const { platform } = createTestPlatform({ articleAnalysis: fakeArticleAnalysis() });
+    await seed(platform, 1);
+    const calls: { jobs: readonly Job[]; options?: { onlyIfIdle?: boolean } }[] = [];
+    platform.jobs.enqueue = async (jobs, options) => {
+      calls.push({ jobs, ...(options && { options }) });
+    };
+    await runScheduled(platform, SLOT);
+    expect(
+      calls.filter((call) => call.jobs.some((job) => job.type === "backfill-article-analyses")),
+    ).toEqual([{ jobs: [BACKFILL], options: { onlyIfIdle: true } }]);
   });
 });
 
@@ -296,6 +355,47 @@ describe("拾い直し", () => {
       [...(repick[0]?.type === "analyze-articles" ? repick[0].articleIds : [])].sort(),
     ).toEqual([hour, recorded, noUrl].sort());
     expect(young).not.toBe("");
+  });
+
+  it("1 時間と 1 日の境目の前後で、拾うかどうかが分かれる。Discord の投稿は 1 時間を待たずに拾う", async () => {
+    const { platform, enqueued } = createTestPlatform({ articleAnalysis: fakeArticleAnalysis() });
+    const url = () => "https://example.com/post";
+    const [overHour = ""] = await seed(platform, 1, { ageMs: HOUR_MS + 60_000, url, prefix: "p" });
+    const [underHour = ""] = await seed(platform, 1, { ageMs: HOUR_MS - 60_000, url, prefix: "q" });
+    const [insideDay = ""] = await seed(platform, 1, { ageMs: DAY_MS - 60_000, prefix: "r" });
+    const [outsideDay = ""] = await seed(platform, 1, { ageMs: DAY_MS + 60_000, prefix: "s" });
+    // Discord のフィードの投稿（URL はある）
+    await insertFeed(platform.db, {
+      id: "discord",
+      url: "https://discord.com/channels/1/2",
+      now: new Date(),
+    });
+    await testDb.exec("UPDATE feeds SET discord_cursor = '0' WHERE id = 'discord'");
+    await insertArticles(platform.db, [
+      {
+        id: "t00000",
+        feedId: "discord",
+        guid: "t00000",
+        title: "投稿",
+        summary: null,
+        url: "https://discord.com/channels/1/2/3",
+        author: null,
+        publishedAt: new Date(),
+        inCurrentFeed: false,
+        contentKey: null,
+      },
+    ]);
+    await testDb.exec(
+      "INSERT INTO article_analysis_backfill (id, candidate_revision, embedding_revision, finished) VALUES (1, 1, 1, 1)",
+    );
+
+    await runScheduled(platform, SLOT);
+    const picked = enqueued.flatMap((job) =>
+      job.type === "analyze-articles" ? job.articleIds : [],
+    );
+    expect([...picked].sort()).toEqual([overHour, insideDay, "t00000"].sort());
+    expect(picked).not.toContain(underHour);
+    expect(picked).not.toContain(outsideDay);
   });
 
   it("拾い直しの仕事は、書いたあとの使用量が 80% ちょうどなら書き、超えるなら書かない", async () => {
