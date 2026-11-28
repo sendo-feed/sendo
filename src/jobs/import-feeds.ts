@@ -6,6 +6,7 @@ import { toFetchableUrl, UrlNotAllowedError } from "../fetcher/url-guard";
 import { notifySync } from "../lib/sync-notify";
 import type { OpmlEntry } from "../opml";
 import type { Platform } from "../platform";
+import { enqueueQueuedJudges } from "./tag-judging";
 
 /**
  * インポートしたフィードを、そのユーザーの購読にする。
@@ -80,7 +81,11 @@ export async function runImportFeeds(
   // すでにあったフィード（ほかの人が購読している）の最近の記事を受信箱に入れる。前回の
   // インポートが途中で落ちていた場合も、補充の済んでいない購読はここで入れ直す
   const toBackfill = rows.map((row) => row.feedId).filter((feedId) => !createdFeeds.has(feedId));
-  if (toBackfill.length > 0) await backfillInbox(db, { userId, feedIds: toBackfill, now });
+  if (toBackfill.length > 0) {
+    await backfillInbox(db, { userId, feedIds: toBackfill, now });
+    // 今の版の埋め込みのある記事が受信箱に入れば、判定待ちに積まれている（docs/decisions/auto-tagging.md の 5）
+    await enqueueQueuedJudges(platform, { userId });
+  }
 
   if (createdFeeds.size > 0) {
     await platform.jobs.enqueue(

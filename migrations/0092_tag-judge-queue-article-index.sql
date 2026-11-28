@@ -1,0 +1,1 @@
+CREATE INDEX `tag_judge_queue_article_id_idx` ON `tag_judge_queue` (`article_id`);

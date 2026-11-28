@@ -2,9 +2,14 @@ import {
   type ArticleTagState,
   advanceJudgingCursor,
   attachAutoTag,
+  clearJudgeQueueWithoutTags,
+  deleteJudgeQueueRows,
   detachAutoTags,
+  findPendingJudgeUsers,
+  findQueuedJudgeUsers,
   findStalledJudging,
   isVectorCurrent,
+  JUDGE_QUEUE_PER_JOB,
   JUDGE_REVISION,
   type JudgedTag,
   type JudgingCursor,
@@ -15,6 +20,7 @@ import {
   REJUDGE_ARTICLES_PER_JOB,
   REJUDGE_DELAY_MS,
   readArticleTagStates,
+  readJudgeQueue,
   readJudgingState,
   readManualEmbeddings,
   readRejudgePage,
@@ -29,7 +35,7 @@ import { notifySync } from "../lib/sync-notify";
 import type { Platform } from "../platform";
 
 /*
- * 自動のタグ付けの判定し直し（docs/decisions/auto-tagging.md の 1、2、6、7）。
+ * 自動のタグ付けの判定し直しと判定（docs/decisions/auto-tagging.md の 1、2、5、6、7）。
  */
 
 /** 定期実行が一度に拾う、判定し直しの止まった人の数 */
@@ -69,11 +75,72 @@ export async function enqueueRejudgeAfterWrite(
   }
 }
 
-/** 定期実行（10 分の区切り）が、止まった判定し直しを拾う（6） */
-export async function enqueueStalledRejudges(platform: JudgingPlatform): Promise<void> {
+/** 定期実行（10 分の区切り）が、止まった判定し直しと、判定待ちの行が残った人の判定を拾う（5、6） */
+export async function enqueueStalledTagJudging(platform: JudgingPlatform): Promise<void> {
   const userIds = await findStalledJudging(platform.db, { limit: STALLED_PER_SCHEDULE });
   for (const userId of userIds) {
     await platform.jobs.enqueue([{ type: "rejudge-tags", userId }], { unlessWaiting: true });
+  }
+  await enqueueJudges(platform, await findPendingJudgeUsers(platform.db, STALLED_PER_SCHEDULE));
+}
+
+/** 人ごとの判定の仕事を積む。未着手の判定の仕事がすでにあれば積まない（5） */
+async function enqueueJudges(
+  platform: Pick<Platform, "jobs">,
+  userIds: readonly string[],
+): Promise<void> {
+  for (const userId of userIds) {
+    await platform.jobs.enqueue([{ type: "judge-tags", userId }], { unlessWaiting: true });
+  }
+}
+
+/**
+ * 判定待ちの行を積んだ側（解析の仕事、取得の仕事、購読と取り込みの受信箱の補充、手直しの取り消しの API）が、
+ * 行のある人の判定の仕事を積む（5）。積めなくても止めない（定期実行が 10 分の区切りで拾う）
+ */
+export async function enqueueQueuedJudges(
+  platform: Pick<Platform, "db" | "jobs">,
+  filter: { articleIds?: readonly string[]; feedId?: string; userId?: string },
+): Promise<void> {
+  try {
+    await enqueueJudges(platform, await findQueuedJudgeUsers(platform.db, filter));
+  } catch (error) {
+    console.warn("could not enqueue tag judging; the schedule will pick it up", { error });
+  }
+}
+
+/**
+ * 判定の仕事（5）。はじめにその人の版を読む。タグのベクトルがその版で作られていなければ、行には手を付けずに、
+ * 判定し直しの仕事を版を上げた時刻の 1 分あとで積んで終える（判定し直しがベクトルを作り直したあとで、判定の
+ * 仕事を積む）。判定待ちの行を積んだ番号の順に 500 行まで、その人の有効なタグすべてで判定し、処理した行を
+ * 消して、残りがあれば続きを積む
+ */
+export async function runJudgeTags(platform: JudgingPlatform, userId: string): Promise<void> {
+  const { db } = platform;
+  await clearJudgeQueueWithoutTags(db, userId);
+  const state = await readJudgingState(db, userId);
+  if (!state) return;
+  const tags = await listJudgedTags(db, userId);
+  if (tags.length === 0) return;
+  const revision = state.revision;
+  const embeddingRevision = platform.articleAnalysis.embeddingRevision;
+  if (tags.some((tag) => !isVectorCurrent(tag, { revision, embeddingRevision }))) {
+    await enqueueRejudge(platform, userId);
+    return;
+  }
+  const rows = await readJudgeQueue(db, { userId, limit: JUDGE_QUEUE_PER_JOB });
+  if (rows.length === 0) return;
+  const result = await judgeArticles(platform, { userId, revision, tags, rows });
+  if (result.changed > 0) await notifySync(platform.syncUpdates.notify, [userId]);
+  // 止まった記事の行は消さずに残す（7）。続きは定期実行が拾う
+  await deleteJudgeQueueRows(db, {
+    userId,
+    revision,
+    ids: rows.slice(0, result.judged).map((row) => row.id),
+  });
+  // 残りがあれば続きを積む（ちょうど 500 行だったときは、続きの仕事が空振りする）
+  if (!result.stopped && rows.length === JUDGE_QUEUE_PER_JOB) {
+    await enqueueJudges(platform, [userId]);
   }
 }
 
@@ -99,13 +166,16 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
   const revision = state.revision;
   let tags = await listJudgedTags(db, userId);
   if (tags.length === 0) {
-    // 有効なタグがなければ、位置を終わりにして終える
+    // 有効なタグがなければ、判定待ちの行を消し、位置を終わりにして終える
+    await clearJudgeQueueWithoutTags(db, userId);
     await advanceJudgingCursor(db, { userId, revision, from: state.cursor, to: null });
     return;
   }
   if (tags.some((tag) => !isVectorCurrent(tag, { revision, embeddingRevision }))) {
     if (!(await rebuildVectors(platform, { userId, revision, tags }))) return;
     tags = await listJudgedTags(db, userId);
+    // ベクトルを作り直したら、待っていた判定待ちの行を判定する（5）
+    await enqueueQueuedJudges(platform, { userId });
   }
   // 判定し直すのは、ベクトルの入力のハッシュが、前に判定し終えたときと違うタグだけ（6）
   const targets = tags.filter(
@@ -138,69 +208,13 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
     await finish();
     return;
   }
-  const judged = targets.flatMap((tag) => {
-    const judge = toJudge(tag);
-    return judge ? [judge] : [];
-  });
-  const states = new Map<string, ArticleTagState>();
-  for (const row of await readArticleTagStates(db, {
-    userId,
-    articleIds: page.map((row) => row.articleId),
-  })) {
-    states.set(`${row.tagId}\n${row.articleId}`, row);
-  }
-
-  let changed = 0;
-  let reached: JudgingCursor | null = state.cursor;
-  // 行を新しく作れなかった（使用量が足りないか、版・タグ・受信箱が変わった）
-  let stopped = false;
-  articles: for (const row of page) {
-    if (row.embeddingRevision === null || row.embeddingRevision !== embeddingRevision) {
-      // 解析の済んでいない記事は飛ばす。埋め込みの版の古い記事（解析し直しを待っている）は書き換えずに残す
-      reached = { createdAt: row.createdAt, articleId: row.articleId };
-      continue;
-    }
-    if (row.embedding === null) {
-      // 今の版で解析済みで、埋め込みが入力が空・失敗：自動で付いた行に消した印を付ける
-      changed += await detachAutoTags(db, { userId, articleId: row.articleId, revision });
-      reached = { createdAt: row.createdAt, articleId: row.articleId };
-      continue;
-    }
-    const article = fromLittleEndian(row.embedding);
-    for (const tag of targets) {
-      const current = states.get(`${tag.id}\n${row.articleId}`);
-      const judge = judged.find((item) => item.id === tag.id);
-      const on = judge !== undefined && score(judge, article) >= TAG_SCORE_THRESHOLD;
-      if (on) {
-        // 付いている行（手で付けた・外した行、自動で付いた行）は変えない
-        if (current && !current.deleted) continue;
-        const written = await attachAutoTag(db, {
-          userId,
-          tagId: tag.id,
-          articleId: row.articleId,
-          revision,
-        });
-        if (written === "written") {
-          changed++;
-          continue;
-        }
-        // 書けなかった：理由によらず、この記事から先へ進めずに終え、続きを積まない（使用量が足りなければ 7 の
-        // とおり）。版が変われば位置を進める文が通らず、新しい版の判定し直しを API が積む。受信箱の行が消えた
-        // ときは、定期実行が拾い、新しい状態で判定する
-        stopped = true;
-        break articles;
-      } else if (current && current.kind === "auto" && !current.deleted) {
-        changed += await detachAutoTags(db, {
-          userId,
-          articleId: row.articleId,
-          revision,
-          tagId: tag.id,
-        });
-      }
-    }
-    reached = { createdAt: row.createdAt, articleId: row.articleId };
-  }
-  if (changed > 0) await notifySync(platform.syncUpdates.notify, [userId]);
+  const result = await judgeArticles(platform, { userId, revision, tags: targets, rows: page });
+  const stopped = result.stopped;
+  const last = page[result.judged - 1];
+  const reached: JudgingCursor | null = last
+    ? { createdAt: last.createdAt, articleId: last.articleId }
+    : state.cursor;
+  if (result.changed > 0) await notifySync(platform.syncUpdates.notify, [userId]);
 
   const done = !stopped && page.length < REJUDGE_ARTICLES_PER_JOB;
   if (done) {
@@ -221,6 +235,97 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
   if (!stopped) {
     await platform.jobs.enqueue([{ type: "rejudge-tags", userId }], { unlessWaiting: true });
   }
+}
+
+type JudgeRow = {
+  articleId: string;
+  embeddingRevision: number | null;
+  embedding: Uint8Array | null;
+};
+
+/**
+ * 記事を順に、指定したタグで判定して書く（2、7）。正規化した類似度が係数以上なら付け、下回った自動の行に消した
+ * 印を付ける。手で付け外しした行は変えない。解析の済んでいない記事と、埋め込みの版の古い記事は書き換えずに
+ * 飛ばし、今の版で埋め込みが空・失敗の記事の自動の行には消した印を付ける。行を新しく作れなければ、その記事で
+ * 止める（使用量が足りないか、版・タグ・受信箱が変わった）。判定し直しの仕事と判定の仕事で使う。
+ *
+ * @returns 書いた記事のタグの数、止まる前に判定し終えた記事の数、止まったか
+ */
+async function judgeArticles(
+  platform: JudgingPlatform,
+  input: {
+    userId: string;
+    revision: number;
+    tags: readonly JudgedTag[];
+    rows: readonly JudgeRow[];
+  },
+): Promise<{ changed: number; judged: number; stopped: boolean }> {
+  const { db } = platform;
+  const { userId, revision, tags } = input;
+  const embeddingRevision = platform.articleAnalysis.embeddingRevision;
+  const judges = new Map<string, Judge>();
+  for (const tag of tags) {
+    const judge = toJudge(tag);
+    if (judge) judges.set(tag.id, judge);
+  }
+  const states = new Map<string, ArticleTagState>();
+  for (const row of await readArticleTagStates(db, {
+    userId,
+    articleIds: input.rows.map((row) => row.articleId),
+  })) {
+    states.set(`${row.tagId}\n${row.articleId}`, row);
+  }
+  let changed = 0;
+  let judged = 0;
+  for (const row of input.rows) {
+    if (row.embeddingRevision === null || row.embeddingRevision !== embeddingRevision) {
+      // 解析の済んでいない記事は飛ばす。埋め込みの版の古い記事（解析し直しを待っている）は書き換えずに残す
+      judged++;
+      continue;
+    }
+    if (row.embedding === null) {
+      // 今の版で解析済みで、埋め込みが入力が空・失敗：自動で付いた行に消した印を付ける
+      changed += await detachAutoTags(db, { userId, articleId: row.articleId, revision });
+      judged++;
+      continue;
+    }
+    const article = fromLittleEndian(row.embedding);
+    for (const tag of tags) {
+      const current = states.get(`${tag.id}\n${row.articleId}`);
+      const judge = judges.get(tag.id);
+      const on = judge !== undefined && score(judge, article) >= TAG_SCORE_THRESHOLD;
+      if (on) {
+        // 付いている行（手で付けた・外した行、自動で付いた行）は変えない
+        if (current && !current.deleted) continue;
+        const written = await attachAutoTag(db, {
+          userId,
+          tagId: tag.id,
+          articleId: row.articleId,
+          revision,
+        });
+        if (written === "written") {
+          changed++;
+          continue;
+        }
+        // 消した印のない行がすでにある（判定し直しと判定の仕事が重なって相手が先に付けたか、利用者が手で付け
+        // 外しした）：変えずに続ける
+        if (written === "present") continue;
+        // 書けなかった：理由によらず、この記事で止める（使用量が足りなければ 7 のとおり）。版が変われば、位置を
+        // 進める文と判定待ちの行を消す文が通らない。受信箱の行が消えたときは、定期実行が拾い、新しい状態で判定する
+        return { changed, judged, stopped: true };
+      }
+      if (current && current.kind === "auto" && !current.deleted) {
+        changed += await detachAutoTags(db, {
+          userId,
+          articleId: row.articleId,
+          revision,
+          tagId: tag.id,
+        });
+      }
+    }
+    judged++;
+  }
+  return { changed, judged, stopped: false };
 }
 
 /** 正規化に使えるタグ（ベクトルがあり、統計が条件を満たす。2） */

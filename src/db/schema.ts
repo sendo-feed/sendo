@@ -1191,6 +1191,38 @@ export const tagJudging = sqliteTable("tag_judging", {
   cursorMovedAt: integer("cursor_moved_at", { mode: "timestamp_ms" }).notNull(),
 });
 
+/**
+ * 自動のタグ付けの判定待ち（docs/decisions/auto-tagging.md の 5）。行はユーザー、記事の ID、積んだ番号。積んだ
+ * 番号は二度と使わない連番で、積み直すときは行を消して入れ直す。解析の行・受信箱の行・記事のタグの行に付けた
+ * トリガーが、同じ文の中で積む。受信箱の行が消えたら、トリガーが消す。保存容量に含めない（8）
+ */
+export const tagJudgeQueue = sqliteTable(
+  "tag_judge_queue",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    articleId: text("article_id").notNull(),
+  },
+  (t) => [
+    uniqueIndex("tag_judge_queue_user_id_article_id_idx").on(t.userId, t.articleId),
+    index("tag_judge_queue_user_id_id_idx").on(t.userId, t.id),
+    // 判定の仕事を積む側が、記事やフィードで行のある人を引く
+    index("tag_judge_queue_article_id_idx").on(t.articleId),
+  ],
+);
+
+/**
+ * 起動したときに書く、今の判定の版と埋め込みの版（docs/decisions/auto-tagging.md の 4）。1 行だけ。受信箱に
+ * 入った記事が今の版の埋め込みを持つかを、判定待ちのトリガーがこの行と比べる
+ */
+export const tagJudgingRevisions = sqliteTable("tag_judging_revisions", {
+  id: integer("id").primaryKey(),
+  judgeRevision: integer("judge_revision").notNull(),
+  embeddingRevision: integer("embedding_revision").notNull(),
+});
+
 /** その人のタグの消した印の行を、どこまで回収したか（差分同期の下限） */
 export const tagHorizons = sqliteTable("tag_horizons", {
   userId: text("user_id")

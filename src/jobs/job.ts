@@ -109,6 +109,11 @@ export const jobSchema = z.discriminatedUnion("type", [
    * （未着手 1 つ・着手済み 1 つの枠）。版を持たず、動いたときにその人の今の版を読む
    */
   z.object({ type: z.literal("rejudge-tags"), userId: z.string().min(1) }),
+  /**
+   * 自動のタグ付けの判定（docs/decisions/auto-tagging.md の 5）。判定待ちの表の行を処理する。人ごとに、ジョブの
+   * 表に 1 本だけ置く。版を持たず、動いたときにその人の今の版を読む
+   */
+  z.object({ type: z.literal("judge-tags"), userId: z.string().min(1) }),
   /** 記事のページから本文を抜く（docs/decisions/content.md の 10）。取得の仕事のあとで積む */
   z.object({ type: z.literal("extract-page"), articleId: z.string().min(1) }),
   z.object({

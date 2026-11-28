@@ -38,6 +38,7 @@ import { notifyBells } from "./bell-notifications";
 import type { FetchFeedOutcome } from "./fetch-feed";
 import { nextFetchInterval } from "./fetch-slots";
 import { reportStorageFull } from "./storage";
+import { enqueueQueuedJudges } from "./tag-judging";
 
 export async function runFetchDiscord(
   platform: Pick<
@@ -142,6 +143,8 @@ export async function runFetchDiscord(
   const inserted = insertedIds.size;
   // 記事を入れ終えてから配り、配り終えてから次に取得する位置を記録する。
   await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
+  // 今の版の埋め込みのある記事が受信箱に入れば、判定待ちに積まれている（docs/decisions/auto-tagging.md の 5）
+  await enqueueQueuedJudges(platform, { feedId: feed.id });
   // この回に行を入れた投稿を、ベルで判定する（docs/decisions/notifications.md の 8）
   await notifyBells(platform, {
     previousSuccessAt: feed.lastSuccessfulFetchAt,

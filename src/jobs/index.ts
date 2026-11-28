@@ -8,7 +8,7 @@ import { runCleanUp, sweepBellNotifications } from "./clean-up";
 import { runFetchFeed } from "./fetch-feed";
 import { runImportFeeds } from "./import-feeds";
 import type { Job } from "./job";
-import { runRejudgeTags } from "./tag-judging";
+import { runJudgeTags, runRejudgeTags } from "./tag-judging";
 import { maintainTranslations, runDecideTranslations, runTranslateArticle } from "./translations";
 
 /** キューから受け取った仕事を1つ実行する。例外を投げたら、キューがやり直す */
@@ -32,6 +32,10 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
     }
     case "rejudge-tags": {
       await runRejudgeTags(platform, job.userId);
+      return;
+    }
+    case "judge-tags": {
+      await runJudgeTags(platform, job.userId);
       return;
     }
     case "fetch-feed":
