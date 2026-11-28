@@ -1,5 +1,6 @@
 import { ACTIVITY_RETENTION_MS, collectExpiredArticleActivity } from "../db/activity";
 import { collectStaleCandidates, STALE_CANDIDATE_GRACE_MS } from "../db/article-analyses";
+import { ARTICLE_TAG_REMOVAL_RETENTION_MS, collectRemovedArticleTags } from "../db/article-tags";
 import { collectOldBellNotifications } from "../db/bell-notifications";
 import { BELL_REMOVAL_RETENTION_MS, collectRemovedBells } from "../db/bells";
 import {
@@ -35,6 +36,7 @@ export const SWEEP_ROUNDS = {
   savedPages: 1,
   bells: 1,
   tags: 1,
+  articleTags: 3,
   activity: 1,
   pushRegistrations: 1,
   bellNotifications: 4,
@@ -51,6 +53,8 @@ export type CleanUpOutcome = {
   bells: number;
   /** 消してから 30 日たったタグの行 */
   tags: number;
+  /** 消してから 30 日たった記事のタグの行 */
+  articleTags: number;
   activity: number;
   /** 期限の切れたセッションの Web Push の登録 */
   pushRegistrations: number;
@@ -160,7 +164,15 @@ export async function runCleanUp(
     }),
   );
 
-  // 消したタグの行（docs/decisions/tags.md の 7）。消す文の中でトリガーが回収の下限を記録する
+  // 消した記事のタグの行（docs/decisions/tags.md の 7）。受信箱の行が消えると印が付くので、行が多い
+  const articleTagRows = await repeat(SWEEP_ROUNDS.articleTags, () =>
+    collectRemovedArticleTags(db, {
+      before: new Date(now - ARTICLE_TAG_REMOVAL_RETENTION_MS),
+      limit: SWEEP_BATCH,
+    }),
+  );
+
+  // 消したタグの行（docs/decisions/tags.md の 7）。記事のタグの行が残っていないタグだけを消す。消す文の中でトリガーが回収の下限を記録する
   const tagRows = await repeat(SWEEP_ROUNDS.tags, () =>
     collectRemovedTags(db, {
       before: new Date(now - TAG_REMOVAL_RETENTION_MS),
@@ -203,6 +215,7 @@ export async function runCleanUp(
     savedPages,
     bells,
     tags: tagRows,
+    articleTags: articleTagRows,
     activity,
     pushRegistrations,
     bellNotifications,

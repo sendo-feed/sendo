@@ -582,6 +582,20 @@
       "when": 1795859336391,
       "tag": "0082_tags-triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "6",
+      "when": 1795860801177,
+      "tag": "0083_article-tags",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "6",
+      "when": 1795860801733,
+      "tag": "0084_article-tags-triggers",
+      "breakpoints": true
     }
   ]
 }

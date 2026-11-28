@@ -251,6 +251,9 @@ export async function collectRemovedTags(
     where rowid in (
       select rowid from ${tags}
       where deleted_at < ${input.before.getTime()}
+        -- 記事のタグの行が残っているタグは消さない（外部キーの連鎖で、上限なしに一度に消さないため。
+        -- 記事のタグの片付けが先に消す）
+        and not exists (select 1 from article_tags where article_tags.tag_id = ${tags}.id)
       order by deleted_at limit ${input.limit}
     )
     returning id

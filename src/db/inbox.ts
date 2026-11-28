@@ -236,6 +236,8 @@ export type ArticleListInput = {
   userId: string;
   feedId?: string | undefined;
   folderId?: string | undefined;
+  /** このタグが付いている（自動で付いた・手で付けた）記事だけ。本人の有効なタグであることは呼ぶ側で確かめる */
+  tagId?: string | undefined;
   state?: ArticleState | undefined;
   starred?: boolean | undefined;
   dateBy?: ArticleDateField | undefined;
@@ -252,6 +254,13 @@ export function inboxConditions(input: ArticleListInput): SQL[] {
   const conditions: SQL[] = [eq(ua.userId, input.userId)];
   if (input.feedId !== undefined) conditions.push(eq(ua.feedId, input.feedId));
   if (input.folderId !== undefined) conditions.push(inFolder(input.userId, input.folderId));
+  if (input.tagId !== undefined) {
+    conditions.push(sql`exists (
+      select 1 from article_tags at
+      where at.tag_id = ${input.tagId} and at.user_id = ${input.userId}
+        and at.article_id = ${ua.articleId} and at."on" = 1 and at.deleted_at is null
+    )`);
+  }
   if (input.state === "unread") conditions.push(isNull(ua.readAt));
   if (input.state === "read" || dateBy === "readAt") conditions.push(isNotNull(ua.readAt));
   if (input.state === "starred" || input.starred === true) conditions.push(isNotNull(ua.starredAt));

@@ -1,4 +1,5 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { isActiveTag, listArticleTagsFor } from "../db/article-tags";
 import { isDiscordArticle } from "../db/articles";
 import { dbNow } from "../db/clock";
 import {
@@ -19,7 +20,14 @@ import { sanitizeHtmlWithImages } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
-import { ArticleSchema, ErrorSchema, errorBody, toArticleResponse } from "./schemas";
+import {
+  ArticleSchema,
+  ArticleTagSchema,
+  ErrorSchema,
+  errorBody,
+  toArticleResponse,
+  toArticleTagResponse,
+} from "./schemas";
 import { decodeSyncCursor } from "./sync";
 
 const ListQuerySchema = z
@@ -30,6 +38,10 @@ const ListQuerySchema = z
       .min(1)
       .optional()
       .openapi({ description: "このフォルダのフィードの記事だけにする" }),
+    tagId: z.string().min(1).max(64).optional().openapi({
+      description:
+        "このタグが付いている（自動で付いた・手で付けた）記事だけにする。本人の有効なタグがなければ 404",
+    }),
     state: z
       .enum(["all", "unread", "starred"])
       .default("all")
@@ -64,7 +76,14 @@ const listRoute = createRoute({
       content: {
         "application/json": {
           schema: z.object({
-            items: z.array(ArticleSchema),
+            items: z.array(
+              ArticleSchema.extend({
+                tags: z.array(ArticleTagSchema).openapi({
+                  description:
+                    "その人の記事のタグ（手で外したものも。docs/decisions/tags.md の 6）",
+                }),
+              }),
+            ),
             nextCursor: z.string().nullable(),
             asOf: z.iso.datetime().openapi({
               description:
@@ -76,6 +95,10 @@ const listRoute = createRoute({
     },
     400: {
       description: "クエリが正しくない",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "tagId に本人の有効なタグがない",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -400,13 +423,18 @@ export function articlesApi(platform: Platform) {
       const cursor = query.cursor === undefined ? undefined : decodeCursor(query.cursor);
       if (cursor === null) return c.json(errorBody("invalid_request", "cursor: invalid"), 400);
 
+      const userId = c.get("user").id;
+      if (query.tagId !== undefined && !(await isActiveTag(db, { userId, tagId: query.tagId }))) {
+        return c.json(errorBody("not_found", "tag does not exist"), 404);
+      }
       // 一覧を読む前に取る。読んだあとに取ると、読んだあとに届いた記事が asOf より前になり、
       // まとめて既読で、一覧に出ていなかったのに既読になる
       const asOf = await dbNow(platform.db);
       const { items, next } = await listInbox(platform.db, {
-        userId: c.get("user").id,
+        userId,
         feedId: query.feedId,
         folderId: query.folderId,
+        tagId: query.tagId,
         state: query.state,
         limit: query.limit,
         cursor,
@@ -414,9 +442,18 @@ export function articlesApi(platform: Platform) {
         until: query.until === undefined ? undefined : new Date(query.until),
       });
       const images = imageSigner(db);
+      const tagsOf = await listArticleTagsFor(db, {
+        userId,
+        articleIds: items.map((item) => item.id),
+      });
       return c.json(
         {
-          items: await Promise.all(items.map((item) => toArticleResponse(item, images))),
+          items: await Promise.all(
+            items.map(async (item) => ({
+              ...(await toArticleResponse(item, images)),
+              tags: (tagsOf.get(item.id) ?? []).map(toArticleTagResponse),
+            })),
+          ),
           nextCursor: next === null ? null : encodeCursor(next),
           asOf: asOf.toISOString(),
         },

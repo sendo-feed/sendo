@@ -15,6 +15,7 @@ import { defaultHook } from "./hook";
 import { SavedPageIdSchema, SavedPageSchema, toSavedPageResponse } from "./saved";
 import {
   ArticleSchema,
+  ArticleTagSchema,
   BellSchema,
   ErrorSchema,
   errorBody,
@@ -27,6 +28,7 @@ import {
   TagSchema,
   TRANSLATION_MODEL_DESCRIPTION,
   toArticleResponse,
+  toArticleTagResponse,
   toBellResponse,
   toFeedHealthResponse,
   toTagResponse,
@@ -60,6 +62,8 @@ const CursorSchema = z.object({
   w: PositionSchema.optional(),
   // タグの位置（docs/decisions/tags.md の 7）。ないカーソルでは、タグだけを最初から送る
   t: PositionSchema.optional(),
+  // 記事のタグの位置。ないカーソルでは、記事のタグを最初の同期と同じに送る
+  g: PositionSchema.optional(),
   b: PositionSchema.optional(),
 });
 
@@ -83,6 +87,7 @@ export function encodeSyncCursor(cursor: SyncCursor): string {
     ...(cursor.workspaces && { w: toTuple(cursor.workspaces) }),
     ...(cursor.bells && { b: toTuple(cursor.bells) }),
     ...(cursor.tags && { t: toTuple(cursor.tags) }),
+    ...(cursor.articleTags && { g: toTuple(cursor.articleTags) }),
   });
   const bytes = new TextEncoder().encode(json);
   return btoa(String.fromCharCode(...bytes))
@@ -107,6 +112,7 @@ export function decodeSyncCursor(value: string): SyncCursor | null {
       ...(parsed.data.w && { workspaces: fromTuple(parsed.data.w) }),
       ...(parsed.data.b && { bells: fromTuple(parsed.data.b) }),
       ...(parsed.data.t && { tags: fromTuple(parsed.data.t) }),
+      ...(parsed.data.g && { articleTags: fromTuple(parsed.data.g) }),
     };
   } catch {
     return null;
@@ -167,6 +173,13 @@ const SyncTagSchema = z
     z.object({ id: z.string(), deleted: z.literal(true) }),
   ])
   .openapi("SyncTag");
+
+const SyncArticleTagSchema = z
+  .discriminatedUnion("deleted", [
+    ArticleTagSchema.extend({ deleted: z.literal(false) }),
+    z.object({ id: z.string(), deleted: z.literal(true) }),
+  ])
+  .openapi("SyncArticleTag");
 
 const SyncTranslationFailureSchema = z
   .object({
@@ -286,7 +299,7 @@ const syncRoute = createRoute({
     "includeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。",
     "includeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。差分の有無にかかわらず、購読先の省略に対応した印 defaultWorkspaceOnSubscribe を返す。",
     "includeBells=true なら、通知のベルの付けたものと外したものも bells に載せる。ベルの位置がない既存のカーソルでは、ベルだけを最初から送る。購読をやめると、その購読のベルも deleted で届く。",
-    "includeTags=true なら、タグの作ったもの・変えたものと消したものも tags に載せる。タグの位置がない既存のカーソルでは、タグだけを最初から送る。",
+    "includeTags=true なら、タグの作ったもの・変えたものと消したものを tags に、記事のタグ（手で外したものも）と消したものを articleTags に載せる。それぞれの位置がない既存のカーソルでは、その表だけを最初から送る。記事のタグの最初の同期は、受信箱の最初の同期と同じ範囲の記事の分だけを送るので、手元のほかの記事の記事のタグは GET /articles で補う。",
     "cursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
   ].join("\n"),
   request: {
@@ -315,6 +328,7 @@ const syncRoute = createRoute({
               workspaces: z.array(SyncWorkspaceSchema).optional(),
               bells: z.array(SyncBellSchema).optional(),
               tags: z.array(SyncTagSchema).optional(),
+              articleTags: z.array(SyncArticleTagSchema).optional(),
               defaultWorkspaceOnSubscribe: z.literal(true).optional().openapi({
                 description: "includeWorkspaces=true のとき付く。購読先の省略はデフォルトを使う",
               }),
@@ -357,6 +371,7 @@ export function syncApi(platform: Platform) {
           : undefined,
         bells: includeBells === "true" ? (decoded.bells ?? INITIAL_POSITION) : undefined,
         tags: includeTags === "true" ? (decoded.tags ?? INITIAL_POSITION) : undefined,
+        articleTags: includeTags === "true" ? (decoded.articleTags ?? INITIAL_POSITION) : undefined,
       };
       const userId = c.get("user").id;
       const changes = await readChanges(platform.db, {
@@ -426,6 +441,11 @@ export function syncApi(platform: Platform) {
           ...(changes.bells && {
             bells: changes.bells.map((item) =>
               item.deleted ? item : { ...toBellResponse(item), deleted: false as const },
+            ),
+          }),
+          ...(changes.articleTags && {
+            articleTags: changes.articleTags.map((item) =>
+              item.deleted ? item : { ...toArticleTagResponse(item), deleted: false as const },
             ),
           }),
           ...(changes.tags && {
