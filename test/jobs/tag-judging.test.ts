@@ -1003,11 +1003,11 @@ describe("保存容量（続き）", () => {
     await t.rejudge();
     t.takeJudges();
 
-    // 新しい記事 1 件ぶん（記事のタグの行 256 バイトと類似度の行 128 バイト）がちょうど入る上限
+    // 新しい記事 1 件ぶん（記事のタグの行と類似度の行、どちらも 256 バイト）がちょうど入る上限
     await t.feed([{ title: "rust-new", embedding: near(0, 99) }]);
     t.takeJudges();
     const usage = await readStorageUsage(t.platform.db);
-    await configureStorage(t.platform.db, Math.floor((usage.bytes + 256 + 128) / 0.9) + 1);
+    await configureStorage(t.platform.db, Math.floor((usage.bytes + 256 + 256) / 0.9) + 1);
     await runJob(t.platform, { type: "judge-tags", userId: t.user.id });
     expect(await t.autoTitles(rust)).toEqual([...rustTitles, "rust-new"].sort());
     expect(await t.queue()).toEqual([]);
@@ -1683,8 +1683,8 @@ describe("類似度の表（#425）", () => {
       const embedding = t.embeddings.get(row.title) ?? new Float32Array();
       expect(row.similarity).toBeCloseTo(embedding[0] ?? 0, 6);
     }
-    // 記事のタグ 10 行（256 バイト）と類似度 10 行（128 バイト）。タグの行は容量に含めない
-    expect((await readStorageUsage(t.platform.db)).bytes).toBe(before + 10 * 256 + 10 * 128);
+    // 記事のタグ 10 行と類似度 10 行（どちらも 256 バイト）。タグの行は容量に含めない
+    expect((await readStorageUsage(t.platform.db)).bytes).toBe(before + 10 * 256 + 10 * 256);
   });
 
   it("統計が条件を満たさないタグでは保存しない", async () => {
@@ -1788,7 +1788,74 @@ describe("類似度の表（#425）", () => {
     await other.request(`/tags/${otherRust}`, "DELETE");
     expect(await similarityRows(otherRust)).toEqual([]);
     // 記事のタグの行は消した印として残り、類似度の行の分だけ容量が減る
-    expect((await readStorageUsage(other.platform.db)).bytes).toBe(usage - 10 * 128);
+    expect((await readStorageUsage(other.platform.db)).bytes).toBe(usage - 10 * 256);
+  });
+
+  it("記事のタグを書いたあと類似度を書く前に落ちても、流し直すと類似度の行がそろう", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    const hook = statementHook(/insert into tag_similarities/i, async () => {
+      throw new Error("crashed");
+    });
+    await expect(t.rejudge({ ...t.platform, db: hook.db })).rejects.toThrow();
+    expect(hook.fired()).toBe(true);
+    expect(await t.state()).toMatchObject({ finished: 0, cursor_article_id: null });
+    await t.rejudge();
+    expect((await similarityRows(rust)).map((row) => row.title)).toEqual(rustTitles);
+    expect(await t.autoTitles(rust)).toEqual(rustTitles);
+  });
+
+  it("ほかの仕事が先に同じ組の類似度の行を作っていても、止めずに続ける", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    const hook = statementHook(/insert into tag_similarities/i, async () => {
+      await testDb
+        .prepare(
+          `INSERT INTO tag_similarities (tag_id, user_id, article_id, similarity)
+          SELECT ?, ?, id, 0.5 FROM articles a
+          WHERE id IN (SELECT article_id FROM user_articles WHERE user_id = ?) AND a.title = 'rust-0'`,
+        )
+        .bind(rust, t.user.id, t.user.id)
+        .run();
+    });
+    await t.rejudge({ ...t.platform, db: hook.db });
+    expect(hook.fired()).toBe(true);
+    expect(await t.state()).toMatchObject({ finished: 1 });
+    expect((await similarityRows(rust)).map((row) => row.title)).toEqual(rustTitles);
+  });
+
+  it("値を変える書き込みは、使用量によらず通る。受信箱の行が消えると容量が戻る", async () => {
+    const t = await setup();
+    const feedId = await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    const before = await similarityRows(rust);
+    // 説明を変え、名前と説明の埋め込みの向きをわずかに変える。同じ記事の組のまま、類似度の値だけが変わる
+    t.texts.set("Rust。言語", normalize(axis(0).map((value, i) => value + (i === 1 ? 0.01 : 0))));
+    await configureStorage(t.platform.db, (await readStorageUsage(t.platform.db)).bytes);
+    expect(
+      (await t.request(`/tags/${rust}`, "PATCH", { name: "Rust", description: "言語" })).status,
+    ).toBe(200);
+    await t.rejudge();
+    expect(await t.state()).toMatchObject({ finished: 1 });
+    const after = await similarityRows(rust);
+    expect(after.map((row) => row.title)).toEqual(before.map((row) => row.title));
+    expect(after.map((row) => row.similarity)).not.toEqual(before.map((row) => row.similarity));
+    await configureStorage(t.platform.db, 10 * 1024 ** 3);
+
+    const usage = (await readStorageUsage(t.platform.db)).bytes;
+    const rows = after.length;
+    const tagRows = await testDb
+      .prepare("SELECT count(*) AS n FROM article_tags WHERE tag_id = ? AND deleted_at IS NULL")
+      .bind(rust)
+      .first<number>("n");
+    expect((await t.request(`/feeds/${feedId}`, "DELETE")).status).toBe(204);
+    expect(await similarityRows(rust)).toEqual([]);
+    // 類似度の行が消えた分だけは確実に戻る（記事のタグの行は消した印として残る）
+    expect((await readStorageUsage(t.platform.db)).bytes).toBeLessThanOrEqual(usage - rows * 256);
+    expect(tagRows).toBeGreaterThan(0);
   });
 
   it("容量の片付けの見積もりに、記事の類似度の行を含める", async () => {
@@ -1827,7 +1894,7 @@ describe("類似度の表（#425）", () => {
     const withRows = await firstEstimate();
     await testDb.prepare("DELETE FROM tag_similarities WHERE article_id = ?").bind(first).run();
     expect(rows).toBeGreaterThan(0);
-    expect(await firstEstimate()).toBe(withRows - (rows ?? 0) * 128);
+    expect(await firstEstimate()).toBe(withRows - (rows ?? 0) * 256);
     expect(rust).not.toBe("");
   });
 });

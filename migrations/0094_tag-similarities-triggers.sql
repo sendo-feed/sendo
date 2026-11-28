@@ -14,18 +14,18 @@ CREATE TRIGGER `user_articles_end_similarities` AFTER DELETE ON `user_articles` 
   DELETE FROM `tag_similarities` WHERE `user_id` = OLD.`user_id` AND `article_id` = OLD.`article_id`;
 END;
 --> statement-breakpoint
--- 保存容量に含める（1 行 128 バイト。docs/decisions/retention.md の 2）
+-- 保存容量に含める（1 行 256 バイト。docs/decisions/retention.md の 2）
 CREATE TRIGGER `tag_similarities_storage_insert` AFTER INSERT ON `tag_similarities` BEGIN
-  UPDATE `storage_usage` SET `bytes` = `bytes` + 128 WHERE `id` = 1;
+  UPDATE `storage_usage` SET `bytes` = `bytes` + 256 WHERE `id` = 1;
 END;
 --> statement-breakpoint
 CREATE TRIGGER `tag_similarities_storage_delete` AFTER DELETE ON `tag_similarities` BEGIN
-  UPDATE `storage_usage` SET `bytes` = `bytes` - 128 WHERE `id` = 1;
+  UPDATE `storage_usage` SET `bytes` = `bytes` - 256 WHERE `id` = 1;
 END;
 --> statement-breakpoint
 -- 上限を超える行は入れない（ほかの表と同じ受け入れの止め）。ふだんは書く文の中の 90% の確かめが先に止める
 CREATE TRIGGER `tag_similarities_storage_admission` BEFORE INSERT ON `tag_similarities`
-WHEN (SELECT `bytes` + 128 > `limit_bytes` FROM `storage_usage` WHERE `id` = 1)
+WHEN (SELECT `bytes` + 256 > `limit_bytes` FROM `storage_usage` WHERE `id` = 1)
 BEGIN
   SELECT RAISE(IGNORE);
 END;

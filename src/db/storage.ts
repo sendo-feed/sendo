@@ -74,7 +74,7 @@ export async function readEvictionCandidates(
       + coalesce(length(cast(t.content as blob)), 0)
       from article_translations t where t.article_id = a.id), 0)
     + coalesce((select bytes from article_search_documents where article_id = a.id), 0)
-    + (select count(*) * 128 from tag_similarities where article_id = a.id)
+    + (select count(*) * 256 from tag_similarities where article_id = a.id)
     + (select count(*) * 512 from user_articles u where u.article_id = a.id)
     - (select count(*) * 256 from user_articles u where u.article_id = a.id
       and not exists (select 1 from user_article_removals r where r.user_id = u.user_id and r.article_id = u.article_id))

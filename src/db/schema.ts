@@ -1194,7 +1194,7 @@ export const tagJudging = sqliteTable("tag_judging", {
 /**
  * タグと記事の類似度（docs/decisions/auto-tagging.md の 3）。正規化した値が保存の係数以上の組だけ、正規化する
  * 前の類似度を持つ。同期で配らないので、物理的に消してよい。タグに消した印が付いたらそのタグの行を、受信箱の
- * 行が消えたらそのユーザーと記事の行を、トリガーが消す。保存容量に含める（1 行 128 バイト）
+ * 行が消えたらそのユーザーと記事の行を、トリガーが消す。保存容量に含める（1 行 256 バイト）
  */
 export const tagSimilarities = sqliteTable(
   "tag_similarities",
