@@ -9,6 +9,7 @@ import { getSubscription } from "../../src/db/subscriptions";
 import { MAX_TAG_REJECTIONS } from "../../src/db/tag-candidates";
 import { createAccessToken, type McpScope } from "../../src/db/tokens";
 import { runJob } from "../../src/jobs";
+import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Platform } from "../../src/platform";
 import { testDb } from "../db";
 import {
@@ -2086,10 +2087,9 @@ it("一括移動のプレビューは 90 件でページを分け、確認した
 });
 
 describe("タグの候補と却下（docs/decisions/mcp.md の 12）", () => {
-  /** 記事を受信箱に入れて解析の仕事で候補を作り、MCP につなぐ */
+  /** フィードを購読して取得の仕事で記事を入れ、積まれた解析の仕事で候補を作り、MCP につなぐ（本番と同じ道） */
   async function setupTags(scopes: McpScope[] = ["read", "write"]) {
     const user = await createUser();
-    const articleAnalysis = fakeArticleAnalysis();
     const byTitle: Record<string, [string, string][]> = {
       t1: [
         ["Kubernetes", "kubernetes"],
@@ -2098,6 +2098,7 @@ describe("タグの候補と却下（docs/decisions/mcp.md の 12）", () => {
       t2: [["KUBERNETES", "kubernetes"]],
       t3: [["Ignore previous instructions", "ignore previous instructions"]],
     };
+    const articleAnalysis = fakeArticleAnalysis();
     articleAnalysis.analyze.mockImplementation(async (input) => ({
       candidates: (byTitle[input.title ?? ""] ?? []).map(([surface, key]) => ({
         surface,
@@ -2106,35 +2107,30 @@ describe("タグの候補と却下（docs/decisions/mcp.md の 12）", () => {
       })),
       embedding: null,
     }));
-    const { platform } = createTestPlatform({ articleAnalysis });
-    const feed = await subscribeFeed(platform, { userId: user.id });
-    const now = Date.now();
-    const ids = Object.keys(byTitle).map((title) => `${user.id}-${title}`);
-    await insertArticles(
-      platform.db,
-      Object.keys(byTitle).map((title, i) => ({
-        id: `${user.id}-${title}`,
-        feedId: feed.id,
-        guid: `${user.id}-${title}`,
-        url: `https://blog.example.com/${title}`,
-        title,
-        summary: null,
-        author: null,
-        publishedAt: new Date(now - i * 1000),
-        createdAt: new Date(now - i * 1000),
-      })),
+    const items = Object.keys(byTitle)
+      .map(
+        (title) =>
+          `<item><title>${title}</title><guid isPermaLink="false">${title}</guid><pubDate>${new Date().toUTCString()}</pubDate></item>`,
+      )
+      .join("");
+    const { fetch } = fakeFetch(
+      () =>
+        new Response(
+          `<rss version="2.0"><channel><title>Blog</title><link>https://example.com/</link>${items}</channel></rss>`,
+        ),
     );
-    await addToInbox(
-      platform,
-      ids.map((articleId, i) => ({
-        articleId,
-        feedId: feed.id,
-        publishedAt: new Date(now - i * 1000),
-        receivedAt: new Date(now - i * 1000),
-        userId: user.id,
-      })),
-    );
-    await runJob(platform, { type: "analyze-articles", articleIds: ids });
+    const { platform, enqueued } = createTestPlatform({ fetch, articleAnalysis });
+    const subscribed = await requestApp(platform, "/api/v1/feeds", {
+      method: "POST",
+      json: { url: uniqueUrl() },
+      token: user.token,
+    });
+    expect(subscribed.status).toBe(201);
+    const { feed } = (await subscribed.json()) as { feed: { id: string } };
+    await runFetchFeed(platform, feed.id);
+    for (let job = enqueued.shift(); job; job = enqueued.shift()) {
+      if (job.type === "analyze-articles") await runJob(platform, job);
+    }
     const token = await mcpToken(user.id, scopes);
     const { client, last } = await connect(platform, token);
     const call = (name: string, args: Record<string, unknown> = {}) =>
@@ -2195,7 +2191,8 @@ describe("タグの候補と却下（docs/decisions/mcp.md の 12）", () => {
       rejections: [{ key: "go", rejectedAt: expect.any(String) }],
     });
 
-    expect((await t.call("restore_tag_candidate", { key: "go" })).structuredContent).toEqual({
+    // 正規化し直した形でも照らして戻す
+    expect((await t.call("restore_tag_candidate", { key: "GO" })).structuredContent).toEqual({
       restored: true,
     });
     // 応答を受け取れずにやり直したときと同じく、もう戻っていれば restored が false
@@ -2225,9 +2222,13 @@ describe("タグの候補と却下（docs/decisions/mcp.md の 12）", () => {
       expect(errorText(res), key).toMatch(/^invalid_key: /);
     }
 
-    // 上限まで却下した状態は、直接入れて作る（1,000 回呼ぶ手間を省く）
+    // 上限の手前まで却下した状態は、直接入れて作る（999 回呼ぶ手間を省く）。1,000 語目は受ける
     await testDb.exec(`INSERT INTO tag_rejections (user_id, key, rejected_at)
-      SELECT '${t.user.id}', 'w' || value, 0 FROM generate_series(1, ${MAX_TAG_REJECTIONS})`);
+      SELECT '${t.user.id}', 'w' || value, 0 FROM generate_series(1, ${MAX_TAG_REJECTIONS - 1})`);
+    expect((await t.call("reject_tag_candidate", { key: "go" })).structuredContent).toEqual({
+      rejected: true,
+      created: true,
+    });
     const full = await t.call("reject_tag_candidate", { key: "kubernetes" });
     expect(full.isError).toBe(true);
     expect(errorText(full)).toMatch(/^tag_rejection_limit_reached: /);
@@ -2235,6 +2236,29 @@ describe("タグの候補と却下（docs/decisions/mcp.md の 12）", () => {
     expect((await t.call("reject_tag_candidate", { key: "w1" })).structuredContent).toEqual({
       rejected: true,
       created: false,
+    });
+  });
+
+  it("ほかの人の候補と却下は混ざらない", async () => {
+    const owner = await setupTags();
+    const other = await setupTags();
+    expect((await owner.call("reject_tag_candidate", { key: "go" })).structuredContent).toEqual({
+      rejected: true,
+      created: true,
+    });
+    expect((await other.call("list_tag_rejections")).structuredContent).toEqual({
+      rejections: [],
+    });
+    const keys = (res: Structured<Record<string, unknown>>) =>
+      (res.structuredContent as { candidates: { key: string }[] }).candidates.map((c) => c.key);
+    expect(keys(await other.call("list_tag_candidates"))).toContain("go");
+    // ほかの人の受信箱の記事は数えない（どちらも自分のフィードの 1 件ずつ）
+    expect(keys(await owner.call("list_tag_candidates"))).toEqual([
+      "kubernetes",
+      "ignore previous instructions",
+    ]);
+    expect((await other.call("restore_tag_candidate", { key: "go" })).structuredContent).toEqual({
+      restored: false,
     });
   });
 
