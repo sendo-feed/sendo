@@ -165,6 +165,8 @@ export async function readManualEmbeddings(
     join article_analyses x on x.article_id = g.article_id
     where g.user_id = ${input.userId} and g.kind = 'manual' and g.deleted_at is null
       and x.embedding_revision = ${input.embeddingRevision} and x.embedding is not null
+    -- 足す順を決める（浮動小数の足し算の順で、ベクトルとハッシュが揺れないように）
+    order by g.tag_id, g.article_id
   `);
   return rows.map((row) => ({ ...row, embedding: asBytes(row.embedding) ?? new Uint8Array() }));
 }

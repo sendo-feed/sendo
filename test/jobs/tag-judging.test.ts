@@ -1223,70 +1223,131 @@ describe("ベクトルの変わったタグだけを判定し直す（#424）", 
 });
 
 describe("手で付けた記事に埋め込みが初めて入ったときの版上げ（#424）", () => {
-  it("前の版の埋め込みがなかった記事にだけ上げ、解析し直しで埋め込みが変わっただけでは上げない", async () => {
+  it("解析の行がない記事に解析の仕事が行を入れると上げ、判定し直しで手直しがベクトルに入る", async () => {
     const t = await setup();
-    await t.feed([...standardArticles().slice(0, 3), { title: "pending-0", embedding: null }]);
-    const rust = await t.tag("Rust");
+    await t.feed([...standardArticles(), { title: "pending-0", embedding: axis(3) }]);
+    const go = await t.tag("Go");
+    await t.rejudge();
     const pending = await t.articleId("pending-0");
+    // 解析の行がまだない（解析を待っている）記事にする
+    await testDb.prepare("DELETE FROM article_analyses WHERE article_id = ?").bind(pending).run();
+    expect((await t.request(`/articles/${pending}/tags/${go}`, "PUT", { on: true })).status).toBe(
+      200,
+    );
+    await t.rejudge();
+    const vectorOf = async () =>
+      fromBytes(
+        (await testDb
+          .prepare("SELECT vector FROM tags WHERE id = ?")
+          .bind(go)
+          .first<Uint8Array>("vector")) ?? new Uint8Array(),
+      );
+    expect((await vectorOf())[3]).toBe(0);
+    const revision = async () => (await t.state())?.revision ?? 0;
+    const before = await revision();
+
+    // 解析の仕事が行を入れる（本番の書き込みの道）
+    await runJob(t.platform, { type: "analyze-articles", articleIds: [pending] });
+    expect(await revision()).toBe(before + 1);
+    await t.rejudge();
+    expect((await vectorOf())[3]).toBeGreaterThan(0);
+    const hash = await testDb
+      .prepare("SELECT vector_hash, judged_hash FROM tags WHERE id = ?")
+      .bind(go)
+      .first<{ vector_hash: string; judged_hash: string }>();
+    expect(hash?.judged_hash).toBe(hash?.vector_hash);
+  });
+
+  it("埋め込みのない解析の行に、新しい版の解析が埋め込みを書くと上げ、埋め込みが変わっただけでは上げない", async () => {
+    const t = await setup();
+    await t.feed([...standardArticles().slice(0, 3), { title: "pending-1", embedding: null }]);
+    const rust = await t.tag("Rust");
+    const pending = await t.articleId("pending-1");
     expect((await t.request(`/articles/${pending}/tags/${rust}`, "PUT", { on: true })).status).toBe(
       200,
     );
     const revision = async () => (await t.state())?.revision ?? 0;
     const before = await revision();
-    const setEmbedding = (vector: Float32Array | null) =>
-      testDb
-        .prepare(
-          "UPDATE article_analyses SET embedding = ?, embedding_status = ? WHERE article_id = ?",
-        )
-        .bind(vector ? toBytes(vector) : null, vector ? "done" : "empty", pending)
-        .run();
-    // 埋め込みが初めて入った
-    await setEmbedding(noise(9_000));
+    // 新しい埋め込みの版で解析し直すと、空だった埋め込みが入る（upsert の DO UPDATE の道）
+    t.embeddings.set("pending-1", noise(9_000));
+    t.articleAnalysis.embeddingRevision = 2;
+    await runJob(t.platform, { type: "analyze-articles", articleIds: [pending] });
+    expect(
+      await testDb
+        .prepare("SELECT embedding_revision FROM article_analyses WHERE article_id = ?")
+        .bind(pending)
+        .first<number>("embedding_revision"),
+    ).toBe(2);
     expect(await revision()).toBe(before + 1);
-    // 埋め込みが変わっただけ
-    await setEmbedding(noise(9_001));
+    // さらに新しい版で埋め込みが変わっただけでは上げない
+    t.embeddings.set("pending-1", noise(9_001));
+    t.articleAnalysis.embeddingRevision = 3;
+    await runJob(t.platform, { type: "analyze-articles", articleIds: [pending] });
     expect(await revision()).toBe(before + 1);
-
-    // 解析の行を作り直したとき（行がなかった）も上げる
-    await testDb.prepare("DELETE FROM article_analyses WHERE article_id = ?").bind(pending).run();
-    await testDb
-      .prepare(
-        `INSERT INTO article_analyses (article_id, feed_id, candidate_revision, candidate_status, embedding_revision, embedding_status, embedding, analyzed_at)
-        SELECT id, feed_id, 1, 'empty', 1, 'done', ?, 0 FROM articles WHERE id = ?`,
-      )
-      .bind(toBytes(noise(9_002)), pending)
-      .run();
-    expect(await revision()).toBe(before + 2);
-
-    // 手直しのない記事、ほかの人の記事では上げない
-    const other = await t.articleId("rust-0");
-    await testDb
-      .prepare("UPDATE article_analyses SET embedding = NULL WHERE article_id = ?")
-      .bind(other)
-      .run();
-    await testDb
-      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
-      .bind(toBytes(near(0, 0)), other)
-      .run();
-    expect(await revision()).toBe(before + 2);
   });
 
-  it("手直しの記事が受信箱にないか、タグが消えていれば上げない", async () => {
+  it("同じ記事を受信箱に持っていても、手直しのない人の版は上げない。購読をやめて受信箱にない手直しでも上げない", async () => {
     const t = await setup();
-    const feedId = await t.feed([{ title: "pending-1", embedding: null }]);
     await t.feed(standardArticles().slice(0, 3));
+    // 2 人目は同じフィードを購読し、同じ記事を受信箱に持つ（手直しはしない）
+    const otherUser = await createUser();
+    const other = (path: string, method = "GET", json?: unknown) =>
+      requestApp(t.platform, `/api/v1${path}`, { method, json, token: otherUser.token });
+    const feedId = await t.feed([{ title: "pending-2", embedding: axis(3) }]);
+    const feedUrl =
+      (await testDb
+        .prepare("SELECT url FROM feeds WHERE id = ?")
+        .bind(feedId)
+        .first<string>("url")) ?? "";
+    expect((await other("/feeds", "POST", { url: feedUrl })).status).toBe(201);
+    expect((await other("/tags", "POST", { name: "Rust" })).status).toBe(201);
+    const otherRevision = async () =>
+      (await testDb
+        .prepare("SELECT revision FROM tag_judging WHERE user_id = ?")
+        .bind(otherUser.id)
+        .first<number>("revision")) ?? 0;
     const rust = await t.tag("Rust");
-    const pending = await t.articleId("pending-1");
+    const pending = await t.articleId("pending-2");
     await t.request(`/articles/${pending}/tags/${rust}`, "PUT", { on: true });
-    // 購読をやめると受信箱の行が消え、手直しの行にも消した印が付く
+    await testDb.prepare("DELETE FROM article_analyses WHERE article_id = ?").bind(pending).run();
+    const otherBefore = await otherRevision();
+    const mineBefore = (await t.state())?.revision ?? 0;
+    await runJob(t.platform, { type: "analyze-articles", articleIds: [pending] });
+    expect((await t.state())?.revision).toBe(mineBefore + 1);
+    expect(await otherRevision()).toBe(otherBefore);
+
+    // 購読をやめると、受信箱の行が消え、手直しの行にも消した印が付く。解析し直しても上げない
     await t.request(`/feeds/${feedId}`, "DELETE");
-    const before = (await t.state())?.revision;
-    await testDb
-      .prepare(
-        "UPDATE article_analyses SET embedding = ?, embedding_status = 'done' WHERE article_id = ?",
-      )
-      .bind(toBytes(noise(9_100)), pending)
-      .run();
-    expect((await t.state())?.revision).toBe(before);
+    await testDb.prepare("DELETE FROM article_analyses WHERE article_id = ?").bind(pending).run();
+    const afterUnsubscribe = (await t.state())?.revision;
+    await runJob(t.platform, { type: "analyze-articles", articleIds: [pending] });
+    expect((await t.state())?.revision).toBe(afterUnsubscribe);
+  });
+});
+
+describe("判定し終えたハッシュを書く文の重なり（#424）", () => {
+  it("ハッシュを書く文の直前に版が上がったら書かず、位置も終わりにしない。新しい版で判定し直す", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    const hook = statementHook(/update tags set judged_hash/i, async () => {
+      await t.tag("Go");
+    });
+    await t.rejudge({ ...t.platform, db: hook.db });
+    expect(hook.fired()).toBe(true);
+    expect(
+      await testDb
+        .prepare("SELECT judged_hash FROM tags WHERE id = ?")
+        .bind(rust)
+        .first("judged_hash"),
+    ).toBeNull();
+    expect(await t.state()).toMatchObject({ finished: 0, cursor_article_id: null });
+    await t.rejudge();
+    const row = await testDb
+      .prepare("SELECT vector_hash, judged_hash FROM tags WHERE id = ?")
+      .bind(rust)
+      .first<{ vector_hash: string; judged_hash: string }>();
+    expect(row?.judged_hash).toBe(row?.vector_hash);
+    expect(await t.state()).toMatchObject({ finished: 1 });
   });
 });
