@@ -1,5 +1,7 @@
+import { rewindBackfill } from "../db/article-analysis-backfill";
 import { leaseDueFeeds, MAX_LEASE } from "../db/feeds";
 import { type Platform, SCHEDULE_INTERVAL_MINUTES } from "../platform";
+import { enqueueAnalysisBackground } from "./article-analyses";
 
 /**
  * キューに積んでから取得が終わるまでの猶予。これを過ぎても取得が記録されなければ、
@@ -106,17 +108,26 @@ export function isBackgroundSlot(scheduledTime: Date): boolean {
  * @param scheduledTime 定期実行が予定された時刻
  */
 export async function runScheduled(
-  platform: Pick<Platform, "db" | "jobs" | "now">,
+  platform: Pick<Platform, "db" | "jobs" | "now" | "articleAnalysis">,
   scheduledTime: Date,
 ): Promise<void> {
   if (await enqueueDailyCleanUp(platform, scheduledTime)) {
     console.info("enqueued daily clean-up");
+    // 1 日 1 回の片付けのときに、記事の解析の遡及を先頭に戻す（docs/decisions/article-analysis.md の 2）。
+    // 拾い直しの 1 日を過ぎて取り残された記事も、ここから拾う。容量で積まれる片付けでは戻さない
+    try {
+      await rewindBackfill(platform.db);
+    } catch (error) {
+      console.warn("could not rewind article analysis backfill", { error });
+    }
   }
   const count = await enqueueDueFeeds(platform);
   if (count > 0) console.info("enqueued due feeds", { count });
   await enqueueTranslationMaintenance(platform);
   if (!isBackgroundSlot(scheduledTime)) return;
   await enqueueLanguageDetection(platform);
+  // 記事の解析の遡及と拾い直し（docs/decisions/article-analysis.md の 2）
+  await enqueueAnalysisBackground(platform);
   try {
     await platform.jobs.enqueue([{ type: "index-article-search" }]);
   } catch (error) {

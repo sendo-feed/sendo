@@ -95,7 +95,15 @@ export const jobSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("analyze-articles"),
     articleIds: z.array(z.string().min(1)).min(1).max(ANALYSIS_ARTICLES_PER_JOB),
+    /** 拾い直しの仕事。書いたあとの使用量が 80% を超えるなら書かない（決定の 4） */
+    background: z.literal(true).optional(),
   }),
+  /**
+   * 記事の解析の遡及（docs/decisions/article-analysis.md の 2）。ジョブの表に 1 本だけ置き（未着手 1 つ・
+   * 着手済み 1 つの枠）、位置から続ける。定期実行が、遡及が終わっておらず仕事がないときだけ積み、仕事が
+   * 自分の続きを積む
+   */
+  z.object({ type: z.literal("backfill-article-analyses") }),
   /** 記事のページから本文を抜く（docs/decisions/content.md の 10）。取得の仕事のあとで積む */
   z.object({ type: z.literal("extract-page"), articleId: z.string().min(1) }),
   z.object({

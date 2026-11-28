@@ -561,6 +561,13 @@
       "when": 1795854775175,
       "tag": "0079_article-categories-storage",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "6",
+      "when": 1795857396330,
+      "tag": "0080_article-analysis-backfill",
+      "breakpoints": true
     }
   ]
 }

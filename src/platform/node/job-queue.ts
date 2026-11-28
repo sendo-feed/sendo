@@ -56,6 +56,11 @@ const discordDueAt = sql`coalesce(${feeds.discordRetryAt}, ${feeds.nextFetchAt})
 
 export type JobRunner = (job: Job) => Promise<void>;
 
+/** 同時に 1 本だけ動かす仕事の枠の名前。枠のない仕事は null */
+function slotOf(job: Job): string | null {
+  return job.type === "backfill-article-analyses" ? "article-analysis-backfill" : null;
+}
+
 export interface SqliteJobQueue extends JobQueue {
   /** 仕事を取り出して動かし始める */
   start(run: JobRunner): void;
@@ -99,8 +104,10 @@ export function createSqliteJobQueue(
   /** 時期の来た仕事を取り出す。取り出した回数を増やし、借りの期限まで先へ送る */
   async function claim(limit: number): Promise<JobRow[]> {
     const at = now();
-    // Discord の仕事は、同じプロセスで処理が長引いても借り直さない。
-    const inFlight = [...active.values()].flatMap((row) => (row.discordFeedId ? [row.id] : []));
+    // Discord の仕事と枠のある仕事は、同じプロセスで処理が長引いても借り直さない。
+    const inFlight = [...active.values()].flatMap((row) =>
+      row.discordFeedId || row.slot ? [row.id] : [],
+    );
     const running = alias(jobQueue, "running");
     const started = db
       .select({ id: running.id })
@@ -122,6 +129,13 @@ export function createSqliteJobQueue(
       or(gt(jobQueue.attempts, 0), notExists(started)),
       notExists(backingOff),
     );
+    // 枠のある仕事は、同じ枠の着手済みの仕事があれば、未着手を取り出さない
+    const slotRunning = alias(jobQueue, "slot_running");
+    const slotStarted = db
+      .select({ id: slotRunning.id })
+      .from(slotRunning)
+      .where(and(eq(slotRunning.slot, jobQueue.slot), gt(slotRunning.attempts, 0)));
+    const slotReady = or(gt(jobQueue.attempts, 0), notExists(slotStarted));
     const due = db
       .select({ id: jobQueue.id })
       .from(jobQueue)
@@ -129,6 +143,7 @@ export function createSqliteJobQueue(
         and(
           lte(jobQueue.runAt, at),
           or(isNull(jobQueue.discordFeedId), discordReady),
+          or(isNull(jobQueue.slot), slotReady),
           inFlight.length > 0 ? notInArray(jobQueue.id, inFlight) : undefined,
         ),
       )
@@ -275,6 +290,21 @@ export function createSqliteJobQueue(
     },
     async enqueue(jobs, options) {
       const at = options?.runAt ?? now();
+      if (options?.onlyIfIdle) {
+        // 枠のある仕事を、その枠に仕事が 1 つもないときだけ積む。確かめるのと積むのを同じ文で行う
+        for (const job of jobs) {
+          const slot = slotOf(job);
+          if (slot === null) throw new Error(`job has no slot: ${job.type}`);
+          await db.run(sql`
+            insert into ${jobQueue} ("id", "job", "slot", "attempts", "run_at")
+            select ${crypto.randomUUID()}, ${JSON.stringify(job)}, ${slot}, 0, ${at.getTime()}
+            where not exists (select 1 from ${jobQueue} where "slot" = ${slot})
+            on conflict do nothing
+          `);
+        }
+        notify();
+        return;
+      }
       for (let i = 0; i < jobs.length; i += ENQUEUE_CHUNK_SIZE) {
         await db
           .insert(jobQueue)
@@ -283,6 +313,7 @@ export function createSqliteJobQueue(
               id: crypto.randomUUID(),
               job: JSON.stringify(job),
               discordFeedId: job.type === "fetch-discord" ? job.feedId : null,
+              slot: slotOf(job),
               attempts: 0,
               runAt: at,
             })),

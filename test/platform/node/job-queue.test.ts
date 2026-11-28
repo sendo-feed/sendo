@@ -37,6 +37,87 @@ describe("仕事の表", () => {
     await database.cleanup();
   });
 
+  describe("同時に 1 本だけ動かす仕事の枠（記事の解析の遡及。docs/decisions/article-analysis.md の 2）", () => {
+    const BACKFILL: Job = { type: "backfill-article-analyses" };
+
+    it("未着手 1 つ・着手済み 1 つまでで、着手済みがあれば未着手を取り出さない", async () => {
+      await queue.enqueue([BACKFILL]);
+      await queue.enqueue([BACKFILL]);
+      expect(await rows()).toHaveLength(1);
+
+      let release: () => void = () => {};
+      const running = queue.runDue(async (job) => {
+        if (job.type !== "backfill-article-analyses") return;
+        // 動いている間に、仕事が自分の続きを積む
+        await queue.enqueue([BACKFILL]);
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      });
+      await vi.waitFor(async () => expect(await rows()).toHaveLength(2));
+      // 着手済みがあるうちは、未着手の続きを取り出さない
+      expect(await queue.runDue(async () => {})).toBe(0);
+      // 3 つ目は積めない
+      await queue.enqueue([BACKFILL]);
+      expect(await rows()).toHaveLength(2);
+      release();
+      expect(await running).toBe(1);
+      // 着手済みが終われば、続きを取り出す
+      const seen: Job[] = [];
+      expect(await queue.runDue(async (job) => void seen.push(job))).toBe(1);
+      expect(seen).toEqual([BACKFILL]);
+      expect(await rows()).toEqual([]);
+    });
+
+    it("onlyIfIdle では、その枠に未着手か着手済みの仕事があれば積まない", async () => {
+      await queue.enqueue([BACKFILL], { onlyIfIdle: true });
+      expect(await rows()).toHaveLength(1);
+      await queue.enqueue([BACKFILL], { onlyIfIdle: true });
+      expect(await rows()).toHaveLength(1);
+
+      let release: () => void = () => {};
+      const running = queue.runDue(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      await vi.waitFor(async () => expect((await rows())[0]?.attempts).toBe(1));
+      await queue.enqueue([BACKFILL], { onlyIfIdle: true });
+      expect(await rows()).toHaveLength(1);
+      release();
+      await running;
+      await queue.enqueue([BACKFILL], { onlyIfIdle: true });
+      expect(await rows()).toHaveLength(1);
+      await expect(queue.enqueue([CLEAN_UP], { onlyIfIdle: true })).rejects.toThrow("no slot");
+    });
+
+    it("再起動のあと、借りの期限が切れた着手済みの仕事だけを借り直し、未着手の続きは取り出さない", async () => {
+      await queue.enqueue([BACKFILL]);
+      // 着手したまま落ちたプロセスの行と、その仕事が積んだ続き
+      await database.db.run(sql`update job_queue set attempts = 1`);
+      await queue.enqueue([BACKFILL]);
+      advance(LEASE_MS + 1);
+      const seen: number[] = [];
+      const restarted = createSqliteJobQueue(database.db, { now: () => clock, concurrency: 4 });
+      const claimed = await restarted.runDue(async () => {
+        seen.push((await rows()).filter((row) => row.attempts > 0).length);
+      });
+      expect(claimed).toBe(1);
+      // 動いていたのは着手済みの 1 本だけ
+      expect(seen).toEqual([1]);
+      expect(await rows()).toHaveLength(1);
+      expect((await rows())[0]?.attempts).toBe(0);
+    });
+
+    it("枠のない仕事は、枠のある仕事と関係なく取り出す", async () => {
+      await queue.enqueue([BACKFILL, FETCH, CLEAN_UP]);
+      const seen: string[] = [];
+      expect(await queue.runDue(async (job) => void seen.push(job.type))).toBe(3);
+      expect(seen.sort()).toEqual(["backfill-article-analyses", "clean-up", "fetch-feed"]);
+    });
+  });
+
   it("積んだ仕事を 1 つずつ受け取り、終わったら消す", async () => {
     await queue.enqueue([FETCH, CLEAN_UP]);
     const seen: Job[] = [];

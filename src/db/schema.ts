@@ -483,6 +483,38 @@ export const articleCategories = sqliteTable(
   (t) => [primaryKey({ columns: [t.articleId, t.position] })],
 );
 
+/**
+ * 記事の解析の遡及の位置（docs/decisions/article-analysis.md の 2）。1 行だけ。取り込みの時刻と ID の
+ * 新しい順にたどり、最後に見た記事を位置に持つ。位置が null なら先頭から。版を上げたときと、1 日 1 回の
+ * 片付けのときに先頭に戻す。完了した埋め込みの版と時刻は、自動のタグ付けが使う
+ */
+export const articleAnalysisBackfill = sqliteTable(
+  "article_analysis_backfill",
+  {
+    id: integer("id").primaryKey(),
+    cursorCreatedAt: integer("cursor_created_at"),
+    cursorId: text("cursor_id"),
+    /** この遡及が対象にする候補と埋め込みの版 */
+    candidateRevision: integer("candidate_revision").notNull(),
+    embeddingRevision: integer("embedding_revision").notNull(),
+    /** 最後までたどり終えた */
+    finished: integer("finished", { mode: "boolean" }).notNull(),
+    /**
+     * 先頭に戻すたびに増やす番号。位置を書く文で、読んだときのままかを確かめる（先頭から始めた仕事と、
+     * 途中で先頭に戻された位置は、どちらも位置が null で見分けられないため）
+     */
+    epoch: integer("epoch").notNull().default(0),
+    /**
+     * 埋め込みの版を上げたあと、その版で初めて最後までたどり終えた版と時刻（DB の時計）。行を作るときは、
+     * 版に今の埋め込みの版を入れ、時刻は null にする（機能を入れたときの最初の遡及では記録しない）。記録が
+     * あるかは、時刻が null でないかで見る
+     */
+    completedEmbeddingRevision: integer("completed_embedding_revision"),
+    completedAt: integer("completed_at"),
+  },
+  (t) => [check("article_analysis_backfill_single", sql`${t.id} = 1`)],
+);
+
 /** 解析の状態。済み ／ 入力が空 ／ 失敗（docs/decisions/article-analysis.md の 5） */
 export const ANALYSIS_STATUSES = ["done", "empty", "failed"] as const;
 
@@ -1135,6 +1167,11 @@ export const jobQueue = sqliteTable(
     job: text("job").notNull(),
     /** Discord の取得だけが持つ、直列に動かす単位 */
     discordFeedId: text("discord_feed_id"),
+    /**
+     * 同時に 1 本だけ動かす仕事の枠の名前（記事の解析の遡及。docs/decisions/article-analysis.md の 2）。
+     * 枠ごとに未着手の仕事 1 つと、着手済みの仕事 1 つを持てる。着手済みがあれば、未着手を取り出さない
+     */
+    slot: text("slot"),
     /** 取り出した回数 */
     attempts: integer("attempts").notNull().default(0),
     /** この時刻を過ぎたら取り出してよい */
@@ -1144,6 +1181,7 @@ export const jobQueue = sqliteTable(
     index("job_queue_run_at_idx").on(table.runAt),
     // Discord の購読ごとに未着手の仕事 1 つと、着手済みの仕事 1 つを持てる。
     uniqueIndex("job_queue_discord_slot_idx").on(table.discordFeedId, sql`(${table.attempts} > 0)`),
+    uniqueIndex("job_queue_slot_idx").on(table.slot, sql`(${table.attempts} > 0)`),
   ],
 );
 
