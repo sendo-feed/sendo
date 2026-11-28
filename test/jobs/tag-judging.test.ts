@@ -15,7 +15,7 @@ import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Job } from "../../src/jobs/job";
 import { runScheduled } from "../../src/jobs/schedule";
-import { enqueueStalledRejudges, rocchio, similarityStats } from "../../src/jobs/tag-judging";
+import { enqueueStalledTagJudging, rocchio, similarityStats } from "../../src/jobs/tag-judging";
 import type { ArticleAnalysisInput, Platform } from "../../src/platform";
 import { createSqliteJobQueue } from "../../src/platform/node/job-queue";
 import { testDb } from "../db";
@@ -710,10 +710,10 @@ describe("保存容量", () => {
 
     await configureStorage(t.platform.db, 10 * 1024 ** 3);
     // 位置を最後に動かしてから 10 分たつまでは拾わない
-    await enqueueStalledRejudges(t.platform);
+    await enqueueStalledTagJudging(t.platform);
     expect(t.takeRejudges()).toEqual([]);
     await t.age(601_000);
-    await enqueueStalledRejudges(t.platform);
+    await enqueueStalledTagJudging(t.platform);
     const picked = t.takeRejudges();
     expect(picked).toEqual([{ type: "rejudge-tags", userId: t.user.id }]);
     for (const job of picked) await runJob(t.platform, job);
@@ -721,7 +721,7 @@ describe("保存容量", () => {
 
     // 終わって、ベクトルが今の版なら拾わない
     await t.age(601_000);
-    await enqueueStalledRejudges(t.platform);
+    await enqueueStalledTagJudging(t.platform);
     expect(t.takeRejudges()).toEqual([]);
   });
 });
@@ -1458,6 +1458,8 @@ describe("判定待ちの表で新しい記事を判定する（#445）", () => 
       )
       .bind(feedId)
       .run();
+    // タグのない人は、記事を解析しても判定待ちに積まない
+    expect(await owner.queue()).toEqual([]);
     await t.feed(standardArticles());
     const rust = await t.tag("Rust");
     await t.rejudge();
@@ -1592,6 +1594,47 @@ describe("判定待ちの表で新しい記事を判定する（#445）", () => 
     for (const job of picked) await runJob(t.platform, job);
     expect(await t.queue()).toEqual([]);
     expect(await t.autoTitles(t.rust)).toContain("new-rust");
+  });
+
+  it("判定し直しと判定の仕事が同じ記事に重なり、相手が先に付けていても止めずに続ける", async () => {
+    const t = await judged();
+    await t.feed([
+      { title: "new-rust", embedding: near(0, 508) },
+      { title: "new-rust-2", embedding: near(0, 509) },
+    ]);
+    t.takeJudges();
+    const first = (await t.queue())[0];
+    const firstArticle = await t.articleId(first?.title ?? "");
+    const hook = statementHook(/insert into article_tags/i, async () => {
+      // 判定し直しの仕事が先に同じ記事に付けた
+      await testDb
+        .prepare(
+          `INSERT INTO article_tags (id, tag_id, user_id, article_id, kind, "on", seq)
+          VALUES (?, ?, ?, ?, 'auto', 1, (SELECT coalesce(max(seq), 0) + 1 FROM article_tags))`,
+        )
+        .bind(crypto.randomUUID(), t.rust, t.user.id, firstArticle)
+        .run();
+    });
+    await runJob({ ...t.platform, db: hook.db }, { type: "judge-tags", userId: t.user.id });
+    expect(hook.fired()).toBe(true);
+    expect(await t.queue()).toEqual([]);
+    expect(await t.autoTitles(t.rust)).toEqual([...rustTitles, "new-rust", "new-rust-2"].sort());
+  });
+
+  it("ほかのタグが残ったまま 1 つのタグを消しても、連鎖で付く消した印では積まない。最後のタグを消すと判定し直しが判定待ちの行を消す", async () => {
+    const t = await judged();
+    const go = await t.tag("Go");
+    const rust1 = await t.articleId("rust-1");
+    await t.request(`/articles/${rust1}/tags/${go}`, "PUT", { on: true });
+    await t.request(`/tags/${go}`, "DELETE");
+    expect(await t.queue()).toEqual([]);
+
+    await t.feed([{ title: "new-rust", embedding: near(0, 510) }]);
+    t.takeJudges();
+    expect(await t.queue()).toHaveLength(1);
+    await t.request(`/tags/${t.rust}`, "DELETE");
+    await t.rejudge();
+    expect(await t.queue()).toEqual([]);
   });
 
   it("起動したときに書く版の行は、1 行だけで書き換える", async () => {

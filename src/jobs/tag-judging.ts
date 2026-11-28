@@ -76,7 +76,7 @@ export async function enqueueRejudgeAfterWrite(
 }
 
 /** 定期実行（10 分の区切り）が、止まった判定し直しと、判定待ちの行が残った人の判定を拾う（5、6） */
-export async function enqueueStalledRejudges(platform: JudgingPlatform): Promise<void> {
+export async function enqueueStalledTagJudging(platform: JudgingPlatform): Promise<void> {
   const userIds = await findStalledJudging(platform.db, { limit: STALLED_PER_SCHEDULE });
   for (const userId of userIds) {
     await platform.jobs.enqueue([{ type: "rejudge-tags", userId }], { unlessWaiting: true });
@@ -138,6 +138,7 @@ export async function runJudgeTags(platform: JudgingPlatform, userId: string): P
     revision,
     ids: rows.slice(0, result.judged).map((row) => row.id),
   });
+  // 残りがあれば続きを積む（ちょうど 500 行だったときは、続きの仕事が空振りする）
   if (!result.stopped && rows.length === JUDGE_QUEUE_PER_JOB) {
     await enqueueJudges(platform, [userId]);
   }
@@ -165,7 +166,8 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
   const revision = state.revision;
   let tags = await listJudgedTags(db, userId);
   if (tags.length === 0) {
-    // 有効なタグがなければ、位置を終わりにして終える
+    // 有効なタグがなければ、判定待ちの行を消し、位置を終わりにして終える
+    await clearJudgeQueueWithoutTags(db, userId);
     await advanceJudgingCursor(db, { userId, revision, from: state.cursor, to: null });
     return;
   }
@@ -305,6 +307,8 @@ async function judgeArticles(
           changed++;
           continue;
         }
+        // 判定し直しと判定の仕事が同じ記事に重なり、相手がもう付けた（消した印のない行がある）：変わらない
+        if (written === "present") continue;
         // 書けなかった：理由によらず、この記事で止める（使用量が足りなければ 7 のとおり）。版が変われば、位置を
         // 進める文と判定待ちの行を消す文が通らない。受信箱の行が消えたときは、定期実行が拾い、新しい状態で判定する
         return { changed, judged, stopped: true };

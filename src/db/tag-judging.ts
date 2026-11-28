@@ -317,13 +317,13 @@ const fitsAfterNewRow = sql`(
  * 自動で付ける（2、7）。消した印の行があれば生き返らせ（使用量によらない）、なければ行を作る（書いたあとの
  * 使用量が 90% 以上になるなら作らない）。消した印のない行（手で付け外しした行と、自動で付いた行）は変えない。
  *
- * @returns 見える状態を変えたら written。書けなかったら not_written（版やタグや受信箱が変わったか、使用量が
- *   足りない。呼ぶ側が見分ける）
+ * @returns 見える状態を変えたら written。ほかの仕事が先に付けていたら present。書けなかったら not_written
+ *   （版やタグや受信箱が変わったか、使用量が足りない）
  */
 export async function attachAutoTag(
   db: Database,
   input: { userId: string; tagId: string; articleId: string; revision: number },
-): Promise<"written" | "not_written"> {
+): Promise<"written" | "present" | "not_written"> {
   const revived = await getRow<{ id: string }>(
     db,
     sql`update article_tags set kind = 'auto', "on" = 1, deleted_at = null, seq = ${nextSeq(articleTags)}
@@ -341,7 +341,15 @@ export async function attachAutoTag(
     on conflict (tag_id, article_id) do nothing
     returning id`,
   );
-  return inserted ? "written" : "not_written";
+  if (inserted) return "written";
+  // ほかの仕事が先に付けていれば（消した印のない行がある）、付いた状態は同じ
+  const present = await getRow<{ found: number }>(
+    db,
+    sql`select 1 as found from article_tags
+    where tag_id = ${input.tagId} and article_id = ${input.articleId} and user_id = ${input.userId}
+      and deleted_at is null`,
+  );
+  return present ? "present" : "not_written";
 }
 
 /**
@@ -567,7 +575,10 @@ export async function findQueuedJudgeUsers(
       ? sql`q.article_id in (select value from json_each(${JSON.stringify(input.articleIds)}))`
       : input.feedId !== undefined
         ? sql`q.article_id in (select id from articles where feed_id = ${input.feedId})`
-        : sql`q.user_id = ${input.userId ?? ""}`;
+        : input.userId !== undefined
+          ? sql`q.user_id = ${input.userId}`
+          : undefined;
+  if (filter === undefined) throw new Error("findQueuedJudgeUsers needs a filter");
   const rows = await db.all<{ userId: string }>(sql`
     select distinct q.user_id as "userId" from tag_judge_queue q where ${filter}
   `);

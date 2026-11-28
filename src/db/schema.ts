@@ -1208,6 +1208,8 @@ export const tagJudgeQueue = sqliteTable(
   (t) => [
     uniqueIndex("tag_judge_queue_user_id_article_id_idx").on(t.userId, t.articleId),
     index("tag_judge_queue_user_id_id_idx").on(t.userId, t.id),
+    // 判定の仕事を積む側が、記事やフィードで行のある人を引く
+    index("tag_judge_queue_article_id_idx").on(t.articleId),
   ],
 );
 

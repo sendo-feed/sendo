@@ -282,6 +282,7 @@ export async function runAnalysisBackfill(
   let cursor = state.cursor;
   let analyzed = 0;
   let stopped = false;
+  const analyzedIds: string[] = [];
   for (const article of articles) {
     if (article.waiting) {
       if (analyzed === BACKFILL_ANALYSES_PER_JOB) {
@@ -289,6 +290,7 @@ export async function runAnalysisBackfill(
         break;
       }
       analyzed++;
+      analyzedIds.push(article.id);
       let outcome: AnalysisOutcome;
       try {
         outcome = await analyzeArticle(platform, article.id, BACKGROUND_STORAGE_SHARE);
@@ -305,11 +307,14 @@ export async function runAnalysisBackfill(
           articleId: article.id,
         });
         await advanceBackfill(db, { read: state, cursor, finished: false });
+        await enqueueQueuedJudges(platform, { articleIds: analyzedIds });
         return;
       }
     }
     cursor = { createdAt: article.createdAt, id: article.id };
   }
+  // 埋め込みを保存した記事は、受信箱に持つ人の判定待ちに積まれている（docs/decisions/auto-tagging.md の 5）
+  await enqueueQueuedJudges(platform, { articleIds: analyzedIds });
   const finished = !stopped && articles.length < BACKFILL_SCAN_PER_JOB;
   const advanced = await advanceBackfill(db, { read: state, cursor, finished });
   // 位置が読んだあとで変わっていたら（先頭に戻したなど）、続きは定期実行に任せる

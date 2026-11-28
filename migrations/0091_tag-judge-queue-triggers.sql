@@ -36,6 +36,7 @@ WHEN EXISTS (SELECT 1 FROM `tags` t WHERE t.`user_id` = NEW.`user_id` AND t.`del
   AND EXISTS (
     SELECT 1 FROM `article_analyses` x JOIN `tag_judging_revisions` r ON r.`id` = 1
     WHERE x.`article_id` = NEW.`article_id` AND x.`embedding_revision` = r.`embedding_revision`
+      AND x.`embedding` IS NOT NULL
   )
 BEGIN
   DELETE FROM `tag_judge_queue` WHERE `user_id` = NEW.`user_id` AND `article_id` = NEW.`article_id`;
