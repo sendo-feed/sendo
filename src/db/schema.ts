@@ -1192,6 +1192,32 @@ export const tagJudging = sqliteTable("tag_judging", {
 });
 
 /**
+ * タグと記事の類似度（docs/decisions/auto-tagging.md の 3）。正規化した値が保存の係数以上の組だけ、正規化する
+ * 前の類似度を持つ。同期で配らないので、物理的に消してよい。タグに消した印が付いたらそのタグの行を、受信箱の
+ * 行が消えたらそのユーザーと記事の行を、トリガーが消す。保存容量に含める（1 行 128 バイト）
+ */
+export const tagSimilarities = sqliteTable(
+  "tag_similarities",
+  {
+    tagId: text("tag_id")
+      .notNull()
+      .references(() => tags.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    articleId: text("article_id").notNull(),
+    similarity: real("similarity").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tagId, t.articleId] }),
+    // 受信箱の行が消えたときのトリガーと、判定で記事の行を読むときに使う
+    index("tag_similarities_user_id_article_id_idx").on(t.userId, t.articleId),
+    // 容量の片付けの見積もりで、記事ごとに数える
+    index("tag_similarities_article_id_idx").on(t.articleId),
+  ],
+);
+
+/**
  * 自動のタグ付けの判定待ち（docs/decisions/auto-tagging.md の 5）。行はユーザー、記事の ID、積んだ番号。積んだ
  * 番号は二度と使わない連番で、積み直すときは行を消して入れ直す。解析の行・受信箱の行・記事のタグの行に付けた
  * トリガーが、同じ文の中で積む。受信箱の行が消えたら、トリガーが消す。保存容量に含めない（8）

@@ -4,6 +4,7 @@ import {
   attachAutoTag,
   clearJudgeQueueWithoutTags,
   deleteJudgeQueueRows,
+  deleteSimilarities,
   detachAutoTags,
   findPendingJudgeUsers,
   findQueuedJudgeUsers,
@@ -24,10 +25,13 @@ import {
   readJudgingState,
   readManualEmbeddings,
   readRejudgePage,
+  readSimilarities,
   readStatsSample,
+  SIMILARITY_SAVE_THRESHOLD,
   STATS_MIN_COUNT,
   STATS_MIN_STD_DEV,
   TAG_SCORE_THRESHOLD,
+  writeSimilarity,
   writeTagVector,
 } from "../db/tag-judging";
 import { sha256Hex } from "../lib/crypto";
@@ -275,6 +279,13 @@ async function judgeArticles(
   })) {
     states.set(`${row.tagId}\n${row.articleId}`, row);
   }
+  const similarities = new Map<string, number>();
+  for (const row of await readSimilarities(db, {
+    userId,
+    articleIds: input.rows.map((row) => row.articleId),
+  })) {
+    similarities.set(`${row.tagId}\n${row.articleId}`, row.similarity);
+  }
   let changed = 0;
   let judged = 0;
   for (const row of input.rows) {
@@ -284,8 +295,9 @@ async function judgeArticles(
       continue;
     }
     if (row.embedding === null) {
-      // 今の版で解析済みで、埋め込みが入力が空・失敗：自動で付いた行に消した印を付ける
+      // 今の版で解析済みで、埋め込みが入力が空・失敗：自動で付いた行に消した印を付け、類似度の行を消す
       changed += await detachAutoTags(db, { userId, articleId: row.articleId, revision });
+      await deleteSimilarities(db, { userId, articleId: row.articleId, revision });
       judged++;
       continue;
     }
@@ -293,34 +305,52 @@ async function judgeArticles(
     for (const tag of tags) {
       const current = states.get(`${tag.id}\n${row.articleId}`);
       const judge = judges.get(tag.id);
-      const on = judge !== undefined && score(judge, article) >= TAG_SCORE_THRESHOLD;
-      if (on) {
+      const similarity = judge ? cosine(judge.vector, judge.norm, article) : null;
+      const normalized =
+        judge && similarity !== null ? (similarity - judge.mean) / judge.stdDev : null;
+      // 記事のタグ：係数以上なら付け、自動で付いた行が下回れば消した印を付ける（2）
+      const on = normalized !== null && normalized >= TAG_SCORE_THRESHOLD;
+      if (on && !(current && !current.deleted)) {
         // 付いている行（手で付けた・外した行、自動で付いた行）は変えない
-        if (current && !current.deleted) continue;
         const written = await attachAutoTag(db, {
           userId,
           tagId: tag.id,
           articleId: row.articleId,
           revision,
         });
-        if (written === "written") {
-          changed++;
-          continue;
-        }
-        // 消した印のない行がすでにある（判定し直しと判定の仕事が重なって相手が先に付けたか、利用者が手で付け
-        // 外しした）：変えずに続ける
-        if (written === "present") continue;
-        // 書けなかった：理由によらず、この記事で止める（使用量が足りなければ 7 のとおり）。版が変われば、位置を
-        // 進める文と判定待ちの行を消す文が通らない。受信箱の行が消えたときは、定期実行が拾い、新しい状態で判定する
-        return { changed, judged, stopped: true };
-      }
-      if (current && current.kind === "auto" && !current.deleted) {
+        if (written === "written") changed++;
+        // present：消した印のない行がすでにある（判定し直しと判定の仕事が重なって相手が先に付けたか、利用者が
+        // 手で付け外しした）。変えずに続ける。not_written：理由によらず、この記事で止める（使用量が足りなければ
+        // 7 のとおり）。版が変われば、位置を進める文と判定待ちの行を消す文が通らない。受信箱の行が消えたときは、
+        // 定期実行が拾い、新しい状態で判定する
+        else if (written === "not_written") return { changed, judged, stopped: true };
+      } else if (!on && current && current.kind === "auto" && !current.deleted) {
         changed += await detachAutoTags(db, {
           userId,
           articleId: row.articleId,
           revision,
           tagId: tag.id,
         });
+      }
+      // 類似度：正規化した値が保存の係数以上なら書き（値が変わらなければ書かない）、下回れば消す（3）。統計が
+      // 条件を満たさないタグでは保存しない。記事のタグのあとに書くので、類似度の行を作れずに止まっても、記事の
+      // タグの生き返り（使用量によらない）は済んでいる
+      const saved = similarities.get(`${tag.id}\n${row.articleId}`);
+      if (similarity !== null && normalized !== null && normalized >= SIMILARITY_SAVE_THRESHOLD) {
+        if (saved !== similarity) {
+          const written = await writeSimilarity(db, {
+            userId,
+            tagId: tag.id,
+            articleId: row.articleId,
+            revision,
+            similarity,
+            exists: saved !== undefined,
+          });
+          // 書けなかった：記事のタグと同じく、この記事で止める（7）
+          if (written === "not_written") return { changed, judged, stopped: true };
+        }
+      } else if (saved !== undefined) {
+        await deleteSimilarities(db, { userId, articleId: row.articleId, revision, tagId: tag.id });
       }
     }
     judged++;
@@ -344,11 +374,6 @@ function toJudge(tag: JudgedTag): Judge | null {
   }
   const vector = fromLittleEndian(tag.vector);
   return { id: tag.id, vector, norm: norm(vector), mean: tag.statsMean, stdDev: tag.statsStdDev };
-}
-
-/** タグごとに正規化した類似度（2） */
-function score(judge: Judge, article: Float32Array): number {
-  return (cosine(judge.vector, judge.norm, article) - judge.mean) / judge.stdDev;
 }
 
 /**
