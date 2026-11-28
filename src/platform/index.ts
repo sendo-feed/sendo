@@ -29,6 +29,11 @@ export interface JobQueue {
        * 積む。定期実行が使う。枠のない仕事には使えない
        */
       onlyIfIdle?: boolean;
+      /**
+       * 枠のある仕事を、その枠に未着手の仕事がないときだけ積む（着手済みの仕事があっても積む。動いている仕事が
+       * 自分の続きを積むときや、自動のタグ付けの判定し直し）。枠のない仕事には使えない
+       */
+      unlessWaiting?: boolean;
     },
   ): Promise<void>;
   enqueueDueDiscordFetches(now: Date, limit: number): Promise<number>;

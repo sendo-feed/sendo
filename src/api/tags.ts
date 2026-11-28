@@ -7,6 +7,7 @@ import {
   rejectTagCandidate,
   restoreTagCandidate,
 } from "../db/tag-candidates";
+import { countRejudgeRemaining } from "../db/tag-judging";
 import {
   createTag,
   listTags,
@@ -17,6 +18,7 @@ import {
   removeTag,
   updateTag,
 } from "../db/tags";
+import { enqueueRejudgeAfterWrite } from "../jobs/tag-judging";
 import type { Platform } from "../platform";
 import { listTagCandidates } from "../tags/candidates";
 import type { AuthVariables } from "./auth";
@@ -247,9 +249,13 @@ export function tagsApi(platform: Platform) {
   const { db } = platform;
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook })
     .openapi(listRoute, async (c) => {
-      const items = await listTags(db, c.get("user").id);
-      // 自動のタグ付けを入れるまでは、判定し直す記事はない
-      return c.json({ items: items.map(toTagResponse), rejudgeRemaining: 0 }, 200);
+      const userId = c.get("user").id;
+      const items = await listTags(db, userId);
+      const rejudgeRemaining = await countRejudgeRemaining(db, {
+        userId,
+        embeddingRevision: platform.articleAnalysis.embeddingRevision,
+      });
+      return c.json({ items: items.map(toTagResponse), rejudgeRemaining }, 200);
     })
     .openapi(candidatesRoute, async (c) => {
       const result = await listTagCandidates(platform, c.get("user").id);
@@ -292,6 +298,8 @@ export function tagsApi(platform: Platform) {
       if (result === "tag_id_taken") {
         return c.json(errorBody("tag_id_taken", "tag id is unavailable"), 409);
       }
+      // 作ったら、トリガーがタグの版を上げている（docs/decisions/auto-tagging.md の 4）
+      if (result.created) await enqueueRejudgeAfterWrite(platform, c.get("user").id);
       return c.json({ tag: toTagResponse(result.tag) }, result.created ? 201 : 200);
     })
     .openapi(updateTagRoute, async (c) => {
@@ -306,6 +314,7 @@ export function tagsApi(platform: Platform) {
       if (result === "tag_name_taken") {
         return c.json(errorBody("tag_name_taken", "another tag has the same name"), 409);
       }
+      await enqueueRejudgeAfterWrite(platform, c.get("user").id);
       return c.json({ tag: toTagResponse(result.tag) }, 200);
     })
     .openapi(removeTagRoute, async (c) => {
@@ -315,6 +324,7 @@ export function tagsApi(platform: Platform) {
         now: platform.now(),
       });
       if (removed === "not_found") return c.json(errorBody("not_found", "tag does not exist"), 404);
+      if (removed === "removed") await enqueueRejudgeAfterWrite(platform, c.get("user").id);
       return c.body(null, 204);
     });
 }

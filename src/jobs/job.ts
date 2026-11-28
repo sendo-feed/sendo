@@ -104,6 +104,11 @@ export const jobSchema = z.discriminatedUnion("type", [
    * 自分の続きを積む
    */
   z.object({ type: z.literal("backfill-article-analyses") }),
+  /**
+   * 自動のタグ付けの判定し直し（docs/decisions/auto-tagging.md の 6）。人ごとに、ジョブの表に 1 本だけ置く
+   * （未着手 1 つ・着手済み 1 つの枠）。版を持たず、動いたときにその人の今の版を読む
+   */
+  z.object({ type: z.literal("rejudge-tags"), userId: z.string().min(1) }),
   /** 記事のページから本文を抜く（docs/decisions/content.md の 10）。取得の仕事のあとで積む */
   z.object({ type: z.literal("extract-page"), articleId: z.string().min(1) }),
   z.object({

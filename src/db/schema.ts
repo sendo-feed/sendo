@@ -817,6 +817,8 @@ export const userArticles = sqliteTable(
   (t) => [
     primaryKey({ columns: [t.userId, t.articleId] }),
     index("user_articles_user_id_published_at_idx").on(t.userId, t.publishedAt, t.articleId),
+    // 自動のタグ付けの判定し直しと統計で、受信箱を入った時刻の新しい順にたどる（docs/decisions/auto-tagging.md の 2、6）
+    index("user_articles_user_id_created_at_idx").on(t.userId, t.createdAt, t.articleId),
     index("user_articles_user_id_seq_idx").on(t.userId, t.seq),
     index("user_articles_seq_idx").on(t.seq),
     // 未読の数はその都度数える（docs/decisions/tech-stack.md）。未読の行だけを載せる
@@ -1066,6 +1068,26 @@ export const tags = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
     seq: seq(),
+    /*
+     * 自動のタグ付けのベクトル（docs/decisions/auto-tagging.md の 1、2）。API と同期には出さない。消した印が
+     * 付いたら、名前と説明の埋め込みとベクトルを空にする
+     */
+    /** 名前と説明の埋め込みを作った入力（埋め込みの版・判定の版・「名前。説明」の文）。同じなら作り直さない */
+    nameEmbeddingInput: text("name_embedding_input"),
+    /** 名前と説明の埋め込み（float32 のリトルエンディアン） */
+    nameEmbedding: blob("name_embedding", { mode: "buffer" }).$type<Uint8Array>(),
+    /** タグのベクトル（float32 のリトルエンディアン）。名前と説明の推論が空なら null */
+    vector: blob("vector", { mode: "buffer" }).$type<Uint8Array>(),
+    /** ベクトルを作ったときの、その人のタグの版（tag_judging の revision） */
+    vectorTagRevision: integer("vector_tag_revision"),
+    vectorEmbeddingRevision: integer("vector_embedding_revision"),
+    vectorJudgeRevision: integer("vector_judge_revision"),
+    /** ベクトルを作り始めた時刻 */
+    vectorStartedAt: integer("vector_started_at", { mode: "timestamp_ms" }),
+    /** 類似度の平均と標準偏差と、求めたときの記事の数（2） */
+    statsMean: real("stats_mean"),
+    statsStdDev: real("stats_std_dev"),
+    statsCount: integer("stats_count"),
   },
   (t) => [
     // 同じ人で照合用の名前が同じ有効なタグは 1 つ。作る文と変える文はこれにぶつけて止める
@@ -1138,6 +1160,27 @@ export const tagRejections = sqliteTable(
     index("tag_rejections_user_id_rejected_at_idx").on(t.userId, t.rejectedAt),
   ],
 );
+
+/**
+ * 人ごとのタグの版と、判定し直しの位置（docs/decisions/auto-tagging.md の 4、6）。版は、タグの API と手の
+ * 付け外しの API で行が実際に変わったときに、表に付けたトリガーが同じ文の中で上げ、位置を先頭に戻す。
+ * 一時的な管理の行なので、保存容量に含めない（8）
+ */
+export const tagJudging = sqliteTable("tag_judging", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  revision: integer("revision").notNull(),
+  /** 版を上げた時刻（DB の時計） */
+  revisedAt: integer("revised_at", { mode: "timestamp_ms" }).notNull(),
+  /** 判定し直しで最後に判定した受信箱の行（受信箱に入った時刻と記事の ID）。null なら先頭から */
+  cursorCreatedAt: integer("cursor_created_at", { mode: "timestamp_ms" }),
+  cursorArticleId: text("cursor_article_id"),
+  /** 判定し直しを終えたか */
+  finished: integer("finished", { mode: "boolean" }).notNull(),
+  /** 位置を最後に動かした時刻（DB の時計） */
+  cursorMovedAt: integer("cursor_moved_at", { mode: "timestamp_ms" }).notNull(),
+});
 
 /** その人のタグの消した印の行を、どこまで回収したか（差分同期の下限） */
 export const tagHorizons = sqliteTable("tag_horizons", {
