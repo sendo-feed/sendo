@@ -11,6 +11,7 @@ import {
   fakeArticleAnalysis,
   fakeFetch,
   requestApp,
+  statementHook,
   uniqueUrl,
 } from "../helpers";
 
@@ -294,6 +295,21 @@ describe("却下", () => {
     // ほかの人の却下は数えない
     const other = client(t.platform, (await createUser()).token);
     expect(await (await other.reject("over")).json()).toEqual({ created: true });
+  });
+});
+
+describe("却下の重なり", () => {
+  it("却下が入らず、読み直す前に同じ語が戻されたら、流し直して却下する（上限でなくても 409 にしない）", async () => {
+    const t = await setup();
+    expect((await t.reject("rust")).status).toBe(200);
+    const hook = statementHook(/as existing/i, async () => {
+      await t.restore("rust");
+    });
+    const hooked = client({ ...t.platform, db: hook.db }, t.user.token);
+    const response = await hooked.reject("rust");
+    expect(hook.fired()).toBe(true);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ created: true });
   });
 });
 
