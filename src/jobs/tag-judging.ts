@@ -1,5 +1,3 @@
-import { CHAIN_STORAGE_SHARE, fitsShare } from "../db/article-analyses";
-import { readStorageUsage } from "../db/storage";
 import {
   type ArticleTagState,
   advanceJudgingCursor,
@@ -71,10 +69,7 @@ export async function enqueueRejudgeAfterWrite(
 
 /** 定期実行（10 分の区切り）が、止まった判定し直しを拾う（6） */
 export async function enqueueStalledRejudges(platform: JudgingPlatform): Promise<void> {
-  const userIds = await findStalledJudging(platform.db, {
-    embeddingRevision: platform.articleAnalysis.embeddingRevision,
-    limit: STALLED_PER_SCHEDULE,
-  });
+  const userIds = await findStalledJudging(platform.db, { limit: STALLED_PER_SCHEDULE });
   for (const userId of userIds) {
     await platform.jobs.enqueue([{ type: "rejudge-tags", userId }], { unlessWaiting: true });
   }
@@ -111,11 +106,12 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
     return;
   }
   const revision = state.revision;
+  // 判定し直しを終えていれば何もしない（埋め込みの版や判定の版が変わったときは、版を上げて判定し直す。4）
+  if (state.finished) return;
   if (tags.some((tag) => !isVectorCurrent(tag, { revision, embeddingRevision }))) {
     if (!(await rebuildVectors(platform, { userId, revision, tags }))) return;
     tags = await listJudgedTags(db, userId);
   }
-  if (state.finished) return;
 
   const page = await readRejudgePage(db, {
     userId,
@@ -140,7 +136,8 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
 
   let changed = 0;
   let reached: JudgingCursor | null = state.cursor;
-  let capacity = false;
+  // 行を新しく作れなかった（使用量が足りないか、版・タグ・受信箱が変わった）
+  let stopped = false;
   articles: for (const row of page) {
     if (row.embeddingRevision === null || row.embeddingRevision !== embeddingRevision) {
       // 解析の済んでいない記事は飛ばす。埋め込みの版の古い記事（解析し直しを待っている）は書き換えずに残す
@@ -171,11 +168,10 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
           changed++;
           continue;
         }
-        // 行を新しく作れなかった：使用量が足りなければ、この記事から先へ進めずに終える（7）
-        if (!current && !(await hasRoomForNewRow(platform))) {
-          capacity = true;
-          break articles;
-        }
+        // 書けなかった：理由によらず、この記事から先へ進めずに終える（使用量が足りなければ 7 のとおり。
+        // 版が変われば位置を進める文が通らず、受信箱やタグが変われば次の仕事が新しい状態で判定する）
+        stopped = true;
+        break articles;
       } else if (current && current.kind === "auto" && !current.deleted) {
         changed += await detachAutoTags(db, {
           userId,
@@ -189,7 +185,7 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
   }
   if (changed > 0) await notifySync(platform.syncUpdates.notify, [userId]);
 
-  const done = !capacity && page.length < REJUDGE_ARTICLES_PER_JOB;
+  const done = !stopped && page.length < REJUDGE_ARTICLES_PER_JOB;
   if (reached !== state.cursor || done) {
     const moved = await advanceJudgingCursor(db, {
       userId,
@@ -200,8 +196,8 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
     // 版か位置が変わっていれば、新しい版の判定し直しがやり直す
     if (!moved) return;
   }
-  // 使用量が足りなければ、続きは定期実行が拾う（位置を最後に動かしてから 10 分たったとき）
-  if (!done && !capacity) {
+  // 止まったときの続きは、定期実行が拾う（位置を最後に動かしてから 10 分たったとき）
+  if (!done && !stopped) {
     await platform.jobs.enqueue([{ type: "rejudge-tags", userId }], { unlessWaiting: true });
   }
 }
@@ -262,6 +258,7 @@ async function rebuildVectors(
       userId: input.userId,
       tagId: tag.id,
       revision: input.revision,
+      readVectorTagRevision: tag.vectorTagRevision,
       embeddingRevision,
       startedAt,
       nameEmbeddingInput,
@@ -335,14 +332,6 @@ function cosine(vector: Float32Array, vectorNorm: number, other: Float32Array): 
   }
   const denominator = vectorNorm * Math.sqrt(otherSum);
   return denominator === 0 ? 0 : dot / denominator;
-}
-
-/** 書いたあとの使用量が、片付けの始まる 90% の手前に収まるか（7） */
-async function hasRoomForNewRow(platform: Pick<Platform, "db">): Promise<boolean> {
-  const usage = await readStorageUsage(platform.db);
-  return (
-    usage.unmeasured === 0 && fitsShare(usage.bytes + 256, usage.limitBytes, CHAIN_STORAGE_SHARE)
-  );
 }
 
 /** float32 のリトルエンディアンのバイト列から読む（記事の解析の埋め込みと同じ形） */

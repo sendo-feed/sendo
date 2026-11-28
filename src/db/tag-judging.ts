@@ -121,7 +121,15 @@ export async function listJudgedTags(db: Database, userId: string): Promise<Judg
   }));
 }
 
-/** タグのベクトルが、その人の今の版と、今の埋め込みの版・判定の版で作られているか */
+/** タグのベクトルが、その人の今の版で作られているか（判定し直しの残りと、定期実行が拾う人。6） */
+export function isVectorAtRevision(
+  tag: Pick<JudgedTag, "vectorTagRevision">,
+  revision: number,
+): boolean {
+  return tag.vectorTagRevision === revision;
+}
+
+/** タグのベクトルが、その人の今の版と、今の埋め込みの版・判定の版で作られているか（作り直すか。1） */
 export function isVectorCurrent(
   tag: Pick<JudgedTag, "vectorTagRevision" | "vectorEmbeddingRevision" | "vectorJudgeRevision">,
   input: { revision: number; embeddingRevision: number },
@@ -173,7 +181,8 @@ const sameRevision = (userId: string, revision: number) =>
   sql`(select revision from tag_judging where user_id = ${userId}) = ${revision}`;
 
 /**
- * タグのベクトルと統計を書く（1、2）。その人の版が読んだときのままで、タグが有効なときだけ書く。書けなければ
+ * タグのベクトルと統計を書く（1、2）。その人の版と、ベクトルのタグの版が読んだときのままで、タグが有効な
+ * ときだけ書く。書けなければ
  * false（版が変わった。新しい版の判定し直しがやり直す）
  */
 export async function writeTagVector(
@@ -182,6 +191,8 @@ export async function writeTagVector(
     userId: string;
     tagId: string;
     revision: number;
+    /** 読んだときのベクトルのタグの版 */
+    readVectorTagRevision: number | null;
     embeddingRevision: number;
     startedAt: Date;
     nameEmbeddingInput: string;
@@ -204,6 +215,7 @@ export async function writeTagVector(
       stats_std_dev = ${input.stats?.stdDev ?? null},
       stats_count = ${input.stats?.count ?? null}
     where id = ${input.tagId} and user_id = ${input.userId} and deleted_at is null
+      and vector_tag_revision is ${input.readVectorTagRevision}
       and ${sameRevision(input.userId, input.revision)}
     returning id`,
   );
@@ -368,21 +380,16 @@ export async function advanceJudgingCursor(
  * 判定し直しの残りの記事の数（6）。有効なタグがなければ 0。ベクトルがその人の今の版で作られていないタグが
  * あれば受信箱の全部、終わっていれば 0、そうでなければ位置よりあとの記事の数
  */
-export async function countRejudgeRemaining(
-  db: Database,
-  input: { userId: string; embeddingRevision: number },
-): Promise<number> {
-  const state = await readJudgingState(db, input.userId);
+export async function countRejudgeRemaining(db: Database, userId: string): Promise<number> {
+  const state = await readJudgingState(db, userId);
   if (!state) return 0;
-  const tags = await listJudgedTags(db, input.userId);
+  // ベクトルは読まず、版だけを読む
+  const tags = await db.all<{ vectorTagRevision: number | null }>(sql`
+    select vector_tag_revision as "vectorTagRevision" from tags
+    where user_id = ${userId} and deleted_at is null
+  `);
   if (tags.length === 0) return 0;
-  const stale = tags.some(
-    (tag) =>
-      !isVectorCurrent(tag, {
-        revision: state.revision,
-        embeddingRevision: input.embeddingRevision,
-      }),
-  );
+  const stale = tags.some((tag) => !isVectorAtRevision(tag, state.revision));
   if (!stale && state.finished) return 0;
   const after =
     !stale && state.cursor
@@ -391,18 +398,19 @@ export async function countRejudgeRemaining(
       : sql``;
   const row = await getRow<{ n: number }>(
     db,
-    sql`select count(*) as n from user_articles where user_id = ${input.userId} ${after}`,
+    sql`select count(*) as n from user_articles where user_id = ${userId} ${after}`,
   );
   return row?.n ?? 0;
 }
 
 /**
  * 判定し直しを拾う人（6）。版を上げてから 1 分たち、判定し直しが終わっていないか、ベクトルがその人の今の版で
- * 作られていない有効なタグがあり、位置を最後に動かしてから 10 分たった人
+ * 作られていない有効なタグがあり、位置を最後に動かしてから 10 分たった人。未着手の判定し直しの仕事がすでに
+ * ある人は外し、位置を動かした時刻の古い順に拾う
  */
 export async function findStalledJudging(
   db: Database,
-  input: { embeddingRevision: number; limit: number },
+  input: { limit: number },
 ): Promise<string[]> {
   const rows = await db.all<{ userId: string }>(sql`
     select j.user_id as "userId" from tag_judging j
@@ -412,13 +420,15 @@ export async function findStalledJudging(
       and (
         j.finished = 0 or exists (
           select 1 from tags t
-          where t.user_id = j.user_id and t.deleted_at is null and (
-            t.vector_tag_revision is not j.revision
-            or t.vector_embedding_revision is not ${input.embeddingRevision}
-            or t.vector_judge_revision is not ${JUDGE_REVISION}
-          )
+          where t.user_id = j.user_id and t.deleted_at is null
+            and t.vector_tag_revision is not j.revision
         )
       )
+      -- 判定し直しの仕事の枠の名前（src/platform/node/job-queue.ts の slotOf）
+      and not exists (
+        select 1 from job_queue q where q.slot = 'tag-rejudge:' || j.user_id and q.attempts = 0
+      )
+    order by j.cursor_moved_at
     limit ${input.limit}
   `);
   return rows.map((row) => row.userId);

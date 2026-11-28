@@ -69,3 +69,11 @@ BEGIN
       `cursor_created_at` = NULL, `cursor_article_id` = NULL, `finished` = 0,
       `cursor_moved_at` = excluded.`cursor_moved_at`;
 END;
+--> statement-breakpoint
+-- この機能を入れる前からタグを持っている人の行を入れる。版を上げてから 1 分たったものとして、定期実行が判定し
+-- 直しを拾う（docs/decisions/auto-tagging.md の 6）
+INSERT INTO `tag_judging` (`user_id`, `revision`, `revised_at`, `cursor_created_at`, `cursor_article_id`, `finished`, `cursor_moved_at`)
+  SELECT DISTINCT `user_id`, 1, cast(unixepoch('subsec') * 1000 as integer) - 3600000, NULL, NULL, 0,
+    cast(unixepoch('subsec') * 1000 as integer) - 3600000
+  FROM `tags` WHERE `deleted_at` IS NULL
+  ON CONFLICT (`user_id`) DO NOTHING;

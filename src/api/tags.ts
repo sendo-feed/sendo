@@ -251,10 +251,7 @@ export function tagsApi(platform: Platform) {
     .openapi(listRoute, async (c) => {
       const userId = c.get("user").id;
       const items = await listTags(db, userId);
-      const rejudgeRemaining = await countRejudgeRemaining(db, {
-        userId,
-        embeddingRevision: platform.articleAnalysis.embeddingRevision,
-      });
+      const rejudgeRemaining = await countRejudgeRemaining(db, userId);
       return c.json({ items: items.map(toTagResponse), rejudgeRemaining }, 200);
     })
     .openapi(candidatesRoute, async (c) => {

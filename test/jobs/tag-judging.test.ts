@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { insertFeed } from "../../src/db/feeds";
 import { configureStorage, readStorageUsage } from "../../src/db/storage";
 import {
   REJUDGE_ARTICLES_PER_JOB,
@@ -8,8 +9,10 @@ import {
 import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Job } from "../../src/jobs/job";
+import { runScheduled } from "../../src/jobs/schedule";
 import { enqueueStalledRejudges, rocchio, similarityStats } from "../../src/jobs/tag-judging";
 import type { ArticleAnalysisInput, Platform } from "../../src/platform";
+import { createSqliteJobQueue } from "../../src/platform/node/job-queue";
 import { testDb } from "../db";
 import {
   createTestPlatform,
@@ -612,13 +615,13 @@ describe("判定し直しの重なり", () => {
 });
 
 describe("保存容量", () => {
-  it("自動で行を新しく作ると 90% 以上になるなら作らず、位置をその記事から先へ進めずに終える。定期実行が 10 分後に拾う", async () => {
+  it("自動で行を新しく作ると 90% を超えるなら作らず、位置をその記事から先へ進めずに終える。定期実行が 10 分後に拾う", async () => {
     const t = await setup();
     await t.feed(standardArticles());
     const rust = await t.tag("Rust");
     const usage = await readStorageUsage(t.platform.db);
-    // 書いたあとがちょうど 90% になる上限（90% 以上なので作らない）
-    await configureStorage(t.platform.db, Math.ceil(((usage.bytes + 256) / 0.9) * 1) - 1);
+    // 書いたあとが 90% をわずかに超える上限
+    await configureStorage(t.platform.db, Math.ceil((usage.bytes + 256) / 0.9) - 1);
     await t.rejudge();
     expect(await t.autoTitles(rust)).toEqual([]);
     const stopped = await t.state();
@@ -656,5 +659,318 @@ describe("保存容量", () => {
     await t.age(601_000);
     await enqueueStalledRejudges(t.platform);
     expect(t.takeRejudges()).toEqual([]);
+  });
+});
+
+describe("判定し直しの待ちと積み方", () => {
+  it("版を上げた時刻の 1 分あとで積み、続けて変えた分は、あとの版の時刻に積み直して 1 回にまとめる（本物の仕事の表）", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    let clock = Date.now();
+    const queue = createSqliteJobQueue(t.platform.db, { now: () => new Date(clock) });
+    const p: Platform = { ...t.platform, jobs: queue, now: () => new Date(clock) };
+    const waiting = () =>
+      testDb
+        .prepare("SELECT run_at, attempts FROM job_queue WHERE slot = ?")
+        .bind(`tag-rejudge:${t.user.id}`)
+        .all<{ run_at: number; attempts: number }>();
+
+    const rust = await (await t.request("/tags", "POST", { name: "Rust" }, p)).json();
+    const [first] = (await waiting()).results;
+    expect(first?.run_at).toBeGreaterThanOrEqual(clock + 59_000);
+    expect(first?.run_at).toBeLessThanOrEqual(clock + 61_000);
+    // 続けて変えても、未着手の仕事があれば積まない
+    clock += 30_000;
+    expect((await t.request("/tags", "POST", { name: "Go" }, p)).status).toBe(201);
+    expect((await waiting()).results).toHaveLength(1);
+
+    // 先の仕事が動いても、あとの版を上げてから 1 分たっていなければ積み直して終わる
+    clock += 31_000;
+    expect(await queue.runDue((job) => runJob(p, job))).toBe(1);
+    const [again] = (await waiting()).results;
+    expect(again?.attempts).toBe(0);
+    expect(again?.run_at).toBeGreaterThan(clock);
+    expect(await t.autoTitles((rust as { tag: { id: string } }).tag.id)).toEqual([]);
+
+    await t.age();
+    clock = (again?.run_at ?? clock) + 1;
+    while ((await queue.runDue((job) => runJob(p, job))) > 0) {}
+    expect(await t.autoTitles((rust as { tag: { id: string } }).tag.id)).toEqual(rustTitles);
+    expect((await waiting()).results).toEqual([]);
+  });
+
+  it("定期実行は 10 分の区切りで、版を上げてから 1 分たち、位置を最後に動かしてから 10 分たった人だけを拾う", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    await t.tag("Rust");
+    t.takeRejudges();
+    const slot = new Date("2026-11-28T05:10:00Z");
+    await runScheduled(t.platform, slot);
+    expect(t.takeRejudges()).toEqual([]);
+    // 1 分はたったが、位置を動かしてから 10 分たっていない
+    await t.age(61_000);
+    await runScheduled(t.platform, slot);
+    expect(t.takeRejudges()).toEqual([]);
+    await t.age(600_000);
+    // 10 分の区切りでなければ拾わない
+    await runScheduled(t.platform, new Date("2026-11-28T05:15:00Z"));
+    expect(t.takeRejudges()).toEqual([]);
+    await runScheduled(t.platform, slot);
+    expect(t.takeRejudges()).toEqual([{ type: "rejudge-tags", userId: t.user.id }]);
+  });
+
+  it(`受信箱がちょうど ${REJUDGE_ARTICLES_PER_JOB} 件なら、続きの仕事が空のページを見て終える`, async () => {
+    const t = await setup();
+    const articles = [
+      ...standardArticles(),
+      ...Array.from({ length: REJUDGE_ARTICLES_PER_JOB - 120 }, (_, i) => ({
+        title: `more-${i}`,
+        embedding: noise(7_000 + i),
+      })),
+    ];
+    await t.feed(articles.slice(0, 200));
+    await t.feed(articles.slice(200, 400));
+    await t.feed(articles.slice(400));
+    await t.tag("Rust");
+    expect(await t.rejudge()).toBe(2);
+    expect(await t.state()).toMatchObject({ finished: 1 });
+  });
+});
+
+describe("統計の記事", () => {
+  it("受信箱の新しい 2,000 件から求め、今の版の埋め込みのない記事（古い版・空）は数えない", async () => {
+    const t = await setup();
+    const feedId = `stats-${crypto.randomUUID()}`;
+    await insertFeed(t.platform.db, {
+      id: feedId,
+      url: `https://stats.example/${feedId}`,
+      now: new Date(),
+    });
+    const now = Date.now();
+    const rows = { articles: [] as string[], inbox: [] as string[] };
+    const analyses: { id: string; revision: number; embedding: Float32Array | null }[] = [];
+    // 新しい順に：古い版の記事 3 件、空の記事 2 件、今の版の記事 2,000 件、さらに古い今の版の記事 50 件
+    const plan = [
+      ...Array.from({ length: 3 }, () => ({
+        revision: 0,
+        embedding: axis(0) as Float32Array | null,
+      })),
+      ...Array.from({ length: 2 }, () => ({ revision: 1, embedding: null })),
+      ...Array.from({ length: 2_000 }, (_, i) => ({ revision: 1, embedding: noise(10_000 + i) })),
+      ...Array.from({ length: 50 }, () => ({ revision: 1, embedding: axis(0) })),
+    ];
+    plan.forEach((item, i) => {
+      const id = `${feedId}-${i}`;
+      const at = now - i * 1_000;
+      rows.articles.push(`('${id}', '${feedId}', '${id}', ${at}, ${at})`);
+      rows.inbox.push(`('${t.user.id}', '${id}', '${feedId}', ${at}, ${at}, ${2_000_000 + i})`);
+      analyses.push({ id, ...item });
+    });
+    for (let i = 0; i < plan.length; i += 500) {
+      await testDb.exec(
+        `INSERT INTO articles (id, feed_id, guid, published_at, created_at) VALUES ${rows.articles.slice(i, i + 500).join(",")}`,
+      );
+      await testDb.exec(
+        `INSERT INTO user_articles (user_id, article_id, feed_id, published_at, created_at, seq) VALUES ${rows.inbox.slice(i, i + 500).join(",")}`,
+      );
+    }
+    for (const item of analyses) {
+      await testDb
+        .prepare(
+          `INSERT INTO article_analyses (article_id, feed_id, candidate_revision, candidate_status, embedding_revision, embedding_status, embedding, analyzed_at)
+          VALUES (?, ?, 1, 'empty', ?, ?, ?, 0)`,
+        )
+        .bind(
+          item.id,
+          feedId,
+          item.revision,
+          item.embedding ? "done" : "empty",
+          item.embedding ? toBytes(item.embedding) : null,
+        )
+        .run();
+    }
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    const row = await testDb
+      .prepare("SELECT stats_mean AS mean, stats_count AS count FROM tags WHERE id = ?")
+      .bind(rust)
+      .first<{ mean: number; count: number }>();
+    expect(row?.count).toBe(2_000);
+    // 新しい 2,000 件（軸 0 との類似度が 0 の記事）だけで求めたので、平均は 0
+    expect(row?.mean).toBeCloseTo(0, 6);
+  });
+});
+
+describe("判定し直しの重なり（続き）", () => {
+  it("生き返らせる文・印を付ける文・ベクトルを書く文の直前に版が上がっても書かない", async () => {
+    for (const [pattern, prepare] of [
+      [/update article_tags set kind = 'auto'/i, "revive"],
+      [/update article_tags set deleted_at/i, "detach"],
+      [/update tags set\s+name_embedding_input/i, "vector"],
+    ] as const) {
+      const t = await setup();
+      await t.feed(standardArticles());
+      const rust = await t.tag("Rust");
+      const rust0 = await t.articleId("rust-0");
+      if (prepare !== "vector") {
+        await t.rejudge();
+        // rust-0 を関係のない記事にして、印を付ける ／ 印を付けてから元に戻して生き返らせる
+        await testDb
+          .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
+          .bind(toBytes(noise(42)), rust0)
+          .run();
+        if (prepare === "revive") {
+          await t.tag("Go");
+          await t.rejudge();
+          expect(await t.autoTitles(rust)).not.toContain("rust-0");
+          await testDb
+            .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
+            .bind(toBytes(near(0, 0)), rust0)
+            .run();
+        }
+        await t.tag(prepare === "revive" ? "Go。プログラミング言語" : "Go");
+      }
+      const before = await t.autoTitles(rust);
+      const hook = statementHook(pattern, async () => {
+        await t.tag(`bump-${prepare}`);
+      });
+      await t.rejudge({ ...t.platform, db: hook.db });
+      expect(hook.fired(), prepare).toBe(true);
+      expect(await t.autoTitles(rust), prepare).toEqual(before);
+      expect((await t.state())?.finished, prepare).toBe(0);
+    }
+  });
+
+  it("判定の途中で手で付け外しされたら、手直しの行を変えず、新しい版で判定し直す", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    const rust5 = await t.articleId("rust-5");
+    const hook = statementHook(/insert into article_tags/i, async () => {
+      const response = await t.request(`/articles/${rust5}/tags/${rust}`, "PUT", { on: false });
+      expect(response.status).toBe(200);
+    });
+    await t.rejudge({ ...t.platform, db: hook.db });
+    expect(hook.fired()).toBe(true);
+    await t.rejudge();
+    expect(await t.autoTitles(rust)).toEqual(rustTitles.filter((title) => title !== "rust-5"));
+    expect(
+      await testDb
+        .prepare(`SELECT kind, "on" FROM article_tags WHERE tag_id = ? AND article_id = ?`)
+        .bind(rust, rust5)
+        .first(),
+    ).toEqual({ kind: "manual", on: 0 });
+  });
+
+  it("受信箱から消えた記事の手直しは、次に作り直すときにベクトルから外れる", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const otherFeed = await t.feed([{ title: "extra-0", embedding: axis(3) }]);
+    const go = await t.tag("Go");
+    await t.request(`/articles/${await t.articleId("extra-0")}/tags/${go}`, "PUT", { on: true });
+    await t.rejudge();
+    const vectorOf = async () =>
+      fromBytes(
+        (await testDb
+          .prepare("SELECT vector FROM tags WHERE id = ?")
+          .bind(go)
+          .first<Uint8Array>("vector")) ?? new Uint8Array(),
+      );
+    expect((await vectorOf())[3]).toBeGreaterThan(0);
+    expect((await t.request(`/feeds/${otherFeed}`, "DELETE")).status).toBe(204);
+    // 受信箱の削除では版を上げないので、次の版上げで作り直したときに外れる
+    await t.tag("Rust");
+    await t.rejudge();
+    expect((await vectorOf())[3]).toBe(0);
+  });
+});
+
+describe("判定し直しの失敗と書かない場合", () => {
+  it("結果の変わらない判定し直しは、記事のタグを書かず、知らせない", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    const seqs = () =>
+      testDb
+        .prepare("SELECT article_id, seq FROM article_tags WHERE tag_id = ? ORDER BY article_id")
+        .bind(rust)
+        .all();
+    const before = await seqs();
+    // 当たる記事のない別のタグで版を上げる（Rust のベクトルと統計は変わらない）
+    await t.tag("Go");
+    const notified = t.notified.length;
+    await t.rejudge();
+    expect(await seqs()).toEqual(before);
+    expect(t.notified.length).toBe(notified);
+  });
+
+  it("名前と説明の推論や自動の書き込みが途中で失敗しても、流し直すと正しい状態になる", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    t.articleAnalysis.embedText.mockRejectedValueOnce(new Error("temporary"));
+    await expect(t.rejudge()).rejects.toThrow("temporary");
+    expect(await t.state()).toMatchObject({ finished: 0, cursor_article_id: null });
+
+    let failed = false;
+    const hook = statementHook(/insert into article_tags/i, async () => {
+      failed = true;
+      throw new Error("disk error");
+    });
+    // drizzle は例外を「Failed query」に包む
+    await expect(t.rejudge({ ...t.platform, db: hook.db })).rejects.toThrow();
+    expect(failed).toBe(true);
+    expect(await t.state()).toMatchObject({ finished: 0 });
+    await t.rejudge();
+    expect(await t.autoTitles(rust)).toEqual(rustTitles);
+    expect(await t.state()).toMatchObject({ finished: 1 });
+  });
+});
+
+describe("保存容量（続き）", () => {
+  it("書いたあとが 90% のすぐ手前なら作り、使用量によらず消した印の行は生き返らせる", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    const rust0 = await t.articleId("rust-0");
+    await t.rejudge();
+    // rust-0 の自動の行に消した印を付ける
+    await testDb
+      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
+      .bind(toBytes(noise(77)), rust0)
+      .run();
+    await t.tag("Go");
+    await t.rejudge();
+    expect(await t.autoTitles(rust)).not.toContain("rust-0");
+
+    // 新しい記事 1 件ぶんの行がちょうど入る上限（書いたあとが 90% のすぐ手前）
+    const newFeed = await t.feed([{ title: "rust-new", embedding: near(0, 99) }]);
+    expect(newFeed).not.toBe("");
+    await testDb
+      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
+      .bind(toBytes(near(0, 0)), rust0)
+      .run();
+    const usage = await readStorageUsage(t.platform.db);
+    await configureStorage(t.platform.db, Math.floor((usage.bytes + 256) / 0.9) + 1);
+    await t.tag("Go。プログラミング言語");
+    await t.rejudge();
+    expect(await t.autoTitles(rust)).toEqual([...rustTitles, "rust-new"].sort());
+    // 上限を詰めても、消した印の行は生き返らせる
+    await testDb
+      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
+      .bind(toBytes(noise(78)), rust0)
+      .run();
+    await t.tag("other-1");
+    await t.rejudge();
+    expect(await t.autoTitles(rust)).not.toContain("rust-0");
+    await testDb
+      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
+      .bind(toBytes(near(0, 0)), rust0)
+      .run();
+    await configureStorage(t.platform.db, (await readStorageUsage(t.platform.db)).bytes);
+    await t.tag("other-2");
+    await t.rejudge();
+    expect(await t.autoTitles(rust)).toContain("rust-0");
   });
 });
