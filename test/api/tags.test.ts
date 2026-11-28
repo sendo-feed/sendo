@@ -119,14 +119,15 @@ describe("タグの作成・変更・削除（REST API）", () => {
 
   it("照合用の名前は、まとめの鍵と同じく Unicode の空白だけでそろえる（U+FEFF は空白にしない）", async () => {
     const { created } = await setup();
-    const spaced = await created({ name: "Foo\u3000Bar" });
+    // U+2028 は NFKC のあとも残る Unicode の空白
+    const spaced = await created({ name: "Foo\u2028Bar" });
     expect(await created({ name: "foo bar" }, 200)).toEqual(spaced);
     const bom = await created({ name: "Foo\ufeffBar" });
     expect(bom.id).not.toBe(spaced.id);
   });
 
   it("同じミリ秒に作ったタグも、作った順に並ぶ", async () => {
-    const { created, list } = await setup({ now: () => new Date("2026-11-01T00:00:00Z") });
+    const { created, list } = await setup();
     const names = Array.from({ length: 10 }, (_, i) => `タグ ${i}`);
     for (const name of names) await created({ name });
     await testDb.exec("UPDATE tags SET created_at = 1700000000000");
@@ -138,6 +139,8 @@ describe("タグの作成・変更・削除（REST API）", () => {
     const other = client(owner.platform, (await createUser()).token);
     const theirs = await other.created({ name: "ほかの人のタグ" });
     const mine = await owner.created({ name: "Rust" });
+    // 名前や説明が決まりに合わなければ、同じ照合用の名前のタグがあっても 400
+    expect((await owner.create({ name: "rust", description: "😀".repeat(141) })).status).toBe(400);
     // 同じ照合用の名前のタグがあれば、id がほかの人の行に使われていても 200
     expect(await owner.created({ id: theirs.id, name: "rust" }, 200)).toEqual(mine);
     // 名前が空なら、上限より先に 400
