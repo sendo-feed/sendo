@@ -9,7 +9,7 @@
  * 当てる。Rust のネイティブのモジュール（native/sendo.node）は、先に pnpm build:native で作っておく。
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -24,9 +24,19 @@ if (!existsSync(nativeModule)) {
 
 const embeddingModel =
   process.env.EMBEDDING_MODEL_DIR || path.join(root, "models/potion-multilingual-128m");
-if (process.argv.length <= 2 && !existsSync(path.join(embeddingModel, "model.safetensors"))) {
-  console.error(`埋め込みのモデルがない: ${embeddingModel}\n先に pnpm model:prepare を実行する`);
-  process.exit(1);
+if (process.argv.length <= 2) {
+  // 用意したモデルが、固定ファイルの版と合っているかを確かめる（古い版のベクトルを書かないため）
+  const lock = JSON.parse(
+    readFileSync(path.join(root, "models/potion-multilingual-128m.json"), "utf8"),
+  );
+  const marker = path.join(embeddingModel, ".prepared.json");
+  const prepared = existsSync(marker) ? JSON.parse(readFileSync(marker, "utf8")) : null;
+  if (prepared?.converted !== lock.converted["model.safetensors"]) {
+    console.error(
+      `埋め込みのモデルがないか、版が古い: ${embeddingModel}\n先に pnpm model:prepare を実行する`,
+    );
+    process.exit(1);
+  }
 }
 
 const env = {

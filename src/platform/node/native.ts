@@ -4,7 +4,9 @@
  *
  * モジュールは pnpm build:native で native/sendo.node に作る（イメージでは /app/native/sendo.node）。
  */
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import path from "node:path";
 import type {
   AnalysisCandidate,
   ArticleAnalysisInput,
@@ -65,6 +67,24 @@ export interface EmbeddingModelFiles {
   tokenizer: Uint8Array;
   model: Uint8Array;
   config: Uint8Array;
+}
+
+/**
+ * 埋め込みのモデルのファイルを読む（pnpm model:prepare で用意したディレクトリ）。Rust の側はファイルを
+ * 読まない（docs/decisions/article-analysis.md の 6）。読めなければ例外
+ */
+export async function readEmbeddingModelFiles(directory: string): Promise<EmbeddingModelFiles> {
+  try {
+    const read = (name: string) => readFile(path.join(directory, name));
+    const [tokenizer, model, config] = await Promise.all([
+      read("tokenizer.json"),
+      read("model.safetensors"),
+      read("config.json"),
+    ]);
+    return { tokenizer, model, config };
+  } catch (error) {
+    throw new Error(`could not read the embedding model: ${directory}`, { cause: error });
+  }
 }
 
 /**

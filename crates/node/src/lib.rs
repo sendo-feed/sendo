@@ -327,6 +327,8 @@ pub fn analysis_info() -> AnalysisInfo {
 
 /// 起動時に読み込んだ埋め込みのモデル。プロセスの中で 1 つだけ持ち、スレッドで共有する
 static EMBEDDER: std::sync::OnceLock<sendo_analysis::Embedder> = std::sync::OnceLock::new();
+/// 読み込みを 1 つずつにする。同時に呼ばれても、モデルを 2 つ作って最大のメモリを倍にしない
+static LOADING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn embedder() -> Result<&'static sendo_analysis::Embedder> {
     EMBEDDER
@@ -346,6 +348,10 @@ impl Task for LoadModelTask {
     type JsValue = ();
 
     fn compute(&mut self) -> Result<Self::Output> {
+        // 前の読み込みが panic してロックが毒されても、中身（()）は壊れないので続ける
+        let _guard = LOADING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if EMBEDDER.get().is_some() {
             return Ok(());
         }
@@ -359,7 +365,6 @@ impl Task for LoadModelTask {
             )
         })?
         .map_err(|error| Error::new(Status::InvalidArg, error))?;
-        // 同時に 2 回呼ばれても、先に入ったほうを使う
         let _ = EMBEDDER.set(embedder);
         Ok(())
     }
@@ -370,7 +375,7 @@ impl Task for LoadModelTask {
 }
 
 /// 緩衝層が読んだモデルのファイルのバイト列から、埋め込みのモデルを読み込む（記事の解析の 6）。
-/// 2 回目からは何もしない
+/// プロセスの中で 1 回だけ読み込む。読み込んだあとの呼び出しは、渡したバイト列によらず何もしない
 #[napi]
 pub fn load_embedding_model(
     tokenizer: Uint8Array,
@@ -438,17 +443,16 @@ impl Task for AnalyzeTask {
         } else {
             None
         };
-        catch_unwind(AssertUnwindSafe(|| AnalyzeResult {
-            candidates: input.candidates.then(|| {
-                sendo_analysis::extract_candidates(
-                    &input.title,
-                    &input.summary,
-                    &input.html,
-                    &input.categories,
-                )
-            }),
-            embedding: embedder
-                .and_then(|e| e.embed_article(&input.title, &input.summary, &input.html)),
+        catch_unwind(AssertUnwindSafe(|| {
+            // HTML の解析は 1 回だけにし、候補の語と埋め込みで同じ入力を使う
+            let text =
+                sendo_analysis::ArticleText::from_html(&input.title, &input.summary, &input.html);
+            AnalyzeResult {
+                candidates: input
+                    .candidates
+                    .then(|| sendo_analysis::extract_candidates_from(&text, &input.categories)),
+                embedding: embedder.and_then(|e| e.embed_prepared(&text)),
+            }
         }))
         .map_err(|_| Error::new(Status::GenericFailure, "article analysis panicked"))
     }

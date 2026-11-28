@@ -2,7 +2,7 @@
 
 use model2vec_rs::model::StaticModel;
 
-use crate::text::{normalize, plain_text, truncate_chars};
+use crate::text::{ArticleText, normalize, truncate_chars};
 
 /// 埋め込みの次元（potion-multilingual-128M）
 pub const DIMENSION: usize = 256;
@@ -33,7 +33,12 @@ impl Embedder {
 
     /// 記事の埋め込み。入力（タイトル、要約、本文）が空なら None（「入力が空」）
     pub fn embed_article(&self, title: &str, summary: &str, body_html: &str) -> Option<Vec<f32>> {
-        self.encode(&article_input(title, summary, body_html))
+        self.embed_prepared(&ArticleText::from_html(title, summary, body_html))
+    }
+
+    /// 解析の入力から記事の埋め込みを作る。候補の語と同じ入力を使い、HTML を 2 回解析しない
+    pub fn embed_prepared(&self, text: &ArticleText) -> Option<Vec<f32>> {
+        self.encode(&article_input(text))
     }
 
     /// 文の埋め込み（タグの名前と説明など）。空なら None
@@ -45,9 +50,10 @@ impl Embedder {
         if text.trim().is_empty() {
             return None;
         }
-        let vectors = self
-            .model
-            .encode_with_args(&[text.to_string()], Some(MAX_TOKENS), 1, None);
+        // 判定はベクトルの内積を cosine として使うので、モデルの設定によらず長さを 1 にそろえる
+        let vectors =
+            self.model
+                .encode_with_args(&[text.to_string()], Some(MAX_TOKENS), 1, Some(true));
         let vector = vectors.into_iter().next()?;
         if vector.iter().all(|value| *value == 0.0) {
             return None;
@@ -57,12 +63,16 @@ impl Embedder {
 }
 
 /// 埋め込みの入力：タイトル、要約、本文のプレーンテキストを、先頭 2,000 コードポイントで切る
-pub fn article_input(title: &str, summary: &str, body_html: &str) -> String {
-    let joined = [normalize(title), plain_text(summary), plain_text(body_html)]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
+pub fn article_input(text: &ArticleText) -> String {
+    let joined = [
+        text.title.as_str(),
+        text.summary.as_str(),
+        text.body.as_str(),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n");
     truncate_chars(&joined, INPUT_CHARS).to_string()
 }
 
@@ -73,7 +83,7 @@ mod tests {
     #[test]
     fn article_input_joins_parts_and_cuts_at_2000_code_points() {
         let body = format!("<p>{}</p><pre>code</pre>", "あ".repeat(3000));
-        let input = article_input("Title", "<b>要約</b>", &body);
+        let input = article_input(&ArticleText::from_html("Title", "<b>要約</b>", &body));
         assert!(input.starts_with("Title\n要約\nあ"));
         assert_eq!(input.chars().count(), 2000);
         assert!(!input.contains("code"));
@@ -81,7 +91,10 @@ mod tests {
 
     #[test]
     fn article_input_is_empty_without_text() {
-        assert_eq!(article_input("", "", "<pre>only code</pre>"), "");
+        assert_eq!(
+            article_input(&ArticleText::from_html("", "", "<pre>only code</pre>")),
+            ""
+        );
     }
 }
 
@@ -136,7 +149,8 @@ pub(crate) mod tiny_model {
     }
 
     pub fn config() -> Vec<u8> {
-        br#"{"model_type":"model2vec","hidden_dim":4,"normalize":true}"#.to_vec()
+        // 長さをそろえない設定でも、埋め込みは長さ 1 になる
+        br#"{"model_type":"model2vec","hidden_dim":4,"normalize":false}"#.to_vec()
     }
 }
 

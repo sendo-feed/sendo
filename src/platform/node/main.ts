@@ -6,9 +6,10 @@
  *   node dist/node/sendo.mjs token:create ...    アクセストークンを発行する
  *
  * 設定は環境変数で受ける（ALLOWED_EMAILS、PUBLIC_URL など。.env.example）。動かし方の設定は、
- * PORT（既定 8787）、HOST（既定 0.0.0.0）、DATA_DIR（既定 /data）、MIGRATIONS_DIR、NATIVE_MODULE。
+ * PORT（既定 8787）、HOST（既定 0.0.0.0）、DATA_DIR（既定 /data）、MIGRATIONS_DIR、NATIVE_MODULE、
+ * EMBEDDING_MODEL_DIR（埋め込みのモデルの置き場）。
  */
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -25,6 +26,7 @@ import {
   createLanguageDetector,
   createPageContentExtractor,
   loadNativeModule,
+  readEmbeddingModelFiles,
 } from "./native";
 import { startScheduler } from "./scheduler";
 import { createNodeServer } from "./server";
@@ -52,22 +54,6 @@ function embeddingModelDirectory(env: NodeEnv): string {
   );
 }
 
-/** 埋め込みのモデルのファイルを読む。Rust の側はファイルを読まない（docs/decisions/article-analysis.md の 6） */
-async function readEmbeddingModel(env: NodeEnv) {
-  const directory = embeddingModelDirectory(env);
-  try {
-    const read = (name: string) => readFile(path.join(directory, name));
-    const [tokenizer, model, config] = await Promise.all([
-      read("tokenizer.json"),
-      read("model.safetensors"),
-      read("config.json"),
-    ]);
-    return { tokenizer, model, config };
-  } catch (error) {
-    throw new Error(`could not read the embedding model: ${directory}`, { cause: error });
-  }
-}
-
 /**
  * Rust の処理を読み込み、記事のページから本文を抜く実装、言語を調べる実装、記事を解析する実装を
  * 作る。イメージには必ず入っているので、読み込めなければ起動を止める（docs/decisions/container.md の 2）
@@ -80,7 +66,7 @@ async function loadNativeFeatures(env: NodeEnv) {
   } catch (error) {
     throw new Error(`could not load the native module: ${file}`, { cause: error });
   }
-  const files = await readEmbeddingModel(env);
+  const files = await readEmbeddingModelFiles(embeddingModelDirectory(env));
   let articleAnalysis: Awaited<ReturnType<typeof createArticleAnalyzer>>;
   try {
     articleAnalysis = await createArticleAnalyzer(native, files);

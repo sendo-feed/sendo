@@ -131,6 +131,28 @@ jobs:
         if: steps.changes.outputs.docs_only != 'true'
         run: pnpm build:native
 
+      # 記事の解析の埋め込みのモデル（docs/decisions/article-analysis.md の 6）。取ってきた元のファイル
+      # （約 530MB）を、固定ファイルをキーにキャッシュする。置くのは main への push のときだけ（Rust と同じ）
+      - name: Restore embedding model
+        if: steps.changes.outputs.docs_only != 'true'
+        id: model-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: models/.cache
+          key: embedding-model-${{ hashFiles('models/potion-multilingual-128m.json') }}
+
+      # テスト（test/platform/node/analysis-model.test.ts）が、本物のモデルを起動と同じ道で読み込む
+      - name: Prepare embedding model
+        if: steps.changes.outputs.docs_only != 'true'
+        run: pnpm model:prepare
+
+      - name: Save embedding model
+        if: steps.changes.outputs.docs_only != 'true' && github.ref == 'refs/heads/main' && steps.model-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: models/.cache
+          key: embedding-model-${{ hashFiles('models/potion-multilingual-128m.json') }}
+
       - name: Test
         if: steps.changes.outputs.docs_only != 'true'
         run: pnpm test

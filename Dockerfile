@@ -9,6 +9,17 @@ RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
+# 埋め込みのモデルを用意する（docs/decisions/article-analysis.md の 6）。固定した版のファイルを取って SHA-256 を
+# 確かめ、行ごとの int8 と倍率のファイルに変換する。合わなければビルドを止める。出来上がりは CPU によらない
+# ので、ビルドする機械の CPU のまま動かす。依存のファイルを入れない段（base を土台にしない）にし、固定ファイル
+# と道具が変わらなければキャッシュから使われるようにする。土台は base と同じイメージ
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS model
+WORKDIR /app
+COPY models/potion-multilingual-128m.json ./models/
+COPY scripts/prepare-embedding-model.mjs ./scripts/
+RUN node scripts/prepare-embedding-model.mjs --out /models/potion-multilingual-128m --cache /tmp/model-cache \
+  && rm -rf /tmp/model-cache
+
 # Rust の処理（crates/）を、napi-rs のネイティブのモジュールにする（docs/decisions/tech-stack.md の 5）。
 # ビルドするマシンの CPU のまま、イメージの CPU（TARGETARCH）向けにクロスコンパイルする（arm64 を
 # エミュレーションでコンパイルすると遅いため）。土台は、動かすイメージと同じ Debian（bookworm）にそろえ、
@@ -41,15 +52,6 @@ RUN set -eu; \
   fi; \
   cargo build --release --locked -p sendo-node --target "$target"; \
   cp "target/$target/release/libsendo_node.so" /sendo.node
-
-# 埋め込みのモデルを用意する（docs/decisions/article-analysis.md の 6）。固定した版のファイルを取って SHA-256 を
-# 確かめ、行ごとの int8 と倍率のファイルに変換する。合わなければビルドを止める。固定ファイルが変わらなければ、
-# この段はキャッシュから使われる
-FROM base AS model
-COPY models/potion-multilingual-128m.json ./models/
-COPY scripts/prepare-embedding-model.mjs ./scripts/
-RUN node scripts/prepare-embedding-model.mjs --out /models/potion-multilingual-128m --cache /tmp/model-cache \
-  && rm -rf /tmp/model-cache
 
 # バンドルを作る。依存はバンドルに入れず（--packages=external）、動かすときに入れる
 FROM base AS build

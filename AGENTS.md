@@ -17,9 +17,9 @@ Sendo のサーバー本体。REST API、MCP、フィードの取得ジョブを
 - `pnpm install`：依存を入れる
 - `pnpm check`：型チェック、lint、Rust の検査（`pnpm check:rust`：rustfmt、clippy、cargo test）、ネイティブのモジュールのビルド、テストをまとめて実行する。変更したら、コミットの前に必ず通す
 - `pnpm format`：整形して、直せる lint の指摘を直す
-- `pnpm test`：テスト（Vitest、Node）。テストファイルごとに一時ディレクトリの SQLite を開き、マイグレーションを当てる（`test/db.ts`）。Rust を使うテストは `native/sendo.node` を読み込むので、先に `pnpm build:native` が要る
+- `pnpm test`：テスト（Vitest、Node）。テストファイルごとに一時ディレクトリの SQLite を開き、マイグレーションを当てる（`test/db.ts`）。Rust を使うテストは `native/sendo.node` を読み込むので、先に `pnpm build:native` が要る。本物の埋め込みのモデルを読み込むテスト（`test/platform/node/analysis-model.test.ts`）のために、`pnpm model:prepare` も要る
 - `pnpm build:native`：Rust（`crates/`）を napi-rs のネイティブのモジュール（`native/sendo.node`）にする。`pnpm dev` とテストが読み込む
-- `pnpm model:prepare`：記事の解析の埋め込みのモデルを、`models/potion-multilingual-128m.json` に固定した版で取り、SHA-256 を確かめて行ごとの int8 に変換する（`models/potion-multilingual-128m/`。docs/decisions/article-analysis.md の 6）。`pnpm dev` が読み込む。テストは使わない（Rust のテストは小さなモデルを組み立てる）
+- `pnpm model:prepare`：記事の解析の埋め込みのモデルを、`models/potion-multilingual-128m.json` に固定した版で取り、SHA-256 を確かめて行ごとの int8 に変換する（`models/potion-multilingual-128m/`。docs/decisions/article-analysis.md の 6）。`pnpm dev` と、本物のモデルを読み込むテストが使う（CI も同じ道具で用意し、取ってきた元のファイルをキャッシュする）。Rust のテスト（`crates/analysis`）は小さなモデルを組み立てる。用意したディレクトリの `.prepared.json` に変換したファイルの SHA-256 を書き、`pnpm dev` は固定ファイルと合わなければ止まる
 - `pnpm build`：バンドル（`dist/node/sendo.mjs`）を作る。`DATA_DIR=<ディレクトリ> pnpm start` で動かせる。イメージは `docker build -t sendo .`
 - API（`src/api/`）を変えたら `pnpm openapi:generate` で `spec/openapi.json` を書き出し、一緒にコミットする。sendo-reader はこのファイルから型を作る（CI で食い違いを検査している）
 - `src/db/schema.ts` を変えたら `pnpm db:generate` でマイグレーションを作り、一緒にコミットする。作ったマイグレーションは手で直さない（CI で食い違いを検査している）

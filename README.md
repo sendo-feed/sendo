@@ -309,7 +309,7 @@ Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader
 | `pnpm test` | テスト（Vitest。テストファイルごとに一時ディレクトリの SQLite を使う） |
 | `pnpm check:rust` | Rust（`crates/`）の整形の確認、lint（clippy）、テスト |
 | `pnpm build:native` | Rust をネイティブのモジュール（`native/sendo.node`）にする（`pnpm dev` とテストの前に要る） |
-| `pnpm model:prepare` | 記事の解析の埋め込みのモデルを取り、SHA-256 を確かめて変換する（`pnpm dev` の前に要る） |
+| `pnpm model:prepare` | 記事の解析の埋め込みのモデルを取り、SHA-256 を確かめて変換する（`pnpm dev` とテストの前に要る） |
 | `pnpm build` | バンドル（`dist/node/sendo.mjs`）を作る |
 | `pnpm start` | バンドルを手元の Node で動かす（`DATA_DIR` にデータを置く） |
 | `pnpm openapi:generate` | API の定義を `spec/openapi.json` に書き出す（API を変えたらコミットする） |

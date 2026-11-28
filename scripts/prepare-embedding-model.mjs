@@ -5,14 +5,16 @@
  * models/potion-multilingual-128m.json に固定した版（コミットのハッシュ）のファイルを Hugging Face から
  * 取り、SHA-256 を確かめる。埋め込みの表を行ごとに int8 に縮め、行ごとの倍率を `weights` の表に
  * 入れたファイルに変換し、その SHA-256 も確かめる。どれかが合わなければ止める。
- * 取ってきた元のファイルは、置き場の .cache に残し、次からは取りにいかない。
+ * 取ってきた元のファイルは、置き場の .cache に残し、次からは取りにいかない（使うたびに SHA-256 を確かめる）。
+ * 用意したディレクトリには、変換したファイルの SHA-256 を書いた印（.prepared.json）を置く。pnpm dev は
+ * これを固定ファイルと比べ、版が古ければ止める。
  *
  *   pnpm model:prepare                        # models/potion-multilingual-128m に用意する
  *   node scripts/prepare-embedding-model.mjs --out /models/potion-multilingual-128m
  */
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -28,8 +30,24 @@ const lock = JSON.parse(await readFile(lockFile, "utf8"));
 const out = path.resolve(values.out ?? path.join(root, "models/potion-multilingual-128m"));
 const cache = path.resolve(values.cache ?? path.join(path.dirname(out), ".cache", lock.revision));
 
+/** 取ってよいファイル。safetensors と JSON（とモデルカード）だけで、pickle の形式は取らない（記事の解析の 6） */
+const ALLOWED_FILES = ["config.json", "model.safetensors", "README.md", "tokenizer.json"];
+/** 1 つのファイルを取るのにかける時間の上限 */
+const FETCH_TIMEOUT_MS = 10 * 60 * 1000;
+
 if (!/^[0-9a-f]{40}$/.test(lock.revision))
   throw new Error(`revision must be a commit hash: ${lock.revision}`);
+if (!/^[\w.-]+\/[\w.-]+$/.test(lock.repository))
+  throw new Error(`unexpected repository: ${lock.repository}`);
+const names = Object.keys(lock.files).sort();
+if (names.join() !== [...ALLOWED_FILES].sort().join())
+  throw new Error(`files must be exactly ${ALLOWED_FILES.join(", ")}: ${names.join(", ")}`);
+for (const [name, hash] of Object.entries({
+  ...lock.files,
+  converted: lock.converted["model.safetensors"],
+})) {
+  if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error(`SHA-256 must be 64 hex digits: ${name}`);
+}
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -44,7 +62,10 @@ async function fetchVerified(name, expected) {
   }
   const url = `https://huggingface.co/${lock.repository}/resolve/${lock.revision}/${name}`;
   console.error(`取りにいく: ${url}`);
-  const response = await fetch(url, { redirect: "follow" });
+  const response = await fetch(url, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   if (!response.ok) throw new Error(`could not fetch ${url}: ${response.status}`);
   const bytes = Buffer.from(await response.arrayBuffer());
   const actual = sha256(bytes);
@@ -128,13 +149,23 @@ const convertedHash = sha256(converted);
 const expectedConverted = lock.converted["model.safetensors"];
 if (convertedHash !== expectedConverted) {
   throw new Error(
-    `SHA-256 mismatch for the converted model: expected ${expectedConverted || "(not recorded)"}, got ${convertedHash}`,
+    `SHA-256 mismatch for the converted model: expected ${expectedConverted}, got ${convertedHash}`,
   );
 }
 
-await mkdir(out, { recursive: true });
-await writeFile(path.join(out, "model.safetensors"), converted);
-for (const name of ["tokenizer.json", "config.json", "README.md"]) {
-  await copyFile(path.join(cache, name), path.join(out, name));
+// 一時ディレクトリに全部書いてから入れ替える。途中で落ちても、半端なファイルや、版の混ざった
+// ディレクトリを残さない。書くのは、確かめたバイト列そのもの（置き場を読み直さない）
+const staging = `${out}.tmp`;
+await rm(staging, { recursive: true, force: true });
+await mkdir(staging, { recursive: true });
+await writeFile(path.join(staging, "model.safetensors"), converted);
+for (const name of ALLOWED_FILES.filter((n) => n !== "model.safetensors")) {
+  await writeFile(path.join(staging, name), sources[name]);
 }
+await writeFile(
+  path.join(staging, ".prepared.json"),
+  `${JSON.stringify({ revision: lock.revision, converted: convertedHash }, null, 2)}\n`,
+);
+await rm(out, { recursive: true, force: true });
+await rename(staging, out);
 console.error(`用意した: ${out}`);

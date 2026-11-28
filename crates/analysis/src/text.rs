@@ -9,9 +9,30 @@ use unicode_normalization::UnicodeNormalization;
 /// 受け付ける HTML の大きさの上限。抜いた本文は 256KB を超えない（記事の本文の 10）
 pub const MAX_INPUT_BYTES: usize = 512 * 1024;
 
+/// URL の形をした文字列。URL に使える ASCII の文字だけを含める（日本語の文が空白なしで続いても、
+/// そこで止まるように）
 fn urls() -> &'static Regex {
     static URLS: OnceLock<Regex> = OnceLock::new();
-    URLS.get_or_init(|| Regex::new(r"https?://[^\s<>]+").expect("valid regex"))
+    URLS.get_or_init(|| {
+        Regex::new(r"(?i)https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+").expect("valid regex")
+    })
+}
+
+/// 記事の解析の入力。HTML の解析は、候補と埋め込みで分けずに 1 回だけ行う
+pub struct ArticleText {
+    pub title: String,
+    pub summary: String,
+    pub body: String,
+}
+
+impl ArticleText {
+    pub fn from_html(title: &str, summary: &str, body_html: &str) -> Self {
+        ArticleText {
+            title: normalize(title),
+            summary: plain_text(summary),
+            body: plain_text(body_html),
+        }
+    }
 }
 
 /// HTML をプレーンテキストにする。コードブロック（`pre`）と、読まれない要素（`script` など）と、
@@ -47,30 +68,48 @@ pub fn truncate_chars(text: &str, limit: usize) -> &str {
     }
 }
 
-/// 先頭の `limit` コードポイントで切り、切り目にかかった最後の語を捨てる（記事の解析の 8）
+/// 先頭の `limit` コードポイントで切り、切り目にかかった最後の語を捨てる（記事の解析の 8）。
+/// 語は、候補として拾う語の文字（英数字の語か、カタカナの語）の並び。切り目の両側が同じ種類の
+/// 語の文字のときだけ捨てる
 pub fn truncate_at_word(text: &str, limit: usize) -> &str {
     let head = truncate_chars(text, limit);
     if head.len() == text.len() {
         return head;
     }
     let next = text[head.len()..].chars().next();
-    let last = head.chars().last();
-    match (last, next) {
-        (Some(a), Some(b)) if is_word_char(a) && is_word_char(b) => {
-            let cut = head
-                .char_indices()
-                .rev()
-                .find(|&(_, c)| !is_word_char(c))
-                .map(|(index, c)| index + c.len_utf8())
-                .unwrap_or(0);
-            &head[..cut]
-        }
-        _ => head,
-    }
+    let kind = match (head.chars().last(), next) {
+        (Some(a), Some(b)) => word_kind(a).filter(|k| Some(*k) == word_kind(b)),
+        _ => None,
+    };
+    let Some(kind) = kind else {
+        return head;
+    };
+    let cut = head
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| word_kind(c) != Some(kind))
+        .map(|(index, c)| index + c.len_utf8())
+        .unwrap_or(0);
+    &head[..cut]
 }
 
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '+' | '#' | 'ー')
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WordKind {
+    Ascii,
+    Katakana,
+}
+
+fn word_kind(c: char) -> Option<WordKind> {
+    if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+' | '#') {
+        Some(WordKind::Ascii)
+    } else if c == 'ー'
+        || ('\u{30A1}'..='\u{30FA}').contains(&c)
+        || ('\u{30FD}'..='\u{30FF}').contains(&c)
+    {
+        Some(WordKind::Katakana)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -90,6 +129,14 @@ mod tests {
     }
 
     #[test]
+    fn plain_text_stops_urls_before_japanese_text() {
+        let html = r#"<p><a href="https://github.com/x">https://github.com/x</a>を参照。RustとKubernetesの話。</p>"#;
+        let text = plain_text(html);
+        assert!(!text.contains("github.com"), "{text}");
+        assert!(text.contains("を参照。RustとKubernetesの話。"), "{text}");
+    }
+
+    #[test]
     fn normalize_applies_nfkc_and_keeps_block_breaks() {
         assert_eq!(
             normalize("ＡＷＳ　と\u{3000}ｶﾀｶﾅ\n\n  次の行 "),
@@ -98,10 +145,19 @@ mod tests {
     }
 
     #[test]
-    fn truncate_at_word_drops_the_cut_word() {
+    fn truncate_at_word_drops_only_the_cut_word_of_the_same_kind() {
         assert_eq!(truncate_at_word("Rust Kubernetes", 8), "Rust ");
         assert_eq!(truncate_at_word("Rust Kubernetes", 5), "Rust ");
         assert_eq!(truncate_at_word("Rust", 10), "Rust");
         assert_eq!(truncate_at_word("コンテナ技術", 3), "");
+        // 切れていない語は捨てない（日本語の文字とは種類が違う）
+        assert_eq!(truncate_at_word("あいう Rustを使う方法", 8), "あいう Rust");
+        assert_eq!(truncate_at_word("あいう Rustを使う方法", 6), "あいう ");
+        assert_eq!(
+            truncate_at_word("あいう Rustを使う方法", 10),
+            "あいう Rustを使"
+        );
+        let long = format!("{}Rust", "あ".repeat(19_998));
+        assert_eq!(truncate_at_word(&long, 20_000).chars().count(), 19_998);
     }
 }
