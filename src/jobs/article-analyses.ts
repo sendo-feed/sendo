@@ -10,6 +10,7 @@ import {
   readAnalysisSource,
   recordAnalysis,
 } from "../db/article-analyses";
+import { readArticleCategories } from "../db/article-categories";
 import { configureStorage, readStorageUsage } from "../db/storage";
 import { escapeHtml } from "../lib/html";
 import type { ArticleAnalysisResult, Platform } from "../platform";
@@ -92,7 +93,7 @@ async function analyzeArticle(
       // 要約はプレーンテキスト。Rust は HTML として読むので、文字の `<` をタグにしない
       summary: ownSummary ? escapeHtml(summary) : "",
       html: html ?? "",
-      categories: [],
+      categories: await readArticleCategories(db, articleId),
       candidates: wantCandidates,
       embedding: wantEmbedding,
     });

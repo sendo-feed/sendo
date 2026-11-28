@@ -547,6 +547,20 @@
       "when": 1795852569840,
       "tag": "0077_article-analyses-storage",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "6",
+      "when": 1795854774659,
+      "tag": "0078_article-categories",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "6",
+      "when": 1795854775175,
+      "tag": "0079_article-categories-storage",
+      "breakpoints": true
     }
   ]
 }

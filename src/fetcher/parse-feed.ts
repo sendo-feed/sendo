@@ -38,6 +38,11 @@ export type ParsedItem = {
    * まだサニタイズしていない。保存する ／ 返す前に、必ず lib/sanitize-html.ts を通す
    */
   contentHtml: string | null;
+  /**
+   * フィードのカテゴリ（docs/decisions/article-analysis.md の 8）。RSS の category、Atom の category
+   * （label、なければ term）、JSON Feed の tags。cleanCategories で整えたもの（10 個まで）
+   */
+  categories: string[];
 };
 
 export class ParseFeedError extends Error {
@@ -99,6 +104,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
             html: [item.content?.encoded, item.description],
           }),
           contentHtml: nonBlank(item.content?.encoded ?? item.description),
+          categories: cleanCategories((item.categories ?? []).map((category) => category.name)),
         })),
       };
     }
@@ -126,6 +132,9 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
               .map((text) => text?.value),
           }),
           contentHtml: atomHtml(entry.content) ?? atomHtml(entry.summary),
+          categories: cleanCategories(
+            (entry.categories ?? []).map((category) => nonBlank(category.label) ?? category.term),
+          ),
         })),
       };
     }
@@ -147,6 +156,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
             html: [item.content?.encoded, item.description],
           }),
           contentHtml: nonBlank(item.content?.encoded ?? item.description),
+          categories: [],
         })),
       };
     }
@@ -175,10 +185,43 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
             html: [item.content_html],
           }),
           contentHtml: nonBlank(item.content_html),
+          categories: cleanCategories(item.tags ?? []),
         })),
       };
     }
   }
+}
+
+/** 記事ごとに保存するフィードのカテゴリの数（docs/decisions/article-analysis.md の 8） */
+export const MAX_CATEGORIES = 10;
+const MIN_CATEGORY_LENGTH = 2;
+const MAX_CATEGORY_LENGTH = 40;
+
+/**
+ * フィードのカテゴリを整える（docs/decisions/article-analysis.md の 8）。制御文字と対になっていない
+ * サロゲートを落とし、前後の空白を除く。表記（NFKC のあと）とまとめの鍵のどちらも 2〜40 コードポイントで、
+ * 数字だけでないもの（決定の 9 と 11。Rust の候補の決まりと同じ）だけを、重なりを除いて 10 個まで残す
+ */
+export function cleanCategories(values: readonly (string | null | undefined)[]): string[] {
+  const kept: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const name = value
+      .replace(/\p{Cc}/gu, "")
+      .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "")
+      .trim();
+    const surface = name.normalize("NFKC");
+    const key = surface.toLowerCase().split(/\s+/u).filter(Boolean).join(" ");
+    const fits = (text: string) => {
+      const length = [...text].length;
+      return length >= MIN_CATEGORY_LENGTH && length <= MAX_CATEGORY_LENGTH;
+    };
+    if (!fits(surface) || !fits(key) || /^[\p{N}.\s]+$/u.test(key)) continue;
+    if (kept.includes(name)) continue;
+    kept.push(name);
+    if (kept.length === MAX_CATEGORIES) break;
+  }
+  return kept;
 }
 
 function alternateLink(

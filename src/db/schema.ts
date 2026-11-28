@@ -466,6 +466,23 @@ export const articleLanguages = sqliteTable(
 
 export type ArticleLanguage = typeof articleLanguages.$inferSelect;
 
+/**
+ * フィードのカテゴリ（docs/decisions/article-analysis.md の 8）。取得の仕事が、記事を入れたあと、ページを
+ * 抜く仕事と解析の仕事を積む前に、記事ごとに 10 個まで入れる。記事の行は変えない。position はフィードに
+ * 出てきた順（0 から）。記事の行が消えると、連鎖で消える
+ */
+export const articleCategories = sqliteTable(
+  "article_categories",
+  {
+    articleId: text("article_id")
+      .notNull()
+      .references(() => articles.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    name: text("name").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.articleId, t.position] })],
+);
+
 /** 解析の状態。済み ／ 入力が空 ／ 失敗（docs/decisions/article-analysis.md の 5） */
 export const ANALYSIS_STATUSES = ["done", "empty", "failed"] as const;
 
