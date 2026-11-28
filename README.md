@@ -15,7 +15,7 @@ Sendo は、オープンソースのフィード集約サーバーです。
 
 ## 動かす
 
-Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS など）で、Docker で動かします（[決定](docs/decisions/container.md)）。上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo` と、画面の `ghcr.io/sendo-feed/sendo-reader`）を、Docker Compose で並べて動かすので、fork もビルドも要りません（[決定](docs/decisions/container.md)の 7、10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。動かすサーバーのメモリは 2GB 以上にしてください（記事の解析の埋め込みのモデルを読み込むので、sendo のコンテナは約 1GB を使います。[決定](docs/decisions/container.md)の 2）。
+Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS など）で、Docker で動かします（[決定](docs/decisions/container.md)）。上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo` と、画面の `ghcr.io/sendo-feed/sendo-reader`）を、Docker Compose で並べて動かすので、fork もビルドも要りません（[決定](docs/decisions/container.md)の 7、10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。動かすサーバーのメモリは 2GB 以上にしてください（記事の解析の埋め込みのモデルを読み込むので、sendo のコンテナは 1.5GiB 未満を使います。[決定](docs/decisions/container.md)の 2）。
 
 外に出すのは sendo-reader のコンテナだけです。sendo-reader が画面を返し、Sendo のパス（`/api`、`/mcp`、OAuth など）を、compose の中の Sendo に中継します。公式 Reader、REST API、MCP は同じ sendo-reader のオリジンを使います（[sendo-reader の決定](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)）。
 
