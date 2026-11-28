@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { insertFeed } from "../../src/db/feeds";
-import { configureStorage, readStorageUsage } from "../../src/db/storage";
+import { configureStorage, readEvictionCandidates, readStorageUsage } from "../../src/db/storage";
 import {
   JUDGE_QUEUE_PER_JOB,
   JUDGE_REVISION,
@@ -996,50 +996,40 @@ describe("判定し直しの失敗と書かない場合", () => {
 });
 
 describe("保存容量（続き）", () => {
-  it("書いたあとが 90% のすぐ手前なら作り、使用量によらず消した印の行は生き返らせる", async () => {
+  it("書いたあとが 90% のすぐ手前なら作り、使用量によらず消した印の行は生き返らせる（類似度の行は作らずに止まる）", async () => {
     const t = await setup();
     await t.feed(standardArticles());
     const rust = await t.tag("Rust");
-    const rust0 = await t.articleId("rust-0");
     await t.rejudge();
-    // rust-0 の自動の行に消した印を付ける
-    await testDb
-      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
-      .bind(toBytes(noise(77)), rust0)
-      .run();
-    await t.touch(rust);
-    await t.rejudge();
-    expect(await t.autoTitles(rust)).not.toContain("rust-0");
+    t.takeJudges();
 
-    // 新しい記事 1 件ぶんの行がちょうど入る上限（書いたあとが 90% のすぐ手前）
-    const newFeed = await t.feed([{ title: "rust-new", embedding: near(0, 99) }]);
-    expect(newFeed).not.toBe("");
-    await testDb
-      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
-      .bind(toBytes(near(0, 0)), rust0)
-      .run();
-    // 手で付けた行も容量に数えるので、上限は版を上げたあとで決める
-    await t.touch(rust);
+    // 新しい記事 1 件ぶん（記事のタグの行と類似度の行、どちらも 256 バイト）がちょうど入る上限
+    await t.feed([{ title: "rust-new", embedding: near(0, 99) }]);
+    t.takeJudges();
     const usage = await readStorageUsage(t.platform.db);
-    await configureStorage(t.platform.db, Math.floor((usage.bytes + 256) / 0.9) + 1);
-    await t.rejudge();
+    await configureStorage(t.platform.db, Math.floor((usage.bytes + 256 + 256) / 0.9) + 1);
+    await runJob(t.platform, { type: "judge-tags", userId: t.user.id });
     expect(await t.autoTitles(rust)).toEqual([...rustTitles, "rust-new"].sort());
-    // 上限を詰めても、消した印の行は生き返らせる
+    expect(await t.queue()).toEqual([]);
+
+    // rust-0 の自動の行に消した印を付け、類似度の行も消えた状態にする（手で外してから取り消す）
+    const rust0 = await t.articleId("rust-0");
+    await configureStorage(t.platform.db, 10 * 1024 ** 3);
+    await t.request(`/articles/${rust0}/tags/${rust}`, "PUT", { on: false });
     await testDb
-      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
-      .bind(toBytes(noise(78)), rust0)
+      .prepare("DELETE FROM tag_similarities WHERE tag_id = ? AND article_id = ?")
+      .bind(rust, rust0)
       .run();
-    await t.touch(rust);
+    expect((await t.request(`/articles/${rust0}/tags/${rust}`, "DELETE")).status).toBe(204);
+    expect((await t.queue()).map((row) => row.title)).toEqual(["rust-0"]);
     await t.rejudge();
-    expect(await t.autoTitles(rust)).not.toContain("rust-0");
-    await testDb
-      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
-      .bind(toBytes(near(0, 0)), rust0)
-      .run();
-    await t.touch(rust);
+    t.takeJudges();
+    // 上限を詰めても、消した印の行は生き返らせる。類似度の行は作れないので、その記事の判定待ちの行を残す
     await configureStorage(t.platform.db, (await readStorageUsage(t.platform.db)).bytes);
-    await t.rejudge();
+    await runJob(t.platform, { type: "judge-tags", userId: t.user.id });
     expect(await t.autoTitles(rust)).toContain("rust-0");
+    expect((await t.queue()).map((row) => row.title)).toEqual(["rust-0"]);
+    await configureStorage(t.platform.db, 10 * 1024 ** 3);
   });
 });
 
@@ -1667,5 +1657,244 @@ describe("判定待ちの表で新しい記事を判定する（#445）", () => 
     expect((await testDb.prepare("SELECT * FROM tag_judging_revisions").all()).results).toEqual([
       { id: 1, judge_revision: JUDGE_REVISION, embedding_revision: 1 },
     ]);
+  });
+});
+
+describe("類似度の表（#425）", () => {
+  const similarityRows = (tagId: string) =>
+    testDb
+      .prepare(
+        `SELECT a.title, s.similarity FROM tag_similarities s JOIN articles a ON a.id = s.article_id
+        WHERE s.tag_id = ? ORDER BY a.title`,
+      )
+      .bind(tagId)
+      .all<{ title: string; similarity: number }>()
+      .then((result) => result.results);
+
+  it("正規化した値が保存の係数 1.0 以上の組だけ、正規化する前の類似度を保存し、容量に数える", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const before = (await readStorageUsage(t.platform.db)).bytes;
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    const rows = await similarityRows(rust);
+    expect(rows.map((row) => row.title)).toEqual(rustTitles);
+    for (const row of rows) {
+      const embedding = t.embeddings.get(row.title) ?? new Float32Array();
+      expect(row.similarity).toBeCloseTo(embedding[0] ?? 0, 6);
+    }
+    // 記事のタグ 10 行と類似度 10 行（どちらも 256 バイト）。タグの行は容量に含めない
+    expect((await readStorageUsage(t.platform.db)).bytes).toBe(before + 10 * 256 + 10 * 256);
+  });
+
+  it("統計が条件を満たさないタグでは保存しない", async () => {
+    const t = await setup();
+    await t.feed(standardArticles().slice(0, STATS_MIN_COUNT - 1));
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    expect(await similarityRows(rust)).toEqual([]);
+  });
+
+  it("値が変わらない行は書かず、保存の係数を下回った組の行は消す", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    // 取り消しで rust-1 を判定待ちに積み、値の変わらない判定をする
+    const rust1 = await t.articleId("rust-1");
+    await t.request(`/articles/${rust1}/tags/${rust}`, "PUT", { on: true });
+    await t.request(`/articles/${rust1}/tags/${rust}`, "DELETE");
+    await t.rejudge();
+    t.takeJudges();
+    const hook = statementHook(/(insert into|update) tag_similarities/i, async () => {});
+    await runJob({ ...t.platform, db: hook.db }, { type: "judge-tags", userId: t.user.id });
+    expect(hook.fired()).toBe(false);
+    expect(await t.queue()).toEqual([]);
+
+    // rust-0 が関係のない記事になると、行を消す
+    const rust0 = await t.articleId("rust-0");
+    await testDb
+      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
+      .bind(toBytes(noise(9_900)), rust0)
+      .run();
+    await t.touch(rust);
+    await t.rejudge();
+    expect((await similarityRows(rust)).map((row) => row.title)).not.toContain("rust-0");
+  });
+
+  it("書く文と消す文の直前に版が上がったら、書かず消さない", async () => {
+    const insert = await setup();
+    await insert.feed(standardArticles());
+    const rust = await insert.tag("Rust");
+    const hook = statementHook(/insert into tag_similarities/i, async () => {
+      await insert.tag("Go");
+    });
+    await insert.rejudge({ ...insert.platform, db: hook.db });
+    expect(hook.fired()).toBe(true);
+    expect(await similarityRows(rust)).toEqual([]);
+
+    const remove = await setup();
+    await remove.feed(standardArticles());
+    const rust2 = await remove.tag("Rust");
+    await remove.rejudge();
+    const rust0 = await remove.articleId("rust-0");
+    await testDb
+      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
+      .bind(toBytes(noise(9_901)), rust0)
+      .run();
+    await remove.touch(rust2);
+    const removeHook = statementHook(/delete from tag_similarities/i, async () => {
+      await remove.tag("Go");
+    });
+    await remove.rejudge({ ...remove.platform, db: removeHook.db });
+    expect(removeHook.fired()).toBe(true);
+    expect((await similarityRows(rust2)).map((row) => row.title)).toContain("rust-0");
+  });
+
+  it("タグを消すか受信箱の行が消えると行が消え、埋め込みが空・失敗になった記事の行も消える。版の合わない記事の行は残す", async () => {
+    const t = await setup();
+    const feedId = await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    const ids = {
+      empty: await t.articleId("rust-0"),
+      stale: await t.articleId("rust-1"),
+    };
+    await testDb
+      .prepare(
+        "UPDATE article_analyses SET embedding = NULL, embedding_status = 'failed' WHERE article_id = ?",
+      )
+      .bind(ids.empty)
+      .run();
+    await testDb
+      .prepare("UPDATE article_analyses SET embedding_revision = 0 WHERE article_id = ?")
+      .bind(ids.stale)
+      .run();
+    await t.touch(rust);
+    await t.rejudge();
+    const titles = (await similarityRows(rust)).map((row) => row.title);
+    expect(titles).not.toContain("rust-0");
+    expect(titles).toContain("rust-1");
+
+    expect((await t.request(`/feeds/${feedId}`, "DELETE")).status).toBe(204);
+    expect(await similarityRows(rust)).toEqual([]);
+
+    const other = await setup();
+    await other.feed(standardArticles());
+    const otherRust = await other.tag("Rust");
+    await other.rejudge();
+    expect(await similarityRows(otherRust)).toHaveLength(10);
+    const usage = (await readStorageUsage(other.platform.db)).bytes;
+    await other.request(`/tags/${otherRust}`, "DELETE");
+    expect(await similarityRows(otherRust)).toEqual([]);
+    // 記事のタグの行は消した印として残り、類似度の行の分だけ容量が減る
+    expect((await readStorageUsage(other.platform.db)).bytes).toBe(usage - 10 * 256);
+  });
+
+  it("記事のタグを書いたあと類似度を書く前に落ちても、流し直すと類似度の行がそろう", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    const hook = statementHook(/insert into tag_similarities/i, async () => {
+      throw new Error("crashed");
+    });
+    await expect(t.rejudge({ ...t.platform, db: hook.db })).rejects.toThrow();
+    expect(hook.fired()).toBe(true);
+    expect(await t.state()).toMatchObject({ finished: 0, cursor_article_id: null });
+    await t.rejudge();
+    expect((await similarityRows(rust)).map((row) => row.title)).toEqual(rustTitles);
+    expect(await t.autoTitles(rust)).toEqual(rustTitles);
+  });
+
+  it("ほかの仕事が先に同じ組の類似度の行を作っていても、止めずに続ける", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    const hook = statementHook(/insert into tag_similarities/i, async () => {
+      await testDb
+        .prepare(
+          `INSERT INTO tag_similarities (tag_id, user_id, article_id, similarity)
+          SELECT ?, ?, id, 0.5 FROM articles a
+          WHERE id IN (SELECT article_id FROM user_articles WHERE user_id = ?) AND a.title = 'rust-0'`,
+        )
+        .bind(rust, t.user.id, t.user.id)
+        .run();
+    });
+    await t.rejudge({ ...t.platform, db: hook.db });
+    expect(hook.fired()).toBe(true);
+    expect(await t.state()).toMatchObject({ finished: 1 });
+    expect((await similarityRows(rust)).map((row) => row.title)).toEqual(rustTitles);
+  });
+
+  it("値を変える書き込みは、使用量によらず通る。受信箱の行が消えると容量が戻る", async () => {
+    const t = await setup();
+    const feedId = await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    const before = await similarityRows(rust);
+    // 説明を変え、名前と説明の埋め込みの向きをわずかに変える。同じ記事の組のまま、類似度の値だけが変わる
+    t.texts.set("Rust。言語", normalize(axis(0).map((value, i) => value + (i === 1 ? 0.01 : 0))));
+    await configureStorage(t.platform.db, (await readStorageUsage(t.platform.db)).bytes);
+    expect(
+      (await t.request(`/tags/${rust}`, "PATCH", { name: "Rust", description: "言語" })).status,
+    ).toBe(200);
+    await t.rejudge();
+    expect(await t.state()).toMatchObject({ finished: 1 });
+    const after = await similarityRows(rust);
+    expect(after.map((row) => row.title)).toEqual(before.map((row) => row.title));
+    expect(after.map((row) => row.similarity)).not.toEqual(before.map((row) => row.similarity));
+    await configureStorage(t.platform.db, 10 * 1024 ** 3);
+
+    const usage = (await readStorageUsage(t.platform.db)).bytes;
+    const rows = after.length;
+    const tagRows = await testDb
+      .prepare("SELECT count(*) AS n FROM article_tags WHERE tag_id = ? AND deleted_at IS NULL")
+      .bind(rust)
+      .first<number>("n");
+    expect((await t.request(`/feeds/${feedId}`, "DELETE")).status).toBe(204);
+    expect(await similarityRows(rust)).toEqual([]);
+    // 類似度の行が消えた分だけは確実に戻る（記事のタグの行は消した印として残る）
+    expect((await readStorageUsage(t.platform.db)).bytes).toBeLessThanOrEqual(usage - rows * 256);
+    expect(tagRows).toBeGreaterThan(0);
+  });
+
+  it("容量の片付けの見積もりに、記事の類似度の行を含める", async () => {
+    const t = await setup();
+    const feedId = await t.feed(standardArticles().slice(0, STATS_MIN_COUNT));
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    // このフィードの記事を片付けの候補にする（フィードに載っていない）
+    await testDb
+      .prepare("UPDATE articles SET in_current_feed = 0 WHERE feed_id = ?")
+      .bind(feedId)
+      .run();
+    // ほかのテストの記事より先に、類似度の行のある rust-0 がいちばん先に並ぶようにする
+    await testDb.prepare("UPDATE articles SET created_at = 1 WHERE feed_id = ?").bind(feedId).run();
+    await testDb
+      .prepare("UPDATE articles SET created_at = 0 WHERE id = ?")
+      .bind(await t.articleId("rust-0"))
+      .run();
+    const [first] = await readEvictionCandidates(t.platform.db, 1);
+    /** 先頭の記事だけを返す最大の見積もり（先頭の記事の見積もり）を二分探索で求める */
+    const firstEstimate = async () => {
+      let low = 1;
+      let high = 10 * 1024 * 1024;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        const ids = await readEvictionCandidates(t.platform.db, 2, middle);
+        if (ids.length === 1) low = middle;
+        else high = middle - 1;
+      }
+      return low;
+    };
+    const rows = await testDb
+      .prepare("SELECT count(*) AS n FROM tag_similarities WHERE article_id = ?")
+      .bind(first)
+      .first<number>("n");
+    const withRows = await firstEstimate();
+    await testDb.prepare("DELETE FROM tag_similarities WHERE article_id = ?").bind(first).run();
+    expect(rows).toBeGreaterThan(0);
+    expect(await firstEstimate()).toBe(withRows - (rows ?? 0) * 256);
+    expect(rust).not.toBe("");
   });
 });

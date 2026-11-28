@@ -11,7 +11,7 @@ import { nextSeq } from "./seq";
  */
 
 /**
- * 判定の版（4）。係数、Rocchio の重み、統計を求める件数、名前と説明の入力の形を変えたら上げる
+ * 判定の版（4）。係数、保存の係数、Rocchio の重み、統計を求める件数、名前と説明の入力の形を変えたら上げる
  * （記事の言語判定の pipeline_revision と同じ考え）
  */
 export const JUDGE_REVISION = 1;
@@ -307,9 +307,9 @@ function autoWriteAllowed(input: {
     ) and ${sameRevision(input.userId, input.revision)}`;
 }
 
-/** 書いたあとの使用量が、片付けの始まる 90% の手前に収まること（7。書く文の中で確かめる） */
-const fitsAfterNewRow = sql`(
-    select su.bytes + ${ARTICLE_TAG_ROW_BYTES} < su.limit_bytes * ${CHAIN_STORAGE_SHARE.share}
+/** 行を 1 つ作ったあとの使用量が、片付けの始まる 90% の手前に収まること（7。書く文の中で確かめる） */
+const fitsAfterNewRow = (rowBytes: number) => sql`(
+    select su.bytes + ${rowBytes} < su.limit_bytes * ${CHAIN_STORAGE_SHARE.share}
     from storage_usage su where su.id = 1
   ) and not exists (select 1 from content_sizes where bytes is null)`;
 
@@ -338,7 +338,7 @@ export async function attachAutoTag(
     sql`insert into article_tags (id, tag_id, user_id, article_id, kind, "on", seq)
     select ${crypto.randomUUID()}, ${input.tagId}, ${input.userId}, ${input.articleId}, 'auto', 1,
       ${nextSeq(articleTags)}
-    where ${autoWriteAllowed(input)} and ${fitsAfterNewRow}
+    where ${autoWriteAllowed(input)} and ${fitsAfterNewRow(ARTICLE_TAG_ROW_BYTES)}
     on conflict (tag_id, article_id) do nothing
     returning id`,
   );
@@ -601,4 +601,83 @@ export async function findPendingJudgeUsers(db: Database, limit: number): Promis
     limit ${limit}
   `);
   return rows.map((row) => row.userId);
+}
+
+/** 正規化した値がこの値以上の組の類似度を保存する（3。判定の版に含める） */
+export const SIMILARITY_SAVE_THRESHOLD = 1.0;
+/** 類似度の 1 行が保存容量に数える大きさ（docs/decisions/retention.md の 2。migrations/0094_tag-similarities-triggers.sql） */
+const SIMILARITY_ROW_BYTES = 256;
+
+/** その人の、指定した記事の類似度の行（タグと記事の組ごと） */
+export async function readSimilarities(
+  db: Database,
+  input: { userId: string; articleIds: readonly string[] },
+): Promise<{ tagId: string; articleId: string; similarity: number }[]> {
+  if (input.articleIds.length === 0) return [];
+  return db.all(sql`
+    select tag_id as "tagId", article_id as "articleId", similarity from tag_similarities
+    where user_id = ${input.userId}
+      and article_id in (select value from json_each(${JSON.stringify(input.articleIds)}))
+  `);
+}
+
+/**
+ * 類似度を書く（3）。行があれば値を変え（使用量によらない）、なければ行を作る（書いたあとの使用量が 90% 以上に
+ * なるなら作らない。7）。どちらも、タグが有効で本人のもの、記事が本人の受信箱にある、版が読んだときのままで
+ * あることを、書く文の中で確かめる。
+ *
+ * @returns 書いたら written。行を作ろうとして、ほかの仕事が先に作っていたら present。書けなかったら not_written
+ */
+export async function writeSimilarity(
+  db: Database,
+  input: {
+    userId: string;
+    tagId: string;
+    articleId: string;
+    revision: number;
+    similarity: number;
+    exists: boolean;
+  },
+): Promise<"written" | "present" | "not_written"> {
+  if (input.exists) {
+    const updated = await getRow<{ tagId: string }>(
+      db,
+      sql`update tag_similarities set similarity = ${input.similarity}
+      where tag_id = ${input.tagId} and article_id = ${input.articleId} and user_id = ${input.userId}
+        and ${autoWriteAllowed(input)}
+      returning tag_id as "tagId"`,
+    );
+    return updated ? "written" : "not_written";
+  }
+  const inserted = await getRow<{ tagId: string }>(
+    db,
+    sql`insert into tag_similarities (tag_id, user_id, article_id, similarity)
+    select ${input.tagId}, ${input.userId}, ${input.articleId}, ${input.similarity}
+    where ${autoWriteAllowed(input)} and ${fitsAfterNewRow(SIMILARITY_ROW_BYTES)}
+    on conflict (tag_id, article_id) do nothing
+    returning tag_id as "tagId"`,
+  );
+  if (inserted) return "written";
+  const present = await getRow<{ found: number }>(
+    db,
+    sql`select 1 as found from tag_similarities
+    where tag_id = ${input.tagId} and article_id = ${input.articleId} and user_id = ${input.userId}`,
+  );
+  return present ? "present" : "not_written";
+}
+
+/**
+ * 類似度の行を消す（3）。tagId を省くと、その記事のその人の行すべて（埋め込みが空・失敗の記事）。タグが有効で
+ * 本人のもの、記事が本人の受信箱にある、版が読んだときのままであることを、消す文の中で確かめる
+ */
+export async function deleteSimilarities(
+  db: Database,
+  input: { userId: string; articleId: string; revision: number; tagId?: string },
+): Promise<void> {
+  await db.run(sql`
+    delete from tag_similarities
+    where user_id = ${input.userId} and article_id = ${input.articleId}
+      ${input.tagId === undefined ? sql`` : sql`and tag_id = ${input.tagId}`}
+      and ${autoWriteAllowed({ ...input, tagId: sql`tag_similarities.tag_id` })}
+  `);
 }
