@@ -21,6 +21,7 @@ import { findFeedIcon, ICON_CHECK_INTERVAL_MS } from "../fetcher/find-icon";
 import { htmlToText, type ParsedItem, ParseFeedError, parseFeed } from "../fetcher/parse-feed";
 import { hasMarkupBeyondText, sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
+import { enqueueArticleAnalyses } from "./article-analyses";
 import { enqueueArticleLanguages } from "./article-languages";
 import { notifyBells } from "./bell-notifications";
 import { runFetchDiscord } from "./fetch-discord";
@@ -195,6 +196,12 @@ export async function runFetchFeed(
     await enqueueArticleLanguages(
       platform,
       insertedArticles.map((article) => article.id),
+    );
+    // ページから抜かない記事（http ／ https の URL のない記事）は、取り込んだときに解析を積む
+    // （docs/decisions/article-analysis.md の 1）。ほかの記事は、ページを抜き終えてから積む
+    await enqueueArticleAnalyses(
+      platform,
+      insertedArticles.filter((article) => article.url === null).map((article) => article.id),
     );
 
     // フィードに今載っているかは、解析できたときだけ記録する。打ち切った場合は、

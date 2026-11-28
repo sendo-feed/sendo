@@ -5,6 +5,9 @@ import { MAX_URL_LENGTH } from "../opml";
 /** 記事を指定した言語の判定の仕事 1 つに入れる記事の数（docs/decisions/jobs.md の 4、13） */
 export const LANGUAGE_ARTICLES_PER_JOB = 10;
 
+/** 記事の解析の仕事 1 つに入れる記事の数（docs/decisions/article-analysis.md の 2） */
+export const ANALYSIS_ARTICLES_PER_JOB = 100;
+
 /**
  * インポートを 1 つのジョブで処理する件数。
  *
@@ -84,6 +87,14 @@ export const jobSchema = z.discriminatedUnion("type", [
     userId: z.string().min(1),
     bellId: z.string().min(1),
     windowStart: z.int().nonnegative(),
+  }),
+  /**
+   * 指定した記事を解析する（docs/decisions/article-analysis.md の 1）。ページの本文を抜いた・抜けなかった
+   * を記録したときと、ページから抜かない記事を取り込んだときに積む
+   */
+  z.object({
+    type: z.literal("analyze-articles"),
+    articleIds: z.array(z.string().min(1)).min(1).max(ANALYSIS_ARTICLES_PER_JOB),
   }),
   /** 記事のページから本文を抜く（docs/decisions/content.md の 10）。取得の仕事のあとで積む */
   z.object({ type: z.literal("extract-page"), articleId: z.string().min(1) }),

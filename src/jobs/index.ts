@@ -1,5 +1,6 @@
 import { extractPageContentOnce } from "../fetcher/page-content";
 import type { Platform } from "../platform";
+import { analyzeArticles } from "./article-analyses";
 import { detectArticleLanguages } from "./article-languages";
 import { indexArticleSearch } from "./article-search";
 import { runBundleBellNotification, runSendBellNotification } from "./bell-notifications";
@@ -18,6 +19,10 @@ export async function runJob(platform: Platform, job: Job): Promise<void> {
     }
     case "detect-article-languages": {
       await detectArticleLanguages(platform, job.after, job.articleIds);
+      return;
+    }
+    case "analyze-articles": {
+      await analyzeArticles(platform, job.articleIds);
       return;
     }
     case "fetch-feed":
