@@ -33,6 +33,7 @@ import { FetchFeedError } from "../fetcher/fetch-feed";
 import { findFeedIcon, ICON_CHECK_INTERVAL_MS } from "../fetcher/find-icon";
 import { sanitizeHtml } from "../lib/sanitize-html";
 import type { Platform } from "../platform";
+import { enqueueArticleAnalyses } from "./article-analyses";
 import { notifyBells } from "./bell-notifications";
 import type { FetchFeedOutcome } from "./fetch-feed";
 import { nextFetchInterval } from "./fetch-slots";
@@ -160,6 +161,9 @@ export async function runFetchDiscord(
         };
       }),
   });
+  // Discord の投稿はページから抜かないので、取り込んだときに解析を積む
+  // （docs/decisions/article-analysis.md の 1）。積めなくても、取得は失敗にしない
+  await enqueueArticleAnalyses(platform, [...insertedIds]);
   const usage = await readStorageUsage(db);
   if (inserted !== articles.length) {
     // 容量のトリガーで一部だけ入らなかった場合は、次回も同じ範囲を取り直す。

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   type AnySQLiteColumn,
+  blob,
   check,
   index,
   integer,
@@ -464,6 +465,73 @@ export const articleLanguages = sqliteTable(
 );
 
 export type ArticleLanguage = typeof articleLanguages.$inferSelect;
+
+/** 解析の状態。済み ／ 入力が空 ／ 失敗（docs/decisions/article-analysis.md の 5） */
+export const ANALYSIS_STATUSES = ["done", "empty", "failed"] as const;
+
+/**
+ * 記事の解析（docs/decisions/article-analysis.md の 5）。記事ごとに 1 行。全員で共有する派生データで、
+ * API と同期には出さない。記事の行が消えると、連鎖で消える。
+ *
+ * - 候補と埋め込みで版・状態を分け、それぞれの版を別々に比べて、古いほうの列だけを書く。同じ版は
+ *   上書きしない
+ * - candidate_generation は、この解析で入れた候補の行の世代。候補を読む側は、この世代の候補の行だけを使う
+ * - summary_hash は、要約を NFKC にして空白をそろえた文の SHA-256。要約が空なら null（8）
+ * - embedding は正規化した float32 のリトルエンディアン（7）
+ */
+export const articleAnalyses = sqliteTable(
+  "article_analyses",
+  {
+    articleId: text("article_id")
+      .primaryKey()
+      .references(() => articles.id, { onDelete: "cascade" }),
+    feedId: text("feed_id").notNull(),
+    summaryHash: text("summary_hash"),
+    candidateRevision: integer("candidate_revision"),
+    candidateStatus: text("candidate_status", { enum: ANALYSIS_STATUSES }),
+    candidateGeneration: text("candidate_generation"),
+    embeddingRevision: integer("embedding_revision"),
+    embeddingStatus: text("embedding_status", { enum: ANALYSIS_STATUSES }),
+    embedding: blob("embedding", { mode: "buffer" }).$type<Uint8Array>(),
+    /** 最後に書いた時刻。書く文の中の DB の時計で決める */
+    analyzedAt: integer("analyzed_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    // 同じフィードのほかの記事に同じ要約があるかを引く（8）
+    index("article_analyses_feed_id_summary_hash_idx")
+      .on(t.feedId, t.summaryHash)
+      .where(sql`${t.summaryHash} is not null`),
+  ],
+);
+
+export type ArticleAnalysis = typeof articleAnalyses.$inferSelect;
+
+/**
+ * 記事の候補の語（docs/decisions/article-analysis.md の 5、10）。解析ごとに新しい世代の番号で、1 つの文で
+ * まとめて入れる。解析の行の世代と合わない行は、どこからも読まれず、作ってから 1 日たつと 1 日 1 回の
+ * 片付けが消す
+ */
+export const articleCandidates = sqliteTable(
+  "article_candidates",
+  {
+    articleId: text("article_id")
+      .notNull()
+      .references(() => articles.id, { onDelete: "cascade" }),
+    generation: text("generation").notNull(),
+    /** まとめの鍵（11） */
+    key: text("key").notNull(),
+    /** 表記（NFKC のあと） */
+    surface: text("surface").notNull(),
+    source: text("source", { enum: ["category", "text"] }).notNull(),
+    /** 作った時刻。書く文の中の DB の時計で決める */
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.articleId, t.generation, t.key] }),
+    // 世代の合わない行の片付けで、古い行から引く
+    index("article_candidates_created_at_idx").on(t.createdAt),
+  ],
+);
 
 /**
  * 記事の翻訳（docs/decisions/translation.md）。記事ごとに 1 行。全員で共有する。訳すかどうかを

@@ -1,4 +1,5 @@
 import { ACTIVITY_RETENTION_MS, collectExpiredArticleActivity } from "../db/activity";
+import { collectStaleCandidates, STALE_CANDIDATE_GRACE_MS } from "../db/article-analyses";
 import { collectOldBellNotifications } from "../db/bell-notifications";
 import { BELL_REMOVAL_RETENTION_MS, collectRemovedBells } from "../db/bells";
 import {
@@ -36,6 +37,7 @@ export const SWEEP_ROUNDS = {
   pushRegistrations: 1,
   bellNotifications: 4,
   contents: 2,
+  candidates: 2,
 } as const;
 
 export type CleanUpOutcome = {
@@ -52,6 +54,8 @@ export type CleanUpOutcome = {
   bellNotifications: number;
   /** 置き場から消した本文の数 */
   contents: number;
+  /** 解析の行の世代と合わない、作ってから 1 日たった候補の行 */
+  candidates: number;
 };
 
 /** 消し切るか、文の数の上限に届くまで、消すのを繰り返す */
@@ -171,6 +175,14 @@ export async function runCleanUp(
   // トリガーが今書き留めたばかりなので、次の日に片付く
   const contents = await sweepContents(platform, new Date(now - CONTENT_NOTE_GRACE_MS));
 
+  // 印を書く前に落ちた解析や、重なって負けた解析の候補の行（docs/decisions/article-analysis.md の 5）
+  const candidates = await repeat(SWEEP_ROUNDS.candidates, () =>
+    collectStaleCandidates(db, {
+      before: new Date(now - STALE_CANDIDATE_GRACE_MS),
+      limit: SWEEP_BATCH,
+    }),
+  );
+
   return {
     inbox,
     articles,
@@ -182,5 +194,6 @@ export async function runCleanUp(
     pushRegistrations,
     bellNotifications,
     contents,
+    candidates,
   };
 }

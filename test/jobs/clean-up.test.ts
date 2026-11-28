@@ -73,6 +73,7 @@ describe("runCleanUp", () => {
       pushRegistrations: 0,
       bellNotifications: 0,
       contents: 0,
+      candidates: 0,
     });
     expect(await count("SELECT count(*) AS n FROM articles")).toBe(2);
     expect(await count("SELECT count(*) AS n FROM user_article_removals")).toBe(0);

@@ -2,6 +2,7 @@ import path from "node:path";
 import type { Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { SQLiteSyncDialect } from "drizzle-orm/sqlite-core";
+import { vi } from "vitest";
 import { createApp } from "../src/app";
 import type { Database } from "../src/db";
 import { DB_NOW_MS } from "../src/db/clock";
@@ -13,6 +14,8 @@ import { subscribeMany } from "../src/db/subscriptions";
 import { createAccessToken } from "../src/db/tokens";
 import type { Job } from "../src/jobs/job";
 import {
+  type ArticleAnalysisInput,
+  type ArticleAnalysisResult,
   type ArticleAnalyzer,
   DEFAULT_FETCH_INTERVAL_MINUTES,
   DEFAULT_STORAGE_LIMIT_MIB,
@@ -134,6 +137,29 @@ const unusedArticleAnalysis: ArticleAnalyzer = {
     throw new Error("article analysis is not set up in this test; pass articleAnalysis");
   },
 };
+
+/**
+ * 記事の解析の差し替え。候補は Rust の 1 つ、埋め込みは 1 つ目の次元だけが 1 のベクトルを返す。
+ * 渡された入力は analyze.mock.calls で見る
+ */
+export function fakeArticleAnalysis() {
+  return {
+    candidateRevision: 1,
+    embeddingRevision: 1,
+    dimension: 256,
+    analyze: vi.fn(
+      async (input: ArticleAnalysisInput): Promise<ArticleAnalysisResult> => ({
+        ...(input.candidates && {
+          candidates: [{ surface: "Rust", key: "rust", source: "text" as const }],
+        }),
+        ...(input.embedding && {
+          embedding: Float32Array.from({ length: 256 }, (_, i) => (i === 0 ? 1 : 0)),
+        }),
+      }),
+    ),
+    embedText: vi.fn(async (_text: string): Promise<Float32Array | null> => null),
+  };
+}
 
 /** Rust の処理を使わないテストで、Platform に渡すもの（呼ばれたら失敗する） */
 export const unusedNative = {

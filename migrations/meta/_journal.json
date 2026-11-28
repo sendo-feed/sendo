@@ -533,6 +533,20 @@
       "when": 1795792278863,
       "tag": "0075_batch-body-repair",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "6",
+      "when": 1795852569310,
+      "tag": "0076_article-analyses",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "6",
+      "when": 1795852569840,
+      "tag": "0077_article-analyses-storage",
+      "breakpoints": true
     }
   ]
 }

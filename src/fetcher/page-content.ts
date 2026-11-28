@@ -16,6 +16,7 @@ import {
   recordExtractedPageContent,
   recordFailedPageContent,
 } from "../db/page-contents";
+import { enqueueArticleAnalyses } from "../jobs/article-analyses";
 import { enqueueArticleLanguages } from "../jobs/article-languages";
 import { canStoreArticles } from "../jobs/storage";
 import { enqueueDecideTranslations } from "../jobs/translations";
@@ -128,6 +129,8 @@ async function extractAndRecord(
     await recordFailedPageContent(platform.db, { articleId: article.id, now: platform.now() });
     // ページの判定を待たずに、訳すかどうかを決める（docs/decisions/jobs.md の 13）
     await enqueueDecideTranslations(platform, [article.id]);
+    // 抜けなかったと記録したら、フィードの本文で解析する（docs/decisions/article-analysis.md の 1）
+    await enqueueArticleAnalyses(platform, [article.id]);
     return { status: "unavailable" };
   }
   // 抜く仕事と開いたときの抜き取りが重なったら、先に書いたほうが残る。残ったほうを返す
@@ -139,6 +142,8 @@ async function extractAndRecord(
   if (stored === null) return { status: "unavailable" };
   // 抜いた本文の言語の判定を積む（docs/decisions/jobs.md の 13）。積めなければ定期実行が拾う
   await enqueueArticleLanguages(platform, [article.id]);
+  // 抜いた本文で解析する（docs/decisions/article-analysis.md の 1）。積めなければ拾い直しが拾う
+  await enqueueArticleAnalyses(platform, [article.id]);
   return { status: "ok", html: stored };
 }
 

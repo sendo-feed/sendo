@@ -10,6 +10,7 @@ import { readStorageUsage } from "../../src/db/storage";
 import { subscribeMany } from "../../src/db/subscriptions";
 import { runJob } from "../../src/jobs";
 import { MAX_CONTENT_BYTES, runFetchFeed } from "../../src/jobs/fetch-feed";
+import type { Job } from "../../src/jobs/job";
 import { enqueueDueFeeds } from "../../src/jobs/schedule";
 import { readOpml } from "../../src/opml";
 import type { Platform } from "../../src/platform";
@@ -369,6 +370,10 @@ describe("Discord の購読", () => {
     ).json();
     const first = (owners as { items: { id: string }[] }).items[0];
     expect(first).toBeDefined();
+    // 投稿はページから抜かないので、取り込んだときに解析を積む（docs/decisions/article-analysis.md の 1）
+    expect(enqueued.filter((job) => job.type === "analyze-articles")).toEqual([
+      { type: "analyze-articles", articleIds: [first?.id] },
+    ]);
     const fetchCount = remote.calls.length;
     // 全文は、ページを取りにいかずに置いた本文を返す（docs/decisions/discord.md の 6）
     const content = await requestApp(
@@ -762,6 +767,11 @@ describe("Discord の購読", () => {
   });
 });
 
+/** 積んだ仕事の呼び出しから、取り込んだ投稿の解析の仕事だけの呼び出しを除く */
+function withoutAnalysis<T extends [readonly Job[], ...unknown[]]>(calls: T[]) {
+  return calls.filter(([list]) => !list.every((job) => job.type === "analyze-articles"));
+}
+
 describe("Discord の取得ジョブ", () => {
   async function subscribeWithQueue() {
     const database = await openTestDatabase();
@@ -778,7 +788,12 @@ describe("Discord の取得ジョブ", () => {
       db: database.db,
       discord: CONFIG,
       fetch: remote.fetch,
-      jobs,
+      // 取得の仕事の数と順を確かめるので、取り込んだ投稿の解析の仕事は表に積まない（解析を積むことは
+      // test/jobs/article-analyses-chain.test.ts で確かめる）
+      jobs: {
+        ...jobs,
+        enqueue: (list) => jobs.enqueue(list.filter((job) => job.type !== "analyze-articles")),
+      },
       now,
     });
     const userId = crypto.randomUUID();
@@ -1022,7 +1037,7 @@ describe("Discord の取得ジョブ", () => {
     await runNext(101);
     expect(await t.runDue()).toBe(0);
     const request = [{ type: "fetch-discord", feedId: t.feedId }];
-    expect(enqueue.mock.calls).toEqual([[request], [request]]);
+    expect(withoutAnalysis(enqueue.mock.calls)).toEqual([[request], [request]]);
     enqueue.mockRestore();
     const live = await sync(first.cursor);
     expect(live.articles).toMatchObject([{ url: `${CHANNEL}/${nextId}` }]);
@@ -1078,7 +1093,7 @@ describe("Discord の取得ジョブ", () => {
     resumed.receive(0, null, { s: 3, t: "RESUMED" });
 
     await vi.waitFor(async () => expect(await t.runDue()).toBe(1), { timeout: 8_000 });
-    expect(enqueue).toHaveBeenCalledTimes(4);
+    expect(withoutAnalysis(enqueue.mock.calls)).toHaveLength(4);
     expect(await t.stored()).toContainEqual({ guid: posted });
   }, 12_000);
 
