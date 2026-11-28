@@ -423,12 +423,12 @@ export function articlesApi(platform: Platform) {
       const cursor = query.cursor === undefined ? undefined : decodeCursor(query.cursor);
       if (cursor === null) return c.json(errorBody("invalid_request", "cursor: invalid"), 400);
 
-      // 一覧を読む前に取る。読んだあとに取ると、読んだあとに届いた記事が asOf より前になり、
-      // まとめて既読で、一覧に出ていなかったのに既読になる
       const userId = c.get("user").id;
       if (query.tagId !== undefined && !(await isActiveTag(db, { userId, tagId: query.tagId }))) {
         return c.json(errorBody("not_found", "tag does not exist"), 404);
       }
+      // 一覧を読む前に取る。読んだあとに取ると、読んだあとに届いた記事が asOf より前になり、
+      // まとめて既読で、一覧に出ていなかったのに既読になる
       const asOf = await dbNow(platform.db);
       const { items, next } = await listInbox(platform.db, {
         userId,

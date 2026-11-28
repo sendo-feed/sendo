@@ -311,6 +311,60 @@ describe("記事の一覧と差分同期", () => {
   });
 });
 
+describe("同じ番号と片付けの量", () => {
+  it("タグを消して同じ番号になった 501 行以上の消した印も、ページが切れても重ねず漏らさず届く", async () => {
+    const t = await setup(1);
+    const [articleId = ""] = t.articleIds;
+    const rust = await t.tag("Rust");
+    await t.putOk(articleId, rust, true);
+    // 501 行を作るのは手間がかかるので、行を直接入れる（同じタグの行は記事ごとに 1 つ）
+    const values = Array.from(
+      { length: 600 },
+      (_, i) =>
+        `('${crypto.randomUUID()}', '${rust}', '${t.user.id}', 'x${i}', 'auto', 1, ${i + 1})`,
+    ).join(",");
+    await testDb.exec(
+      `INSERT INTO article_tags (id, tag_id, user_id, article_id, kind, "on", seq) VALUES ${values}`,
+    );
+    const before = await t.sync();
+    let cursor = before.cursor;
+    for (let page = before; page.hasMore; cursor = page.cursor) page = await t.sync(page.cursor);
+    expect((await t.request(`/tags/${rust}`, "DELETE")).status).toBe(204);
+    expect(
+      await testDb
+        .prepare("SELECT count(DISTINCT seq) AS n FROM article_tags WHERE tag_id = ?")
+        .bind(rust)
+        .first<number>("n"),
+    ).toBe(1);
+    const seen: string[] = [];
+    let pages = 0;
+    for (;;) {
+      const page = await t.sync(cursor);
+      seen.push(...(page.articleTags ?? []).map((tag) => tag.id));
+      cursor = page.cursor;
+      pages++;
+      if (!page.hasMore) break;
+    }
+    expect(pages).toBeGreaterThan(1);
+    expect(new Set(seen).size).toBe(seen.length);
+    expect(seen).toHaveLength(601);
+  });
+
+  it("消したタグの片付けは、記事のタグの行が残るうちはタグを消さず、記事のタグを先に片付ける", async () => {
+    let now = new Date("2026-11-01T00:00:00Z");
+    const t = await setup(2, { now: () => now });
+    const [first = "", second = ""] = t.articleIds;
+    const rust = await t.tag("Rust");
+    await t.putOk(first, rust, true);
+    await t.putOk(second, rust, false);
+    expect((await t.request(`/tags/${rust}`, "DELETE")).status).toBe(204);
+    now = new Date("2026-12-02T00:00:00Z");
+    const outcome = await runCleanUp(t.platform);
+    // 記事のタグの片付けが先に 2 行を消し、残っていないのでタグも消える
+    expect(outcome).toMatchObject({ articleTags: 2, tags: 1 });
+  });
+});
+
 describe("容量", () => {
   it("記事のタグを保存容量に 1 行 256 バイトで数え、手の付け外しは上限でも断らない", async () => {
     const t = await setup(1);

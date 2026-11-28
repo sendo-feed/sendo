@@ -164,18 +164,18 @@ export async function runCleanUp(
     }),
   );
 
-  // 消したタグの行（docs/decisions/tags.md の 7）。消す文の中でトリガーが回収の下限を記録する
-  const tagRows = await repeat(SWEEP_ROUNDS.tags, () =>
-    collectRemovedTags(db, {
-      before: new Date(now - TAG_REMOVAL_RETENTION_MS),
-      limit: SWEEP_BATCH,
-    }),
-  );
-
   // 消した記事のタグの行（docs/decisions/tags.md の 7）。受信箱の行が消えると印が付くので、行が多い
   const articleTagRows = await repeat(SWEEP_ROUNDS.articleTags, () =>
     collectRemovedArticleTags(db, {
       before: new Date(now - ARTICLE_TAG_REMOVAL_RETENTION_MS),
+      limit: SWEEP_BATCH,
+    }),
+  );
+
+  // 消したタグの行（docs/decisions/tags.md の 7）。記事のタグの行が残っていないタグだけを消す。消す文の中でトリガーが回収の下限を記録する
+  const tagRows = await repeat(SWEEP_ROUNDS.tags, () =>
+    collectRemovedTags(db, {
+      before: new Date(now - TAG_REMOVAL_RETENTION_MS),
       limit: SWEEP_BATCH,
     }),
   );
