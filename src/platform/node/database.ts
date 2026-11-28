@@ -7,6 +7,9 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 import type { Database } from "../../db";
 import * as schema from "../../db/schema";
 
+/** 接続の待ち時間（busy_timeout。ミリ秒）。重い読み取りの接続（heavy-read.ts）にも同じものを付ける */
+export const BUSY_TIMEOUT_MS = 5000;
+
 export interface OpenedDatabase {
   db: Database;
   close(): void;
@@ -32,7 +35,7 @@ export async function openDatabase(
   // 待ち時間（busy_timeout）は接続ごとの設定なので、libsql が開くどの接続にも当たる timeout で渡す
   // （接続が捨てられて開き直されても効く）。書く接続はこの 1 本だけ。重い読み取りは、別のスレッドで書けない
   // 接続を開いて流す（heavy-read.ts。書かないので、上の SQLITE_BUSY_SNAPSHOT には当たらない）
-  const client = createClient({ url, concurrency: 1, timeout: 5000 });
+  const client = createClient({ url, concurrency: 1, timeout: BUSY_TIMEOUT_MS });
   try {
     await client.execute("PRAGMA foreign_keys = ON");
     if (url !== ":memory:") await client.execute("PRAGMA journal_mode = WAL");

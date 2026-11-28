@@ -8,34 +8,44 @@ import { Worker } from "node:worker_threads";
 import type { SQL } from "drizzle-orm";
 import { SQLiteAsyncDialect } from "drizzle-orm/sqlite-core";
 import type { HeavyRead } from "..";
+import { BUSY_TIMEOUT_MS } from "./database";
 
 export interface WorkerHeavyRead extends HeavyRead {
-  /** 別のスレッドを止める。流している文と待っている文は失敗する */
+  /**
+   * 別のスレッドを止める。流している文は終わるのを待ち、待っている文と新しい文は失敗する。スレッドは接続を
+   * 閉じてから自分で終わる
+   */
   close(): Promise<void>;
 }
 
-type Reply = { rows: Record<string, unknown>[] } | { error: string };
+type Reply = { id: number } & ({ rows: Record<string, unknown>[] } | { error: string });
 
 /*
  * 別のスレッドで動かすコード（CommonJS）。文を 1 つ受けるたびに、その接続を書けないようにしてから
  * 流し、行を列の名前の付いたただのオブジェクトにして返す。接続は最初の文で開き、開き直されても書けない
- * ように、書けない設定は文ごとに当てる（設定は接続ごとのもので、1 回で済ませると開き直したあとに外れる）
+ * ように、書けない設定は文ごとに当てる（設定は接続ごとのもので、1 回で済ませると開き直したあとに外れる）。
+ * 止めるときは、接続を閉じ、受け口を閉じて自分で終わる
  */
 const WORKER_SOURCE = `
 const { parentPort, workerData } = require("node:worker_threads");
 const { createClient } = require(workerData.libsqlPath);
 let client;
-parentPort.on("message", async ({ sql, args }) => {
+parentPort.on("message", async ({ id, sql, args, close }) => {
+  if (close) {
+    client?.close();
+    parentPort.close();
+    return;
+  }
   try {
-    client ??= createClient({ url: workerData.url, concurrency: 1, timeout: 5000 });
+    client ??= createClient({ url: workerData.url, concurrency: 1, timeout: workerData.busyTimeout });
     await client.execute("PRAGMA query_only = ON");
     const result = await client.execute({ sql, args });
     const rows = result.rows.map((row) =>
       Object.fromEntries(result.columns.map((column, index) => [column, row[index]])),
     );
-    parentPort.postMessage({ rows });
+    parentPort.postMessage({ id, rows });
   } catch (error) {
-    parentPort.postMessage({ error: String(error?.message ?? error) });
+    parentPort.postMessage({ id, error: String(error?.message ?? error) });
   }
 });
 `;
@@ -45,28 +55,43 @@ parentPort.on("message", async ({ sql, args }) => {
  * 最初の文で起こす。文は 1 つずつ流し（CPU を食い合わせない）、前の文が終わるまで次の文は待つ。別の
  * スレッドが落ちたら、そのとき流していた文を失敗にし、次の文で起こし直す
  */
-export function createWorkerHeavyRead(url: string): WorkerHeavyRead {
+export function createWorkerHeavyRead(
+  url: string,
+  options: {
+    /** 起こした別のスレッドを受け取る（テストで、落ちたときを起こすのに使う） */
+    onStart?: (worker: Worker) => void;
+  } = {},
+): WorkerHeavyRead {
   const dialect = new SQLiteAsyncDialect();
   const libsqlPath = createRequire(import.meta.url).resolve("@libsql/client");
   let worker: Worker | undefined;
-  let current: { resolve(reply: Reply): void; reject(error: Error): void } | undefined;
+  /** 流している読み取り。どのスレッドに送った何番目の文かで照らす（落ちたスレッドの遅れたイベントや返事を、ほかの読み取りに当てない） */
+  let current:
+    | { worker: Worker; id: number; resolve(reply: Reply): void; reject(error: Error): void }
+    | undefined;
+  let nextId = 0;
   let tail: Promise<unknown> = Promise.resolve();
   let closed = false;
 
   const start = (): Worker => {
-    const started = new Worker(WORKER_SOURCE, { eval: true, workerData: { url, libsqlPath } });
+    const started = new Worker(WORKER_SOURCE, {
+      eval: true,
+      workerData: { url, libsqlPath, busyTimeout: BUSY_TIMEOUT_MS },
+    });
     // 別のスレッドだけが残っていても、プロセスは終われるようにする
     started.unref();
     started.on("message", (reply: Reply) => {
+      if (current?.worker !== started || current.id !== reply.id) return;
       const waiting = current;
       current = undefined;
-      waiting?.resolve(reply);
+      waiting.resolve(reply);
     });
     const fail = (error: Error) => {
       if (worker === started) worker = undefined;
+      if (current?.worker !== started) return;
       const waiting = current;
       current = undefined;
-      waiting?.reject(error);
+      waiting.reject(error);
     };
     started.on("error", fail);
     started.on("exit", (code) => fail(new Error(`heavy read worker exited (code ${code})`)));
@@ -75,11 +100,15 @@ export function createWorkerHeavyRead(url: string): WorkerHeavyRead {
 
   const run = async (sql: string, params: unknown[]): Promise<Record<string, unknown>[]> => {
     if (closed) throw new Error("heavy read is closed");
-    worker ??= start();
+    if (!worker) {
+      worker = start();
+      options.onStart?.(worker);
+    }
     const target = worker;
+    const id = nextId++;
     const reply = await new Promise<Reply>((resolve, reject) => {
-      current = { resolve, reject };
-      target.postMessage({ sql, args: params });
+      current = { worker: target, id, resolve, reject };
+      target.postMessage({ id, sql, args: params });
     });
     if ("error" in reply) throw new Error(reply.error);
     return reply.rows;
@@ -97,9 +126,15 @@ export function createWorkerHeavyRead(url: string): WorkerHeavyRead {
     },
     async close() {
       closed = true;
+      // 流している文が終わるのを待つ。文の途中でスレッドを止める（terminate）と、libsql のネイティブの結びが
+      // panic し、プロセスごと落ちる。待っている文は、順に closed で失敗する
+      await tail;
       const running = worker;
       worker = undefined;
-      await running?.terminate();
+      if (!running) return;
+      const exited = new Promise<void>((resolve) => running.once("exit", () => resolve()));
+      running.postMessage({ close: true });
+      await exited;
     },
   };
 }

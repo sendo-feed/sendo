@@ -34,18 +34,32 @@ const workerHeavyRead = createWorkerHeavyRead(
 );
 afterAll(() => workerHeavyRead.close());
 
-/** 流した重い読み取りの文を数える。fail を立てると失敗させる */
+/**
+ * 流した重い読み取りの文を数える。fail を立てると失敗させる。hold() のあとは、release() まで読み取りを
+ * 止めておく（集計の途中に来たリクエストを確かめる）
+ */
 function countingHeavyRead() {
   const state = { calls: 0, fail: false };
+  let gate: Promise<void> = Promise.resolve();
+  let open = () => {};
   const read: HeavyRead = {
-    all(query) {
+    async all(query) {
       state.calls++;
-      if (state.fail) return Promise.reject(new Error("aggregation failed"));
+      await gate;
+      if (state.fail) throw new Error("aggregation failed");
       return workerHeavyRead.all(query);
     },
   };
-  return { read, state };
+  const hold = () => {
+    gate = new Promise((resolve) => {
+      open = resolve;
+    });
+  };
+  return { read, state, hold, release: () => open() };
 }
+
+/** 流しているリクエストが、止めた集計に追いつくまで待つ */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 type Candidate = { key: string; label: string; count: number };
 type Item = {
@@ -299,10 +313,16 @@ describe("集計の使い回し", () => {
   });
 
   it("同じ利用者の重なったリクエストは集計を 1 本だけ流し、ほかの利用者は自分の分を集計する", async () => {
-    const { read, state } = countingHeavyRead();
+    const { read, state, hold, release } = countingHeavyRead();
     const t = await setup({ heavyRead: read });
     await t.feed([article("a1", ["Rust", "rust"])]);
-    const [first, second] = await Promise.all([t.candidates(), t.candidates()]);
+    hold();
+    const both = Promise.all([t.candidates(), t.candidates()]);
+    await settle();
+    // 2 本目は、止めた 1 本目の集計を待っている
+    expect(state.calls).toBe(1);
+    release();
+    const [first, second] = await both;
     expect(first).toEqual(second);
     // 集計 1 回は、候補と残りの数の 2 つの文
     expect(state.calls).toBe(2);
@@ -349,14 +369,15 @@ describe("集計の使い回し", () => {
   });
 
   it("集計が失敗したら待っていたリクエストにも失敗を返し、1 分未満は集計し直さず、1 分から集計し直す", async () => {
-    const { read, state } = countingHeavyRead();
+    const { read, state, hold, release } = countingHeavyRead();
     const t = await setup({ heavyRead: read });
     await t.feed([article("a1", ["Rust", "rust"])]);
     state.fail = true;
-    const responses = await Promise.all([
-      t.request("/tags/candidates"),
-      t.request("/tags/candidates"),
-    ]);
+    hold();
+    const pending = Promise.all([t.request("/tags/candidates"), t.request("/tags/candidates")]);
+    await settle();
+    release();
+    const responses = await pending;
     expect(responses.map((response) => response.status)).toEqual([500, 500]);
     expect(state.calls).toBe(1);
     state.fail = false;

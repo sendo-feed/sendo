@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { Worker } from "node:worker_threads";
 import { sql } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import { createWorkerHeavyRead } from "../../../src/platform/node/heavy-read";
@@ -78,13 +79,51 @@ describe("重い読み取り", () => {
     expect(await heavyRead.all(sql`select 1 as one`)).toEqual([{ one: 1 }]);
   });
 
-  it("止めたあとは、待っていた読み取りも新しい読み取りも失敗する", async () => {
-    const own = createWorkerHeavyRead(url);
+  it("別のスレッドが落ちたら流していた読み取りだけを失敗にし、待っていた読み取りは起こし直したスレッドで流す。落ちたスレッドの遅れたイベントと返事はほかの読み取りに当てない", async () => {
+    const workers: Worker[] = [];
+    const own = createWorkerHeavyRead(url, { onStart: (worker) => workers.push(worker) });
+    try {
+      await own.all(sql`select 1 as one`);
+      const first = own.all(slowCount);
+      const second = own.all(sql`select ${"b"} as who`);
+      const third = own.all(sql`select ${"c"} as who`);
+      // 1 つ目が別のスレッドに送られてから、捕まえていない例外で落ちたときを起こす（error が来て、exit は
+      // 別のタスクで遅れて来る）
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const [crashed] = workers;
+      if (!crashed) throw new Error("worker is not started");
+      const lateReply = new Promise((resolve) => crashed.once("message", resolve));
+      crashed.emit("error", new Error("boom"));
+      await expect(first).rejects.toThrow("boom");
+      // 待っていた読み取りが起こし直したスレッドに送られてから、落ちたスレッドの exit が届く
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(workers).toHaveLength(2);
+      crashed.emit("exit", 1);
+      expect(await second).toEqual([{ who: "b" }]);
+      expect(await third).toEqual([{ who: "c" }]);
+      // 落ちたスレッドが流していた文の返事が遅れて届いても、ほかの読み取りに当てない
+      const fourth = own.all(slowCount);
+      await lateReply;
+      expect(await fourth).toEqual([{ n: 3_000_000 }]);
+      expect(workers).toHaveLength(2);
+      await crashed.terminate();
+    } finally {
+      await own.close();
+    }
+  });
+
+  it("止めるときは流している読み取りが終わるのを待ち、待っていた読み取りと新しい読み取りは失敗する", async () => {
+    const workers: Worker[] = [];
+    const own = createWorkerHeavyRead(url, { onStart: (worker) => workers.push(worker) });
     await own.all(sql`select 1 as one`);
     const running = own.all(slowCount);
     const waiting = own.all(sql`select 1 as one`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const exited = new Promise((resolve) => workers[0]?.once("exit", resolve));
     await own.close();
-    await expect(running).rejects.toThrow();
+    // 流している文の途中でスレッドを止めない（止めると libsql が落ちる）。スレッドは自分で終わる
+    expect(await running).toEqual([{ n: 3_000_000 }]);
+    expect(await exited).toBe(0);
     await expect(waiting).rejects.toThrow(/closed/);
     await expect(own.all(sql`select 1 as one`)).rejects.toThrow(/closed/);
   });
