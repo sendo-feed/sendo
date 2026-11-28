@@ -20,6 +20,7 @@ import { savedApi } from "./saved";
 import { settingsApi } from "./settings";
 import { syncApi } from "./sync";
 import { syncUpdatesApi } from "./sync-updates";
+import { tagsApi } from "./tags";
 import { tokensApi } from "./tokens";
 import { translationsApi } from "./translations";
 import { workspacesApi } from "./workspaces";
@@ -98,6 +99,7 @@ export function createApi(platform: Platform) {
   protectedApi.route("/", opmlApi(platform));
   protectedApi.route("/", savedApi(platform));
   protectedApi.route("/", bellsApi(platform));
+  protectedApi.route("/", tagsApi(platform));
   protectedApi.route("/", pushApi(platform));
   protectedApi.route("/", settingsApi(platform));
   protectedApi.route("/", syncApi(platform));

@@ -69,6 +69,7 @@ describe("runCleanUp", () => {
       settings: 0,
       savedPages: 0,
       bells: 0,
+      tags: 0,
       activity: 0,
       pushRegistrations: 0,
       bellNotifications: 0,
