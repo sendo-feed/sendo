@@ -198,26 +198,32 @@ const MIN_CATEGORY_LENGTH = 2;
 const MAX_CATEGORY_LENGTH = 40;
 
 /**
- * フィードのカテゴリを整える（docs/decisions/article-analysis.md の 8）。制御文字と対になっていない
- * サロゲートを落とし、前後の空白を除く。表記（NFKC のあと）とまとめの鍵のどちらも 2〜40 コードポイントで、
- * 数字だけでないもの（決定の 9 と 11。Rust の候補の決まりと同じ）だけを、重なりを除いて 10 個まで残す
+ * フィードのカテゴリを整える（docs/decisions/article-analysis.md の 8）。制御文字、書式の文字（ゼロ幅
+ * スペースなど）、置き換えの文字、対になっていないサロゲートを落とし、前後の空白を除いて中の空白を 1 つに
+ * そろえる。表記（NFKC のあと）とまとめの鍵のどちらも 2〜40 コードポイントで、数字だけでないもの（決定の
+ * 9 と 11）だけを、まとめの鍵で重なりを除いて 10 個まで残す。Rust の候補の決まり（crates/analysis の
+ * clean_category と acceptable）と同じにし、保存したのに候補にならないカテゴリで枠を食わない
  */
 export function cleanCategories(values: readonly (string | null | undefined)[]): string[] {
   const kept: string[] = [];
+  const keys = new Set<string>();
   for (const value of values) {
     if (typeof value !== "string") continue;
     const name = value
-      .replace(/\p{Cc}/gu, "")
       .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "")
-      .trim();
-    const surface = name.normalize("NFKC");
+      .replace(/[\p{Cc}\p{Cf}\uFFFD]/gu, "")
+      .split(/\s+/u)
+      .filter(Boolean)
+      .join(" ");
+    const surface = name.normalize("NFKC").split(/\s+/u).filter(Boolean).join(" ");
     const key = surface.toLowerCase().split(/\s+/u).filter(Boolean).join(" ");
     const fits = (text: string) => {
       const length = [...text].length;
       return length >= MIN_CATEGORY_LENGTH && length <= MAX_CATEGORY_LENGTH;
     };
     if (!fits(surface) || !fits(key) || /^[\p{N}.\s]+$/u.test(key)) continue;
-    if (kept.includes(name)) continue;
+    if (keys.has(key)) continue;
+    keys.add(key);
     kept.push(name);
     if (kept.length === MAX_CATEGORIES) break;
   }

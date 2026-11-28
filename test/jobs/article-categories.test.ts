@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { readArticleCategories } from "../../src/db/article-categories";
 import { articles } from "../../src/db/schema";
 import { readEvictionCandidates } from "../../src/db/storage";
+import { cleanCategories } from "../../src/fetcher/parse-feed";
 import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
 import type { Job } from "../../src/jobs/job";
@@ -183,6 +184,65 @@ describe("解析の候補", () => {
       ]),
     );
     expect(await candidatesOf(id)).toHaveLength(3);
+  });
+});
+
+describe("TypeScript と Rust の決まり", () => {
+  it("保存したカテゴリは、端の文字でも、すべて出どころ「カテゴリ」の候補になる", async () => {
+    const edges = [
+      "A\u200b",
+      "a\ufffd",
+      `A${" ".repeat(40)}B`,
+      `¯${"a".repeat(39)}`,
+      "あ".repeat(40),
+      "İ".repeat(20),
+      "㍿",
+      "Ⅻ",
+      "x\u0007y",
+      "Rust",
+      "rust",
+    ];
+    const stored = cleanCategories(edges);
+    const result = await native.analyzeArticle({
+      title: "",
+      summary: "",
+      html: "",
+      categories: stored,
+      candidates: true,
+      embedding: false,
+    });
+    const fromCategories = (result.candidates ?? []).filter((c) => c.source === "category");
+    expect(fromCategories).toHaveLength(stored.length);
+  });
+});
+
+describe("解析の途中の失敗", () => {
+  it("カテゴリを読む DB が一時的に失敗しても「失敗」と記録せず、やり直せば解析する", async () => {
+    const hook = statementHook(
+      /from article_categories/,
+      async () => {
+        throw new Error("database is busy");
+      },
+      { armed: false },
+    );
+    const t = await setUp([{ link: null, title: "Rust の話", categories: ["Go"] }], {
+      db: hook.db,
+    });
+    await runFetchFeed(t.platform, t.feed.id);
+    const [id = ""] = await t.ids();
+    hook.arm();
+    await runJob(t.platform, { type: "analyze-articles", articleIds: [id] });
+    expect(hook.fired()).toBe(true);
+    expect(
+      await testDb
+        .prepare("SELECT count(*) AS n FROM article_analyses WHERE article_id = ?")
+        .bind(id)
+        .first<number>("n"),
+    ).toBe(0);
+    await runJob(t.platform, { type: "analyze-articles", articleIds: [id] });
+    expect(await candidatesOf(id)).toEqual(
+      expect.arrayContaining([{ surface: "Go", key: "go", source: "category" }]),
+    );
   });
 });
 

@@ -165,6 +165,17 @@ export async function runFetchFeed(
       rows.filter((row) => !storedContents.deferredIds.has(row.id)),
     );
     const insertedIds = new Set(insertedArticles.map((article) => article.id));
+    // 入れた記事のフィードのカテゴリを、ページを抜く仕事と解析の仕事を積む前に入れる
+    // （docs/decisions/article-analysis.md の 8）。受信箱に配る前に入れ、読者が開いて解析が先に走る隙間を作らない。
+    // ここで落ちると、その記事のカテゴリは欠ける（受け入れる）。配りは次の取得でやり直す
+    await insertArticleCategories(
+      db,
+      rows.flatMap((row, index) =>
+        insertedIds.has(row.id)
+          ? [{ articleId: row.id, categories: parsed.items[index]?.categories ?? [] }]
+          : [],
+      ),
+    );
     // 行に入った名前の書き留めを消す。入らなかった名前は残り、1 日 1 回の片付けが本文を消す
     await clearUsedContentNotes(db, storedContents.keys);
     // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
@@ -191,16 +202,6 @@ export async function runFetchFeed(
         ];
       }),
     });
-    // 入れた記事のフィードのカテゴリを、ページを抜く仕事と解析の仕事を積む前に入れる
-    // （docs/decisions/article-analysis.md の 8）。ここで落ちると、その記事のカテゴリは欠ける（受け入れる）
-    await insertArticleCategories(
-      db,
-      rows.flatMap((row, index) =>
-        insertedIds.has(row.id)
-          ? [{ articleId: row.id, categories: parsed.items[index]?.categories ?? [] }]
-          : [],
-      ),
-    );
     // 新しい記事ごとに、ページから本文を抜く仕事を積む（docs/decisions/content.md の 10）。ここで落ちて積めなくても、読者が開いたときに抜く
     await enqueuePageContents(platform, insertedArticles);
     // 新しい記事の言語の判定も積む（docs/decisions/jobs.md の 13）。積めなければ定期実行が拾う
