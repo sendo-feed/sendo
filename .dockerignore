@@ -1,4 +1,5 @@
-# イメージに入れるのは、Dockerfile で COPY するもの（package.json、ロックファイル、src、migrations）だけ。
+# イメージに入れるのは、Dockerfile で COPY するもの（package.json、ロックファイル、src、migrations、埋め込みの
+# モデルの固定ファイルと、それを用意する道具）だけ。
 # 手元の秘密や生成物を、ビルドの文脈に送らない
 node_modules
 dist
@@ -14,4 +15,8 @@ docs
 spec
 test
 scripts
+!scripts/prepare-embedding-model.mjs
+# 埋め込みのモデルは、イメージのビルドの段で取って変換する。手元で用意したものは送らない
+models/*
+!models/*.json
 *.log

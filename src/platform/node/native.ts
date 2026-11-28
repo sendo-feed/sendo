@@ -4,8 +4,13 @@
  *
  * モジュールは pnpm build:native で native/sendo.node に作る（イメージでは /app/native/sendo.node）。
  */
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import path from "node:path";
 import type {
+  AnalysisCandidate,
+  ArticleAnalysisInput,
+  ArticleAnalyzer,
   ExtractedPage,
   LanguageDetectionResult,
   LanguageDetector,
@@ -48,6 +53,60 @@ export interface NativeModule {
     contentType: string | null,
     url: string,
   ): Promise<ExtractedPage | null>;
+  analysisInfo(): { candidateRevision: number; embeddingRevision: number; dimension: number };
+  loadEmbeddingModel(tokenizer: Uint8Array, model: Uint8Array, config: Uint8Array): Promise<void>;
+  analyzeArticle(input: ArticleAnalysisInput): Promise<{
+    candidates?: AnalysisCandidate[] | null;
+    embedding?: Float32Array | null;
+  }>;
+  embedText(text: string): Promise<Float32Array | null>;
+}
+
+/** 埋め込みのモデルのファイル（docs/decisions/article-analysis.md の 6） */
+export interface EmbeddingModelFiles {
+  tokenizer: Uint8Array;
+  model: Uint8Array;
+  config: Uint8Array;
+}
+
+/**
+ * 埋め込みのモデルのファイルを読む（pnpm model:prepare で用意したディレクトリ）。Rust の側はファイルを
+ * 読まない（docs/decisions/article-analysis.md の 6）。読めなければ例外
+ */
+export async function readEmbeddingModelFiles(directory: string): Promise<EmbeddingModelFiles> {
+  try {
+    const read = (name: string) => readFile(path.join(directory, name));
+    const [tokenizer, model, config] = await Promise.all([
+      read("tokenizer.json"),
+      read("model.safetensors"),
+      read("config.json"),
+    ]);
+    return { tokenizer, model, config };
+  } catch (error) {
+    throw new Error(`could not read the embedding model: ${directory}`, { cause: error });
+  }
+}
+
+/**
+ * 埋め込みのモデルを読み込み、記事を解析する実装を作る。読み込めなければ例外
+ * （docs/decisions/container.md の 2）
+ */
+export async function createArticleAnalyzer(
+  native: NativeModule,
+  files: EmbeddingModelFiles,
+): Promise<ArticleAnalyzer> {
+  await native.loadEmbeddingModel(files.tokenizer, files.model, files.config);
+  return {
+    ...native.analysisInfo(),
+    analyze: async (input) => {
+      const result = await native.analyzeArticle({ ...input, categories: [...input.categories] });
+      return {
+        ...(input.candidates ? { candidates: result.candidates ?? [] } : {}),
+        ...(input.embedding ? { embedding: result.embedding ?? null } : {}),
+      };
+    },
+    embedText: (text) => native.embedText(text),
+  };
 }
 
 export function createLanguageDetector(native: NativeModule): LanguageDetector {

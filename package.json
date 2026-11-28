@@ -13,6 +13,7 @@
     "dev": "node scripts/dev.mjs",
     "build": "esbuild src/platform/node/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --sourcemap --outfile=dist/node/sendo.mjs",
     "build:native": "node scripts/build-native.mjs",
+    "model:prepare": "node scripts/prepare-embedding-model.mjs",
     "start": "node --enable-source-maps dist/node/sendo.mjs",
     "openapi:generate": "tsx scripts/generate-openapi.ts",
     "db:generate": "drizzle-kit generate",

@@ -15,7 +15,7 @@ Sendo は、オープンソースのフィード集約サーバーです。
 
 ## 動かす
 
-Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS など）で、Docker で動かします（[決定](docs/decisions/container.md)）。上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo` と、画面の `ghcr.io/sendo-feed/sendo-reader`）を、Docker Compose で並べて動かすので、fork もビルドも要りません（[決定](docs/decisions/container.md)の 7、10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。
+Sendo は、自分のサーバー（手元の PC、自宅のサーバー、VPS など）で、Docker で動かします（[決定](docs/decisions/container.md)）。上流の CI が作ったイメージ（`ghcr.io/sendo-feed/sendo` と、画面の `ghcr.io/sendo-feed/sendo-reader`）を、Docker Compose で並べて動かすので、fork もビルドも要りません（[決定](docs/decisions/container.md)の 7、10）。データ（SQLite のファイルと記事の本文）は、ボリュームの `/data` に置きます。動かすサーバーのメモリは 2GB 以上にしてください（記事の解析の埋め込みのモデルを読み込むので、sendo のコンテナは約 1GB を使います。[決定](docs/decisions/container.md)の 2）。
 
 外に出すのは sendo-reader のコンテナだけです。sendo-reader が画面を返し、Sendo のパス（`/api`、`/mcp`、OAuth など）を、compose の中の Sendo に中継します。公式 Reader、REST API、MCP は同じ sendo-reader のオリジンを使います（[sendo-reader の決定](https://github.com/sendo-feed/sendo-reader/blob/main/docs/decisions/container.md)）。
 
@@ -122,12 +122,13 @@ git clone https://github.com/sendo-feed/sendo.git
 cd sendo
 pnpm install
 pnpm build:native                             # Rust の処理をネイティブのモジュールにする
+pnpm model:prepare                            # 埋め込みのモデルを取って確かめ、変換する（約 530MB を取る）
 cp .env.example .env                          # 設定（なくても動く）
 pnpm token:create --email you@example.com     # ユーザーとアクセストークンを作る
 pnpm dev
 ```
 
-`pnpm dev` は、ソースを [tsx](https://tsx.is/) でそのまま動かし、変更を見て動かし直します（`http://localhost:8787`）。`.env` があれば読みます。データは `.data/` に置き、マイグレーションは起動時に当てます。Rust のモジュールがなければ起動しないので、先に `pnpm build:native` を実行します（`crates/` を変えたときも）。
+`pnpm dev` は、ソースを [tsx](https://tsx.is/) でそのまま動かし、変更を見て動かし直します（`http://localhost:8787`）。`.env` があれば読みます。データは `.data/` に置き、マイグレーションは起動時に当てます。Rust のモジュールと埋め込みのモデルがなければ起動しないので、先に `pnpm build:native` と `pnpm model:prepare` を実行します（`crates/` を変えたときは `pnpm build:native` も）。モデルは `models/potion-multilingual-128m/` に用意し、取ってきた元のファイルは `models/.cache/` に残すので、2 回目からは取りにいきません。
 
 `pnpm token:create` は、ユーザーがいなければ作り、アクセストークン（`sendo_` で始まる文字列）を発行します。トークンは一度だけ表示されるので、控えておいてください。DB にはハッシュだけを置きます。
 
@@ -308,6 +309,7 @@ Sendo が OAuth の認可サーバーになり、許可の画面は sendo-reader
 | `pnpm test` | テスト（Vitest。テストファイルごとに一時ディレクトリの SQLite を使う） |
 | `pnpm check:rust` | Rust（`crates/`）の整形の確認、lint（clippy）、テスト |
 | `pnpm build:native` | Rust をネイティブのモジュール（`native/sendo.node`）にする（`pnpm dev` とテストの前に要る） |
+| `pnpm model:prepare` | 記事の解析の埋め込みのモデルを取り、SHA-256 を確かめて変換する（`pnpm dev` とテストの前に要る） |
 | `pnpm build` | バンドル（`dist/node/sendo.mjs`）を作る |
 | `pnpm start` | バンドルを手元の Node で動かす（`DATA_DIR` にデータを置く） |
 | `pnpm openapi:generate` | API の定義を `spec/openapi.json` に書き出す（API を変えたらコミットする） |
@@ -335,6 +337,7 @@ sendo/
 │   └── platform/       # 緩衝層（実行環境の入出力）のインターフェース
 │       └── node/       # 緩衝層の実装と入口（SQLite、ファイル、ジョブの表、Rust の読み込み）
 ├── crates/             # Rust（重い処理と、napi-rs の結び）
+├── models/             # 埋め込みのモデルの版と SHA-256（pnpm model:prepare で、ここにモデルを用意する）
 ├── migrations/         # マイグレーション（pnpm db:generate で作る。起動時に当たる）
 ├── spec/openapi.json   # API の定義（pnpm openapi:generate で書き出す。sendo-reader が型を作る）
 ├── test/               # テスト（Vitest）
@@ -368,3 +371,5 @@ Node.js の組み込みモジュール（`node:*`）と `process` を使って�
 ## ライセンス
 
 未定です。決まるまでは、すべての権利を留保します。
+
+イメージに入れる埋め込みのモデル（[minishlab/potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M)）は MIT ライセンスです。ライセンスを書いたモデルカード（`README.md`）を、イメージのモデルのディレクトリ（`models/potion-multilingual-128m/`）に一緒に入れています。

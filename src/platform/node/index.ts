@@ -5,7 +5,13 @@
 import path from "node:path";
 import type { Database } from "../../db";
 import { createClaudeTranslator } from "../../translation/claude";
-import type { LanguageDetector, PageContentExtractor, Platform, SyncUpdates } from "..";
+import type {
+  ArticleAnalyzer,
+  LanguageDetector,
+  PageContentExtractor,
+  Platform,
+  SyncUpdates,
+} from "..";
 import {
   readAuthConfig,
   readDiscordConfig,
@@ -48,6 +54,8 @@ export function createNodePlatform(input: {
   pageContent: PageContentExtractor;
   /** 記事の主言語を調べる（Rust のモジュール） */
   languageDetection: LanguageDetector;
+  /** 記事から候補の語と埋め込みを作る（Rust のモジュール） */
+  articleAnalysis: ArticleAnalyzer;
   syncUpdates: SyncUpdates;
 }): Platform {
   const settings = definedSettings(input.env);
@@ -64,6 +72,7 @@ export function createNodePlatform(input: {
     ...(translation && { translator: createClaudeTranslator({ ...translation, fetch, now }) }),
     pageContent: input.pageContent,
     languageDetection: input.languageDetection,
+    articleAnalysis: input.articleAnalysis,
     syncUpdates: input.syncUpdates,
     db: input.db,
     articleSearch: createSqliteArticleSearch(input.db),

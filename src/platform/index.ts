@@ -162,6 +162,47 @@ export interface LanguageDetector {
   detect(html: string): Promise<LanguageDetectionResult>;
 }
 
+/** 記事の候補の語（docs/decisions/article-analysis.md の 8〜11） */
+export interface AnalysisCandidate {
+  /** 表記（NFKC のあと） */
+  surface: string;
+  /** まとめの鍵 */
+  key: string;
+  /** 出どころ。フィードのカテゴリか、記事の文字 */
+  source: "category" | "text";
+}
+
+export interface ArticleAnalysisInput {
+  title: string;
+  /** 解析の入力に使う要約。同じフィードで同じ要約なら空にする（記事の解析の 8） */
+  summary: string;
+  /** 抜いた本文（なければフィードの本文）の HTML */
+  html: string;
+  categories: readonly string[];
+  /** 候補の語を作るか */
+  candidates: boolean;
+  /** 埋め込みを作るか */
+  embedding: boolean;
+}
+
+export interface ArticleAnalysisResult {
+  /** 候補の語を求めたときだけ */
+  candidates?: AnalysisCandidate[];
+  /** 埋め込みを求めたときだけ。入力が空なら null（「入力が空」） */
+  embedding?: Float32Array | null;
+}
+
+/** 記事から候補の語と埋め込みを作る（Rust。docs/decisions/article-analysis.md） */
+export interface ArticleAnalyzer {
+  candidateRevision: number;
+  embeddingRevision: number;
+  /** 埋め込みの次元 */
+  dimension: number;
+  analyze(input: ArticleAnalysisInput): Promise<ArticleAnalysisResult>;
+  /** 文の埋め込み（タグの名前と説明など）。空なら null */
+  embedText(text: string): Promise<Float32Array | null>;
+}
+
 /** SQLite の索引を作るための、共有記事の現在の入力。 */
 export type SearchInput = {
   articleId: string;
@@ -355,6 +396,8 @@ export interface Platform {
   pageContent: PageContentExtractor;
   /** 記事の主言語を調べる（Rust） */
   languageDetection: LanguageDetector;
+  /** 記事から候補の語と埋め込みを作る（Rust） */
+  articleAnalysis: ArticleAnalyzer;
   syncUpdates: SyncUpdates;
   /** 記事を訳す。API キーがなければない（docs/decisions/translation.md の 15） */
   translator?: Translator;

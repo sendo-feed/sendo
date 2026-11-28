@@ -20,6 +20,8 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
+      - models/*.json
+      - scripts/prepare-embedding-model.mjs
       - .github/workflows/container.yml
 
 permissions:

@@ -6,7 +6,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use napi::bindgen_prelude::{AsyncTask, Uint8Array};
+use napi::bindgen_prelude::{AsyncTask, Float32Array, Uint8Array};
 use napi::{Env, Error, Result, Status, Task};
 use napi_derive::napi;
 use sendo_extract::{ExtractError, Extracted};
@@ -306,4 +306,201 @@ pub fn remove_page_image(html: String, src: String, url: String) -> AsyncTask<Me
     AsyncTask::new(MediaTask {
         input: MediaInput::Remove { html, src, url },
     })
+}
+
+/// 記事の解析の版と、埋め込みの次元（docs/decisions/article-analysis.md の 5）
+#[napi(object)]
+pub struct AnalysisInfo {
+    pub candidate_revision: u32,
+    pub embedding_revision: u32,
+    pub dimension: u32,
+}
+
+#[napi]
+pub fn analysis_info() -> AnalysisInfo {
+    AnalysisInfo {
+        candidate_revision: sendo_analysis::CANDIDATE_REVISION,
+        embedding_revision: sendo_analysis::EMBEDDING_REVISION,
+        dimension: sendo_analysis::DIMENSION as u32,
+    }
+}
+
+/// 起動時に読み込んだ埋め込みのモデル。プロセスの中で 1 つだけ持ち、スレッドで共有する
+static EMBEDDER: std::sync::OnceLock<sendo_analysis::Embedder> = std::sync::OnceLock::new();
+/// 読み込みを 1 つずつにする。同時に呼ばれても、モデルを 2 つ作って最大のメモリを倍にしない
+static LOADING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn embedder() -> Result<&'static sendo_analysis::Embedder> {
+    EMBEDDER
+        .get()
+        .ok_or_else(|| Error::new(Status::GenericFailure, "the embedding model is not loaded"))
+}
+
+/// JS のバイト列をそのまま持つ（130MB のモデルを写さず、読み込み中の最大のメモリを抑えるため）
+pub struct LoadModelTask {
+    tokenizer: Uint8Array,
+    model: Uint8Array,
+    config: Uint8Array,
+}
+
+impl Task for LoadModelTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        // 前の読み込みが panic してロックが毒されても、中身（()）は壊れないので続ける
+        let _guard = LOADING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if EMBEDDER.get().is_some() {
+            return Ok(());
+        }
+        let embedder = catch_unwind(AssertUnwindSafe(|| {
+            sendo_analysis::Embedder::from_bytes(&self.tokenizer, &self.model, &self.config)
+        }))
+        .map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "loading the embedding model panicked",
+            )
+        })?
+        .map_err(|error| Error::new(Status::InvalidArg, error))?;
+        let _ = EMBEDDER.set(embedder);
+        Ok(())
+    }
+
+    fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
+        Ok(())
+    }
+}
+
+/// 緩衝層が読んだモデルのファイルのバイト列から、埋め込みのモデルを読み込む（記事の解析の 6）。
+/// プロセスの中で 1 回だけ読み込む。読み込んだあとの呼び出しは、渡したバイト列によらず何もしない
+#[napi]
+pub fn load_embedding_model(
+    tokenizer: Uint8Array,
+    model: Uint8Array,
+    config: Uint8Array,
+) -> AsyncTask<LoadModelTask> {
+    AsyncTask::new(LoadModelTask {
+        tokenizer,
+        model,
+        config,
+    })
+}
+
+#[napi(object)]
+pub struct ArticleAnalysisInput {
+    pub title: String,
+    /// 解析の入力に使う要約。同じフィードで同じ要約なら、呼ぶ側が空にする（記事の解析の 8）
+    pub summary: String,
+    /// 抜いた本文（なければフィードの本文）の HTML
+    pub html: String,
+    pub categories: Vec<String>,
+    pub candidates: bool,
+    pub embedding: bool,
+}
+
+#[napi(object)]
+pub struct AnalysisCandidate {
+    pub surface: String,
+    pub key: String,
+    /// `category` か `text`
+    pub source: String,
+}
+
+#[napi(object)]
+pub struct ArticleAnalysisOutput {
+    /// 候補を求めたときだけ
+    pub candidates: Option<Vec<AnalysisCandidate>>,
+    /// 埋め込みを求めたときだけ。入力が空なら null
+    pub embedding: Option<Float32Array>,
+}
+
+pub struct AnalyzeTask {
+    input: ArticleAnalysisInput,
+}
+
+pub struct AnalyzeResult {
+    candidates: Option<Vec<sendo_analysis::Candidate>>,
+    embedding: Option<Vec<f32>>,
+}
+
+impl Task for AnalyzeTask {
+    type Output = AnalyzeResult;
+    type JsValue = ArticleAnalysisOutput;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let input = &self.input;
+        if input.html.len() > sendo_analysis::text::MAX_INPUT_BYTES {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "analysis input exceeds 512 KiB",
+            ));
+        }
+        let embedder = if input.embedding {
+            Some(embedder()?)
+        } else {
+            None
+        };
+        catch_unwind(AssertUnwindSafe(|| {
+            // HTML の解析は 1 回だけにし、候補の語と埋め込みで同じ入力を使う
+            let text =
+                sendo_analysis::ArticleText::from_html(&input.title, &input.summary, &input.html);
+            AnalyzeResult {
+                candidates: input
+                    .candidates
+                    .then(|| sendo_analysis::extract_candidates_from(&text, &input.categories)),
+                embedding: embedder.and_then(|e| e.embed_prepared(&text)),
+            }
+        }))
+        .map_err(|_| Error::new(Status::GenericFailure, "article analysis panicked"))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(ArticleAnalysisOutput {
+            candidates: output.candidates.map(|candidates| {
+                candidates
+                    .into_iter()
+                    .map(|c| AnalysisCandidate {
+                        surface: c.surface,
+                        key: c.key,
+                        source: c.source.as_str().into(),
+                    })
+                    .collect()
+            }),
+            embedding: output.embedding.map(Float32Array::new),
+        })
+    }
+}
+
+/// 記事から候補の語と埋め込みを作る（docs/decisions/article-analysis.md の 7〜11）
+#[napi]
+pub fn analyze_article(input: ArticleAnalysisInput) -> AsyncTask<AnalyzeTask> {
+    AsyncTask::new(AnalyzeTask { input })
+}
+
+pub struct EmbedTextTask {
+    text: String,
+}
+
+impl Task for EmbedTextTask {
+    type Output = Option<Vec<f32>>;
+    type JsValue = Option<Float32Array>;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let embedder = embedder()?;
+        catch_unwind(AssertUnwindSafe(|| embedder.embed_text(&self.text)))
+            .map_err(|_| Error::new(Status::GenericFailure, "text embedding panicked"))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output.map(Float32Array::new))
+    }
+}
+
+/// 文の埋め込み（タグの名前と説明など）。空なら null
+#[napi]
+pub fn embed_text(text: String) -> AsyncTask<EmbedTextTask> {
+    AsyncTask::new(EmbedTextTask { text })
 }

@@ -2,7 +2,7 @@
 # Node から呼ぶための結び（napi-rs）の crate を分ける
 [workspace]
 resolver = "3"
-members = ["crates/extract", "crates/language", "crates/node"]
+members = ["crates/analysis", "crates/extract", "crates/language", "crates/node"]
 
 [workspace.package]
 edition = "2024"

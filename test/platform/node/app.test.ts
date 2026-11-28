@@ -103,6 +103,7 @@ describe("本番の組み立てでアプリを動かす", () => {
       fetch: fakeFetch,
       pageContent: createPageContentExtractor(loadNativeModule(NATIVE_MODULE)),
       languageDetection: createLanguageDetector(loadNativeModule(NATIVE_MODULE)),
+      articleAnalysis: unusedNative.articleAnalysis,
     });
     token = await createTokenForEmail(
       database.db,

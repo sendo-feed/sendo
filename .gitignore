@@ -6,6 +6,9 @@ dist/
 # Rust のビルドの生成物と、Node から読み込むネイティブのモジュール（pnpm build:native）
 target
 native/
+# 埋め込みのモデル（pnpm model:prepare で用意する）。版と SHA-256 を固定した models/*.json だけをコミットする
+/models/*
+!/models/*.json
 # コンテナ版を手元で動かしたときのデータ（DATA_DIR=./.data）
 .data/
 coverage/
