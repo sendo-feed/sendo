@@ -38,6 +38,11 @@ export type ParsedItem = {
    * まだサニタイズしていない。保存する ／ 返す前に、必ず lib/sanitize-html.ts を通す
    */
   contentHtml: string | null;
+  /**
+   * フィードのカテゴリ（docs/decisions/article-analysis.md の 8）。RSS の category、Atom の category
+   * （label、なければ term）、JSON Feed の tags。cleanCategories で整えたもの（10 個まで）
+   */
+  categories: string[];
 };
 
 export class ParseFeedError extends Error {
@@ -99,6 +104,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
             html: [item.content?.encoded, item.description],
           }),
           contentHtml: nonBlank(item.content?.encoded ?? item.description),
+          categories: cleanCategories((item.categories ?? []).map((category) => category.name)),
         })),
       };
     }
@@ -126,6 +132,9 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
               .map((text) => text?.value),
           }),
           contentHtml: atomHtml(entry.content) ?? atomHtml(entry.summary),
+          categories: cleanCategories(
+            (entry.categories ?? []).map((category) => nonBlank(category.label) ?? category.term),
+          ),
         })),
       };
     }
@@ -147,6 +156,7 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
             html: [item.content?.encoded, item.description],
           }),
           contentHtml: nonBlank(item.content?.encoded ?? item.description),
+          categories: [],
         })),
       };
     }
@@ -175,10 +185,58 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
             html: [item.content_html],
           }),
           contentHtml: nonBlank(item.content_html),
+          categories: cleanCategories(item.tags ?? []),
         })),
       };
     }
   }
+}
+
+/** 記事ごとに保存するフィードのカテゴリの数（docs/decisions/article-analysis.md の 8） */
+export const MAX_CATEGORIES = 10;
+const MIN_CATEGORY_LENGTH = 2;
+const MAX_CATEGORY_LENGTH = 40;
+/**
+ * 整える前に見る、生のカテゴリの長さ（UTF-16 の単位）と、1 つの記事で見るカテゴリの数の上限。NFKC は
+ * 1 文字を最大 18 文字に増やす（U+FDFA）ので、長さを確かめずに正規化すると、巨大なカテゴリでメモリと時間を
+ * 使わせられる。40 コードポイントに収まるカテゴリは、空白や書式の文字を含めてもこの長さに収まる
+ */
+const MAX_RAW_CATEGORY_LENGTH = 400;
+const MAX_RAW_CATEGORIES = 1_000;
+
+/**
+ * フィードのカテゴリを整える（docs/decisions/article-analysis.md の 8）。制御文字と対になっていない
+ * サロゲートを落とし、前後の空白を除いたものを保存する。残すのは、決定の 9 の長さと数字だけの決まりに
+ * 合うものだけで、10 個まで。決まりは、Rust が候補にするときの表記（書式の文字と置き換えの文字も落とし、
+ * 空白をそろえて NFKC にしたもの）とまとめの鍵で判定する（crates/analysis の clean_category と
+ * acceptable と同じ）。保存したのに候補にならないカテゴリで、10 個の枠を食わないため
+ */
+export function cleanCategories(values: readonly (string | null | undefined)[]): string[] {
+  const kept: string[] = [];
+  for (const value of values.slice(0, MAX_RAW_CATEGORIES)) {
+    if (typeof value !== "string" || value.length > MAX_RAW_CATEGORY_LENGTH) continue;
+    const name = value
+      .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "")
+      .replace(/\p{Cc}/gu, "")
+      .trim();
+    // Rust が候補にするときの表記とまとめの鍵
+    const surface = name
+      .replace(/[\p{Cf}\uFFFD]/gu, "")
+      .trim()
+      .normalize("NFKC")
+      .split(/\s+/u)
+      .filter(Boolean)
+      .join(" ");
+    const key = surface.toLowerCase().split(/\s+/u).filter(Boolean).join(" ");
+    const fits = (text: string) => {
+      const length = [...text].length;
+      return length >= MIN_CATEGORY_LENGTH && length <= MAX_CATEGORY_LENGTH;
+    };
+    if (!fits(surface) || !fits(key) || /^[\p{N}.\s]+$/u.test(key)) continue;
+    kept.push(name);
+    if (kept.length === MAX_CATEGORIES) break;
+  }
+  return kept;
 }
 
 function alternateLink(

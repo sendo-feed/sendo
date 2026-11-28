@@ -1,3 +1,4 @@
+import { insertArticleCategories } from "../db/article-categories";
 import {
   type ArticleInput,
   estimateArticleBytes,
@@ -163,13 +164,25 @@ export async function runFetchFeed(
       db,
       rows.filter((row) => !storedContents.deferredIds.has(row.id)),
     );
+    const insertedIds = new Set(insertedArticles.map((article) => article.id));
+    // 入れた記事のフィードのカテゴリを、ページを抜く仕事と解析の仕事を積む前に入れる
+    // （docs/decisions/article-analysis.md の 8）。受信箱に配る前に入れ、読者が開いて抜き取りと解析が
+    // 先に走る隙間を小さくする。ここで落ちると、その記事のカテゴリは欠ける（受け入れる）。配りは次の
+    // 取得でやり直し、この回の記事のベルの判定は欠ける（docs/decisions/notifications.md の 8 と同じ扱い）
+    await insertArticleCategories(
+      db,
+      rows.flatMap((row, index) =>
+        insertedIds.has(row.id)
+          ? [{ articleId: row.id, categories: parsed.items[index]?.categories ?? [] }]
+          : [],
+      ),
+    );
     // 行に入った名前の書き留めを消す。入らなかった名前は残り、1 日 1 回の片付けが本文を消す
     await clearUsedContentNotes(db, storedContents.keys);
     // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
     await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
     // この回に行を入れた記事を、ベルで判定する（docs/decisions/notifications.md の 8）。失敗しても、
     // 取得は失敗にしない
-    const insertedIds = new Set(insertedArticles.map((article) => article.id));
     await notifyBells(platform, {
       previousSuccessAt: feed.lastSuccessfulFetchAt,
       articles: rows.flatMap((row, index) => {

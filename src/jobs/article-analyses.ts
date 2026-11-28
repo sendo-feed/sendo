@@ -10,6 +10,7 @@ import {
   readAnalysisSource,
   recordAnalysis,
 } from "../db/article-analyses";
+import { readArticleCategories } from "../db/article-categories";
 import { configureStorage, readStorageUsage } from "../db/storage";
 import { escapeHtml } from "../lib/html";
 import type { ArticleAnalysisResult, Platform } from "../platform";
@@ -85,6 +86,8 @@ async function analyzeArticle(
     summaryHash !== null &&
     !(await hasSameSummary(db, { articleId, feedId: source.feedId, summaryHash }));
 
+  // DB の一時的な失敗は「失敗」と記録しない（例外のまま返し、拾い直しに任せる）
+  const categories = await readArticleCategories(db, articleId);
   let result: ArticleAnalysisResult | null;
   try {
     result = await analyzer.analyze({
@@ -92,7 +95,7 @@ async function analyzeArticle(
       // 要約はプレーンテキスト。Rust は HTML として読むので、文字の `<` をタグにしない
       summary: ownSummary ? escapeHtml(summary) : "",
       html: html ?? "",
-      categories: [],
+      categories,
       candidates: wantCandidates,
       embedding: wantEmbedding,
     });

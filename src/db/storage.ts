@@ -67,6 +67,8 @@ export async function readEvictionCandidates(
     + coalesce((select 256 + coalesce(length(embedding), 0) from article_analyses where article_id = a.id), 0)
     + coalesce((select sum(128 + length(cast(key as blob)) + length(cast(surface as blob)))
       from article_candidates where article_id = a.id), 0)
+    + coalesce((select sum(128 + length(cast(name as blob))) from article_categories
+      where article_id = a.id), 0)
     + coalesce((select 512 + coalesce(length(cast(t.title as blob)), 0)
       + coalesce(length(cast(t.summary as blob)), 0) + coalesce(length(cast(t.model as blob)), 0)
       + coalesce(length(cast(t.content as blob)), 0)

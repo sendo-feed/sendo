@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  cleanCategories,
   htmlToText,
   MAX_SUMMARY_LENGTH,
   normalizeText,
@@ -46,6 +47,7 @@ describe("parseFeed", () => {
           publishedTimeKnown: true,
           thumbnailUrl: null,
           contentHtml: "<p>Hello <b>world</b></p>",
+          categories: [],
         },
       ],
     });
@@ -84,6 +86,7 @@ describe("parseFeed", () => {
       publishedTimeKnown: true,
       thumbnailUrl: null,
       contentHtml: "Short",
+      categories: [],
     });
   });
 
@@ -326,5 +329,101 @@ describe("stripTags", () => {
   ])("悪意のある入力でも長さに比例する時間で終わる：%s", (_label, input) => {
     expect(() => htmlToText(input, 500)).not.toThrow();
     expect(typeof stripTags(input)).toBe("string");
+  });
+});
+
+describe("parseFeed のフィードのカテゴリ（docs/decisions/article-analysis.md の 8）", () => {
+  it("RSS の category を、フィードに出てきた順で読む", () => {
+    // はてなブログの RSS の形
+    const feed = parseFeed(
+      `<rss version="2.0"><channel><title>Blog</title><link>https://h.example/</link>
+        <item><title>A</title><link>https://h.example/entry/1</link>
+          <category>技術</category><category domain="https://h.example/tags">Rust</category>
+          <category>  Kubernetes  </category><category>2024</category><category>2024.11</category>
+          <category>R</category><category>技術</category><category></category>
+        </item>
+      </channel></rss>`,
+      BASE,
+    );
+    // 重なりは除かない（Rust がまとめの鍵で除く）
+    expect(feed.items[0]?.categories).toEqual(["技術", "Rust", "Kubernetes", "技術"]);
+  });
+
+  it("Atom の category は label を使い、なければ term を使う", () => {
+    const feed = parseFeed(
+      `<feed xmlns="http://www.w3.org/2005/Atom"><title>Atom</title><id>urn:feed</id>
+        <entry><id>urn:1</id><title>A</title><link href="https://a.example/1"/>
+          <category term="rust" label="Rust"/><category scheme="https://a.example/tags" term="Go"/>
+          <category term="ai" label="  "/>
+        </entry>
+      </feed>`,
+      BASE,
+    );
+    expect(feed.items[0]?.categories).toEqual(["Rust", "Go", "ai"]);
+  });
+
+  it("JSON Feed の tags を読み、制御文字と対になっていないサロゲートを落とす", () => {
+    const feed = parseFeed(
+      `{"version":"https://jsonfeed.org/version/1.1","title":"J","items":[{"id":"1","url":"https://j.example/1",
+        "tags":["生成\\u0007AI","\\ud800Claude","Code\\udc00","ＡＷＳ"]}]}`,
+      BASE,
+    );
+    expect(feed.items[0]?.categories).toEqual(["生成AI", "Claude", "Code", "ＡＷＳ"]);
+  });
+
+  it("RSS 1.0（RDF）にはカテゴリを付けない", () => {
+    const feed = parseFeed(
+      `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/"
+        xmlns:dc="http://purl.org/dc/elements/1.1/">
+        <channel rdf:about="https://r.example/"><title>R</title><link>https://r.example/</link></channel>
+        <item rdf:about="https://r.example/1"><title>A</title><link>https://r.example/1</link>
+          <dc:subject>Rust</dc:subject></item>
+      </rdf:RDF>`,
+      BASE,
+    );
+    expect(feed.items[0]?.categories).toEqual([]);
+  });
+});
+
+describe("cleanCategories", () => {
+  it("表記と鍵のどちらも 2〜40 コードポイントで、数字だけでないものを、重なりを除いて 10 個まで残す", () => {
+    expect(
+      cleanCategories(["ab", "a", "あ".repeat(40), "あ".repeat(41), "1.0", "1 2", "١٢"]),
+    ).toEqual(["ab", "あ".repeat(40)]);
+    // 小文字にすると長さが倍になる文字：表記は 30、鍵は 60
+    expect(cleanCategories(["İ".repeat(30)])).toEqual([]);
+    // NFKC で 1 文字が 4 文字になる文字
+    expect(cleanCategories(["㍿"])).toEqual(["㍿"]);
+    const many = Array.from({ length: 12 }, (_, i) => `Tag${i}`);
+    expect(cleanCategories(["2024", ...many])).toEqual(many.slice(0, 10));
+    expect(cleanCategories([" \t ", null, undefined])).toEqual([]);
+  });
+
+  it("正規化する前に、長すぎるカテゴリと多すぎるカテゴリを読まない", () => {
+    // U+FDFA は NFKC で 18 文字になる。2 MiB ほどのカテゴリでも、正規化せずにすぐ落とす
+    const huge = "\ufdfa".repeat(700_000);
+    const started = performance.now();
+    expect(cleanCategories([huge, "Rust"])).toEqual(["Rust"]);
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(cleanCategories(["a".repeat(400)])).toEqual([]);
+    expect(cleanCategories([`  ${"Rust"}${" ".repeat(390)}`])).toEqual(["Rust"]);
+    expect(cleanCategories([`${" ".repeat(397)}Rust`])).toEqual([]);
+    // 1,001 個目より後は見ない
+    expect(cleanCategories([...Array.from({ length: 1_000 }, () => "1"), "Rust"])).toEqual([]);
+    expect(cleanCategories([...Array.from({ length: 999 }, () => "1"), "Rust"])).toEqual(["Rust"]);
+  });
+
+  it("保存するのは制御文字とひとりのサロゲートを落として前後の空白を除いた形で、決まりは Rust の候補の表記で判定する", () => {
+    // 書式の文字や置き換えの文字を除くと 1 文字になるものは残さない
+    expect(cleanCategories(["A\u200b", "\u200b\u200bX", "a\ufffd"])).toEqual([]);
+    // 保存する形は、書式の文字と中の空白をそのまま持つ（Rust が候補にするときに落とし、そろえる）
+    expect(cleanCategories(["Kuber\u00adnetes", `A${" ".repeat(40)}B`])).toEqual([
+      "Kuber\u00adnetes",
+      `A${" ".repeat(40)}B`,
+    ]);
+    // NFKC で先頭に空白が出る文字（¯ は「 ̄」になる）
+    expect(cleanCategories([`¯${"a".repeat(39)}`])).toEqual([`¯${"a".repeat(39)}`]);
+    // 重なりは除かない（Rust がまとめの鍵で除く）
+    expect(cleanCategories(["Rust", "rust"])).toEqual(["Rust", "rust"]);
   });
 });
