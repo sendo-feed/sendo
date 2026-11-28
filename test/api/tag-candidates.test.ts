@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { insertFeed } from "../../src/db/feeds";
 import { MAX_TAG_REJECTIONS } from "../../src/db/tag-candidates";
 import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
@@ -159,6 +160,55 @@ describe("候補の一覧", () => {
     });
   });
 
+  it("定型の語として外した行は見出しの数からも外し、分母には候補のない解析済みの記事も入る", async () => {
+    const t = await setup();
+    // 10 件のフィードの 5 件に出る SHARE は外れる。見出しは、ほかのフィードの 1 件の Share になる
+    await t.feed(
+      Array.from({ length: 10 }, (_, i) =>
+        article(`label${i}`, ...((i < 5 ? [["SHARE", "share"]] : []) as Item["candidates"])),
+      ),
+    );
+    await t.feed([article("label-other", ["Share", "share"])]);
+    // 14 件のフィード（うち 4 件は候補なし）の 6 件に出る語は 6/14 で残る（分母が候補のある 10 件なら外れる）
+    await t.feed(
+      Array.from({ length: 14 }, (_, i) =>
+        article(
+          `denominator${i}`,
+          ...((i < 6
+            ? [["Topic", "topic"]]
+            : i < 10
+              ? [["Other", `other${i}`]]
+              : []) as Item["candidates"]),
+        ),
+      ),
+    );
+    const { items } = await t.candidates();
+    expect(items.find((item) => item.key === "share")).toEqual({
+      key: "share",
+      label: "Share",
+      count: 1,
+    });
+    expect(items.find((item) => item.key === "topic")).toEqual({
+      key: "topic",
+      label: "Topic",
+      count: 6,
+    });
+  });
+
+  it("100 件の境目で同じ数の鍵は鍵の順で切り、見出しが同じ数なら表記のコードポイントの順で先のもの", async () => {
+    const t = await setup();
+    const keys = Array.from({ length: 101 }, (_, i) => `k${String(i).padStart(3, "0")}`);
+    await t.feed([
+      article("many", ...keys.map((key) => [key.toUpperCase(), key] as [string, string])),
+      article("tie-a", ["Go", "go"]),
+      article("tie-b", ["GO", "go"]),
+    ]);
+    const { items } = await t.candidates();
+    expect(items).toHaveLength(100);
+    expect(items[0]).toEqual({ key: "go", label: "GO", count: 2 });
+    expect(items.at(-1)?.key).toBe("k098");
+  });
+
   it("世代の合う候補の行だけを数え、まだ今の版で解析していない記事の数を pending に返す", async () => {
     const t = await setup();
     await t.feed([article("a1", ["Rust", "rust"]), article("a2", ["Go", "go"])]);
@@ -248,43 +298,55 @@ describe("却下", () => {
 });
 
 describe("集計の時間", () => {
-  it("記事 3,000 件・候補 45,000 行の受信箱でも、p95 で 1 秒を超えない", async () => {
+  it("見積もった実際の量（30 日で 18,000 件、候補 23 万行、60 フィード）でも、p95 で 1 秒を超えない", async () => {
     const t = await setup();
-    const { id: feedId } = await t.feed([article("seed", ["Seed", "seed"])]);
-    // 実際の量に近いデータを直接入れる（30 日で 3,000 件、記事あたり 15 個。フィードは 30 個に分ける）
+    await t.feed([article("seed", ["Seed", "seed"])]);
+    // 実際の量に近いデータを直接入れる（作るのに手間がかかるため）。1 日約 600 件、記事あたり 13 個、
+    // 鍵は 5,000 種類。フィードは受信箱の行の側で 60 個に分け、各フィードに定型の語を 1 つ置く
     const now = Date.now();
-    const articles: string[] = [];
-    const inbox: string[] = [];
-    const analyses: string[] = [];
-    const candidates: string[] = [];
-    for (let i = 0; i < 3_000; i++) {
+    const feeds = Array.from({ length: 60 }, (_, i) => `perf-feed-${i}`);
+    for (const id of feeds) {
+      await insertFeed(t.platform.db, { id, url: `https://perf.example/${id}`, now: new Date() });
+    }
+    const rows = {
+      articles: [] as string[],
+      inbox: [] as string[],
+      analyses: [] as string[],
+      candidates: [] as string[],
+    };
+    for (let i = 0; i < 18_000; i++) {
       const id = `perf${i}`;
+      const feed = feeds[i % feeds.length];
       const at = now - (i % 29) * 86_400_000;
-      articles.push(`('${id}', '${feedId}', '${id}', ${at}, ${at})`);
-      inbox.push(`('${t.user.id}', '${id}', '${feedId}', ${at}, ${at}, ${1_000_000 + i})`);
-      analyses.push(`('${id}', 'f${i % 30}', 1, 'done', 'g', 1, 'empty', ${at})`);
-      for (let k = 0; k < 15; k++) {
-        const key = `w${(i * 7 + k * 13) % 600}`;
-        candidates.push(`('${id}', 'g', '${key}', '${key}', 'text', ${at})`);
+      rows.articles.push(`('${id}', '${feed}', '${id}', ${at}, ${at})`);
+      rows.inbox.push(`('${t.user.id}', '${id}', '${feed}', ${at}, ${at}, ${1_000_000 + i})`);
+      rows.analyses.push(`('${id}', '${feed}', 1, 'done', 'g', 1, 'empty', ${at})`);
+      rows.candidates.push(`('${id}', 'g', 'boiler-${i % feeds.length}', 'Boiler', 'text', ${at})`);
+      for (let k = 0; k < 12; k++) {
+        const key = `w${(i * 7 + k * 131) % 5000}`;
+        rows.candidates.push(`('${id}', 'g', '${key}', '${key}', 'text', ${at})`);
       }
     }
-    const insert = async (head: string, rows: string[]) => {
-      for (let i = 0; i < rows.length; i += 500) {
-        await testDb.exec(`${head} VALUES ${rows.slice(i, i + 500).join(",")}`);
+    const insert = async (head: string, values: string[]) => {
+      for (let i = 0; i < values.length; i += 1_000) {
+        await testDb.exec(`${head} VALUES ${values.slice(i, i + 1_000).join(",")}`);
       }
     };
-    await insert("INSERT INTO articles (id, feed_id, guid, published_at, created_at)", articles);
+    await insert(
+      "INSERT INTO articles (id, feed_id, guid, published_at, created_at)",
+      rows.articles,
+    );
     await insert(
       "INSERT INTO user_articles (user_id, article_id, feed_id, published_at, created_at, seq)",
-      inbox,
+      rows.inbox,
     );
     await insert(
       "INSERT INTO article_analyses (article_id, feed_id, candidate_revision, candidate_status, candidate_generation, embedding_revision, embedding_status, analyzed_at)",
-      analyses,
+      rows.analyses,
     );
     await insert(
       "INSERT INTO article_candidates (article_id, generation, key, surface, source, created_at)",
-      candidates,
+      rows.candidates,
     );
     const times: number[] = [];
     for (let i = 0; i < 20; i++) {
@@ -292,10 +354,10 @@ describe("集計の時間", () => {
       const { items } = await t.candidates();
       times.push(performance.now() - started);
       expect(items).toHaveLength(100);
+      // 定型の語は外れる
+      expect(items.some((item) => item.key.startsWith("boiler-"))).toBe(false);
     }
     times.sort((a, b) => a - b);
-    const p95 = times[Math.ceil(times.length * 0.95) - 1] ?? 0;
-    console.info("tag candidates p95 (ms)", Math.round(p95), "median", Math.round(times[10] ?? 0));
-    expect(p95).toBeLessThan(1_000);
-  }, 60_000);
+    expect(times[Math.ceil(times.length * 0.95) - 1]).toBeLessThan(1_000);
+  }, 120_000);
 });

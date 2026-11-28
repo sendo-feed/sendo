@@ -131,26 +131,35 @@ export function parseRestoreKey(key: string): string | null {
 
 /**
  * 却下する。却下済みの語は上限より先に見て成功にし（created: false）、上限は同じ文の中で数える。上限ちょうど
- * （1,000 語目）は受ける
+ * （1,000 語目）は受ける。入らなければ理由を読み直し、どの理由にも当たらなければ（読み直す前に同じ語が戻された）
+ * 1 回だけ流し直す（タグの作成と同じ形）
  */
 export async function rejectTagCandidate(
   db: Database,
   input: { userId: string; key: string },
 ): Promise<{ created: boolean } | "tag_rejection_limit_reached"> {
-  const inserted = await getRow<{ key: string }>(
-    db,
-    sql`insert into tag_rejections (user_id, key, rejected_at)
-    select ${input.userId}, ${input.key}, ${DB_NOW_MS}
-    where (select count(*) from tag_rejections where user_id = ${input.userId}) < ${MAX_TAG_REJECTIONS}
-    on conflict do nothing
-    returning key`,
-  );
-  if (inserted) return { created: true };
-  const existing = await getRow<{ found: number }>(
-    db,
-    sql`select 1 as found from tag_rejections where user_id = ${input.userId} and key = ${input.key}`,
-  );
-  return existing ? { created: false } : "tag_rejection_limit_reached";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const inserted = await getRow<{ key: string }>(
+      db,
+      sql`insert into tag_rejections (user_id, key, rejected_at)
+      select ${input.userId}, ${input.key}, ${DB_NOW_MS}
+      where (select count(*) from tag_rejections where user_id = ${input.userId}) < ${MAX_TAG_REJECTIONS}
+      on conflict do nothing
+      returning key`,
+    );
+    if (inserted) return { created: true };
+    const found = await getRow<{ existing: number; full: number }>(
+      db,
+      sql`select
+        exists (select 1 from tag_rejections where user_id = ${input.userId} and key = ${input.key})
+          as existing,
+        (select count(*) from tag_rejections where user_id = ${input.userId}) >= ${MAX_TAG_REJECTIONS}
+          as full`,
+    );
+    if (found?.existing) return { created: false };
+    if (found?.full) return "tag_rejection_limit_reached";
+  }
+  throw new Error("tag rejection was neither created nor found");
 }
 
 /**
