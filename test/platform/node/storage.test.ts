@@ -10,7 +10,7 @@ import { configureStorage, readStorageUsage } from "../../../src/db/storage";
 import { createNodePlatform } from "../../../src/platform/node";
 import { createSqliteJobQueue } from "../../../src/platform/node/job-queue";
 import { MIGRATIONS_DIR, openTestDatabase } from "../../db";
-import { unusedNative, unusedSyncUpdates } from "../../helpers";
+import { inThreadHeavyRead, unusedNative, unusedSyncUpdates } from "../../helpers";
 
 describe("保存容量", () => {
   it("環境変数を読み、SQLite でも同時の本文予約を上限内に収める", async () => {
@@ -21,6 +21,7 @@ describe("保存容量", () => {
         syncUpdates: unusedSyncUpdates,
         env: { DATA_DIR: database.directory, STORAGE_LIMIT_MIB: "20480" },
         db: database.db,
+        heavyRead: inThreadHeavyRead(database.db),
         jobs,
         ...unusedNative,
       });
@@ -30,6 +31,7 @@ describe("保存容量", () => {
           syncUpdates: unusedSyncUpdates,
           env: {},
           db: database.db,
+          heavyRead: inThreadHeavyRead(database.db),
           jobs,
           ...unusedNative,
         }).retentionConfig.maxBytes,

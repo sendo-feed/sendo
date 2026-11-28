@@ -7,6 +7,7 @@ import type { Database } from "../../db";
 import { createClaudeTranslator } from "../../translation/claude";
 import type {
   ArticleAnalyzer,
+  HeavyRead,
   LanguageDetector,
   PageContentExtractor,
   Platform,
@@ -47,6 +48,8 @@ export function dataDirectory(env: NodeEnv): string {
 export function createNodePlatform(input: {
   env: NodeEnv;
   db: Database;
+  /** 重い読み取り（別のスレッドの接続） */
+  heavyRead: HeavyRead;
   jobs: SqliteJobQueue;
   /** テストで差し替える */
   fetch?: typeof fetch;
@@ -75,6 +78,7 @@ export function createNodePlatform(input: {
     articleAnalysis: input.articleAnalysis,
     syncUpdates: input.syncUpdates,
     db: input.db,
+    heavyRead: input.heavyRead,
     articleSearch: createSqliteArticleSearch(input.db),
     jobs: input.jobs,
     content: createFileObjectStore(path.join(dataDirectory(input.env), "content")),

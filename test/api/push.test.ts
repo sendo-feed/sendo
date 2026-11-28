@@ -12,6 +12,7 @@ import { createFakeGoogle, GOOGLE_CLIENT, type Jar, login, send } from "../googl
 import {
   createSessionHeaders,
   createUser,
+  inThreadHeavyRead,
   requestApp,
   statementHook,
   TEST_USER,
@@ -32,6 +33,7 @@ function platformFor(
   return createNodePlatform({
     env: { DATA_DIR: testDatabase.directory, ...env },
     db: overrides.db ?? testDatabase.db,
+    heavyRead: inThreadHeavyRead(overrides.db ?? testDatabase.db),
     jobs: createSqliteJobQueue(testDatabase.db),
     syncUpdates: unusedSyncUpdates,
     fetch:

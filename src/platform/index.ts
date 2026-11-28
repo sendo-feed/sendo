@@ -5,6 +5,7 @@
  * アプリ（api/、jobs/ など）は、ここのインターフェース越しに使い、テストでは差し替える。
  * 実装は platform/node/ にある（docs/decisions/container.md）。
  */
+import type { SQL } from "drizzle-orm";
 import type { Context } from "hono";
 import type { Database } from "../db";
 import type { ArticleCursor, ArticleListInput, InboxArticle } from "../db/inbox";
@@ -386,9 +387,20 @@ export interface Translator {
   checkBatch(batchId: string): Promise<BatchTranslationStatus>;
 }
 
+/**
+ * 重い読み取り（docs/decisions/container.md の 5）。1 回で数百 ms を超える集計を、主のスレッドとは別の
+ * スレッドの、書き込めない接続で流す。重い読み取りは 1 つずつ流す
+ */
+export interface HeavyRead {
+  /** 文を流して行を返す。書き込む文は失敗する */
+  all<T>(query: SQL): Promise<T[]>;
+}
+
 /** アプリが実行環境から受け取るもの */
 export interface Platform {
   db: Database;
+  /** 重い読み取りを流す（主のスレッドを止めない） */
+  heavyRead: HeavyRead;
   articleSearch: ArticleSearch;
   jobs: JobQueue;
   /** 記事の本文の置き場 */

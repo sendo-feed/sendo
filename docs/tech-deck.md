@@ -131,6 +131,7 @@ sendo/
 │   ├── api/                   # REST API
 │   ├── auth/                  # ログイン（OpenID Connect の提供元）
 │   ├── feeds/                 # 購読の手続き（REST API や MCP で共通）
+│   ├── tags/                  # タグの候補の一覧（REST API や MCP で共通）
 │   ├── mcp/                   # ツール・リソース
 │   ├── oauth/                 # MCP 用の OAuth の認可サーバー
 │   ├── jobs/                  # 定期実行・仕事の表で動く処理

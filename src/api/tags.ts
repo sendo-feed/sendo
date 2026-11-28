@@ -1,5 +1,13 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
+  listTagRejections,
+  MAX_TAG_REJECTIONS,
+  parseRejectKey,
+  parseRestoreKey,
+  rejectTagCandidate,
+  restoreTagCandidate,
+} from "../db/tag-candidates";
+import {
   createTag,
   listTags,
   MAX_TAG_DESCRIPTION_LENGTH,
@@ -10,6 +18,7 @@ import {
   updateTag,
 } from "../db/tags";
 import type { Platform } from "../platform";
+import { listTagCandidates } from "../tags/candidates";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
 import { ErrorSchema, errorBody, TagSchema, toTagResponse } from "./schemas";
@@ -134,6 +143,106 @@ const removeTagRoute = createRoute({
   },
 });
 
+const candidatesRoute = createRoute({
+  method: "get",
+  path: "/tags/candidates",
+  summary: "タグの候補の一覧",
+  description:
+    "受信箱の、受信箱に入った時刻と公開日時のどちらも 30 日以内の記事の候補の語を、記事の数の多い順に 100 件まで返す。すでにタグにした語と却下した語は外す。候補を選んでタグを作るときは、label を POST /tags の name に送る",
+  responses: {
+    200: {
+      description: "候補の一覧",
+      content: {
+        "application/json": {
+          schema: z.object({
+            items: z.array(
+              z.object({
+                key: z.string().openapi({ description: "まとめの鍵。却下に使う" }),
+                label: z.string().openapi({ description: "見出し（いちばん多い表記）" }),
+                count: z.int().positive().openapi({ description: "記事の数" }),
+              }),
+            ),
+            pending: z.int().nonnegative().openapi({
+              description: "範囲の記事のうち、まだ今の版で解析していない記事の数（集計中の残り）",
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+const KeyBodySchema = z.strictObject({ key: z.string() });
+
+const rejectionsRoute = createRoute({
+  method: "get",
+  path: "/tags/rejections",
+  summary: "却下した語を新しい順で返す",
+  responses: {
+    200: {
+      description: "却下した語の一覧",
+      content: {
+        "application/json": {
+          schema: z.object({
+            items: z.array(
+              z.object({
+                key: z.string(),
+                rejectedAt: z.string().openapi({ format: "date-time" }),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+  },
+});
+
+const rejectRoute = createRoute({
+  method: "post",
+  path: "/tags/rejections",
+  summary: "候補の語を却下する",
+  description: `却下した語は候補の一覧に出なくなる。鍵はまとめの鍵の作り方で正規化し直してから 2〜40 文字で確かめる。1 人 ${MAX_TAG_REJECTIONS} 語まで。却下済みなら created: false`,
+  request: {
+    body: {
+      required: true,
+      content: {
+        "application/json": { schema: KeyBodySchema.openapi("RejectTagCandidateRequest") },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "却下した、または却下済み",
+      content: { "application/json": { schema: z.object({ created: z.boolean() }) } },
+    },
+    400: error("鍵が決まりに合わない（invalid_key）"),
+    409: error(`却下した語が ${MAX_TAG_REJECTIONS} 語ある（tag_rejection_limit_reached）`),
+  },
+});
+
+const restoreRoute = createRoute({
+  method: "post",
+  path: "/tags/rejections/restore",
+  summary: "却下を戻す",
+  description:
+    "却下の一覧が返した鍵をそのまま受ける（200 文字まで）。却下していなければ restored: false",
+  request: {
+    body: {
+      required: true,
+      content: {
+        "application/json": { schema: KeyBodySchema.openapi("RestoreTagCandidateRequest") },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "戻した、または却下していなかった",
+      content: { "application/json": { schema: z.object({ restored: z.boolean() }) } },
+    },
+    400: error("鍵が決まりに合わない（invalid_key）"),
+  },
+});
+
 export function tagsApi(platform: Platform) {
   const { db } = platform;
   return new OpenAPIHono<{ Variables: AuthVariables }>({ defaultHook })
@@ -141,6 +250,36 @@ export function tagsApi(platform: Platform) {
       const items = await listTags(db, c.get("user").id);
       // 自動のタグ付けを入れるまでは、判定し直す記事はない
       return c.json({ items: items.map(toTagResponse), rejudgeRemaining: 0 }, 200);
+    })
+    .openapi(candidatesRoute, async (c) => {
+      const result = await listTagCandidates(platform, c.get("user").id);
+      return c.json(result, 200);
+    })
+    .openapi(rejectionsRoute, async (c) => {
+      const items = await listTagRejections(db, c.get("user").id);
+      return c.json(
+        {
+          items: items.map((item) => ({
+            key: item.key,
+            rejectedAt: new Date(item.rejectedAt).toISOString(),
+          })),
+        },
+        200,
+      );
+    })
+    .openapi(rejectRoute, async (c) => {
+      const key = parseRejectKey(c.req.valid("json").key);
+      if (key === null) return c.json(errorBody("invalid_key", "key is invalid"), 400);
+      const result = await rejectTagCandidate(db, { userId: c.get("user").id, key });
+      if (result === "tag_rejection_limit_reached") {
+        return c.json(errorBody("tag_rejection_limit_reached", "rejection limit reached"), 409);
+      }
+      return c.json(result, 200);
+    })
+    .openapi(restoreRoute, async (c) => {
+      const key = parseRestoreKey(c.req.valid("json").key);
+      if (key === null) return c.json(errorBody("invalid_key", "key is invalid"), 400);
+      return c.json(await restoreTagCandidate(db, { userId: c.get("user").id, key }), 200);
     })
     .openapi(createTagRoute, async (c) => {
       const { id = crypto.randomUUID(), ...body } = c.req.valid("json");

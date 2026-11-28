@@ -15,7 +15,7 @@ import { createSqliteJobQueue, type SqliteJobQueue } from "../../../src/platform
 import { createNodeServer } from "../../../src/platform/node/server";
 import { createNodeSyncUpdates } from "../../../src/platform/node/sync-updates";
 import { openTestDatabase } from "../../db";
-import { unusedNative } from "../../helpers";
+import { inThreadHeavyRead, unusedNative } from "../../helpers";
 
 const ORIGIN = "https://reader.example";
 const UPDATES = "/api/v1/sync/updates";
@@ -39,6 +39,7 @@ beforeEach(async () => {
   platform = createNodePlatform({
     env: { DATA_DIR: database.directory },
     db: database.db,
+    heavyRead: inThreadHeavyRead(database.db),
     jobs,
     syncUpdates: hub.updates,
     ...unusedNative,

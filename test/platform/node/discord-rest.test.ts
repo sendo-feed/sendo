@@ -4,7 +4,7 @@ import { createNodePlatform } from "../../../src/platform/node";
 import { createDiscordBotFetch } from "../../../src/platform/node/discord-rest";
 import { createSqliteJobQueue } from "../../../src/platform/node/job-queue";
 import { testDatabase } from "../../db";
-import { fakeFetch, unusedNative, unusedSyncUpdates } from "../../helpers";
+import { fakeFetch, inThreadHeavyRead, unusedNative, unusedSyncUpdates } from "../../helpers";
 
 const API = "https://discord.com/api/v10";
 const TOKEN = "test-bot-token";
@@ -144,6 +144,7 @@ it("Node の組み立てで Bot の読み取りに制限を反映し、通信失
   });
   const platform = createNodePlatform({
     db: testDatabase.db,
+    heavyRead: inThreadHeavyRead(testDatabase.db),
     jobs: createSqliteJobQueue(testDatabase.db),
     fetch: upstream.fetch,
     env: {
