@@ -39,7 +39,9 @@ export async function analyzeArticles(
       continue;
     }
     if (outcome === "capacity") {
-      console.warn("article analysis deferred: storage is nearly full", { articleId });
+      console.warn("article analysis deferred: storage is nearly full or still being measured", {
+        articleId,
+      });
       return;
     }
   }
@@ -100,15 +102,16 @@ async function analyzeArticle(
     result = null;
   }
 
-  if (result?.embedding && result.embedding.length !== analyzer.dimension) {
-    // 決めた次元でないベクトルは保存しない（決定の 7）
+  // 決めた次元でないベクトルは保存せず、埋め込みだけを「失敗」にする（決定の 7。候補は作る。決定の 5）
+  const badDimension = result?.embedding != null && result.embedding.length !== analyzer.dimension;
+  if (badDimension) {
     console.warn("article analysis returned an unexpected dimension", {
       articleId,
-      dimension: result.embedding.length,
+      dimension: result?.embedding?.length,
     });
-    result = null;
   }
-  const vector = wantEmbedding && result?.embedding ? toLittleEndian(result.embedding) : null;
+  const vector =
+    wantEmbedding && result?.embedding && !badDimension ? toLittleEndian(result.embedding) : null;
   const reservedBytes = analysisRowBytes(vector);
   let candidates:
     | { revision: number; status: AnalysisStatus; generation: string | null }
@@ -140,7 +143,11 @@ async function analyzeArticle(
   const embedding = wantEmbedding
     ? {
         revision: analyzer.embeddingRevision,
-        status: (result === null ? "failed" : vector === null ? "empty" : "done") as AnalysisStatus,
+        status: (result === null || badDimension
+          ? "failed"
+          : vector === null
+            ? "empty"
+            : "done") as AnalysisStatus,
         vector,
       }
     : undefined;

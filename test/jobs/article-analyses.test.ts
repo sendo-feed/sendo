@@ -263,7 +263,7 @@ describe("重なりと途中の失敗", () => {
     expect(await analysisOf("b")).toMatchObject({ candidate_status: "done" });
   });
 
-  it("決めた次元でない埋め込みは保存せず、「失敗」と記録する", async () => {
+  it("決めた次元でない埋め込みは保存せず「失敗」と記録し、候補は保存する", async () => {
     const articleAnalysis = fakeArticleAnalysis();
     articleAnalysis.analyze.mockResolvedValueOnce({
       candidates: [{ surface: "Rust", key: "rust", source: "text" }],
@@ -273,10 +273,27 @@ describe("重なりと途中の失敗", () => {
     await seed(platform, [{ id: "a" }]);
     await analyze(platform, ["a"]);
     expect(await analysisOf("a")).toMatchObject({
-      candidate_status: "failed",
+      candidate_status: "done",
       embedding_status: "failed",
       embedding_bytes: null,
     });
+    expect(await readCandidates("a")).toEqual(["rust"]);
+  });
+
+  it("作り直した候補が空なら、入れ替わった古い世代の行も消える", async () => {
+    const articleAnalysis = fakeArticleAnalysis();
+    const { platform } = createTestPlatform({ articleAnalysis });
+    await seed(platform, [{ id: "a" }]);
+    await analyze(platform, ["a"]);
+    articleAnalysis.candidateRevision = 2;
+    articleAnalysis.analyze.mockResolvedValueOnce({ candidates: [] });
+    await analyze(platform, ["a"]);
+    expect(await analysisOf("a")).toMatchObject({
+      candidate_revision: 2,
+      candidate_status: "empty",
+      candidate_generation: null,
+    });
+    expect(await candidateRows("a")).toEqual([]);
   });
 
   it("Rust が失敗した記事は「失敗」と記録し、同じ版では解析し直さない", async () => {
