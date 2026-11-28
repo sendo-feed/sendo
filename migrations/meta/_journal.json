@@ -603,6 +603,20 @@
       "when": 1795862641171,
       "tag": "0085_tag-rejections",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "6",
+      "when": 1795873726032,
+      "tag": "0086_tag-judging",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "6",
+      "when": 1795873740541,
+      "tag": "0087_tag-judging-triggers",
+      "breakpoints": true
     }
   ]
 }

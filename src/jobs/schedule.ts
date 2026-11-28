@@ -2,6 +2,7 @@ import { rewindBackfill } from "../db/article-analysis-backfill";
 import { leaseDueFeeds, MAX_LEASE } from "../db/feeds";
 import { type Platform, SCHEDULE_INTERVAL_MINUTES } from "../platform";
 import { enqueueAnalysisBackground } from "./article-analyses";
+import { enqueueStalledRejudges } from "./tag-judging";
 
 /**
  * キューに積んでから取得が終わるまでの猶予。これを過ぎても取得が記録されなければ、
@@ -108,7 +109,7 @@ export function isBackgroundSlot(scheduledTime: Date): boolean {
  * @param scheduledTime 定期実行が予定された時刻
  */
 export async function runScheduled(
-  platform: Pick<Platform, "db" | "jobs" | "now" | "articleAnalysis">,
+  platform: Pick<Platform, "db" | "jobs" | "now" | "articleAnalysis" | "syncUpdates">,
   scheduledTime: Date,
 ): Promise<void> {
   if (await enqueueDailyCleanUp(platform, scheduledTime)) {
@@ -128,6 +129,14 @@ export async function runScheduled(
   await enqueueLanguageDetection(platform);
   // 記事の解析の遡及と拾い直し（docs/decisions/article-analysis.md の 2）
   await enqueueAnalysisBackground(platform);
+  // 止まった自動のタグ付けの判定し直し（docs/decisions/auto-tagging.md の 6）
+  try {
+    await enqueueStalledRejudges(platform);
+  } catch (error) {
+    console.warn("could not enqueue stalled tag rejudges; retrying at the next schedule", {
+      error,
+    });
+  }
   try {
     await platform.jobs.enqueue([{ type: "index-article-search" }]);
   } catch (error) {

@@ -58,7 +58,10 @@ export type JobRunner = (job: Job) => Promise<void>;
 
 /** 同時に 1 本だけ動かす仕事の枠の名前。枠のない仕事は null */
 function slotOf(job: Job): string | null {
-  return job.type === "backfill-article-analyses" ? "article-analysis-backfill" : null;
+  if (job.type === "backfill-article-analyses") return "article-analysis-backfill";
+  // 自動のタグ付けの判定し直しは、人ごとに 1 つ（docs/decisions/auto-tagging.md の「判定の仕事」）
+  if (job.type === "rejudge-tags") return `tag-rejudge:${job.userId}`;
+  return null;
 }
 
 export interface SqliteJobQueue extends JobQueue {
@@ -290,15 +293,17 @@ export function createSqliteJobQueue(
     },
     async enqueue(jobs, options) {
       const at = options?.runAt ?? now();
-      if (options?.onlyIfIdle) {
-        // 枠のある仕事を、その枠に仕事が 1 つもないときだけ積む。確かめるのと積むのを同じ文で行う
+      if (options?.onlyIfIdle || options?.unlessWaiting) {
+        // 枠のある仕事を、その枠に仕事が 1 つもないとき（onlyIfIdle）か、未着手の仕事がないとき
+        // （unlessWaiting）だけ積む。確かめるのと積むのを同じ文で行う
+        const blocking = options.onlyIfIdle ? sql`` : sql`and "attempts" = 0`;
         for (const job of jobs) {
           const slot = slotOf(job);
           if (slot === null) throw new Error(`job has no slot: ${job.type}`);
           await db.run(sql`
             insert into ${jobQueue} ("id", "job", "slot", "attempts", "run_at")
             select ${crypto.randomUUID()}, ${JSON.stringify(job)}, ${slot}, 0, ${at.getTime()}
-            where not exists (select 1 from ${jobQueue} where "slot" = ${slot})
+            where not exists (select 1 from ${jobQueue} where "slot" = ${slot} ${blocking})
             on conflict do nothing
           `);
         }

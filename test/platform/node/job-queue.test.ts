@@ -92,6 +92,37 @@ describe("仕事の表", () => {
       await expect(queue.enqueue([CLEAN_UP], { onlyIfIdle: true })).rejects.toThrow("no slot");
     });
 
+    it("unlessWaiting では、その枠に未着手の仕事があれば積まず、着手済みの仕事だけなら積む。枠は人ごとに分かれる", async () => {
+      const rejudge = { type: "rejudge-tags", userId: "u1" } as const;
+      await queue.enqueue([rejudge], { unlessWaiting: true });
+      await queue.enqueue([rejudge], { unlessWaiting: true });
+      expect(await rows()).toHaveLength(1);
+      // ほかの人の枠は別
+      await queue.enqueue([{ type: "rejudge-tags", userId: "u2" }], { unlessWaiting: true });
+      expect(await rows()).toHaveLength(2);
+      await database.db.run(sql`delete from job_queue where job like '%u2%'`);
+
+      let release: () => void = () => {};
+      const running = queue.runDue(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      await vi.waitFor(async () => expect((await rows())[0]?.attempts).toBe(1));
+      // 動いている仕事が続きを積める
+      await queue.enqueue([rejudge], { unlessWaiting: true });
+      expect(await rows()).toHaveLength(2);
+      await queue.enqueue([rejudge], { unlessWaiting: true });
+      expect(await rows()).toHaveLength(2);
+      // 着手済みがある間は、未着手を取り出さない
+      expect(await queue.runDue(async () => {})).toBe(0);
+      release();
+      await running;
+      expect(await rows()).toHaveLength(1);
+      await expect(queue.enqueue([CLEAN_UP], { unlessWaiting: true })).rejects.toThrow("no slot");
+    });
+
     it("再起動のあと、借りの期限が切れた着手済みの仕事だけを借り直し、未着手の続きは取り出さない", async () => {
       await queue.enqueue([BACKFILL]);
       // 着手したまま落ちたプロセスの行と、その仕事が積んだ続き

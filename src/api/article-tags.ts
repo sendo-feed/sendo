@@ -1,5 +1,6 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { clearArticleTag, setArticleTag } from "../db/article-tags";
+import { enqueueRejudgeAfterWrite } from "../jobs/tag-judging";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
@@ -84,6 +85,8 @@ export function articleTagsApi(platform: Platform) {
       if (result === "not_found") {
         return c.json(errorBody("not_found", "article or tag does not exist"), 404);
       }
+      // 手直しの見える状態が変わっていれば、トリガーがタグの版を上げている（docs/decisions/auto-tagging.md の 4）
+      await enqueueRejudgeAfterWrite(platform, c.get("user").id);
       return c.json({ articleTag: toArticleTagResponse(result) }, 200);
     })
     .openapi(clearRoute, async (c) => {
@@ -92,6 +95,7 @@ export function articleTagsApi(platform: Platform) {
       if (result === "not_found") {
         return c.json(errorBody("not_found", "article or tag does not exist"), 404);
       }
+      await enqueueRejudgeAfterWrite(platform, c.get("user").id);
       return c.body(null, 204);
     });
 }
