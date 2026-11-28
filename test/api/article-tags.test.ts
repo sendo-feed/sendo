@@ -365,6 +365,27 @@ describe("同じ番号と片付けの量", () => {
   });
 });
 
+describe("片付けが 1 日で消し切れないとき", () => {
+  it("記事のタグが残る間は消したタグを消さず、記事のタグを消し切った日にタグも消す", async () => {
+    let now = new Date("2026-11-01T00:00:00Z");
+    const t = await setup(1, { now: () => now });
+    const rust = await t.tag("Rust");
+    // 1 日の片付け（500 行 × 3 回）で消し切れない数の行を、直接入れる
+    const values = Array.from(
+      { length: 1_600 },
+      (_, i) =>
+        `('${crypto.randomUUID()}', '${rust}', '${t.user.id}', 'y${i}', 'auto', 1, ${i + 1})`,
+    ).join(",");
+    await testDb.exec(
+      `INSERT INTO article_tags (id, tag_id, user_id, article_id, kind, "on", seq) VALUES ${values}`,
+    );
+    expect((await t.request(`/tags/${rust}`, "DELETE")).status).toBe(204);
+    now = new Date("2026-12-02T00:00:00Z");
+    expect(await runCleanUp(t.platform)).toMatchObject({ articleTags: 1_500, tags: 0 });
+    expect(await runCleanUp(t.platform)).toMatchObject({ articleTags: 100, tags: 1 });
+  });
+});
+
 describe("容量", () => {
   it("記事のタグを保存容量に 1 行 256 バイトで数え、手の付け外しは上限でも断らない", async () => {
     const t = await setup(1);
