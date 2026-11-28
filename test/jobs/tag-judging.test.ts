@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { insertFeed } from "../../src/db/feeds";
 import { configureStorage, readStorageUsage } from "../../src/db/storage";
@@ -182,13 +184,15 @@ async function setup() {
       .run();
   };
 
-  /** 積まれた判定し直しの仕事を取り出す */
+  /**
+   * 積まれた判定し直しの仕事を取り出し、この人の分を返す（定期実行は、同じファイルのほかのテストの人も拾う）
+   */
   const takeRejudges = () => {
     const taken: Job[] = [];
     for (let index = 0; index < enqueued.length; ) {
       const job = enqueued[index];
       if (job?.type === "rejudge-tags") {
-        taken.push(job);
+        if (job.userId === user.id) taken.push(job);
         enqueued.splice(index, 1);
       } else {
         index++;
@@ -589,6 +593,15 @@ describe("判定し直しの重なり", () => {
     await inbox.rejudge({ ...inbox.platform, db: hook.db });
     expect(hook.fired()).toBe(true);
     expect(await inbox.autoTitles(rust)).toEqual([]);
+    // 書けなかった記事から先へ進めず、続きも積まない。定期実行が拾い、新しい状態（受信箱が空）で終える
+    expect(await inbox.state()).toMatchObject({ finished: 0 });
+    expect(inbox.takeRejudges()).toEqual([]);
+    await inbox.age(601_000);
+    await runScheduled(inbox.platform, new Date("2026-11-28T05:10:00Z"));
+    const picked = inbox.takeRejudges();
+    expect(picked).toEqual([{ type: "rejudge-tags", userId: inbox.user.id }]);
+    for (const job of picked) await runJob(inbox.platform, job);
+    expect(await inbox.state()).toMatchObject({ finished: 1 });
 
     const tag = await setup();
     await tag.feed(standardArticles());
@@ -738,7 +751,9 @@ describe("判定し直しの待ちと積み方", () => {
 });
 
 describe("統計の記事", () => {
-  it("受信箱の新しい 2,000 件から求め、今の版の埋め込みのない記事（古い版・空）は数えない", async () => {
+  it("受信箱の新しい 2,000 件から求め、今の版の埋め込みのない記事（古い版・空）は数えない", {
+    timeout: 60_000,
+  }, async () => {
     const t = await setup();
     const feedId = `stats-${crypto.randomUUID()}`;
     await insertFeed(t.platform.db, {
@@ -774,20 +789,17 @@ describe("統計の記事", () => {
         `INSERT INTO user_articles (user_id, article_id, feed_id, published_at, created_at, seq) VALUES ${rows.inbox.slice(i, i + 500).join(",")}`,
       );
     }
-    for (const item of analyses) {
-      await testDb
-        .prepare(
-          `INSERT INTO article_analyses (article_id, feed_id, candidate_revision, candidate_status, embedding_revision, embedding_status, embedding, analyzed_at)
-          VALUES (?, ?, 1, 'empty', ?, ?, ?, 0)`,
-        )
-        .bind(
-          item.id,
-          feedId,
-          item.revision,
-          item.embedding ? "done" : "empty",
-          item.embedding ? toBytes(item.embedding) : null,
-        )
-        .run();
+    const hex = (vector: Float32Array) => Buffer.from(toBytes(vector)).toString("hex");
+    const values = analyses.map(
+      (item) =>
+        `('${item.id}', '${feedId}', 1, 'empty', ${item.revision}, '${item.embedding ? "done" : "empty"}', ${
+          item.embedding ? `X'${hex(item.embedding)}'` : "NULL"
+        }, 0)`,
+    );
+    for (let i = 0; i < values.length; i += 200) {
+      await testDb.exec(
+        `INSERT INTO article_analyses (article_id, feed_id, candidate_revision, candidate_status, embedding_revision, embedding_status, embedding, analyzed_at) VALUES ${values.slice(i, i + 200).join(",")}`,
+      );
     }
     const rust = await t.tag("Rust");
     await t.rejudge();
@@ -972,5 +984,92 @@ describe("保存容量（続き）", () => {
     await t.tag("other-2");
     await t.rejudge();
     expect(await t.autoTitles(rust)).toContain("rust-0");
+  });
+});
+
+describe("判定し直しの直し", () => {
+  it("ベクトルを書く文の直前に、別の作り直しが同じタグを書いたら書かずに終え、流し直すと作り直す", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    const hook = statementHook(/update tags set\s+name_embedding_input/i, async () => {
+      await testDb
+        .prepare(
+          "UPDATE tags SET vector_tag_revision = (SELECT revision FROM tag_judging WHERE user_id = ?) WHERE id = ?",
+        )
+        .bind(t.user.id, rust)
+        .run();
+    });
+    await t.rejudge({ ...t.platform, db: hook.db });
+    expect(hook.fired()).toBe(true);
+    expect(
+      await testDb.prepare("SELECT vector FROM tags WHERE id = ?").bind(rust).first("vector"),
+    ).toBeNull();
+    expect(await t.state()).toMatchObject({ finished: 0 });
+    await t.rejudge();
+    expect(await t.autoTitles(rust)).toEqual(rustTitles);
+  });
+
+  it("判定し直しを終えた人は、埋め込みの版が変わってもベクトルを作り直さない（版を上げて判定し直す）", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    t.articleAnalysis.embeddingRevision = 2;
+    t.articleAnalysis.embedText.mockClear();
+    await runJob(t.platform, { type: "rejudge-tags", userId: t.user.id });
+    expect(t.articleAnalysis.embedText).not.toHaveBeenCalled();
+    expect(
+      await testDb
+        .prepare("SELECT vector_embedding_revision FROM tags WHERE id = ?")
+        .bind(rust)
+        .first<number>("vector_embedding_revision"),
+    ).toBe(1);
+    expect(await t.rejudgeRemaining()).toBe(0);
+  });
+
+  it("定期実行は、未着手の判定し直しの仕事がある人を外す", async () => {
+    const t = await setup();
+    await t.feed(standardArticles().slice(0, 5));
+    await t.tag("Rust");
+    t.takeRejudges();
+    await t.age(601_000);
+    const slot = `tag-rejudge:${t.user.id}`;
+    await testDb
+      .prepare("INSERT INTO job_queue (id, job, slot, attempts, run_at) VALUES (?, ?, ?, 0, 0)")
+      .bind(crypto.randomUUID(), JSON.stringify({ type: "rejudge-tags", userId: t.user.id }), slot)
+      .run();
+    await runScheduled(t.platform, new Date("2026-11-28T05:10:00Z"));
+    expect(t.takeRejudges()).toEqual([]);
+    await testDb.prepare("DELETE FROM job_queue WHERE slot = ?").bind(slot).run();
+    await runScheduled(t.platform, new Date("2026-11-28T05:10:00Z"));
+    expect(t.takeRejudges()).toEqual([{ type: "rejudge-tags", userId: t.user.id }]);
+  });
+
+  it("機能を入れる前からタグを持つ人の行をマイグレーションで入れ、定期実行が拾って判定し直す", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    // マイグレーションの前の状態：タグはあるが、人ごとの行もベクトルもない
+    await testDb.prepare("DELETE FROM tag_judging WHERE user_id = ?").bind(t.user.id).run();
+    t.takeRejudges();
+    const migration = readFileSync(
+      fileURLToPath(new URL("../../migrations/0087_tag-judging-triggers.sql", import.meta.url)),
+      "utf8",
+    );
+    const backfill = migration.split("--> statement-breakpoint").at(-1) ?? "";
+    expect(backfill).toContain("INSERT INTO `tag_judging`");
+    await testDb.exec(backfill);
+    expect(await t.state()).toMatchObject({ revision: 1, finished: 0 });
+    expect(await t.rejudgeRemaining()).toBe(120);
+    await runScheduled(t.platform, new Date("2026-11-28T05:10:00Z"));
+    const picked = t.takeRejudges();
+    expect(picked).toEqual([{ type: "rejudge-tags", userId: t.user.id }]);
+    for (const job of picked) await runJob(t.platform, job);
+    expect(await t.autoTitles(rust)).toEqual(rustTitles);
+    // 2 回流しても行は増えず、変わらない
+    const before = await t.state();
+    await testDb.exec(backfill);
+    expect(await t.state()).toEqual(before);
   });
 });

@@ -91,23 +91,16 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
     });
     return;
   }
+  // 判定し直しを終えていれば何もしない（埋め込みの版や判定の版が変わったときは、版を上げて判定し直す。4）
+  if (state.finished) return;
   const embeddingRevision = platform.articleAnalysis.embeddingRevision;
+  const revision = state.revision;
   let tags = await listJudgedTags(db, userId);
   if (tags.length === 0) {
     // 有効なタグがなければ、位置を終わりにして終える
-    if (!state.finished) {
-      await advanceJudgingCursor(db, {
-        userId,
-        revision: state.revision,
-        from: state.cursor,
-        to: null,
-      });
-    }
+    await advanceJudgingCursor(db, { userId, revision, from: state.cursor, to: null });
     return;
   }
-  const revision = state.revision;
-  // 判定し直しを終えていれば何もしない（埋め込みの版や判定の版が変わったときは、版を上げて判定し直す。4）
-  if (state.finished) return;
   if (tags.some((tag) => !isVectorCurrent(tag, { revision, embeddingRevision }))) {
     if (!(await rebuildVectors(platform, { userId, revision, tags }))) return;
     tags = await listJudgedTags(db, userId);
@@ -168,8 +161,9 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
           changed++;
           continue;
         }
-        // 書けなかった：理由によらず、この記事から先へ進めずに終える（使用量が足りなければ 7 のとおり。
-        // 版が変われば位置を進める文が通らず、受信箱やタグが変われば次の仕事が新しい状態で判定する）
+        // 書けなかった：理由によらず、この記事から先へ進めずに終え、続きを積まない（使用量が足りなければ 7 の
+        // とおり）。版が変われば位置を進める文が通らず、新しい版の判定し直しを API が積む。受信箱の行が消えた
+        // ときは、定期実行が拾い、新しい状態で判定する
         stopped = true;
         break articles;
       } else if (current && current.kind === "auto" && !current.deleted) {
