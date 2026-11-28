@@ -72,7 +72,7 @@ async function setUp(
       .all();
     return items.map((_, i) => rows.find((row) => row.guid === `g${i}`)?.id ?? "");
   };
-  return { ...created, feed, ids };
+  return { ...created, feed, ids, userId: user.id };
 }
 
 const candidatesOf = async (id: string) =>
@@ -157,13 +157,35 @@ describe("取得の仕事", () => {
       throw new Error("crashed");
     });
     const t = await setUp([{ link: null, title: "記事", categories: ["Rust"] }], { db: hook.db });
-    // 取得の仕事は例外を投げ、仕事の表がやり直す
+    // 取得の仕事は例外を投げ、仕事の表がやり直す。その回は受信箱に配らない
     await expect(runFetchFeed(t.platform, t.feed.id)).rejects.toThrow();
-    // やり直しでは記事を入れ直さないので、カテゴリは入らない（受け入れる）
+    const inbox = () =>
+      testDb
+        .prepare("SELECT count(*) AS n FROM user_articles WHERE user_id = ?")
+        .bind(t.userId)
+        .first<number>("n");
+    expect(await inbox()).toBe(0);
+    // やり直しでは記事を入れ直さないので、カテゴリは入らない（受け入れる）。記事は受信箱に届く
     await runFetchFeed(t.platform, t.feed.id);
     const [id = ""] = await t.ids();
     expect(id).not.toBe("");
     expect(await readArticleCategories(t.platform.db, id)).toEqual([]);
+    expect(await inbox()).toBe(1);
+  });
+
+  it("カテゴリは、受信箱に配る前に入っている", async () => {
+    let seen: number | null = null;
+    const hook = statementHook(/insert into "user_articles"/, async () => {
+      seen = await testDb
+        .prepare("SELECT count(*) AS n FROM article_categories")
+        .first<number>("n");
+    });
+    const t = await setUp([{ link: null, title: "記事", categories: ["Rust", "Go"] }], {
+      db: hook.db,
+    });
+    await runFetchFeed(t.platform, t.feed.id);
+    expect(hook.fired()).toBe(true);
+    expect(seen).toBe(2);
   });
 });
 
@@ -200,7 +222,6 @@ describe("TypeScript と Rust の決まり", () => {
       "Ⅻ",
       "x\u0007y",
       "Rust",
-      "rust",
     ];
     const stored = cleanCategories(edges);
     const result = await native.analyzeArticle({

@@ -166,8 +166,9 @@ export async function runFetchFeed(
     );
     const insertedIds = new Set(insertedArticles.map((article) => article.id));
     // 入れた記事のフィードのカテゴリを、ページを抜く仕事と解析の仕事を積む前に入れる
-    // （docs/decisions/article-analysis.md の 8）。受信箱に配る前に入れ、読者が開いて解析が先に走る隙間を作らない。
-    // ここで落ちると、その記事のカテゴリは欠ける（受け入れる）。配りは次の取得でやり直す
+    // （docs/decisions/article-analysis.md の 8）。受信箱に配る前に入れ、読者が開いて抜き取りと解析が
+    // 先に走る隙間を小さくする。ここで落ちると、その記事のカテゴリは欠ける（受け入れる）。配りは次の
+    // 取得でやり直し、この回の記事のベルの判定は欠ける（docs/decisions/notifications.md の 8 と同じ扱い）
     await insertArticleCategories(
       db,
       rows.flatMap((row, index) =>

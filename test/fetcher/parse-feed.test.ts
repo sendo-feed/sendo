@@ -345,7 +345,8 @@ describe("parseFeed のフィードのカテゴリ（docs/decisions/article-anal
       </channel></rss>`,
       BASE,
     );
-    expect(feed.items[0]?.categories).toEqual(["技術", "Rust", "Kubernetes"]);
+    // 重なりは除かない（Rust がまとめの鍵で除く）
+    expect(feed.items[0]?.categories).toEqual(["技術", "Rust", "Kubernetes", "技術"]);
   });
 
   it("Atom の category は label を使い、なければ term を使う", () => {
@@ -398,20 +399,17 @@ describe("cleanCategories", () => {
     expect(cleanCategories([" \t ", null, undefined])).toEqual([]);
   });
 
-  it("書式の文字と置き換えの文字を落とし、中の空白をそろえてから数える（Rust の候補の決まりと同じ）", () => {
-    expect(cleanCategories(["A\u200b", "\u200b\u200bX", "a\ufffd", "Kuber\u00adnetes"])).toEqual([
-      "Kubernetes",
+  it("保存するのは制御文字とひとりのサロゲートを落として前後の空白を除いた形で、決まりは Rust の候補の表記で判定する", () => {
+    // 書式の文字や置き換えの文字を除くと 1 文字になるものは残さない
+    expect(cleanCategories(["A\u200b", "\u200b\u200bX", "a\ufffd"])).toEqual([]);
+    // 保存する形は、書式の文字と中の空白をそのまま持つ（Rust が候補にするときに落とし、そろえる）
+    expect(cleanCategories(["Kuber\u00adnetes", `A${" ".repeat(40)}B`])).toEqual([
+      "Kuber\u00adnetes",
+      `A${" ".repeat(40)}B`,
     ]);
-    expect(cleanCategories([`A${" ".repeat(40)}B`])).toEqual(["A B"]);
     // NFKC で先頭に空白が出る文字（¯ は「 ̄」になる）
     expect(cleanCategories([`¯${"a".repeat(39)}`])).toEqual([`¯${"a".repeat(39)}`]);
-  });
-
-  it("まとめの鍵が同じものは 1 つにまとめ、先に出たものを残す", () => {
-    const tags = Array.from({ length: 10 }, (_, i) => `Tag${i}`);
-    expect(cleanCategories(["Rust", "rust", "ＲＵＳＴ", ...tags])).toEqual([
-      "Rust",
-      ...tags.slice(0, 9),
-    ]);
+    // 重なりは除かない（Rust がまとめの鍵で除く）
+    expect(cleanCategories(["Rust", "rust"])).toEqual(["Rust", "rust"]);
   });
 });
