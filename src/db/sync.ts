@@ -17,6 +17,7 @@ import {
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import { type Database, getRow } from ".";
+import { type ArticleTag, readArticleTagHorizon } from "./article-tags";
 import { type ActiveBell, readBellHorizon } from "./bells";
 import type { InboxArticle } from "./inbox";
 import { readRemovalHorizon } from "./retention";
@@ -24,6 +25,8 @@ import { readSavedPageHorizon, type SavedPage, toSavedPage } from "./saved";
 import {
   type ArticleTranslation,
   articles,
+  articleTagHorizons,
+  articleTags,
   articleTranslations,
   bellHorizons,
   bells,
@@ -77,6 +80,7 @@ export type SyncCursor = {
   workspaces?: SyncPosition | undefined;
   bells?: SyncPosition | undefined;
   tags?: SyncPosition | undefined;
+  articleTags?: SyncPosition | undefined;
 };
 
 /** 最初の同期の始まり。upTo は、最初のページで決める（-1 は「まだ決めていない」） */
@@ -106,6 +110,7 @@ export const SYNC_LIMITS = {
   workspaces: 500,
   bells: 500,
   tags: 500,
+  articleTags: 500,
 } as const;
 
 /** 最初の同期で送る、既読の記事の範囲（受信箱に入ってからの日数） */
@@ -217,6 +222,8 @@ export type SyncBell = (ActiveBell & { deleted: false }) | { id: string; deleted
 
 export type SyncTag = (ActiveTag & { deleted: false }) | { id: string; deleted: true };
 
+export type SyncArticleTag = (ArticleTag & { deleted: false }) | { id: string; deleted: true };
+
 export type SyncChanges = {
   folders: Folder[];
   subscriptions: (Subscription & { feed: Feed })[];
@@ -226,6 +233,7 @@ export type SyncChanges = {
   workspaces?: Workspace[];
   bells?: SyncBell[];
   tags?: SyncTag[];
+  articleTags?: SyncArticleTag[];
   cursor: SyncCursor;
   hasMore: boolean;
 };
@@ -741,6 +749,53 @@ export async function readChanges(
       cursor.tags,
     ));
 
+  // 記事のタグ（docs/decisions/tags.md の 7）。最初の同期では、受信箱の最初の同期と同じ範囲（未読・スター・
+  // 直近の記事）の記事の分だけを送る。差分は範囲によらず送る
+  const at =
+    cursor.articleTags &&
+    (await readTable(
+      singleTable({
+        seq: articleTags.seq,
+        id: articleTags.id,
+        initialFilter: and(
+          isNull(articleTags.deletedAt),
+          sql`exists (
+            select 1 from ${ua} where ${ua.userId} = ${userId} and ${ua.articleId} = ${articleTags.articleId}
+              and (${ua.readAt} is null or ${ua.starredAt} is not null or ${ua.createdAt} > ${since.getTime()})
+          )`,
+        ),
+        limit: SYNC_LIMITS.articleTags,
+        read: (where, limit) =>
+          db
+            .select({
+              id: articleTags.id,
+              tagId: articleTags.tagId,
+              articleId: articleTags.articleId,
+              kind: articleTags.kind,
+              on: articleTags.on,
+              deletedAt: articleTags.deletedAt,
+              seq: articleTags.seq,
+            })
+            .from(articleTags)
+            .where(and(eq(articleTags.userId, userId), where))
+            .orderBy(asc(articleTags.seq), asc(articleTags.id))
+            .limit(limit)
+            .all(),
+        position: (row) => ({ seq: row.seq, id: row.id }),
+        maxSeq: async () => {
+          const row = await getRow<{ value: number }>(
+            db,
+            sql`select max(
+          coalesce((select max(${articleTags.seq}) from ${articleTags} where ${articleTags.userId} = ${userId}), 0),
+          coalesce((select ${articleTagHorizons.seq} from ${articleTagHorizons} where ${articleTagHorizons.userId} = ${userId}), 0)
+        ) as value`,
+          );
+          return row?.value ?? 0;
+        },
+      }),
+      cursor.articleTags,
+    ));
+
   return {
     folders: f.items,
     ...(w && { workspaces: w.items }),
@@ -776,6 +831,14 @@ export async function readChanges(
             : { id, deleted: true },
       ),
     }),
+    ...(at && {
+      articleTags: at.items.map(
+        ({ id, tagId, articleId, kind, on, deletedAt }): SyncArticleTag =>
+          deletedAt === null
+            ? { id, tagId, articleId, kind, on, deleted: false }
+            : { id, deleted: true },
+      ),
+    }),
     cursor: {
       folders: f.next,
       subscriptions: s.next,
@@ -785,6 +848,7 @@ export async function readChanges(
       workspaces: w?.next,
       bells: b?.next,
       tags: tg?.next,
+      articleTags: at?.next,
     },
     hasMore:
       f.more ||
@@ -794,7 +858,8 @@ export async function readChanges(
       (p?.more ?? false) ||
       (w?.more ?? false) ||
       (b?.more ?? false) ||
-      (tg?.more ?? false),
+      (tg?.more ?? false) ||
+      (at?.more ?? false),
   };
 }
 
@@ -839,9 +904,17 @@ export async function isCursorExpired(
   ) {
     return true;
   }
-  return (
+  if (
     input.cursor.tags !== undefined &&
     (await isCollectedAfter(input.cursor.tags, () => readTagHorizon(db, input.userId)))
+  ) {
+    return true;
+  }
+  return (
+    input.cursor.articleTags !== undefined &&
+    (await isCollectedAfter(input.cursor.articleTags, () =>
+      readArticleTagHorizon(db, input.userId),
+    ))
   );
 }
 

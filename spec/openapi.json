@@ -635,6 +635,39 @@
           "folders"
         ]
       },
+      "ArticleTag": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tagId": {
+            "type": "string"
+          },
+          "articleId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "manual"
+            ],
+            "description": "付け方。auto は自動で付いた、manual は手で付け外しした"
+          },
+          "on": {
+            "type": "boolean",
+            "description": "付いているか。manual で false なら手で外した"
+          }
+        },
+        "required": [
+          "id",
+          "tagId",
+          "articleId",
+          "kind",
+          "on"
+        ]
+      },
       "ArticleTranslation": {
         "type": "object",
         "properties": {
@@ -1048,6 +1081,19 @@
         ],
         "additionalProperties": false
       },
+      "SetArticleTagRequest": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean",
+            "description": "true なら付け、false なら外す"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "additionalProperties": false
+      },
       "PushStatus": {
         "type": "object",
         "properties": {
@@ -1209,6 +1255,12 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SyncTag"
+            }
+          },
+          "articleTags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncArticleTag"
             }
           },
           "defaultWorkspaceOnSubscribe": {
@@ -1767,6 +1819,49 @@
             "allOf": [
               {
                 "$ref": "#/components/schemas/Tag"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "deleted": {
+                    "type": "boolean",
+                    "enum": [
+                      false
+                    ]
+                  }
+                },
+                "required": [
+                  "deleted"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "deleted": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "deleted"
+            ]
+          }
+        ]
+      },
+      "SyncArticleTag": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ArticleTag"
               },
               {
                 "type": "object",
@@ -3076,6 +3171,18 @@
           {
             "schema": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "このタグが付いている（自動で付いた・手で付けた）記事だけにする。本人の有効なタグがなければ 404"
+            },
+            "required": false,
+            "description": "このタグが付いている（自動で付いた・手で付けた）記事だけにする。本人の有効なタグがなければ 404",
+            "name": "tagId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "enum": [
                 "all",
                 "unread",
@@ -3145,7 +3252,26 @@
                     "items": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/Article"
+                        "allOf": [
+                          {
+                            "$ref": "#/components/schemas/Article"
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "tags": {
+                                "type": "array",
+                                "items": {
+                                  "$ref": "#/components/schemas/ArticleTag"
+                                },
+                                "description": "その人の記事のタグ（手で外したものも。docs/decisions/tags.md の 6）"
+                              }
+                            },
+                            "required": [
+                              "tags"
+                            ]
+                          }
+                        ]
                       }
                     },
                     "nextCursor": {
@@ -3171,6 +3297,16 @@
           },
           "400": {
             "description": "クエリが正しくない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "tagId に本人の有効なタグがない",
             "content": {
               "application/json": {
                 "schema": {
@@ -4454,6 +4590,119 @@
         }
       }
     },
+    "/articles/{id}/tags/{tagId}": {
+      "put": {
+        "summary": "記事のタグを手で付け外しする",
+        "description": "同じ状態の再送も同じ応答。自動のタグ付けは、手で付け外しした記事のタグを変えない",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "記事の ID"
+            },
+            "required": true,
+            "description": "記事の ID",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "tagId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetArticleTagRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "付け外しした",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "articleTag": {
+                      "$ref": "#/components/schemas/ArticleTag"
+                    }
+                  },
+                  "required": [
+                    "articleTag"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "本人の有効なタグがないか、記事が本人の受信箱にない（ほかの人の受信箱にある記事かどうかは漏らさない）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "記事のタグの手直しを取り消し、自動に戻す",
+        "description": "手で付け外しした記事のタグだけを取り消す。自動のタグ付けが判定し直すまでは、付いていないものとして見える。手直しがなければ何も変えずに 204",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "記事の ID"
+            },
+            "required": true,
+            "description": "記事の ID",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "tagId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "取り消した、または取り消す手直しがなかった"
+          },
+          "404": {
+            "description": "本人の有効なタグがないか、記事が本人の受信箱にない（ほかの人の受信箱にある記事かどうかは漏らさない）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/push": {
       "get": {
         "summary": "Web Push の有無と VAPID の公開鍵",
@@ -4674,7 +4923,7 @@
     "/sync": {
       "get": {
         "summary": "前回の同期からの差分を取る",
-        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\nsettings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。\nincludeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。\nincludeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。差分の有無にかかわらず、購読先の省略に対応した印 defaultWorkspaceOnSubscribe を返す。\nincludeBells=true なら、通知のベルの付けたものと外したものも bells に載せる。ベルの位置がない既存のカーソルでは、ベルだけを最初から送る。購読をやめると、その購読のベルも deleted で届く。\nincludeTags=true なら、タグの作ったもの・変えたものと消したものも tags に載せる。タグの位置がない既存のカーソルでは、タグだけを最初から送る。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
+        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\nsettings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。\nincludeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。\nincludeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。差分の有無にかかわらず、購読先の省略に対応した印 defaultWorkspaceOnSubscribe を返す。\nincludeBells=true なら、通知のベルの付けたものと外したものも bells に載せる。ベルの位置がない既存のカーソルでは、ベルだけを最初から送る。購読をやめると、その購読のベルも deleted で届く。\nincludeTags=true なら、タグの作ったもの・変えたものと消したものを tags に、記事のタグ（手で外したものも）と消したものを articleTags に載せる。それぞれの位置がない既存のカーソルでは、その表だけを最初から送る。記事のタグの最初の同期は、受信箱の最初の同期と同じ範囲の記事の分だけを送るので、手元のほかの記事の記事のタグは GET /articles で補う。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
         "parameters": [
           {
             "schema": {

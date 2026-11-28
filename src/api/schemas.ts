@@ -1,4 +1,5 @@
 import { z } from "@hono/zod-openapi";
+import type { ArticleTag } from "../db/article-tags";
 import type { ActiveBell } from "../db/bells";
 import type { InboxArticle } from "../db/inbox";
 import type { Feed, Folder, Workspace } from "../db/schema";
@@ -192,6 +193,28 @@ export function toTagResponse(tag: ActiveTag): z.infer<typeof TagSchema> {
     name: tag.name,
     description: tag.description,
     createdAt: tag.createdAt.toISOString(),
+  };
+}
+
+export const ArticleTagSchema = z
+  .object({
+    id: z.string(),
+    tagId: z.string(),
+    articleId: z.string(),
+    kind: z.enum(["auto", "manual"]).openapi({
+      description: "付け方。auto は自動で付いた、manual は手で付け外しした",
+    }),
+    on: z.boolean().openapi({ description: "付いているか。manual で false なら手で外した" }),
+  })
+  .openapi("ArticleTag");
+
+export function toArticleTagResponse(tag: ArticleTag): z.infer<typeof ArticleTagSchema> {
+  return {
+    id: tag.id,
+    tagId: tag.tagId,
+    articleId: tag.articleId,
+    kind: tag.kind,
+    on: tag.on,
   };
 }
 

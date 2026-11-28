@@ -1078,6 +1078,46 @@ export const tags = sqliteTable(
   ],
 );
 
+/**
+ * 記事のタグ（docs/decisions/tags.md の 5）。タグと記事の組ごとに 1 行。見える状態は、自動で付いた
+ * （auto・on）／手で付けた（manual・on）／手で外した（manual・off）の 3 つで、どれでもない組は行がないか
+ * 消した印が付いている。記事の行とは外部キーで連鎖させない（消した印を 30 日残すため）。受信箱の行が消える
+ * か、タグを消すと、トリガーが同じ文の中で消した印と新しい変更番号を付ける
+ */
+export const articleTags = sqliteTable(
+  "article_tags",
+  {
+    id: text("id").primaryKey(),
+    tagId: text("tag_id")
+      .notNull()
+      .references(() => tags.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    articleId: text("article_id").notNull(),
+    kind: text("kind", { enum: ["auto", "manual"] }).notNull(),
+    on: integer("on", { mode: "boolean" }).notNull(),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    seq: seq(),
+  },
+  (t) => [
+    uniqueIndex("article_tags_tag_id_article_id_idx").on(t.tagId, t.articleId),
+    // 受信箱の行が消えたときのトリガーと、記事の一覧に記事のタグを付けるときに使う
+    index("article_tags_user_id_article_id_idx").on(t.userId, t.articleId),
+    index("article_tags_user_id_seq_idx").on(t.userId, t.seq),
+    index("article_tags_seq_idx").on(t.seq),
+    index("article_tags_deleted_at_idx").on(t.deletedAt).where(sql`${t.deletedAt} is not null`),
+  ],
+);
+
+/** その人の記事のタグの消した印の行を、どこまで回収したか（差分同期の下限） */
+export const articleTagHorizons = sqliteTable("article_tag_horizons", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  seq: integer("seq").notNull(),
+});
+
 /** その人のタグの消した印の行を、どこまで回収したか（差分同期の下限） */
 export const tagHorizons = sqliteTable("tag_horizons", {
   userId: text("user_id")
