@@ -196,6 +196,13 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed {
 export const MAX_CATEGORIES = 10;
 const MIN_CATEGORY_LENGTH = 2;
 const MAX_CATEGORY_LENGTH = 40;
+/**
+ * 整える前に見る、生のカテゴリの長さ（UTF-16 の単位）と、1 つの記事で見るカテゴリの数の上限。NFKC は
+ * 1 文字を最大 18 文字に増やす（U+FDFA）ので、長さを確かめずに正規化すると、巨大なカテゴリでメモリと時間を
+ * 使わせられる。40 コードポイントに収まるカテゴリは、空白や書式の文字を含めてもこの長さに収まる
+ */
+const MAX_RAW_CATEGORY_LENGTH = 400;
+const MAX_RAW_CATEGORIES = 1_000;
 
 /**
  * フィードのカテゴリを整える（docs/decisions/article-analysis.md の 8）。制御文字と対になっていない
@@ -206,8 +213,8 @@ const MAX_CATEGORY_LENGTH = 40;
  */
 export function cleanCategories(values: readonly (string | null | undefined)[]): string[] {
   const kept: string[] = [];
-  for (const value of values) {
-    if (typeof value !== "string") continue;
+  for (const value of values.slice(0, MAX_RAW_CATEGORIES)) {
+    if (typeof value !== "string" || value.length > MAX_RAW_CATEGORY_LENGTH) continue;
     const name = value
       .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "")
       .replace(/\p{Cc}/gu, "")

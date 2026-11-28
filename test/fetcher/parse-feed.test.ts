@@ -399,6 +399,20 @@ describe("cleanCategories", () => {
     expect(cleanCategories([" \t ", null, undefined])).toEqual([]);
   });
 
+  it("正規化する前に、長すぎるカテゴリと多すぎるカテゴリを読まない", () => {
+    // U+FDFA は NFKC で 18 文字になる。2 MiB ほどのカテゴリでも、正規化せずにすぐ落とす
+    const huge = "\ufdfa".repeat(700_000);
+    const started = performance.now();
+    expect(cleanCategories([huge, "Rust"])).toEqual(["Rust"]);
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(cleanCategories(["a".repeat(400)])).toEqual([]);
+    expect(cleanCategories([`  ${"Rust"}${" ".repeat(390)}`])).toEqual(["Rust"]);
+    expect(cleanCategories([`${" ".repeat(397)}Rust`])).toEqual([]);
+    // 1,001 個目より後は見ない
+    expect(cleanCategories([...Array.from({ length: 1_000 }, () => "1"), "Rust"])).toEqual([]);
+    expect(cleanCategories([...Array.from({ length: 999 }, () => "1"), "Rust"])).toEqual(["Rust"]);
+  });
+
   it("保存するのは制御文字とひとりのサロゲートを落として前後の空白を除いた形で、決まりは Rust の候補の表記で判定する", () => {
     // 書式の文字や置き換えの文字を除くと 1 文字になるものは残さない
     expect(cleanCategories(["A\u200b", "\u200b\u200bX", "a\ufffd"])).toEqual([]);
