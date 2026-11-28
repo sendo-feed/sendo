@@ -74,8 +74,9 @@ describe("runScheduled（docs/decisions/jobs.md の 12）", () => {
     ]);
   });
 
-  it("10 分の区切りでは、言語の判定と検索の索引も積む", async () => {
+  it("10 分の区切りでは、言語の判定、記事の解析の遡及、検索の索引も積む", async () => {
     await testDb.exec("DELETE FROM feeds");
+    await testDb.exec("DELETE FROM article_analysis_backfill");
     const { platform, enqueued } = createTestPlatform({ now: () => NOW });
     const feed = await subscribeFeed(platform, { now: NOW });
 
@@ -84,6 +85,7 @@ describe("runScheduled（docs/decisions/jobs.md の 12）", () => {
       { type: "fetch-feed", feedId: feed.id },
       { type: "maintain-translations" },
       { type: "detect-article-languages" },
+      { type: "backfill-article-analyses" },
       { type: "index-article-search" },
     ]);
   });

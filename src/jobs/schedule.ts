@@ -1,5 +1,6 @@
 import { leaseDueFeeds, MAX_LEASE } from "../db/feeds";
 import { type Platform, SCHEDULE_INTERVAL_MINUTES } from "../platform";
+import { enqueueAnalysisBackground } from "./article-analyses";
 
 /**
  * キューに積んでから取得が終わるまでの猶予。これを過ぎても取得が記録されなければ、
@@ -106,7 +107,7 @@ export function isBackgroundSlot(scheduledTime: Date): boolean {
  * @param scheduledTime 定期実行が予定された時刻
  */
 export async function runScheduled(
-  platform: Pick<Platform, "db" | "jobs" | "now">,
+  platform: Pick<Platform, "db" | "jobs" | "now" | "articleAnalysis">,
   scheduledTime: Date,
 ): Promise<void> {
   if (await enqueueDailyCleanUp(platform, scheduledTime)) {
@@ -117,6 +118,8 @@ export async function runScheduled(
   await enqueueTranslationMaintenance(platform);
   if (!isBackgroundSlot(scheduledTime)) return;
   await enqueueLanguageDetection(platform);
+  // 記事の解析の遡及と拾い直し（docs/decisions/article-analysis.md の 2）
+  await enqueueAnalysisBackground(platform);
   try {
     await platform.jobs.enqueue([{ type: "index-article-search" }]);
   } catch (error) {

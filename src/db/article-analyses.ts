@@ -7,11 +7,25 @@ import type { ANALYSIS_STATUSES } from "./schema";
 /** 解析の状態。済み ／ 入力が空 ／ 失敗（docs/decisions/article-analysis.md の 5） */
 export type AnalysisStatus = (typeof ANALYSIS_STATUSES)[number];
 
+/** 書いたあとの使用量の上限（上限に対する割合と、ちょうどの値を含めるか） */
+export interface StorageShare {
+  share: number;
+  inclusive: boolean;
+}
+
 /**
- * 書いたあとの使用量の上限（上限に対する割合）。新しい記事の連鎖の解析は、片付けの始まる 90% 以上に
- * なるなら書かない（docs/decisions/article-analysis.md の 4）
+ * 新しい記事の連鎖の解析は、書いたあとの使用量が片付けの始まる 90% 以上になるなら書かない
+ * （docs/decisions/article-analysis.md の 4）
  */
-export const CHAIN_STORAGE_SHARE = 0.9;
+export const CHAIN_STORAGE_SHARE: StorageShare = { share: 0.9, inclusive: false };
+
+/** 拾い直しと遡及は、書いたあとの使用量が 80% を超えるなら後回しにする（決定の 4） */
+export const BACKGROUND_STORAGE_SHARE: StorageShare = { share: 0.8, inclusive: true };
+
+/** 書いたあとの使用量が上限の割合に収まるか（読んだ使用量で比べる） */
+export function fitsShare(used: number, limit: number, share: StorageShare): boolean {
+  return share.inclusive ? used <= limit * share.share : used < limit * share.share;
+}
 
 /** 世代の合わない候補の行を消すまでの時間（docs/decisions/article-analysis.md の 5） */
 export const STALE_CANDIDATE_GRACE_MS = 24 * 60 * 60 * 1000;
@@ -34,8 +48,9 @@ export function candidatesBytes(candidates: readonly AnalysisCandidate[]): numbe
 }
 
 /** 書く文の中で、書いたあとの使用量が上限の割合に収まるかを確かめる */
-function fits(bytes: number, share: number) {
-  return sql`(select bytes + ${bytes} < limit_bytes * ${share} from storage_usage where id = 1)`;
+function fits(bytes: number, share: StorageShare) {
+  const compare = share.inclusive ? sql`<=` : sql`<`;
+  return sql`(select bytes + ${bytes} ${compare} limit_bytes * ${share.share} from storage_usage where id = 1)`;
 }
 
 export interface AnalysisVersions {
@@ -129,7 +144,7 @@ export async function insertCandidates(
     generation: string;
     candidates: readonly AnalysisCandidate[];
     reservedBytes: number;
-    share: number;
+    share: StorageShare;
   },
 ): Promise<number> {
   if (input.candidates.length === 0) return 0;
@@ -153,7 +168,7 @@ export interface AnalysisRecord {
   candidates?: { revision: number; status: AnalysisStatus; generation: string | null };
   /** 埋め込みを作ったときだけ */
   embedding?: { revision: number; status: AnalysisStatus; vector: Uint8Array | null };
-  share: number;
+  share: StorageShare;
 }
 
 /**

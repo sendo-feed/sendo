@@ -1,16 +1,27 @@
 import {
   type AnalysisStatus,
   analysisRowBytes,
+  BACKGROUND_STORAGE_SHARE,
   CHAIN_STORAGE_SHARE,
   candidatesBytes,
   deleteReplacedCandidates,
+  fitsShare,
   getAnalysisVersions,
   hasSameSummary,
   insertCandidates,
   readAnalysisSource,
   recordAnalysis,
+  type StorageShare,
 } from "../db/article-analyses";
+import {
+  advanceBackfill,
+  findBackfillArticles,
+  findRepickArticles,
+  prepareBackfill,
+  readBackfill,
+} from "../db/article-analysis-backfill";
 import { readArticleCategories } from "../db/article-categories";
+import { dbNow } from "../db/clock";
 import { configureStorage, readStorageUsage } from "../db/storage";
 import { escapeHtml } from "../lib/html";
 import type { ArticleAnalysisResult, Platform } from "../platform";
@@ -19,22 +30,24 @@ import { ANALYSIS_ARTICLES_PER_JOB } from "./job";
 type AnalysisPlatform = Pick<Platform, "db" | "content" | "articleAnalysis" | "retentionConfig">;
 
 /** 1 件の解析の結末。capacity なら、その仕事の残りの記事を解析しない */
-type AnalysisOutcome = "analyzed" | "skipped" | "missing" | "capacity";
+export type AnalysisOutcome = "analyzed" | "skipped" | "missing" | "capacity";
 
 /**
- * 指定した記事を解析して保存する（docs/decisions/article-analysis.md の 1、3〜5）。新しい記事の連鎖の
- * 解析で、書いたあとの使用量が 90% 以上になるなら書かない。容量で止まったら、残りの記事は解析せず、
- * 続きも積まない（拾い直しと遡及が拾う）。1 件の失敗では止まらない
+ * 指定した記事を解析して保存する（docs/decisions/article-analysis.md の 1〜5）。新しい記事の連鎖の解析は、
+ * 書いたあとの使用量が 90% 以上になるなら書かない。拾い直し（background）は 80% を超えるなら書かない。
+ * 容量で止まったら、残りの記事は解析せず、続きも積まない（拾い直しと遡及が拾う）。1 件の失敗では止まらない
  */
 export async function analyzeArticles(
   platform: AnalysisPlatform,
   articleIds: readonly string[],
+  options: { background?: boolean } = {},
 ): Promise<void> {
   await configureStorage(platform.db, platform.retentionConfig.maxBytes);
+  const share = options.background ? BACKGROUND_STORAGE_SHARE : CHAIN_STORAGE_SHARE;
   for (const articleId of articleIds.slice(0, ANALYSIS_ARTICLES_PER_JOB)) {
     let outcome: AnalysisOutcome;
     try {
-      outcome = await analyzeArticle(platform, articleId, CHAIN_STORAGE_SHARE);
+      outcome = await analyzeArticle(platform, articleId, share);
     } catch (error) {
       console.warn("could not analyze article", { articleId, error });
       continue;
@@ -49,10 +62,10 @@ export async function analyzeArticles(
 }
 
 /** 1 件の記事を解析して保存する */
-async function analyzeArticle(
+export async function analyzeArticle(
   platform: AnalysisPlatform,
   articleId: string,
-  share: number,
+  share: StorageShare,
 ): Promise<AnalysisOutcome> {
   const { db, articleAnalysis: analyzer } = platform;
   const current = await getAnalysisVersions(db, articleId);
@@ -176,11 +189,11 @@ async function analyzeArticle(
 async function hasRoom(
   platform: Pick<Platform, "db">,
   bytes: number,
-  share: number,
+  share: StorageShare,
 ): Promise<boolean> {
   const usage = await readStorageUsage(platform.db);
   // まだ大きさを測っていない本文があるうちは、使用量が少なく出るので書かない（取り込みと同じ）
-  return usage.unmeasured === 0 && usage.bytes + bytes < usage.limitBytes * share;
+  return usage.unmeasured === 0 && fitsShare(usage.bytes + bytes, usage.limitBytes, share);
 }
 
 /**
@@ -224,5 +237,119 @@ export async function enqueueArticleAnalyses(
     await platform.jobs.enqueue(jobs);
   } catch (error) {
     console.warn("could not enqueue article analysis", { error });
+  }
+}
+
+/** 遡及の 1 つの仕事で解析する記事の数（飛ばした記事は数えない）と、たどる記事の数（決定の 2） */
+export const BACKFILL_ANALYSES_PER_JOB = 100;
+export const BACKFILL_SCAN_PER_JOB = 1_000;
+
+/** 拾い直しで、定期実行の 1 回に拾う記事の数。残りは次の区切りで拾う（docs/decisions/jobs.md の 4） */
+export const REPICK_LIMIT = 1_000;
+/** 拾い直しが見る、取り込んでからの時間（決定の 2） */
+export const REPICK_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 記事の解析の遡及を進める（docs/decisions/article-analysis.md の 2、4）。位置のあとの記事を、取り込みの
+ * 時刻と ID の新しい順に 1,000 件までたどり、解析を待つ記事を 100 件まで解析する（解析済みの記事は飛ばし、
+ * 数えない）。書いたあとの使用量が 80% を超える記事があれば、その記事の手前で位置を止め、続きを積まない
+ * （次の定期実行でその記事から続ける）。位置を書く文で、位置が読んだときのままであることを確かめる。
+ * 最後までたどれば終わりにし、そうでなければ区切りを待たずに続きの仕事を積む
+ */
+export async function runAnalysisBackfill(
+  platform: AnalysisPlatform & Pick<Platform, "jobs">,
+): Promise<void> {
+  await configureStorage(platform.db, platform.retentionConfig.maxBytes);
+  const { db, articleAnalysis: analyzer } = platform;
+  const revisions = {
+    candidateRevision: analyzer.candidateRevision,
+    embeddingRevision: analyzer.embeddingRevision,
+  };
+  await prepareBackfill(db, revisions);
+  const state = await readBackfill(db);
+  if (!state || state.finished) return;
+  const articles = await findBackfillArticles(db, {
+    cursor: state.cursor,
+    revisions,
+    limit: BACKFILL_SCAN_PER_JOB,
+  });
+
+  let cursor = state.cursor;
+  let analyzed = 0;
+  let stopped = false;
+  for (const article of articles) {
+    if (article.waiting) {
+      if (analyzed === BACKFILL_ANALYSES_PER_JOB) {
+        stopped = true;
+        break;
+      }
+      analyzed++;
+      let outcome: AnalysisOutcome;
+      try {
+        outcome = await analyzeArticle(platform, article.id, BACKGROUND_STORAGE_SHARE);
+      } catch (error) {
+        // 1 件の失敗では止めない。この記事は、次に先頭からたどるとき（1 日 1 回）にまた試す
+        console.warn("could not analyze article in backfill", { articleId: article.id, error });
+        outcome = "skipped";
+      }
+      if (outcome === "capacity") {
+        // 後回しにした記事があれば、位置を進めずに止まる（決定の 4）
+        console.warn("article analysis backfill deferred: storage is nearly full", {
+          articleId: article.id,
+        });
+        await advanceBackfill(db, { read: state, cursor, finished: false });
+        return;
+      }
+    }
+    cursor = { createdAt: article.createdAt, id: article.id };
+  }
+  const finished = !stopped && articles.length < BACKFILL_SCAN_PER_JOB;
+  const advanced = await advanceBackfill(db, { read: state, cursor, finished });
+  // 位置が読んだあとで変わっていたら（先頭に戻したなど）、続きは定期実行に任せる
+  if (!advanced || finished) return;
+  await platform.jobs.enqueue([{ type: "backfill-article-analyses" }]);
+}
+
+/**
+ * 定期実行（10 分の区切り）で、記事の解析の遡及と拾い直しを積む（docs/decisions/article-analysis.md の 2）。
+ * 遡及は、位置の行を用意し（版を上げたら先頭に戻す）、終わっておらず遡及の仕事がないときだけ積む。拾い直し
+ * は、取り込んでから 1 日以内の解析を待つ記事を、80% を基準にした解析の仕事として積む。積めなくても、
+ * ほかの定期実行は止めない
+ */
+export async function enqueueAnalysisBackground(
+  platform: Pick<Platform, "db" | "jobs" | "articleAnalysis">,
+): Promise<void> {
+  const { db, articleAnalysis: analyzer } = platform;
+  const revisions = {
+    candidateRevision: analyzer.candidateRevision,
+    embeddingRevision: analyzer.embeddingRevision,
+  };
+  try {
+    await prepareBackfill(db, revisions);
+    const state = await readBackfill(db);
+    if (state && !state.finished) {
+      await platform.jobs.enqueue([{ type: "backfill-article-analyses" }], { onlyIfIdle: true });
+    }
+  } catch (error) {
+    console.warn("could not enqueue article analysis backfill; retrying at the next schedule", {
+      error,
+    });
+  }
+  try {
+    const since = (await dbNow(db)).getTime() - REPICK_WINDOW_MS;
+    const ids = await findRepickArticles(db, { since, revisions, limit: REPICK_LIMIT });
+    const jobs = [];
+    for (let i = 0; i < ids.length; i += ANALYSIS_ARTICLES_PER_JOB) {
+      jobs.push({
+        type: "analyze-articles" as const,
+        articleIds: ids.slice(i, i + ANALYSIS_ARTICLES_PER_JOB),
+        background: true as const,
+      });
+    }
+    if (jobs.length > 0) await platform.jobs.enqueue(jobs);
+  } catch (error) {
+    console.warn("could not enqueue article analysis re-pick; retrying at the next schedule", {
+      error,
+    });
   }
 }

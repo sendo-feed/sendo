@@ -19,7 +19,17 @@ export interface JobQueue {
    * 仕事を積む。runAt を指定すると、その時刻になるまで取り出さない。指定しなければ、すぐに取り出せる
    * （docs/decisions/jobs.md の 1）
    */
-  enqueue(jobs: readonly Job[], options?: { runAt?: Date }): Promise<void>;
+  enqueue(
+    jobs: readonly Job[],
+    options?: {
+      runAt?: Date;
+      /**
+       * 同時に 1 本だけ動かす仕事（記事の解析の遡及）を、その枠に未着手の仕事も着手済みの仕事もないときだけ
+       * 積む。定期実行が使う。枠のない仕事には使えない
+       */
+      onlyIfIdle?: boolean;
+    },
+  ): Promise<void>;
   enqueueDueDiscordFetches(now: Date, limit: number): Promise<number>;
 }
 
