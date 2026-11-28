@@ -26,6 +26,7 @@ import { configureStorage, readStorageUsage } from "../db/storage";
 import { escapeHtml } from "../lib/html";
 import type { ArticleAnalysisResult, Platform } from "../platform";
 import { ANALYSIS_ARTICLES_PER_JOB } from "./job";
+import { enqueueQueuedJudges } from "./tag-judging";
 
 type AnalysisPlatform = Pick<Platform, "db" | "content" | "articleAnalysis" | "retentionConfig">;
 
@@ -38,7 +39,7 @@ export type AnalysisOutcome = "analyzed" | "skipped" | "missing" | "capacity";
  * 容量で止まったら、残りの記事は解析せず、続きも積まない（拾い直しと遡及が拾う）。1 件の失敗では止まらない
  */
 export async function analyzeArticles(
-  platform: AnalysisPlatform,
+  platform: AnalysisPlatform & Pick<Platform, "jobs">,
   articleIds: readonly string[],
   options: { background?: boolean } = {},
 ): Promise<void> {
@@ -56,9 +57,13 @@ export async function analyzeArticles(
       console.warn("article analysis deferred: storage is nearly full or still being measured", {
         articleId,
       });
-      return;
+      break;
     }
   }
+  // 埋め込みを保存した記事は、受信箱に持つ人の判定待ちに積まれている（docs/decisions/auto-tagging.md の 5）
+  await enqueueQueuedJudges(platform, {
+    articleIds: articleIds.slice(0, ANALYSIS_ARTICLES_PER_JOB),
+  });
 }
 
 /** 1 件の記事を解析して保存する */

@@ -10,6 +10,7 @@ import {
 import { requireWorkspace } from "../db/workspaces";
 import { discoverFeed } from "../fetcher/discover";
 import { toFetchableUrl } from "../fetcher/url-guard";
+import { enqueueQueuedJudges } from "../jobs/tag-judging";
 import type { Platform } from "../platform";
 
 /*
@@ -43,6 +44,8 @@ export async function subscribeFeed(
   }
   // 新しく購読したときだけでなく、前回の補充が途中で落ちていた場合も、ここで入れ直す
   await backfillInbox(db, { userId: input.userId, feedIds: [input.feed.id], now });
+  // 今の版の埋め込みのある記事が受信箱に入れば、判定待ちに積まれている（docs/decisions/auto-tagging.md の 5）
+  await enqueueQueuedJudges(platform, { userId: input.userId });
   if (input.feedCreated || (created && input.feed.nextFetchAt <= now)) {
     await platform.jobs.enqueue([{ type: "fetch-feed", feedId: input.feed.id }]);
   }

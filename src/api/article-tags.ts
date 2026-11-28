@@ -1,6 +1,6 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { clearArticleTag, setArticleTag } from "../db/article-tags";
-import { enqueueRejudgeAfterWrite } from "../jobs/tag-judging";
+import { enqueueQueuedJudges, enqueueRejudgeAfterWrite } from "../jobs/tag-judging";
 import type { Platform } from "../platform";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
@@ -96,6 +96,8 @@ export function articleTagsApi(platform: Platform) {
         return c.json(errorBody("not_found", "article or tag does not exist"), 404);
       }
       await enqueueRejudgeAfterWrite(platform, c.get("user").id);
+      // 取り消した記事は、トリガーが判定待ちに積んでいる（docs/decisions/auto-tagging.md の 5）
+      await enqueueQueuedJudges(platform, { userId: c.get("user").id });
       return c.body(null, 204);
     });
 }

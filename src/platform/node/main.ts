@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createApp } from "../../app";
+import { JUDGE_REVISION, recordJudgingRevisions } from "../../db/tag-judging";
 import { runJob } from "../../jobs";
 import { enqueueLanguageDetection, runScheduled } from "../../jobs/schedule";
 import { parseOrigin } from "..";
@@ -132,6 +133,11 @@ async function runServer(env: NodeEnv): Promise<void> {
   });
   const app = createApp(platform);
 
+  // 仕事を動かし始める前に、今の判定の版と埋め込みの版を書く（docs/decisions/auto-tagging.md の 4、5）
+  await recordJudgingRevisions(database.db, {
+    judgeRevision: JUDGE_REVISION,
+    embeddingRevision: native.articleAnalysis.embeddingRevision,
+  });
   jobs.start((job) => runJob(platform, job));
   const discord = startDiscordIngestion(platform);
   await enqueueLanguageDetection(platform);

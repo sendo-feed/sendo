@@ -489,3 +489,104 @@ export async function findStalledJudging(
   `);
   return rows.map((row) => row.userId);
 }
+
+/** 判定の仕事が一度に処理する、判定待ちの行の数（5） */
+export const JUDGE_QUEUE_PER_JOB = 500;
+
+/**
+ * 起動したときに、今の判定の版と埋め込みの版を書く（4）。受信箱に入った記事を積むトリガーが、この行と比べる
+ */
+export async function recordJudgingRevisions(
+  db: Database,
+  input: { judgeRevision: number; embeddingRevision: number },
+): Promise<void> {
+  await db.run(sql`
+    insert into tag_judging_revisions (id, judge_revision, embedding_revision)
+    values (1, ${input.judgeRevision}, ${input.embeddingRevision})
+    on conflict (id) do update set
+      judge_revision = excluded.judge_revision, embedding_revision = excluded.embedding_revision
+  `);
+}
+
+export type JudgeQueueRow = {
+  id: number;
+  articleId: string;
+  embeddingRevision: number | null;
+  embedding: Uint8Array | null;
+};
+
+/** その人の判定待ちの行を、積んだ番号の順に読む（記事の解析と一緒に） */
+export async function readJudgeQueue(
+  db: Database,
+  input: { userId: string; limit: number },
+): Promise<JudgeQueueRow[]> {
+  const rows = await db.all<JudgeQueueRow>(sql`
+    select q.id, q.article_id as "articleId", x.embedding_revision as "embeddingRevision", x.embedding
+    from tag_judge_queue q
+    left join article_analyses x on x.article_id = q.article_id
+    where q.user_id = ${input.userId}
+    order by q.id
+    limit ${input.limit}
+  `);
+  return rows.map((row) => ({ ...row, embedding: asBytes(row.embedding) }));
+}
+
+/**
+ * 処理した判定待ちの行を消す（5）。積んだ番号が読んだときのままで（積み直した行は番号が変わるので消えない）、
+ * その人の版も読んだときのままのときだけ消す
+ */
+export async function deleteJudgeQueueRows(
+  db: Database,
+  input: { userId: string; revision: number; ids: readonly number[] },
+): Promise<void> {
+  if (input.ids.length === 0) return;
+  await db.run(sql`
+    delete from tag_judge_queue
+    where user_id = ${input.userId}
+      and id in (select value from json_each(${JSON.stringify(input.ids)}))
+      and ${sameRevision(input.userId, input.revision)}
+  `);
+}
+
+/** 有効なタグのない人の判定待ちの行を消す（5）。有効なタグがあれば消さない（同じ文で確かめる） */
+export async function clearJudgeQueueWithoutTags(db: Database, userId: string): Promise<void> {
+  await db.run(sql`
+    delete from tag_judge_queue
+    where user_id = ${userId}
+      and not exists (select 1 from tags where user_id = ${userId} and deleted_at is null)
+  `);
+}
+
+/** 判定待ちの行がある人（記事か人で絞る）。判定の仕事を積む側が使う */
+export async function findQueuedJudgeUsers(
+  db: Database,
+  input: { articleIds?: readonly string[]; feedId?: string; userId?: string },
+): Promise<string[]> {
+  const filter =
+    input.articleIds !== undefined
+      ? sql`q.article_id in (select value from json_each(${JSON.stringify(input.articleIds)}))`
+      : input.feedId !== undefined
+        ? sql`q.article_id in (select id from articles where feed_id = ${input.feedId})`
+        : sql`q.user_id = ${input.userId ?? ""}`;
+  const rows = await db.all<{ userId: string }>(sql`
+    select distinct q.user_id as "userId" from tag_judge_queue q where ${filter}
+  `);
+  return rows.map((row) => row.userId);
+}
+
+/**
+ * 定期実行が判定の仕事を積む人（5）。判定待ちの行があり、未着手の判定の仕事がない人を、いちばん古い行の順に
+ */
+export async function findPendingJudgeUsers(db: Database, limit: number): Promise<string[]> {
+  const rows = await db.all<{ userId: string }>(sql`
+    select q.user_id as "userId" from tag_judge_queue q
+    -- 判定の仕事の枠の名前（src/platform/node/job-queue.ts の slotOf）
+    where not exists (
+      select 1 from job_queue j where j.slot = 'tag-judge:' || q.user_id and j.attempts = 0
+    )
+    group by q.user_id
+    order by min(q.id)
+    limit ${limit}
+  `);
+  return rows.map((row) => row.userId);
+}

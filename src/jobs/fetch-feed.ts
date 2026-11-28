@@ -35,6 +35,7 @@ import {
 } from "./fetch-interval";
 import { nextFetchInterval } from "./fetch-slots";
 import { canStoreArticles, measureExistingContents, reportStorageFull } from "./storage";
+import { enqueueQueuedJudges } from "./tag-judging";
 
 /*
  * 取得の間隔は、フィードごとに記事の出るペースから決める。設定の間隔（platform.fetchConfig）は、
@@ -114,6 +115,8 @@ export async function runFetchFeed(
     if (result.status === "not-modified") {
       // 前回の取得が、受信箱に配る途中で落ちていた場合に備えて、配り直しを試みる
       await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
+      // 今の版の埋め込みのある記事が受信箱に入れば、判定待ちに積まれている（docs/decisions/auto-tagging.md の 5）
+      await enqueueQueuedJudges(platform, { feedId: feed.id });
       // 新しい記事がなくても、時間がたった分だけペースは落ちているので、間隔を決め直す
       const nextIntervalMs = await nextFetchInterval(db, {
         feedId: feed.id,
@@ -150,6 +153,8 @@ export async function runFetchFeed(
     if (!canStore) {
       // 前回の取り込みが配布の前で落ちていても、確保済みの受信箱の容量で配り切れる。
       await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
+      // 今の版の埋め込みのある記事が受信箱に入れば、判定待ちに積まれている（docs/decisions/auto-tagging.md の 5）
+      await enqueueQueuedJudges(platform, { feedId: feed.id });
       await platform.jobs.enqueue([{ type: "clean-up" }]);
       return { status: "storage-full" };
     }
@@ -181,6 +186,8 @@ export async function runFetchFeed(
     await clearUsedContentNotes(db, storedContents.keys);
     // 購読している人の受信箱に配る。記事を入れ終えてから配り、配り終えてから取得済みとして記録する
     await deliverNewArticles(db, { feedId: feed.id }, platform.syncUpdates.notify);
+    // 今の版の埋め込みのある記事が受信箱に入れば、判定待ちに積まれている（docs/decisions/auto-tagging.md の 5）
+    await enqueueQueuedJudges(platform, { feedId: feed.id });
     // この回に行を入れた記事を、ベルで判定する（docs/decisions/notifications.md の 8）。失敗しても、
     // 取得は失敗にしない
     await notifyBells(platform, {

@@ -61,6 +61,8 @@ function slotOf(job: Job): string | null {
   if (job.type === "backfill-article-analyses") return "article-analysis-backfill";
   // 自動のタグ付けの判定し直しは、人ごとに 1 つ（docs/decisions/auto-tagging.md の「判定の仕事」）
   if (job.type === "rejudge-tags") return `tag-rejudge:${job.userId}`;
+  // 判定の仕事も人ごとに 1 つ（判定し直しとは別の枠）
+  if (job.type === "judge-tags") return `tag-judge:${job.userId}`;
   return null;
 }
 
