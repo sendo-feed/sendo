@@ -983,6 +983,71 @@
         },
         "additionalProperties": false
       },
+      "Tag": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "前後の空白を除いた名前"
+          },
+          "description": {
+            "type": "string",
+            "description": "前後の空白を除いた説明。なければ空文字"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "createdAt"
+        ]
+      },
+      "CreateTagRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "クライアントが決めた小文字の UUID。省略時は Sendo が決める"
+          },
+          "name": {
+            "type": "string",
+            "description": "名前。前後の空白を除いて 1〜64 文字（コードポイント）。制御文字は含められない"
+          },
+          "description": {
+            "type": "string",
+            "description": "説明。前後の空白を除いて 0〜140 文字（コードポイント）。Go のように短く紛らわしい名前の意味を決めるのに使う"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateTagRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "名前。前後の空白を除いて 1〜64 文字（コードポイント）。制御文字は含められない"
+          },
+          "description": {
+            "type": "string",
+            "description": "説明。前後の空白を除いて 0〜140 文字（コードポイント）。Go のように短く紛らわしい名前の意味を決めるのに使う"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
       "PushStatus": {
         "type": "object",
         "properties": {
@@ -1138,6 +1203,12 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SyncBell"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncTag"
             }
           },
           "defaultWorkspaceOnSubscribe": {
@@ -1653,6 +1724,49 @@
             "allOf": [
               {
                 "$ref": "#/components/schemas/Bell"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "deleted": {
+                    "type": "boolean",
+                    "enum": [
+                      false
+                    ]
+                  }
+                },
+                "required": [
+                  "deleted"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "deleted": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "deleted"
+            ]
+          }
+        ]
+      },
+      "SyncTag": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Tag"
               },
               {
                 "type": "object",
@@ -4127,6 +4241,219 @@
         }
       }
     },
+    "/tags": {
+      "get": {
+        "summary": "有効なタグを作った順で返す",
+        "responses": {
+          "200": {
+            "description": "有効なタグの一覧と、自動のタグ付けの判定し直しの残りの記事の数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Tag"
+                      }
+                    },
+                    "rejudgeRemaining": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "自動のタグ付けが判定し直す残りの記事の数（docs/decisions/auto-tagging.md の 6）"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "rejudgeRemaining"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "タグを作る",
+        "description": "候補から選ぶときも、名前を打つときも同じ。有効なタグは 100 個まで。クライアントは応答の id を正とする。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTagRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "同じ照合用の名前の有効なタグがある。送った id・説明・上限によらず、そのタグを返す",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tag": {
+                      "$ref": "#/components/schemas/Tag"
+                    }
+                  },
+                  "required": [
+                    "tag"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "作った",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tag": {
+                      "$ref": "#/components/schemas/Tag"
+                    }
+                  },
+                  "required": [
+                    "tag"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "名前か説明が決まりに合わない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "有効なタグが 100 個ある（tag_limit_reached）か、指定した id はほかの行に使われている（tag_id_taken）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tags/{id}": {
+      "patch": {
+        "summary": "タグの名前と説明を変える",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTagRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "変えた",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tag": {
+                      "$ref": "#/components/schemas/Tag"
+                    }
+                  },
+                  "required": [
+                    "tag"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "名前か説明が決まりに合わない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "本人の有効なタグがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "変えた照合用の名前が、ほかの有効なタグと同じ（tag_name_taken）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "タグを消す",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "消した、または消してあった"
+          },
+          "404": {
+            "description": "本人のタグがない",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/push": {
       "get": {
         "summary": "Web Push の有無と VAPID の公開鍵",
@@ -4347,7 +4674,7 @@
     "/sync": {
       "get": {
         "summary": "前回の同期からの差分を取る",
-        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\nsettings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。\nincludeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。\nincludeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。差分の有無にかかわらず、購読先の省略に対応した印 defaultWorkspaceOnSubscribe を返す。\nincludeBells=true なら、通知のベルの付けたものと外したものも bells に載せる。ベルの位置がない既存のカーソルでは、ベルだけを最初から送る。購読をやめると、その購読のベルも deleted で届く。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
+        "description": "カーソルなしで呼ぶと、最初の同期を始める（消した印の付いていないフォルダ・購読・設定、未読・スター・直近 30 日の記事）。\n応答の cursor を次に渡すと、そのあとに変わったものだけを返す。hasMore が true なら、すぐにもう一度呼ぶ。\n配列は変更番号の順に並んでいる。同じ id が続けて来たら、後のものを採る。\ndeleted が true のものは手元から消す。手元の行を消すのは、その行の deleted が届いたときだけにする。購読をやめた（feeds の deleted）からといって、そのフィードの記事を消さない（配列ごとにページを送るので、配列をまたいだ順序は保証されない）。\nsettings には、どの端末の種類の項目も届く。クライアントは、自分の種類の分だけを使えばよい。\nincludeSaved=true なら、あとで読むページの新規保存と解除も savedPages に載せる。\nincludeWorkspaces=true なら、workspaces と、有効な feeds の workspaceId・subscriptionId を返す。対応する位置がない既存のカーソルでは、購読とワークスペースだけを番号0から返す。差分の有無にかかわらず、購読先の省略に対応した印 defaultWorkspaceOnSubscribe を返す。\nincludeBells=true なら、通知のベルの付けたものと外したものも bells に載せる。ベルの位置がない既存のカーソルでは、ベルだけを最初から送る。購読をやめると、その購読のベルも deleted で届く。\nincludeTags=true なら、タグの作ったもの・変えたものと消したものも tags に載せる。タグの位置がない既存のカーソルでは、タグだけを最初から送る。\ncursor の中身には意味を持たせていないので、クライアントはそのまま送り返すだけにする。",
         "parameters": [
           {
             "schema": {
@@ -4383,6 +4710,18 @@
             },
             "required": false,
             "name": "includeBells",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "includeTags",
             "in": "query"
           },
           {

@@ -3,6 +3,7 @@ import type { ActiveBell } from "../db/bells";
 import type { InboxArticle } from "../db/inbox";
 import type { Feed, Folder, Workspace } from "../db/schema";
 import type { SubscriptionWithFeed } from "../db/subscriptions";
+import type { ActiveTag } from "../db/tags";
 import { FETCH_FEED_ERROR_CODES } from "../fetcher/fetch-feed";
 import type { ImageSigner } from "../lib/image-url";
 
@@ -173,6 +174,24 @@ export function toBellResponse(bell: ActiveBell): z.infer<typeof BellSchema> {
     feedId: bell.feedId,
     words: bell.words,
     createdAt: bell.createdAt.toISOString(),
+  };
+}
+
+export const TagSchema = z
+  .object({
+    id: z.string(),
+    name: z.string().openapi({ description: "前後の空白を除いた名前" }),
+    description: z.string().openapi({ description: "前後の空白を除いた説明。なければ空文字" }),
+    createdAt: z.string().openapi({ format: "date-time" }),
+  })
+  .openapi("Tag");
+
+export function toTagResponse(tag: ActiveTag): z.infer<typeof TagSchema> {
+  return {
+    id: tag.id,
+    name: tag.name,
+    description: tag.description,
+    createdAt: tag.createdAt.toISOString(),
   };
 }
 

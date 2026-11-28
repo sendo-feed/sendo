@@ -6,6 +6,7 @@ import {
   type savedPages,
   seqFloors,
   type subscriptions,
+  type tags,
   type userArticles,
   type workspaces,
 } from "./schema";
@@ -18,7 +19,8 @@ export type SeqTable =
   | typeof clientSettings
   | typeof savedPages
   | typeof workspaces
-  | typeof bells;
+  | typeof bells
+  | typeof tags;
 
 /**
  * 次の変更番号を返す SQL の式。行を作る ／ 変える文の中で、seq の値として使う。

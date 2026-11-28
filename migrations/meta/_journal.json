@@ -568,6 +568,20 @@
       "when": 1795857396330,
       "tag": "0080_article-analysis-backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "6",
+      "when": 1795859335839,
+      "tag": "0081_tags",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "6",
+      "when": 1795859336391,
+      "tag": "0082_tags-triggers",
+      "breakpoints": true
     }
   ]
 }

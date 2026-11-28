@@ -1049,6 +1049,47 @@ export const bells = sqliteTable(
  * ベルの消した印の行を、人ごとにどこまで回収したか。行を消すトリガーが、消した行の番号まで
  * 引き上げる。その人のカーソルの位置がこれより前なら、最初から同期し直してもらう
  */
+/**
+ * 人ごとのタグ（docs/decisions/tags.md の 4）。名前と説明で表す。match_key は照合用の名前（まとめの鍵と
+ * 同じ作り方。docs/decisions/article-analysis.md の 11）。同じ人で照合用の名前が同じ有効なタグは 1 つ。
+ * 消すときは消した印と新しい変更番号を付け、30 日たったら 1 日 1 回の片付けが消す
+ */
+export const tags = sqliteTable(
+  "tags",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** 前後の空白を除いた名前 */
+    name: text("name").notNull(),
+    matchKey: text("match_key").notNull(),
+    /** 前後の空白を除いた説明。なければ空文字 */
+    description: text("description").notNull(),
+    /** 作った時刻。書く文の中の DB の時計（db/clock.ts の DB_NOW_MS）で決める */
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    seq: seq(),
+  },
+  (t) => [
+    // 同じ人で照合用の名前が同じ有効なタグは 1 つ。作る文と変える文はこれにぶつけて止める
+    uniqueIndex("tags_user_id_match_key_idx")
+      .on(t.userId, t.matchKey)
+      .where(sql`${t.deletedAt} is null`),
+    index("tags_user_id_seq_idx").on(t.userId, t.seq),
+    index("tags_seq_idx").on(t.seq),
+    index("tags_deleted_at_idx").on(t.deletedAt).where(sql`${t.deletedAt} is not null`),
+  ],
+);
+
+/** その人のタグの消した印の行を、どこまで回収したか（差分同期の下限） */
+export const tagHorizons = sqliteTable("tag_horizons", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  seq: integer("seq").notNull(),
+});
+
 export const bellHorizons = sqliteTable("bell_horizons", {
   userId: text("user_id")
     .primaryKey()

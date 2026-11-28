@@ -38,12 +38,15 @@ import {
   savedPages,
   settingHorizons,
   subscriptions,
+  tagHorizons,
+  tags,
   userArticleRemovals,
   userArticles,
   type Workspace,
   workspaces,
 } from "./schema";
 import { readSettingHorizon } from "./settings";
+import { type ActiveTag, readTagHorizon } from "./tags";
 import type { TranslationFailure } from "./translations";
 
 /*
@@ -73,6 +76,7 @@ export type SyncCursor = {
   savedPages?: SyncPosition | undefined;
   workspaces?: SyncPosition | undefined;
   bells?: SyncPosition | undefined;
+  tags?: SyncPosition | undefined;
 };
 
 /** 最初の同期の始まり。upTo は、最初のページで決める（-1 は「まだ決めていない」） */
@@ -101,6 +105,7 @@ export const SYNC_LIMITS = {
   savedPages: 100,
   workspaces: 500,
   bells: 500,
+  tags: 500,
 } as const;
 
 /** 最初の同期で送る、既読の記事の範囲（受信箱に入ってからの日数） */
@@ -210,6 +215,8 @@ export type SyncSavedPage = (SavedPage & { deleted: false }) | { id: string; del
 
 export type SyncBell = (ActiveBell & { deleted: false }) | { id: string; deleted: true };
 
+export type SyncTag = (ActiveTag & { deleted: false }) | { id: string; deleted: true };
+
 export type SyncChanges = {
   folders: Folder[];
   subscriptions: (Subscription & { feed: Feed })[];
@@ -218,6 +225,7 @@ export type SyncChanges = {
   savedPages?: SyncSavedPage[];
   workspaces?: Workspace[];
   bells?: SyncBell[];
+  tags?: SyncTag[];
   cursor: SyncCursor;
   hasMore: boolean;
 };
@@ -694,6 +702,45 @@ export async function readChanges(
       cursor.bells,
     ));
 
+  const tg =
+    cursor.tags &&
+    (await readTable(
+      singleTable({
+        seq: tags.seq,
+        id: tags.id,
+        initialFilter: isNull(tags.deletedAt),
+        limit: SYNC_LIMITS.tags,
+        read: (where, limit) =>
+          db
+            .select({
+              id: tags.id,
+              name: tags.name,
+              description: tags.description,
+              createdAt: tags.createdAt,
+              deletedAt: tags.deletedAt,
+              seq: tags.seq,
+            })
+            .from(tags)
+            .where(and(eq(tags.userId, userId), where))
+            .orderBy(asc(tags.seq), asc(tags.id))
+            .limit(limit)
+            .all(),
+        position: (row) => ({ seq: row.seq, id: row.id }),
+        // 消した印の行を回収した下限も含める（記事の maxSeq と同じ理由）
+        maxSeq: async () => {
+          const row = await getRow<{ value: number }>(
+            db,
+            sql`select max(
+          coalesce((select max(${tags.seq}) from ${tags} where ${tags.userId} = ${userId}), 0),
+          coalesce((select ${tagHorizons.seq} from ${tagHorizons} where ${tagHorizons.userId} = ${userId}), 0)
+        ) as value`,
+          );
+          return row?.value ?? 0;
+        },
+      }),
+      cursor.tags,
+    ));
+
   return {
     folders: f.items,
     ...(w && { workspaces: w.items }),
@@ -721,6 +768,14 @@ export async function readChanges(
             : { id, deleted: true },
       ),
     }),
+    ...(tg && {
+      tags: tg.items.map(
+        ({ id, name, description, createdAt, deletedAt }): SyncTag =>
+          deletedAt === null
+            ? { id, name, description, createdAt, deleted: false }
+            : { id, deleted: true },
+      ),
+    }),
     cursor: {
       folders: f.next,
       subscriptions: s.next,
@@ -729,6 +784,7 @@ export async function readChanges(
       savedPages: p?.next,
       workspaces: w?.next,
       bells: b?.next,
+      tags: tg?.next,
     },
     hasMore:
       f.more ||
@@ -737,7 +793,8 @@ export async function readChanges(
       c.more ||
       (p?.more ?? false) ||
       (w?.more ?? false) ||
-      (b?.more ?? false),
+      (b?.more ?? false) ||
+      (tg?.more ?? false),
   };
 }
 
@@ -776,9 +833,15 @@ export async function isCursorExpired(
   if (await isCollectedAfter(input.cursor.settings, () => readSettingHorizon(db, input.userId))) {
     return true;
   }
-  return (
+  if (
     input.cursor.bells !== undefined &&
     (await isCollectedAfter(input.cursor.bells, () => readBellHorizon(db, input.userId)))
+  ) {
+    return true;
+  }
+  return (
+    input.cursor.tags !== undefined &&
+    (await isCollectedAfter(input.cursor.tags, () => readTagHorizon(db, input.userId)))
   );
 }
 

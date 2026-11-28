@@ -16,6 +16,7 @@ import {
   DELETED_SETTING_RETENTION_MS,
   raiseSettingHorizons,
 } from "../db/settings";
+import { collectRemovedTags, TAG_REMOVAL_RETENTION_MS } from "../db/tags";
 import type { Platform } from "../platform";
 import { measureExistingContents, reclaimStorage } from "./storage";
 
@@ -33,6 +34,7 @@ export const SWEEP_ROUNDS = {
   settings: 2,
   savedPages: 1,
   bells: 1,
+  tags: 1,
   activity: 1,
   pushRegistrations: 1,
   bellNotifications: 4,
@@ -47,6 +49,8 @@ export type CleanUpOutcome = {
   settings: number;
   savedPages: number;
   bells: number;
+  /** 消してから 30 日たったタグの行 */
+  tags: number;
   activity: number;
   /** 期限の切れたセッションの Web Push の登録 */
   pushRegistrations: number;
@@ -156,6 +160,14 @@ export async function runCleanUp(
     }),
   );
 
+  // 消したタグの行（docs/decisions/tags.md の 7）。消す文の中でトリガーが回収の下限を記録する
+  const tagRows = await repeat(SWEEP_ROUNDS.tags, () =>
+    collectRemovedTags(db, {
+      before: new Date(now - TAG_REMOVAL_RETENTION_MS),
+      limit: SWEEP_BATCH,
+    }),
+  );
+
   const activity = await repeat(SWEEP_ROUNDS.activity, () =>
     collectExpiredArticleActivity(db, {
       before: new Date(now - ACTIVITY_RETENTION_MS),
@@ -190,6 +202,7 @@ export async function runCleanUp(
     settings,
     savedPages,
     bells,
+    tags: tagRows,
     activity,
     pushRegistrations,
     bellNotifications,
