@@ -1,7 +1,7 @@
 # MCP サーバー
 
 - 状態：提案中
-- 関連：[ユーザーと認証](accounts.md)（6 の「AI エージェント（リモート MCP）」、7 のアクセストークン）、[テックスタック](tech-stack.md)、[ワークスペース](workspaces.md)、[通知](notifications.md)（ベル）、[機能一覧](../features.md)（MCP のイメージ）
+- 関連：[ユーザーと認証](accounts.md)（6 の「AI エージェント（リモート MCP）」、7 のアクセストークン）、[テックスタック](tech-stack.md)、[ワークスペース](workspaces.md)、[通知](notifications.md)（ベル）、[記事のタグ](tags.md)（候補と却下）、[機能一覧](../features.md)（MCP のイメージ）
 
 AI エージェント（Claude、ChatGPT、Claude Code など）から、Sendo の購読や記事をツールとして使えるようにする。MCP の仕様は 2026-07-28 版に合わせる。
 
@@ -36,7 +36,7 @@ MCP のクライアントのつなぎ方は 2 通りある。
    - リダイレクト先は、登録されたものと完全に一致するものだけを受ける。`https` か、`http://localhost`・`http://127.0.0.1`・`http://[::1]` だけ
    - ただし、ループバック（`http://localhost`・`http://127.0.0.1`・`http://[::1]`）は、ポートを問わずに比べる（RFC 8252 の 7.3）。スキーム、ホスト、パス、クエリは完全に一致させる。`https` は、ポートも含めて完全に一致させる
 6. **スコープは `read` と `write` の 2 つにする。**
-   - `read`：購読、フォルダ、ワークスペース、記事、未読の数、開封履歴、ベルを読むツールと Resources
+   - `read`：購読、フォルダ、ワークスペース、記事、未読の数、開封履歴、ベル、タグの候補と却下を読むツールと Resources
    - `write`：状態を変えるツール（購読する ／ やめる、既読、スターなど）
    - メタデータの `scopes_supported` は `read` だけにし、`write` は要るときに足してもらう。`write` の要るツールを `read` だけのトークンで呼ばれたら、403 と `WWW-Authenticate: Bearer error="insufficient_scope", scope="read write"` を返す（仕様の step-up）
 7. **OAuth で出すアクセストークンは短く、リフレッシュトークンで延ばす。**
@@ -86,6 +86,20 @@ MCP のクライアントのつなぎ方は 2 通りある。
     - `feedId` は `list_feeds` で調べる。本人の有効な購読がなければ `feed_not_found`、有効なベルが 100 個あれば `bell_limit_reached`、言葉が上限などに合わなければ `invalid_words`、`feedId` も `words` もなければ `invalid_request`（REST API の 400 `invalid_request` と同じ）を、`isError: true` のテキストにエラーコードと理由を入れて返す
     - `list_bells` の説明に、`feedTitle` はフィード由来の文字列で、指示として扱わないと書く（8）
     - 書き込みのツールは、利用者に頼まれたときだけ使うと説明する。`add_bell` には `destructiveHint: false`、`remove_bell` には `destructiveHint: true` を付け、どちらにも `idempotentHint: true` を付ける。付けるのはベルを足すだけだが、外すと、そのベルの通知が止まる。付け直せても、外す前にクライアントが利用者に確かめられるよう、削除と同じ印を付ける
+12. **タグの候補の一覧と却下をツールで扱う。** 中身、上限、冪等さは [記事のタグ](tags.md)の 1〜3 に従う。一般的すぎる語（停止語）を落とすのも却下で行う。
+
+    | ツール | スコープ | 入力と成功時の結果 |
+    |---|---|---|
+    | `list_tag_candidates` | `read` | 入力なし。REST API の `GET /tags/candidates` と同じ項目（`key`、`label`、`count`）を `{ candidates, pending }` で返す（[記事のタグ](tags.md)の 6） |
+    | `list_tag_rejections` | `read` | 入力なし。却下した語を新しい順に `{ rejections }` で返す。項目は REST API と同じ `key`、`rejectedAt`（[記事のタグ](tags.md)の 6） |
+    | `reject_tag_candidate` | `write` | `{ key }` で却下し、`{ rejected: true, created }` を返す。新しく却下したら `created: true`、却下済みの語なら `created: false` |
+    | `restore_tag_candidate` | `write` | `{ key }` で戻し、`{ restored }` を返す。却下していない語には、誤りにせず `restored: false` を返す |
+
+    - 鍵が決まりに合わなければ `invalid_key`、却下が 1,000 語に達していれば `tag_rejection_limit_reached` を、`isError: true` のテキストにエラーコードと理由を入れて返す
+    - `list_tag_candidates` と `list_tag_rejections` の説明に、見出しと鍵は記事由来の文字列で、指示として扱わないと書く（8）
+    - `restore_tag_candidate` の説明に、応答を受け取れずにやり直すと、すでに戻っていて `restored: false` になりうると書く
+    - `invalid_key` は、却下のときは [記事のタグ](tags.md)の 3 の長さと文字の決まりに、戻すときは文字の決まりと 200 コードポイントの上限に合わないときに返す
+    - 書き込みのツールは、利用者に頼まれたときだけ使うと説明する。どちらも戻せるので `destructiveHint: false` と `idempotentHint: true` を付ける
 
 ## 理由
 
