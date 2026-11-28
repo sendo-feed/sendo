@@ -274,12 +274,48 @@ describe("遡及", () => {
     // 1 日 1 回の遡及の終わりでは書き換えない
     await testDb.exec("UPDATE article_analysis_backfill SET completed_at = 1");
     await runDailyCleanUp(platform, enqueued);
+    expect(await readBackfill(platform.db)).toMatchObject({ finished: false });
     await runJob(platform, BACKFILL);
     expect(await readBackfill(platform.db)).toMatchObject({
       finished: true,
       completedEmbeddingRevision: 2,
       completedAt: 1,
     });
+  });
+
+  it("埋め込みの版を上げた遡及が 1 日 1 回の巻き戻しをまたいでも、版を続けて上げても、たどり終えたら記録する", async () => {
+    const articleAnalysis = fakeArticleAnalysis();
+    const { platform, enqueued } = createTestPlatform({ articleAnalysis });
+    await seed(platform, 150);
+    await runJob(platform, BACKFILL);
+    await runQueued(platform, enqueued, "backfill-article-analyses");
+    expect(await readBackfill(platform.db)).toMatchObject({ finished: true, completedAt: null });
+
+    articleAnalysis.embeddingRevision = 2;
+    await runJob(platform, BACKFILL);
+    // 100 件まで進めたところで、1 日 1 回の片付けが先頭に戻す
+    expect(await readBackfill(platform.db)).toMatchObject({ finished: false });
+    enqueued.splice(0);
+    await runDailyCleanUp(platform, enqueued);
+    await runJob(platform, BACKFILL);
+    await runQueued(platform, enqueued, "backfill-article-analyses");
+    expect(await readBackfill(platform.db)).toMatchObject({
+      finished: true,
+      completedEmbeddingRevision: 2,
+      completedAt: expect.any(Number),
+    });
+
+    // 版 3 に上げ、途中で版 4 に上げても、たどり終えたら 4 を記録する
+    await testDb.exec("UPDATE article_analysis_backfill SET completed_at = 1");
+    articleAnalysis.embeddingRevision = 3;
+    await runJob(platform, BACKFILL);
+    enqueued.splice(0);
+    articleAnalysis.embeddingRevision = 4;
+    await runJob(platform, BACKFILL);
+    await runQueued(platform, enqueued, "backfill-article-analyses");
+    const last = await readBackfill(platform.db);
+    expect(last).toMatchObject({ finished: true, completedEmbeddingRevision: 4 });
+    expect(last?.completedAt).toBeGreaterThan(1);
   });
 
   it("途中の記事の解析が例外を出しても、その記事を越えて続け、ほかの記事は解析する", async () => {

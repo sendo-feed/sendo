@@ -504,7 +504,11 @@ export const articleAnalysisBackfill = sqliteTable(
      * 途中で先頭に戻された位置は、どちらも位置が null で見分けられないため）
      */
     epoch: integer("epoch").notNull().default(0),
-    /** その埋め込みの版で、初めて最後までたどり終えた版と時刻（DB の時計） */
+    /**
+     * 埋め込みの版を上げたあと、その版で初めて最後までたどり終えた版と時刻（DB の時計）。行を作るときは、
+     * 版に今の埋め込みの版を入れ、時刻は null にする（機能を入れたときの最初の遡及では記録しない）。記録が
+     * あるかは、時刻が null でないかで見る
+     */
     completedEmbeddingRevision: integer("completed_embedding_revision"),
     completedAt: integer("completed_at"),
   },
