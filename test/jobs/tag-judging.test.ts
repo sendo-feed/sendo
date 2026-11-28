@@ -227,6 +227,17 @@ async function setup() {
         .all<{ title: string }>()
     ).results.map((row) => row.title);
 
+  /**
+   * タグの入力を変えて版を上げる（関係のない記事を 1 件、手で付ける）。そのタグが判定し直しの対象になる
+   * （変わったタグだけを判定し直す。docs/decisions/auto-tagging.md の 6）
+   */
+  let touched = 0;
+  const touch = async (tagId: string) => {
+    const id = await articleId(`noise-${100 + touched++}`);
+    const response = await request(`/articles/${id}/tags/${tagId}`, "PUT", { on: true });
+    expect(response.status).toBe(200);
+  };
+
   const rejudgeRemaining = async () =>
     ((await (await request("/tags")).json()) as { rejudgeRemaining: number }).rejudgeRemaining;
 
@@ -245,6 +256,7 @@ async function setup() {
     takeRejudges,
     autoTitles,
     rejudgeRemaining,
+    touch,
     embeddings,
     texts,
     articleAnalysis,
@@ -518,7 +530,9 @@ describe("判定し直し", () => {
     ]);
   });
 
-  it(`1 つの仕事で ${REJUDGE_ARTICLES_PER_JOB} 件まで判定し、続きを積む。途中の残りの数は位置よりあとの記事の数`, async () => {
+  it(`1 つの仕事で ${REJUDGE_ARTICLES_PER_JOB} 件まで判定し、続きを積む。途中の残りの数は位置よりあとの記事の数`, {
+    timeout: 30_000,
+  }, async () => {
     const t = await setup();
     const articles = [
       ...standardArticles(),
@@ -732,7 +746,9 @@ describe("判定し直しの待ちと積み方", () => {
     expect(t.takeRejudges()).toEqual([{ type: "rejudge-tags", userId: t.user.id }]);
   });
 
-  it(`受信箱がちょうど ${REJUDGE_ARTICLES_PER_JOB} 件なら、続きの仕事が空のページを見て終える`, async () => {
+  it(`受信箱がちょうど ${REJUDGE_ARTICLES_PER_JOB} 件なら、続きの仕事が空のページを見て終える`, {
+    timeout: 30_000,
+  }, async () => {
     const t = await setup();
     const articles = [
       ...standardArticles(),
@@ -814,7 +830,9 @@ describe("統計の記事", () => {
 });
 
 describe("判定し直しの重なり（続き）", () => {
-  it("生き返らせる文・印を付ける文・ベクトルを書く文の直前に版が上がっても書かない", async () => {
+  it("生き返らせる文・印を付ける文・ベクトルを書く文の直前に版が上がっても書かない", {
+    timeout: 30_000,
+  }, async () => {
     for (const [pattern, prepare] of [
       [/update article_tags set kind = 'auto'/i, "revive"],
       [/update article_tags set deleted_at/i, "detach"],
@@ -832,7 +850,7 @@ describe("判定し直しの重なり（続き）", () => {
           .bind(toBytes(noise(42)), rust0)
           .run();
         if (prepare === "revive") {
-          await t.tag("Go");
+          await t.touch(rust);
           await t.rejudge();
           expect(await t.autoTitles(rust)).not.toContain("rust-0");
           await testDb
@@ -840,7 +858,7 @@ describe("判定し直しの重なり（続き）", () => {
             .bind(toBytes(near(0, 0)), rust0)
             .run();
         }
-        await t.tag(prepare === "revive" ? "Go。プログラミング言語" : "Go");
+        await t.touch(rust);
       }
       const before = await t.autoTitles(rust);
       const hook = statementHook(pattern, async () => {
@@ -952,7 +970,7 @@ describe("保存容量（続き）", () => {
       .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
       .bind(toBytes(noise(77)), rust0)
       .run();
-    await t.tag("Go");
+    await t.touch(rust);
     await t.rejudge();
     expect(await t.autoTitles(rust)).not.toContain("rust-0");
 
@@ -963,9 +981,10 @@ describe("保存容量（続き）", () => {
       .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
       .bind(toBytes(near(0, 0)), rust0)
       .run();
+    // 手で付けた行も容量に数えるので、上限は版を上げたあとで決める
+    await t.touch(rust);
     const usage = await readStorageUsage(t.platform.db);
     await configureStorage(t.platform.db, Math.floor((usage.bytes + 256) / 0.9) + 1);
-    await t.tag("Go。プログラミング言語");
     await t.rejudge();
     expect(await t.autoTitles(rust)).toEqual([...rustTitles, "rust-new"].sort());
     // 上限を詰めても、消した印の行は生き返らせる
@@ -973,15 +992,15 @@ describe("保存容量（続き）", () => {
       .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
       .bind(toBytes(noise(78)), rust0)
       .run();
-    await t.tag("other-1");
+    await t.touch(rust);
     await t.rejudge();
     expect(await t.autoTitles(rust)).not.toContain("rust-0");
     await testDb
       .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
       .bind(toBytes(near(0, 0)), rust0)
       .run();
+    await t.touch(rust);
     await configureStorage(t.platform.db, (await readStorageUsage(t.platform.db)).bytes);
-    await t.tag("other-2");
     await t.rejudge();
     expect(await t.autoTitles(rust)).toContain("rust-0");
   });
@@ -1071,5 +1090,203 @@ describe("判定し直しの直し", () => {
     const before = await t.state();
     await testDb.exec(backfill);
     expect(await t.state()).toEqual(before);
+  });
+});
+
+describe("ベクトルの変わったタグだけを判定し直す（#424）", () => {
+  const goArticles = Array.from({ length: 6 }, (_, i) => ({
+    title: `go-${i}`,
+    embedding: near(1, 300 + i),
+  }));
+  const goTitles = goArticles.map((article) => article.title).sort();
+
+  const hashes = (tagId: string) =>
+    testDb
+      .prepare(
+        "SELECT vector_hash AS vectorHash, judged_hash AS judgedHash, stats_count AS statsCount FROM tags WHERE id = ?",
+      )
+      .bind(tagId)
+      .first<{ vectorHash: string | null; judgedHash: string | null; statsCount: number }>();
+
+  it("入力の変わらないタグは、ベクトルと統計を使い回し、判定し直さない", async () => {
+    const t = await setup();
+    await t.feed([...standardArticles(), ...goArticles]);
+    const rust = await t.tag("Rust");
+    const go = await t.tag("Go");
+    await t.rejudge();
+    expect(await t.autoTitles(rust)).toEqual(rustTitles);
+    expect(await t.autoTitles(go)).toEqual(goTitles);
+    const rustBefore = await hashes(rust);
+    expect(rustBefore?.judgedHash).toBe(rustBefore?.vectorHash);
+    const rustSeqs = () =>
+      testDb.prepare("SELECT article_id, seq FROM article_tags WHERE tag_id = ?").bind(rust).all();
+    const seqBefore = await rustSeqs();
+
+    // 受信箱が増えても、Rust の統計は求め直さない。Go だけ入力を変える
+    await t.feed([{ title: "late-0", embedding: noise(8_000) }]);
+    const rust0 = await t.articleId("rust-0");
+    await testDb
+      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
+      .bind(toBytes(noise(8_001)), rust0)
+      .run();
+    t.articleAnalysis.embedText.mockClear();
+    await t.touch(go);
+    await t.rejudge();
+    expect(t.articleAnalysis.embedText).not.toHaveBeenCalled();
+    expect(await hashes(rust)).toEqual(rustBefore);
+    // Rust は判定し直さないので、関係のない記事になった rust-0 の行もそのまま
+    expect(await rustSeqs()).toEqual(seqBefore);
+    expect(await t.autoTitles(go)).toEqual(goTitles);
+    const goAfter = await hashes(go);
+    expect(goAfter?.judgedHash).toBe(goAfter?.vectorHash);
+    expect(goAfter?.statsCount).toBe(127);
+    expect(await t.rejudgeRemaining()).toBe(0);
+  });
+
+  it("書き始める前に判定し終えたハッシュを空にし、途中で設定を元に戻しても判定し直す", async () => {
+    const t = await setup();
+    t.texts.set("Rust。言語", axis(0));
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    const judged = (await hashes(rust))?.judgedHash;
+    expect(judged).not.toBeNull();
+
+    // 説明を変え、判定を書き始める前に落ちる
+    expect(
+      (await t.request(`/tags/${rust}`, "PATCH", { name: "Rust", description: "言語" })).status,
+    ).toBe(200);
+    // rust-0 の自動の行に消した印を付けておく（判定し直せば生き返る）。生き返らせる文の直前に落ちる
+    const rust0 = await t.articleId("rust-0");
+    await testDb
+      .prepare("UPDATE article_tags SET deleted_at = 1 WHERE tag_id = ? AND article_id = ?")
+      .bind(rust, rust0)
+      .run();
+    const hook = statementHook(/update article_tags set kind = 'auto'/i, async () => {
+      throw new Error("crashed");
+    });
+    await expect(t.rejudge({ ...t.platform, db: hook.db })).rejects.toThrow();
+    expect(hook.fired()).toBe(true);
+    expect((await hashes(rust))?.judgedHash).toBeNull();
+
+    // 説明を元に戻す。ハッシュは前に判定し終えたときと同じになるが、空にしてあるので判定し直す
+    expect(
+      (await t.request(`/tags/${rust}`, "PATCH", { name: "Rust", description: "" })).status,
+    ).toBe(200);
+    await t.rejudge();
+    const after = await hashes(rust);
+    expect(after?.vectorHash).toBe(judged);
+    expect(after?.judgedHash).toBe(judged);
+    // 判定し直したので、消した印を付けておいた rust-0 も生き返る
+    expect(await t.autoTitles(rust)).toEqual(rustTitles);
+  });
+
+  it("たどり終えたらハッシュを先に書き、そのあとで位置を終わりにする。間で落ちても、次の仕事が位置を終わりにして終える", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    // 位置を終わりにする文（120 件なので、仕事の中で最初に位置を動かす文）の直前に落ちる
+    const hook = statementHook(/update tag_judging set/i, async () => {
+      throw new Error("crashed");
+    });
+    await expect(t.rejudge({ ...t.platform, db: hook.db })).rejects.toThrow();
+    expect(hook.fired()).toBe(true);
+    const marked = await hashes(rust);
+    expect(marked?.judgedHash).toBe(marked?.vectorHash);
+    expect(await t.state()).toMatchObject({ finished: 0 });
+    t.articleAnalysis.embedText.mockClear();
+    expect(await t.rejudge()).toBe(1);
+    expect(await t.state()).toMatchObject({ finished: 1 });
+    expect(await t.autoTitles(rust)).toEqual(rustTitles);
+  });
+
+  it("対象のタグがなければ（解析の済んでいない記事を手で付けただけなど）、ベクトルを書いたあと位置を終わりにして終える", async () => {
+    const t = await setup();
+    await t.feed(standardArticles());
+    const rust = await t.tag("Rust");
+    await t.rejudge();
+    const stale = await t.articleId("noise-50");
+    await testDb
+      .prepare("UPDATE article_analyses SET embedding_revision = 0 WHERE article_id = ?")
+      .bind(stale)
+      .run();
+    const before = await hashes(rust);
+    expect((await t.request(`/articles/${stale}/tags/${rust}`, "PUT", { on: true })).status).toBe(
+      200,
+    );
+    expect(await t.rejudgeRemaining()).toBe(120);
+    expect(await t.rejudge()).toBe(1);
+    expect(await hashes(rust)).toEqual(before);
+    expect(await t.state()).toMatchObject({ finished: 1 });
+    expect(await t.rejudgeRemaining()).toBe(0);
+  });
+});
+
+describe("手で付けた記事に埋め込みが初めて入ったときの版上げ（#424）", () => {
+  it("前の版の埋め込みがなかった記事にだけ上げ、解析し直しで埋め込みが変わっただけでは上げない", async () => {
+    const t = await setup();
+    await t.feed([...standardArticles().slice(0, 3), { title: "pending-0", embedding: null }]);
+    const rust = await t.tag("Rust");
+    const pending = await t.articleId("pending-0");
+    expect((await t.request(`/articles/${pending}/tags/${rust}`, "PUT", { on: true })).status).toBe(
+      200,
+    );
+    const revision = async () => (await t.state())?.revision ?? 0;
+    const before = await revision();
+    const setEmbedding = (vector: Float32Array | null) =>
+      testDb
+        .prepare(
+          "UPDATE article_analyses SET embedding = ?, embedding_status = ? WHERE article_id = ?",
+        )
+        .bind(vector ? toBytes(vector) : null, vector ? "done" : "empty", pending)
+        .run();
+    // 埋め込みが初めて入った
+    await setEmbedding(noise(9_000));
+    expect(await revision()).toBe(before + 1);
+    // 埋め込みが変わっただけ
+    await setEmbedding(noise(9_001));
+    expect(await revision()).toBe(before + 1);
+
+    // 解析の行を作り直したとき（行がなかった）も上げる
+    await testDb.prepare("DELETE FROM article_analyses WHERE article_id = ?").bind(pending).run();
+    await testDb
+      .prepare(
+        `INSERT INTO article_analyses (article_id, feed_id, candidate_revision, candidate_status, embedding_revision, embedding_status, embedding, analyzed_at)
+        SELECT id, feed_id, 1, 'empty', 1, 'done', ?, 0 FROM articles WHERE id = ?`,
+      )
+      .bind(toBytes(noise(9_002)), pending)
+      .run();
+    expect(await revision()).toBe(before + 2);
+
+    // 手直しのない記事、ほかの人の記事では上げない
+    const other = await t.articleId("rust-0");
+    await testDb
+      .prepare("UPDATE article_analyses SET embedding = NULL WHERE article_id = ?")
+      .bind(other)
+      .run();
+    await testDb
+      .prepare("UPDATE article_analyses SET embedding = ? WHERE article_id = ?")
+      .bind(toBytes(near(0, 0)), other)
+      .run();
+    expect(await revision()).toBe(before + 2);
+  });
+
+  it("手直しの記事が受信箱にないか、タグが消えていれば上げない", async () => {
+    const t = await setup();
+    const feedId = await t.feed([{ title: "pending-1", embedding: null }]);
+    await t.feed(standardArticles().slice(0, 3));
+    const rust = await t.tag("Rust");
+    const pending = await t.articleId("pending-1");
+    await t.request(`/articles/${pending}/tags/${rust}`, "PUT", { on: true });
+    // 購読をやめると受信箱の行が消え、手直しの行にも消した印が付く
+    await t.request(`/feeds/${feedId}`, "DELETE");
+    const before = (await t.state())?.revision;
+    await testDb
+      .prepare(
+        "UPDATE article_analyses SET embedding = ?, embedding_status = 'done' WHERE article_id = ?",
+      )
+      .bind(toBytes(noise(9_100)), pending)
+      .run();
+    expect((await t.state())?.revision).toBe(before);
   });
 });

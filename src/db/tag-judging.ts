@@ -100,6 +100,9 @@ export type JudgedTag = {
   statsMean: number | null;
   statsStdDev: number | null;
   statsCount: number | null;
+  vectorSourceHash: string | null;
+  vectorHash: string | null;
+  judgedHash: string | null;
 };
 
 /** その人の有効なタグ（作った順） */
@@ -109,7 +112,9 @@ export async function listJudgedTags(db: Database, userId: string): Promise<Judg
       name_embedding as "nameEmbedding", vector, vector_tag_revision as "vectorTagRevision",
       vector_embedding_revision as "vectorEmbeddingRevision",
       vector_judge_revision as "vectorJudgeRevision", stats_mean as "statsMean",
-      stats_std_dev as "statsStdDev", stats_count as "statsCount"
+      stats_std_dev as "statsStdDev", stats_count as "statsCount",
+      vector_source_hash as "vectorSourceHash", vector_hash as "vectorHash",
+      judged_hash as "judgedHash"
     from tags
     where user_id = ${userId} and deleted_at is null
     order by created_at, rowid
@@ -148,9 +153,14 @@ export function isVectorCurrent(
 export async function readManualEmbeddings(
   db: Database,
   input: { userId: string; embeddingRevision: number },
-): Promise<{ tagId: string; on: number; embedding: Uint8Array }[]> {
-  const rows = await db.all<{ tagId: string; on: number; embedding: unknown }>(sql`
-    select g.tag_id as "tagId", g."on", x.embedding
+): Promise<{ tagId: string; articleId: string; on: number; embedding: Uint8Array }[]> {
+  const rows = await db.all<{
+    tagId: string;
+    articleId: string;
+    on: number;
+    embedding: unknown;
+  }>(sql`
+    select g.tag_id as "tagId", g.article_id as "articleId", g."on", x.embedding
     from article_tags g
     join article_analyses x on x.article_id = g.article_id
     where g.user_id = ${input.userId} and g.kind = 'manual' and g.deleted_at is null
@@ -199,6 +209,9 @@ export async function writeTagVector(
     nameEmbedding: Uint8Array | null;
     vector: Uint8Array | null;
     stats: { mean: number; stdDev: number; count: number } | null;
+    /** 統計を除いた入力のハッシュと、統計を含むベクトルの入力のハッシュ */
+    sourceHash: string;
+    vectorHash: string;
   },
 ): Promise<boolean> {
   const row = await getRow<{ id: string }>(
@@ -213,7 +226,11 @@ export async function writeTagVector(
       vector_started_at = ${input.startedAt.getTime()},
       stats_mean = ${input.stats?.mean ?? null},
       stats_std_dev = ${input.stats?.stdDev ?? null},
-      stats_count = ${input.stats?.count ?? null}
+      stats_count = ${input.stats?.count ?? null},
+      vector_source_hash = ${input.sourceHash},
+      vector_hash = ${input.vectorHash},
+      -- ハッシュが変わったタグは、判定を書き始める前に、判定し終えたハッシュを空にする（6）
+      judged_hash = case when judged_hash = ${input.vectorHash} then judged_hash else null end
     where id = ${input.tagId} and user_id = ${input.userId} and deleted_at is null
       and vector_tag_revision is ${input.readVectorTagRevision}
       and ${sameRevision(input.userId, input.revision)}
@@ -344,6 +361,43 @@ export async function detachAutoTags(
     returning id
   `);
   return rows.length;
+}
+
+/**
+ * 判定し直しをたどり終えたタグに、その仕事が使ったハッシュを判定し終えたハッシュとして書く（6）。版と位置が
+ * 読んだときのままで、タグの行のハッシュが使ったハッシュのままのときだけ書く。位置を終わりにする前に呼ぶ。
+ *
+ * @returns 版と位置が読んだときのままだったか
+ */
+export async function markTagsJudged(
+  db: Database,
+  input: {
+    userId: string;
+    revision: number;
+    cursor: JudgingCursor | null;
+    tags: readonly { id: string; hash: string }[];
+  },
+): Promise<boolean> {
+  const cursor = input.cursor
+    ? sql`j.cursor_created_at = ${input.cursor.createdAt} and j.cursor_article_id = ${input.cursor.articleId}`
+    : sql`j.cursor_created_at is null and j.cursor_article_id is null`;
+  const unchanged = sql`exists (
+      select 1 from tag_judging j
+      where j.user_id = ${input.userId} and j.revision = ${input.revision} and j.finished = 0 and ${cursor}
+    )`;
+  if (input.tags.length > 0) {
+    await db.run(sql`
+      update tags set judged_hash = vector_hash
+      where user_id = ${input.userId} and deleted_at is null
+        and exists (
+          select 1 from json_each(${JSON.stringify(input.tags)}) used
+          where used.value ->> 'id' = tags.id and used.value ->> 'hash' = tags.vector_hash
+        )
+        and ${unchanged}
+    `);
+  }
+  const row = await getRow<{ ok: number }>(db, sql`select ${unchanged} as ok`);
+  return row?.ok === 1;
 }
 
 /**

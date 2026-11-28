@@ -9,6 +9,7 @@ import {
   type JudgedTag,
   type JudgingCursor,
   listJudgedTags,
+  markTagsJudged,
   NEGATIVE_WEIGHT,
   POSITIVE_WEIGHT,
   REJUDGE_ARTICLES_PER_JOB,
@@ -23,6 +24,7 @@ import {
   TAG_SCORE_THRESHOLD,
   writeTagVector,
 } from "../db/tag-judging";
+import { sha256Hex } from "../lib/crypto";
 import { notifySync } from "../lib/sync-notify";
 import type { Platform } from "../platform";
 
@@ -105,6 +107,27 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
     if (!(await rebuildVectors(platform, { userId, revision, tags }))) return;
     tags = await listJudgedTags(db, userId);
   }
+  // 判定し直すのは、ベクトルの入力のハッシュが、前に判定し終えたときと違うタグだけ（6）
+  const targets = tags.filter(
+    (tag) => tag.vectorHash === null || tag.judgedHash !== tag.vectorHash,
+  );
+  if (targets.length === 0) {
+    await advanceJudgingCursor(db, { userId, revision, from: state.cursor, to: null });
+    return;
+  }
+  /** たどり終えたら、対象のタグに使ったハッシュを書いてから、位置を終わりにする */
+  const finish = async () => {
+    const marked = await markTagsJudged(db, {
+      userId,
+      revision,
+      cursor: state.cursor,
+      tags: targets.flatMap((tag) =>
+        tag.vectorHash ? [{ id: tag.id, hash: tag.vectorHash }] : [],
+      ),
+    });
+    if (!marked) return false;
+    return advanceJudgingCursor(db, { userId, revision, from: state.cursor, to: null });
+  };
 
   const page = await readRejudgePage(db, {
     userId,
@@ -112,10 +135,10 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
     limit: REJUDGE_ARTICLES_PER_JOB,
   });
   if (page.length === 0) {
-    await advanceJudgingCursor(db, { userId, revision, from: state.cursor, to: null });
+    await finish();
     return;
   }
-  const judged = tags.flatMap((tag) => {
+  const judged = targets.flatMap((tag) => {
     const judge = toJudge(tag);
     return judge ? [judge] : [];
   });
@@ -144,7 +167,7 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
       continue;
     }
     const article = fromLittleEndian(row.embedding);
-    for (const tag of tags) {
+    for (const tag of targets) {
       const current = states.get(`${tag.id}\n${row.articleId}`);
       const judge = judged.find((item) => item.id === tag.id);
       const on = judge !== undefined && score(judge, article) >= TAG_SCORE_THRESHOLD;
@@ -180,18 +203,22 @@ export async function runRejudgeTags(platform: JudgingPlatform, userId: string):
   if (changed > 0) await notifySync(platform.syncUpdates.notify, [userId]);
 
   const done = !stopped && page.length < REJUDGE_ARTICLES_PER_JOB;
-  if (reached !== state.cursor || done) {
+  if (done) {
+    await finish();
+    return;
+  }
+  if (reached !== state.cursor) {
     const moved = await advanceJudgingCursor(db, {
       userId,
       revision,
       from: state.cursor,
-      to: done ? null : reached,
+      to: reached,
     });
     // 版か位置が変わっていれば、新しい版の判定し直しがやり直す
     if (!moved) return;
   }
   // 止まったときの続きは、定期実行が拾う（位置を最後に動かしてから 10 分たったとき）
-  if (!done && !stopped) {
+  if (!stopped) {
     await platform.jobs.enqueue([{ type: "rejudge-tags", userId }], { unlessWaiting: true });
   }
 }
@@ -220,7 +247,9 @@ function score(judge: Judge, article: Float32Array): number {
 }
 
 /**
- * 有効なタグのベクトルと統計を作り直す（1、2）。名前と説明の埋め込みは、入力が変わったタグだけ推論する。
+ * 有効なタグのベクトルと統計を作り直す（1、2）。統計を除いた入力が前と同じタグは、ベクトルと統計を使い回す
+ * （別のタグを変えて版が上がっただけでは、ほかのタグの統計は求め直さない）。名前と説明の埋め込みは、入力が
+ * 変わったタグだけ推論する。
  *
  * @returns 書けたか。その人の版が変わっていれば false（新しい版の判定し直しがやり直す）
  */
@@ -232,22 +261,51 @@ async function rebuildVectors(
   const embeddingRevision = articleAnalysis.embeddingRevision;
   const startedAt = platform.now();
   const manual = await readManualEmbeddings(db, { userId: input.userId, embeddingRevision });
-  const sample = (await readStatsSample(db, { userId: input.userId, embeddingRevision })).map(
-    fromLittleEndian,
-  );
+  let sample: Float32Array[] | undefined;
   for (const tag of input.tags) {
     const text = tag.description === "" ? tag.name : `${tag.name}。${tag.description}`;
+    const tagManual = manual.filter((row) => row.tagId === tag.id);
+    const sourceHash = await sha256Hex(
+      JSON.stringify([
+        tag.name,
+        tag.description,
+        tagManual.map((row) => [row.articleId, row.on !== 0]).sort(),
+        embeddingRevision,
+        JUDGE_REVISION,
+      ]),
+    );
+    if (tag.vectorSourceHash === sourceHash && tag.vectorHash !== null) {
+      // 入力が同じ：ベクトルと統計を使い回し、版だけを今の版にする
+      const reused = await writeTagVector(db, {
+        userId: input.userId,
+        tagId: tag.id,
+        revision: input.revision,
+        readVectorTagRevision: tag.vectorTagRevision,
+        embeddingRevision,
+        startedAt,
+        nameEmbeddingInput: tag.nameEmbeddingInput ?? "",
+        nameEmbedding: tag.nameEmbedding,
+        vector: tag.vector,
+        stats:
+          tag.statsMean !== null && tag.statsStdDev !== null && tag.statsCount !== null
+            ? { mean: tag.statsMean, stdDev: tag.statsStdDev, count: tag.statsCount }
+            : null,
+        sourceHash,
+        vectorHash: tag.vectorHash,
+      });
+      if (!reused) return false;
+      continue;
+    }
     const nameEmbeddingInput = `${embeddingRevision}:${JUDGE_REVISION}:${text}`;
     const nameEmbedding =
       tag.nameEmbeddingInput === nameEmbeddingInput
         ? tag.nameEmbedding && fromLittleEndian(tag.nameEmbedding)
         : await articleAnalysis.embedText(text);
-    const vector = nameEmbedding
-      ? rocchio(
-          nameEmbedding,
-          manual.filter((row) => row.tagId === tag.id),
-        )
-      : null;
+    const vector = nameEmbedding ? rocchio(nameEmbedding, tagManual) : null;
+    sample ??= (await readStatsSample(db, { userId: input.userId, embeddingRevision })).map(
+      fromLittleEndian,
+    );
+    const stats = vector ? similarityStats(vector, sample) : null;
     const written = await writeTagVector(db, {
       userId: input.userId,
       tagId: tag.id,
@@ -258,7 +316,9 @@ async function rebuildVectors(
       nameEmbeddingInput,
       nameEmbedding: nameEmbedding ? toLittleEndian(nameEmbedding) : null,
       vector: vector ? toLittleEndian(vector) : null,
-      stats: vector ? similarityStats(vector, sample) : null,
+      stats,
+      sourceHash,
+      vectorHash: await sha256Hex(JSON.stringify([sourceHash, stats])),
     });
     if (!written) return false;
   }
