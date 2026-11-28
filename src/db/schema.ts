@@ -1088,6 +1088,15 @@ export const tags = sqliteTable(
     statsMean: real("stats_mean"),
     statsStdDev: real("stats_std_dev"),
     statsCount: integer("stats_count"),
+    /**
+     * 統計を除いたベクトルの入力のハッシュ（名前と説明、足した手直しの記事と向き、埋め込みの版、判定の版）。
+     * 同じなら、ベクトルと統計を作り直さない（2）
+     */
+    vectorSourceHash: text("vector_source_hash"),
+    /** ベクトルの入力のハッシュ（統計を含む。1） */
+    vectorHash: text("vector_hash"),
+    /** 判定し終えたときのベクトルの入力のハッシュ（6）。vector_hash と違うタグを判定し直す */
+    judgedHash: text("judged_hash"),
   },
   (t) => [
     // 同じ人で照合用の名前が同じ有効なタグは 1 つ。作る文と変える文はこれにぶつけて止める
