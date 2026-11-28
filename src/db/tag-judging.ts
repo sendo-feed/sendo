@@ -317,8 +317,9 @@ const fitsAfterNewRow = sql`(
  * 自動で付ける（2、7）。消した印の行があれば生き返らせ（使用量によらない）、なければ行を作る（書いたあとの
  * 使用量が 90% 以上になるなら作らない）。消した印のない行（手で付け外しした行と、自動で付いた行）は変えない。
  *
- * @returns 見える状態を変えたら written。ほかの仕事が先に付けていたら present。書けなかったら not_written
- *   （版やタグや受信箱が変わったか、使用量が足りない）
+ * @returns 見える状態を変えたら written。消した印のない行がすでにあれば present（ほかの仕事が先に付けたか、
+ *   利用者が手で付け外しした。どちらも変えない）。書けなかったら not_written（版やタグや受信箱が変わったか、
+ *   使用量が足りない）
  */
 export async function attachAutoTag(
   db: Database,
@@ -342,7 +343,7 @@ export async function attachAutoTag(
     returning id`,
   );
   if (inserted) return "written";
-  // ほかの仕事が先に付けていれば（消した印のない行がある）、付いた状態は同じ
+  // 消した印のない行がすでにあれば（ほかの仕事が先に付けたか、利用者が手で付け外しした）、変えない
   const present = await getRow<{ found: number }>(
     db,
     sql`select 1 as found from article_tags

@@ -1451,6 +1451,8 @@ describe("判定待ちの表で新しい記事を判定する（#445）", () => 
     const feedId = await owner.feed([
       { title: "shared-rust", embedding: near(0, 600) },
       { title: "shared-old", embedding: near(0, 601) },
+      // 今の版で埋め込みが空の記事は積まない
+      { title: "shared-empty", embedding: null },
     ]);
     await testDb
       .prepare(
@@ -1635,6 +1637,24 @@ describe("判定待ちの表で新しい記事を判定する（#445）", () => 
     await t.request(`/tags/${t.rust}`, "DELETE");
     await t.rejudge();
     expect(await t.queue()).toEqual([]);
+  });
+
+  it("解析の遡及が解析した記事も積み、遡及の仕事が判定の仕事を積む", async () => {
+    const t = await judged();
+    const article = await t.articleId("rust-4");
+    // 解析を待っている記事にする（遡及が拾う）
+    await testDb.prepare("DELETE FROM article_analyses WHERE article_id = ?").bind(article).run();
+    await testDb
+      .prepare("UPDATE article_tags SET deleted_at = 1 WHERE tag_id = ? AND article_id = ?")
+      .bind(t.rust, article)
+      .run();
+    t.takeJudges();
+    await runJob(t.platform, { type: "backfill-article-analyses" });
+    expect((await t.queue()).map((row) => row.title)).toEqual(["rust-4"]);
+    const jobs = t.takeJudges();
+    expect(jobs).toEqual([{ type: "judge-tags", userId: t.user.id }]);
+    for (const job of jobs) await runJob(t.platform, job);
+    expect(await t.autoTitles(t.rust)).toEqual(rustTitles);
   });
 
   it("起動したときに書く版の行は、1 行だけで書き換える", async () => {
