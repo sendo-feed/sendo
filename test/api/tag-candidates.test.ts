@@ -1,10 +1,18 @@
-import { describe, expect, it } from "vitest";
+import path from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import { insertFeed } from "../../src/db/feeds";
-import { MAX_TAG_REJECTIONS } from "../../src/db/tag-candidates";
+import { aggregateTagCandidates, MAX_TAG_REJECTIONS } from "../../src/db/tag-candidates";
 import { runJob } from "../../src/jobs";
 import { runFetchFeed } from "../../src/jobs/fetch-feed";
-import type { AnalysisCandidate, ArticleAnalysisInput, Platform } from "../../src/platform";
-import { testDb } from "../db";
+import type {
+  AnalysisCandidate,
+  ArticleAnalysisInput,
+  HeavyRead,
+  Platform,
+} from "../../src/platform";
+import { createWorkerHeavyRead } from "../../src/platform/node/heavy-read";
+import { CANDIDATE_REUSE_MS } from "../../src/tags/candidates";
+import { testDatabase, testDb } from "../db";
 import {
   createTestPlatform,
   createUser,
@@ -17,8 +25,27 @@ import {
 
 /*
  * タグの候補の一覧と却下（docs/decisions/tags.md の 1〜3、6）。記事は取得の仕事で入れ、候補は解析の仕事で
- * 作る（本番と同じ道）。解析の差し替えは、記事のタイトルごとに決めた候補を返す
+ * 作る（本番と同じ道）。解析の差し替えは、記事のタイトルごとに決めた候補を返す。集計は、本番と同じく
+ * 別のスレッドで、テストの DB のファイルを開いて流す
  */
+
+const workerHeavyRead = createWorkerHeavyRead(
+  `file:${path.join(testDatabase.directory, "sendo.db")}`,
+);
+afterAll(() => workerHeavyRead.close());
+
+/** 流した重い読み取りの文を数える。fail を立てると失敗させる */
+function countingHeavyRead() {
+  const state = { calls: 0, fail: false };
+  const read: HeavyRead = {
+    all(query) {
+      state.calls++;
+      if (state.fail) return Promise.reject(new Error("aggregation failed"));
+      return workerHeavyRead.all(query);
+    },
+  };
+  return { read, state };
+}
 
 type Candidate = { key: string; label: string; count: number };
 type Item = {
@@ -39,7 +66,7 @@ const rss = (
 </channel></rss>`;
 
 /** フィードごとの記事の並び。キーはフィードの URL */
-async function setup() {
+async function setup(options: { heavyRead?: HeavyRead } = {}) {
   const byTitle = new Map<string, AnalysisCandidate[]>();
   const feeds = new Map<string, Item[]>();
   const { fetch } = fakeFetch((url) => new Response(rss(feeds.get(url.href) ?? [])));
@@ -48,7 +75,14 @@ async function setup() {
     candidates: byTitle.get(input.title) ?? [],
     embedding: null,
   }));
-  const { platform, enqueued } = createTestPlatform({ fetch, articleAnalysis });
+  // 使い回しの長さを確かめるため、プロセスの時計は手で進める
+  const clock = { now: Date.now() };
+  const { platform, enqueued } = createTestPlatform({
+    fetch,
+    articleAnalysis,
+    heavyRead: options.heavyRead ?? workerHeavyRead,
+    now: () => new Date(clock.now),
+  });
   const user = await createUser();
   const c = client(platform, user.token);
   /** フィードを購読して取り込み、解析する */
@@ -74,7 +108,10 @@ async function setup() {
     }
     return { id, url };
   };
-  return { ...c, platform, user, feed, articleAnalysis };
+  const advance = (ms: number) => {
+    clock.now += ms;
+  };
+  return { ...c, platform, user, feed, articleAnalysis, advance };
 }
 
 function client(platform: Platform, token: string) {
@@ -91,6 +128,7 @@ function client(platform: Platform, token: string) {
 }
 
 const article = (title: string, ...candidates: Item["candidates"]): Item => ({ title, candidates });
+const keysOf = (list: { items: Candidate[] }) => list.items.map((item) => item.key);
 
 describe("候補の一覧", () => {
   it("鍵ごとに記事の数を数えて多い順（同じ数なら鍵の順）に返し、見出しはいちばん多い表記", async () => {
@@ -244,6 +282,93 @@ describe("候補の一覧", () => {
   });
 });
 
+describe("集計の使い回し", () => {
+  it("集計が終わった時刻から 1 分未満は使い回し、ちょうど 1 分から集計し直す（新しい記事と pending もそこで出る）", async () => {
+    const t = await setup();
+    await t.feed([article("a1", ["Rust", "rust"])]);
+    expect(await t.candidates()).toEqual({
+      items: [{ key: "rust", label: "Rust", count: 1 }],
+      pending: 0,
+    });
+    await t.feed([article("a2", ["Go", "go"])]);
+    expect(keysOf(await t.candidates())).toEqual(["rust"]);
+    t.advance(CANDIDATE_REUSE_MS - 1);
+    expect(keysOf(await t.candidates())).toEqual(["rust"]);
+    t.advance(1);
+    expect(keysOf(await t.candidates())).toEqual(["go", "rust"]);
+  });
+
+  it("同じ利用者の重なったリクエストは集計を 1 本だけ流し、ほかの利用者は自分の分を集計する", async () => {
+    const { read, state } = countingHeavyRead();
+    const t = await setup({ heavyRead: read });
+    await t.feed([article("a1", ["Rust", "rust"])]);
+    const [first, second] = await Promise.all([t.candidates(), t.candidates()]);
+    expect(first).toEqual(second);
+    // 集計 1 回は、候補と残りの数の 2 つの文
+    expect(state.calls).toBe(2);
+    expect(keysOf(await t.candidates())).toEqual(["rust"]);
+    expect(state.calls).toBe(2);
+    const other = client(t.platform, (await createUser()).token);
+    expect(await other.candidates()).toEqual({ items: [], pending: 0 });
+    expect(state.calls).toBe(4);
+  });
+
+  it("使い回す間の却下とタグは返すたびに外して多めに持った分で埋め、100 件より多く外すと次の集計まで少なくなる", async () => {
+    const { read, state } = countingHeavyRead();
+    const t = await setup({ heavyRead: read });
+    const keys = Array.from({ length: 250 }, (_, i) => `k${String(i).padStart(3, "0")}`);
+    await t.feed([
+      article("many", ...keys.map((key) => [key.toUpperCase(), key] as [string, string])),
+    ]);
+    expect(keysOf(await t.candidates())).toEqual(keys.slice(0, 100));
+    expect((await t.reject("k000")).status).toBe(200);
+    expect((await t.request("/tags", "POST", { name: "K001" })).status).toBe(201);
+    expect(keysOf(await t.candidates())).toEqual(keys.slice(2, 102));
+    // 集計で持つのは 200 件（k000〜k199）。合わせて 101 件外すと、残りは 99 件
+    for (const key of keys.slice(2, 101)) expect((await t.reject(key)).status).toBe(200);
+    expect(keysOf(await t.candidates())).toEqual(keys.slice(101, 200));
+    expect(state.calls).toBe(2);
+    t.advance(CANDIDATE_REUSE_MS);
+    expect(keysOf(await t.candidates())).toEqual(keys.slice(101, 201));
+    expect(state.calls).toBe(4);
+  });
+
+  it("集計した時点で却下していた語は、戻しても次の集計まで出ない。集計したあとに却下した語は、戻せばすぐ出る", async () => {
+    const t = await setup();
+    await t.feed([article("a1", ["Rust", "rust"], ["Go", "go"])]);
+    expect((await t.reject("go")).status).toBe(200);
+    expect(keysOf(await t.candidates())).toEqual(["rust"]);
+    expect(await (await t.restore("go")).json()).toEqual({ restored: true });
+    expect(keysOf(await t.candidates())).toEqual(["rust"]);
+    expect((await t.reject("rust")).status).toBe(200);
+    expect(keysOf(await t.candidates())).toEqual([]);
+    expect(await (await t.restore("rust")).json()).toEqual({ restored: true });
+    expect(keysOf(await t.candidates())).toEqual(["rust"]);
+    t.advance(CANDIDATE_REUSE_MS);
+    expect(keysOf(await t.candidates())).toEqual(["go", "rust"]);
+  });
+
+  it("集計が失敗したら待っていたリクエストにも失敗を返し、1 分未満は集計し直さず、1 分から集計し直す", async () => {
+    const { read, state } = countingHeavyRead();
+    const t = await setup({ heavyRead: read });
+    await t.feed([article("a1", ["Rust", "rust"])]);
+    state.fail = true;
+    const responses = await Promise.all([
+      t.request("/tags/candidates"),
+      t.request("/tags/candidates"),
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([500, 500]);
+    expect(state.calls).toBe(1);
+    state.fail = false;
+    t.advance(CANDIDATE_REUSE_MS - 1);
+    expect((await t.request("/tags/candidates")).status).toBe(500);
+    expect(state.calls).toBe(1);
+    t.advance(1);
+    expect(keysOf(await t.candidates())).toEqual(["rust"]);
+    expect(state.calls).toBe(3);
+  });
+});
+
 describe("却下", () => {
   it("鍵はまとめの鍵の形にそろえて 2〜40 コードポイントで確かめ、合わなければ invalid_key", async () => {
     const t = await setup();
@@ -364,14 +489,20 @@ describe("集計の時間", () => {
       "INSERT INTO article_candidates (article_id, generation, key, surface, source, created_at)",
       rows.candidates,
     );
+    const { items } = await t.candidates();
+    expect(items).toHaveLength(100);
+    // 定型の語は外れる
+    expect(items.some((item) => item.key.startsWith("boiler-"))).toBe(false);
+    // 一覧は結果を使い回すので、集計そのもの（別のスレッド）の時間を測る
     const times: number[] = [];
     for (let i = 0; i < 20; i++) {
       const started = performance.now();
-      const { items } = await t.candidates();
+      const result = await aggregateTagCandidates(workerHeavyRead, {
+        userId: t.user.id,
+        candidateRevision: 1,
+      });
       times.push(performance.now() - started);
-      expect(items).toHaveLength(100);
-      // 定型の語は外れる
-      expect(items.some((item) => item.key.startsWith("boiler-"))).toBe(false);
+      expect(result.items).toHaveLength(200);
     }
     times.sort((a, b) => a - b);
     expect(times[Math.ceil(times.length * 0.95) - 1]).toBeLessThan(1_000);

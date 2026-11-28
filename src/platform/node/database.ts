@@ -30,7 +30,8 @@ export async function openDatabase(
   // 1 本なので、トランザクション（client.transaction）を開くと、その間ほかの呼び出しは
   // TRANSACTION_ACTIVE で失敗する。トランザクションは使わない（docs/decisions/tech-stack.md）。
   // 待ち時間（busy_timeout）は接続ごとの設定なので、libsql が開くどの接続にも当たる timeout で渡す
-  // （接続が捨てられて開き直されても効く）
+  // （接続が捨てられて開き直されても効く）。書く接続はこの 1 本だけ。重い読み取りは、別のスレッドで書けない
+  // 接続を開いて流す（heavy-read.ts。書かないので、上の SQLITE_BUSY_SNAPSHOT には当たらない）
   const client = createClient({ url, concurrency: 1, timeout: 5000 });
   try {
     await client.execute("PRAGMA foreign_keys = ON");

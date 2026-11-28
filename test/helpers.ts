@@ -19,6 +19,7 @@ import {
   type ArticleAnalyzer,
   DEFAULT_FETCH_INTERVAL_MINUTES,
   DEFAULT_STORAGE_LIMIT_MIB,
+  type HeavyRead,
   type LanguageDetector,
   type PageContentExtractor,
   type Platform,
@@ -188,6 +189,14 @@ export function recordingSyncUpdates() {
   return { syncUpdates, notified };
 }
 
+/**
+ * 主のスレッドで流す重い読み取り。別のスレッドを確かめないテストで使う（別のスレッドで流すものは
+ * src/platform/node/heavy-read.ts の createWorkerHeavyRead をテストの DB のファイルで作る）
+ */
+export function inThreadHeavyRead(db: Database): HeavyRead {
+  return { all: (query) => db.all(query) };
+}
+
 /** テスト用の Platform。DB はテストファイルの SQLite（test/db.ts）、キューと fetch は差し替える */
 export function createTestPlatform(overrides: Partial<Platform> = {}) {
   const enqueued: Job[] = [];
@@ -202,6 +211,7 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
   const platform: Platform = {
     syncUpdates: unusedSyncUpdates,
     db,
+    heavyRead: inThreadHeavyRead(db),
     articleSearch: createSqliteArticleSearch(db),
     jobs: {
       async enqueueDueDiscordFetches() {

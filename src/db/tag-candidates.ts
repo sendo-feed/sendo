@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { HeavyRead } from "../platform";
 import { type Database, getRow } from ".";
 import { DB_NOW_MS } from "./clock";
 import { tagMatchKey } from "./tags";
@@ -11,6 +12,11 @@ import { tagMatchKey } from "./tags";
 export const CANDIDATE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 /** 候補の一覧に返す数 */
 export const MAX_CANDIDATE_ITEMS = 100;
+/**
+ * 集計で持つ数。集計の結果を使い回す間に、却下や作ったタグで外れた枠を埋めるため、返す数より多めに持つ
+ * （docs/decisions/tags.md の 1）
+ */
+export const CANDIDATE_POOL_SIZE = 200;
 /** フィードの定型の語を見分けるのは、そのフィードの範囲の解析済みの記事がこの数以上のときだけ */
 export const BOILERPLATE_MIN_ARTICLES = 10;
 /** 1 人が却下できる語の数 */
@@ -24,16 +30,16 @@ const MAX_RESTORE_KEY_LENGTH = 200;
 export type TagCandidate = { key: string; label: string; count: number };
 
 /**
- * 候補の一覧（docs/decisions/tags.md の 1、2）。その人の受信箱の、受信箱に入った時刻と公開日時のどちらも
- * 30 日以内の記事について、鍵ごとに記事の数を数え、多い順（同じ数なら鍵のコードポイントの順）に 100 件まで
- * 返す。数えるのは解析の行と世代が同じ候補の行だけ。同じフィードの範囲の解析済みの記事の 50% 以上（ちょうど
+ * 候補の集計（docs/decisions/tags.md の 1、2）。重い読み取りなので、別のスレッドの接続（read）で流す。
+ * その人の受信箱の、受信箱に入った時刻と公開日時のどちらも 30 日以内の記事について、鍵ごとに記事の数を
+ * 数え、多い順（同じ数なら鍵のコードポイントの順）に 200 件まで返す。数えるのは解析の行と世代が同じ候補の行だけ。同じフィードの範囲の解析済みの記事の 50% 以上（ちょうど
  * を含む）に記事の文字の候補として出る鍵は、そのフィードの記事からは数えない（解析済みの記事が 10 件以上の
  * フィードだけ）。有効なタグの照合用の名前と、却下した鍵は外す。見出しは、数えた行の表記のうちいちばん
  * 多いもの（同じ数なら表記のコードポイントの順で先のもの）。pending は、範囲の記事のうち今の候補の版の
  * 解析がない記事の数
  */
-export async function listTagCandidates(
-  db: Database,
+export async function aggregateTagCandidates(
+  read: HeavyRead,
   input: { userId: string; candidateRevision: number },
 ): Promise<{ items: TagCandidate[]; pending: number }> {
   const { userId } = input;
@@ -41,7 +47,7 @@ export async function listTagCandidates(
   // 候補の行を「フィード・鍵・出どころ」ごとに 1 回だけ数え、定型の語の判定と鍵ごとの合計は、まとめた表の
   // 上で行う（候補の行は記事あたり数十行になり、行のまま何度も集計すると遅いため）。見出しの表記は、上位の
   // 鍵の行だけで数える
-  const items = await db.all<TagCandidate>(sql`
+  const items = await read.all<TagCandidate>(sql`
     with analyzed as materialized (
       select ua.article_id, ua.feed_id, x.candidate_generation as generation
       from user_articles ua join article_analyses x on x.article_id = ua.article_id
@@ -74,7 +80,7 @@ export async function listTagCandidates(
           select 1 from tag_rejections j where j.user_id = ${userId} and j.key = kept.key
         )
       group by key
-      order by n desc, key limit ${MAX_CANDIDATE_ITEMS}
+      order by n desc, key limit ${CANDIDATE_POOL_SIZE}
     ),
     labels as (
       select r.key, r.surface,
@@ -92,8 +98,7 @@ export async function listTagCandidates(
     from top t join labels l on l.key = t.key and l.rank = 1
     order by t.n desc, t.key
   `);
-  const pending = await getRow<{ n: number }>(
-    db,
+  const [pending] = await read.all<{ n: number }>(
     sql`select count(*) as n from user_articles ua
     where ua.user_id = ${userId} and ua.published_at >= ${since} and ua.created_at >= ${since}
       and not exists (
@@ -176,6 +181,19 @@ export async function restoreTagCandidate(
     returning key
   `);
   return { restored: rows.length > 0 };
+}
+
+/** その人の有効なタグの照合用の名前と、却下した鍵（集計の結果を返すたびに外し直す。docs/decisions/tags.md の 1） */
+export async function readExcludedCandidateKeys(
+  db: Database,
+  userId: string,
+): Promise<Set<string>> {
+  const rows = await db.all<{ key: string }>(sql`
+    select match_key as key from tags where user_id = ${userId} and deleted_at is null
+    union all
+    select key from tag_rejections where user_id = ${userId}
+  `);
+  return new Set(rows.map((row) => row.key));
 }
 
 /** 却下した語を新しい順に返す */

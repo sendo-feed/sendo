@@ -16,7 +16,7 @@ import {
 import { createTokenForEmail, normalizeTokenRequest } from "../../../src/platform/node/token";
 import { NATIVE_MODULE, openTestDatabase } from "../../db";
 import { articlePage } from "../../fixtures/pages";
-import { unusedNative, unusedSyncUpdates } from "../../helpers";
+import { inThreadHeavyRead, unusedNative, unusedSyncUpdates } from "../../helpers";
 
 const FEED_URL = "https://news.example.com/feed.xml";
 
@@ -99,6 +99,7 @@ describe("本番の組み立てでアプリを動かす", () => {
       syncUpdates: unusedSyncUpdates,
       env: { DATA_DIR: path.join(database.directory, "data") },
       db: database.db,
+      heavyRead: inThreadHeavyRead(database.db),
       jobs,
       fetch: fakeFetch,
       pageContent: createPageContentExtractor(loadNativeModule(NATIVE_MODULE)),
@@ -318,6 +319,7 @@ describe("withPublicOrigin", () => {
           READER_URL: reader,
         },
         db: database.db,
+        heavyRead: inThreadHeavyRead(database.db),
         jobs: createSqliteJobQueue(database.db),
         fetch: fakeFetch,
         ...unusedNative,

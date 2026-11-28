@@ -19,6 +19,7 @@ import { enqueueLanguageDetection, runScheduled } from "../../jobs/schedule";
 import { parseOrigin } from "..";
 import { openDatabase } from "./database";
 import { startDiscordIngestion } from "./discord-ingestion";
+import { createWorkerHeavyRead } from "./heavy-read";
 import { createNodePlatform, dataDirectory, type NodeEnv, withPublicOrigin } from "./index";
 import { createSqliteJobQueue } from "./job-queue";
 import {
@@ -89,9 +90,9 @@ function migrationsDirectory(env: NodeEnv): string {
 async function prepareDatabase(env: NodeEnv) {
   const directory = dataDirectory(env);
   await mkdir(directory, { recursive: true });
-  return openDatabase(`file:${path.join(directory, "sendo.db")}`, {
-    migrationsFolder: migrationsDirectory(env),
-  });
+  const url = `file:${path.join(directory, "sendo.db")}`;
+  const database = await openDatabase(url, { migrationsFolder: migrationsDirectory(env) });
+  return { ...database, url };
 }
 
 function readPort(env: NodeEnv): number {
@@ -119,9 +120,12 @@ async function runServer(env: NodeEnv): Promise<void> {
   const jobs = createSqliteJobQueue(database.db);
   const publicOrigin = readPublicOrigin(env);
   const sync = createNodeSyncUpdates(database.db, { invalidPublicOrigin: publicOrigin === null });
+  // 重い読み取りは、別のスレッドで同じファイルを開いて流す（決定の 5）
+  const heavyRead = createWorkerHeavyRead(database.url);
   const platform = createNodePlatform({
     env,
     db: database.db,
+    heavyRead,
     jobs,
     syncUpdates: sync.updates,
     ...native,
@@ -162,6 +166,7 @@ async function runServer(env: NodeEnv): Promise<void> {
     await Promise.all([closed, notificationsClosed, discord?.stop()]);
     await scheduler.stop();
     await jobs.stop();
+    await heavyRead.close();
     database.close();
     clearTimeout(timeout);
     process.exit(0);

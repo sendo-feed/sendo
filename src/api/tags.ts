@@ -1,6 +1,5 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
-  listTagCandidates,
   listTagRejections,
   MAX_TAG_REJECTIONS,
   parseRejectKey,
@@ -19,6 +18,7 @@ import {
   updateTag,
 } from "../db/tags";
 import type { Platform } from "../platform";
+import { listTagCandidates } from "../tags/candidates";
 import type { AuthVariables } from "./auth";
 import { defaultHook } from "./hook";
 import { ErrorSchema, errorBody, TagSchema, toTagResponse } from "./schemas";
@@ -252,10 +252,7 @@ export function tagsApi(platform: Platform) {
       return c.json({ items: items.map(toTagResponse), rejudgeRemaining: 0 }, 200);
     })
     .openapi(candidatesRoute, async (c) => {
-      const result = await listTagCandidates(db, {
-        userId: c.get("user").id,
-        candidateRevision: platform.articleAnalysis.candidateRevision,
-      });
+      const result = await listTagCandidates(platform, c.get("user").id);
       return c.json(result, 200);
     })
     .openapi(rejectionsRoute, async (c) => {
