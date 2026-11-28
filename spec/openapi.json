@@ -1042,6 +1042,30 @@
           "createdAt"
         ]
       },
+      "RejectTagCandidateRequest": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "additionalProperties": false
+      },
+      "RestoreTagCandidateRequest": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "additionalProperties": false
+      },
       "CreateTagRequest": {
         "type": "object",
         "properties": {
@@ -4472,6 +4496,202 @@
           },
           "409": {
             "description": "有効なタグが 100 個ある（tag_limit_reached）か、指定した id はほかの行に使われている（tag_id_taken）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tags/candidates": {
+      "get": {
+        "summary": "タグの候補の一覧",
+        "description": "受信箱の、受信箱に入った時刻と公開日時のどちらも 30 日以内の記事の候補の語を、記事の数の多い順に 100 件まで返す。すでにタグにした語と却下した語は外す。候補を選んでタグを作るときは、label を POST /tags の name に送る",
+        "responses": {
+          "200": {
+            "description": "候補の一覧",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string",
+                            "description": "まとめの鍵。却下に使う"
+                          },
+                          "label": {
+                            "type": "string",
+                            "description": "見出し（いちばん多い表記）"
+                          },
+                          "count": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "description": "記事の数"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "label",
+                          "count"
+                        ]
+                      }
+                    },
+                    "pending": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "範囲の記事のうち、まだ今の版で解析していない記事の数（集計中の残り）"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "pending"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tags/rejections": {
+      "get": {
+        "summary": "却下した語を新しい順で返す",
+        "responses": {
+          "200": {
+            "description": "却下した語の一覧",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "rejectedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "rejectedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "候補の語を却下する",
+        "description": "却下した語は候補の一覧に出なくなる。鍵はまとめの鍵の作り方で正規化し直してから 2〜40 文字で確かめる。1 人 1000 語まで。却下済みなら created: false",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectTagCandidateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "却下した、または却下済み",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "created": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "created"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "鍵が決まりに合わない（invalid_key）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "却下した語が 1000 語ある（tag_rejection_limit_reached）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tags/rejections/restore": {
+      "post": {
+        "summary": "却下を戻す",
+        "description": "却下の一覧が返した鍵をそのまま受ける（200 文字まで）。却下していなければ restored: false",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreTagCandidateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "戻した、または却下していなかった",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "restored": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "restored"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "鍵が決まりに合わない（invalid_key）",
             "content": {
               "application/json": {
                 "schema": {

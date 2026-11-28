@@ -1118,6 +1118,27 @@ export const articleTagHorizons = sqliteTable("article_tag_horizons", {
   seq: integer("seq").notNull(),
 });
 
+/**
+ * 却下したタグの候補（docs/decisions/tags.md の 3）。人ごとに、まとめの鍵と却下した時刻を持ち、1 人 1,000 語
+ * まで。管理画面と MCP で読み書きし、差分同期には載せない（変更番号を振らない）。件数の上限があり小さいので、
+ * 保存容量に含めない
+ */
+export const tagRejections = sqliteTable(
+  "tag_rejections",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    /** 却下した時刻。書く文の中の DB の時計で決める */
+    rejectedAt: integer("rejected_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.key] }),
+    index("tag_rejections_user_id_rejected_at_idx").on(t.userId, t.rejectedAt),
+  ],
+);
+
 /** その人のタグの消した印の行を、どこまで回収したか（差分同期の下限） */
 export const tagHorizons = sqliteTable("tag_horizons", {
   userId: text("user_id")
