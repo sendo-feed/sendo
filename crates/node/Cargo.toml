@@ -10,6 +10,7 @@ description = "sendo-extract などを、napi-rs で Node から呼ぶための�
 crate-type = ["cdylib"]
 
 [dependencies]
+sendo-analysis = { path = "../analysis" }
 sendo-extract = { path = "../extract" }
 sendo-language = { path = "../language" }
 napi = { version = "=3.16.1", default-features = false, features = ["napi4"] }

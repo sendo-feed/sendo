@@ -13,6 +13,7 @@ import { subscribeMany } from "../src/db/subscriptions";
 import { createAccessToken } from "../src/db/tokens";
 import type { Job } from "../src/jobs/job";
 import {
+  type ArticleAnalyzer,
   DEFAULT_FETCH_INTERVAL_MINUTES,
   DEFAULT_STORAGE_LIMIT_MIB,
   type LanguageDetector,
@@ -121,10 +122,24 @@ const unusedLanguageDetection: LanguageDetector = {
   },
 };
 
+/** テストで呼ばれたら失敗させる、記事の解析。使うテストは差し替える */
+const unusedArticleAnalysis: ArticleAnalyzer = {
+  candidateRevision: 1,
+  embeddingRevision: 1,
+  dimension: 256,
+  async analyze() {
+    throw new Error("article analysis is not set up in this test; pass articleAnalysis");
+  },
+  async embedText() {
+    throw new Error("article analysis is not set up in this test; pass articleAnalysis");
+  },
+};
+
 /** Rust の処理を使わないテストで、Platform に渡すもの（呼ばれたら失敗する） */
 export const unusedNative = {
   pageContent: unusedPageContent,
   languageDetection: unusedLanguageDetection,
+  articleAnalysis: unusedArticleAnalysis,
 };
 
 /** 実際の HTTP 接続を使わないテストの通知。 */
@@ -180,6 +195,7 @@ export function createTestPlatform(overrides: Partial<Platform> = {}) {
     retentionConfig: { maxBytes: DEFAULT_STORAGE_LIMIT_MIB * 1024 * 1024 },
     pageContent: unusedPageContent,
     languageDetection: unusedLanguageDetection,
+    articleAnalysis: unusedArticleAnalysis,
     ...overrides,
   };
   return {

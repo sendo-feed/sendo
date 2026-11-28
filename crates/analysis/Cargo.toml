@@ -1,0 +1,16 @@
+[package]
+name = "sendo-analysis"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "記事から候補の語と埋め込みベクトルを作る（docs/decisions/article-analysis.md）"
+
+[dependencies]
+dom_query = "=0.29.0"
+regex = "=1.13.1"
+unicode-normalization = "=0.1.26"
+# 外への取得（hf-hub）と、C ／ C++ の正規表現（onig、esaxx_fast）を入れない（記事の解析の 6）
+model2vec-rs = { version = "=0.5.1", default-features = false }
+# tokenizers は正規表現の実装がないとビルドできないので、純 Rust の fancy-regex だけを入れる
+tokenizers = { version = "=0.21.4", default-features = false, features = ["fancy-regex"] }

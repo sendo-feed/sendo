@@ -1,0 +1,13 @@
+{
+  "repository": "minishlab/potion-multilingual-128M",
+  "revision": "73908c3438cf03b6a01bcb9611d62b23d0726f08",
+  "files": {
+    "config.json": "595e4cab2093732efd5dbe084fd5c1826b5eea693b73b4c1fd971672867d2e54",
+    "model.safetensors": "14b5eb39cb4ce5666da8ad1f3dc6be4346e9b2d601c073302fa0a31bf7943397",
+    "README.md": "9505454b6a3efbb25257124de875cb73e02bd663a822528525a3c29b1c4d91ac",
+    "tokenizer.json": "19f1909063da3cfe3bd83a782381f040dccea475f4816de11116444a73e1b6a1"
+  },
+  "converted": {
+    "model.safetensors": "13b3567a9617de55e55a093dd1cff25271726e25364377227e441f8aa7493ea7"
+  }
+}

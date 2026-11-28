@@ -19,17 +19,19 @@ Sendo のサーバー本体。REST API、MCP、フィードの取得ジョブを
 - `pnpm format`：整形して、直せる lint の指摘を直す
 - `pnpm test`：テスト（Vitest、Node）。テストファイルごとに一時ディレクトリの SQLite を開き、マイグレーションを当てる（`test/db.ts`）。Rust を使うテストは `native/sendo.node` を読み込むので、先に `pnpm build:native` が要る
 - `pnpm build:native`：Rust（`crates/`）を napi-rs のネイティブのモジュール（`native/sendo.node`）にする。`pnpm dev` とテストが読み込む
+- `pnpm model:prepare`：記事の解析の埋め込みのモデルを、`models/potion-multilingual-128m.json` に固定した版で取り、SHA-256 を確かめて行ごとの int8 に変換する（`models/potion-multilingual-128m/`。docs/decisions/article-analysis.md の 6）。`pnpm dev` が読み込む。テストは使わない（Rust のテストは小さなモデルを組み立てる）
 - `pnpm build`：バンドル（`dist/node/sendo.mjs`）を作る。`DATA_DIR=<ディレクトリ> pnpm start` で動かせる。イメージは `docker build -t sendo .`
 - API（`src/api/`）を変えたら `pnpm openapi:generate` で `spec/openapi.json` を書き出し、一緒にコミットする。sendo-reader はこのファイルから型を作る（CI で食い違いを検査している）
 - `src/db/schema.ts` を変えたら `pnpm db:generate` でマイグレーションを作り、一緒にコミットする。作ったマイグレーションは手で直さない（CI で食い違いを検査している）
-- 手元で動かすときは `pnpm build:native` と `pnpm token:create --email <メール>` のあとに `pnpm dev`（`scripts/dev.mjs`。`.env` を読み、データは `.data/`、マイグレーションは起動時に当てる）。発行したトークンを `Authorization: Bearer` に付ける。ブラウザのログイン（Google）などを試すときは、`.env.example` を `.env` に写して設定を書く
+- 手元で動かすときは `pnpm build:native`、`pnpm model:prepare`、`pnpm token:create --email <メール>` のあとに `pnpm dev`（`scripts/dev.mjs`。`.env` を読み、データは `.data/`、マイグレーションは起動時に当てる）。発行したトークンを `Authorization: Bearer` に付ける。ブラウザのログイン（Google）などを試すときは、`.env.example` を `.env` に写して設定を書く
 
 ## ディレクトリ
 
 - `src/app.ts`：HTTP のルーティング。実行環境の入出力には直接触らず、`Platform` で受け取る
 - `crates/`：重い処理（Rust。docs/decisions/tech-stack.md の 5）。処理の本体の crate（`extract/` など。`#![forbid(unsafe_code)]`）と、Node から呼ぶための結び（`node/`。napi-rs）を分ける。外への取得と DB には触らず、TypeScript の側からバイト列を受け取って結果を返す。重い処理は `AsyncTask` でスレッドプールに出す
 - `src/platform/`：緩衝層。実行環境の入出力（DB、ファイル、外への取得、Rust のネイティブのモジュール、タイマー）をまとめる。インターフェースは `src/platform/index.ts`、実装と入口（`main.ts`）は `src/platform/node/` に置く（docs/decisions/tech-stack.md の 3、docs/decisions/container.md）。アプリはインターフェース越しに使い、テストでは差し替える。設定の読み方は `config.ts`
-  - Rust の処理（`pageContent`、`languageDetection`）は `Platform` の必須の項目。読み込めなければ起動しない（docs/decisions/container.md の 2）
+  - Rust の処理（`pageContent`、`languageDetection`、`articleAnalysis`）は `Platform` の必須の項目。読み込めなければ起動しない（docs/decisions/container.md の 2）
+  - 埋め込みのモデルのファイルは `main.ts` が読み、バイト列を Rust に渡す（`EMBEDDING_MODEL_DIR`。既定はイメージの `models/potion-multilingual-128m`）。モデルの版を上げるときは、固定ファイルの SHA-256 と、変換したファイルの SHA-256 を両方直す
   - Rust のネイティブのモジュールを読み込むのは `src/platform/node/native.ts` だけ
 - 機能のディレクトリ（`api/`、`fetcher/`、`jobs/` など）は `docs/tech-deck.md` の「6. ディレクトリ構成」に従う
 - `src/api/`：REST API。入力は zod のスキーマで検証し、OpenAPI の定義も同じスキーマから作る

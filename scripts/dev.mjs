@@ -22,11 +22,19 @@ if (!existsSync(nativeModule)) {
   process.exit(1);
 }
 
+const embeddingModel =
+  process.env.EMBEDDING_MODEL_DIR || path.join(root, "models/potion-multilingual-128m");
+if (process.argv.length <= 2 && !existsSync(path.join(embeddingModel, "model.safetensors"))) {
+  console.error(`埋め込みのモデルがない: ${embeddingModel}\n先に pnpm model:prepare を実行する`);
+  process.exit(1);
+}
+
 const env = {
   ...process.env,
   DATA_DIR: process.env.DATA_DIR || path.join(root, ".data"),
   MIGRATIONS_DIR: process.env.MIGRATIONS_DIR || path.join(root, "migrations"),
   NATIVE_MODULE: nativeModule,
+  EMBEDDING_MODEL_DIR: embeddingModel,
 };
 
 const args = process.argv.slice(2);

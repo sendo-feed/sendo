@@ -42,6 +42,15 @@ RUN set -eu; \
   cargo build --release --locked -p sendo-node --target "$target"; \
   cp "target/$target/release/libsendo_node.so" /sendo.node
 
+# 埋め込みのモデルを用意する（docs/decisions/article-analysis.md の 6）。固定した版のファイルを取って SHA-256 を
+# 確かめ、行ごとの int8 と倍率のファイルに変換する。合わなければビルドを止める。固定ファイルが変わらなければ、
+# この段はキャッシュから使われる
+FROM base AS model
+COPY models/potion-multilingual-128m.json ./models/
+COPY scripts/prepare-embedding-model.mjs ./scripts/
+RUN node scripts/prepare-embedding-model.mjs --out /models/potion-multilingual-128m --cache /tmp/model-cache \
+  && rm -rf /tmp/model-cache
+
 # バンドルを作る。依存はバンドルに入れず（--packages=external）、動かすときに入れる
 FROM base AS build
 # インストール時のスクリプトは、バンドルには要らないので動かさない
@@ -50,7 +59,8 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN pnpm build
 
-# 動かすイメージ。動かすのに要る依存と、バンドルと、マイグレーションと、Rust のモジュールだけを入れる
+# 動かすイメージ。動かすのに要る依存と、バンドルと、マイグレーションと、Rust のモジュールと、埋め込みの
+# モデル（モデルカードの README.md にライセンスを書いている）だけを入れる
 FROM base AS runtime
 ENV NODE_ENV=production \
     PORT=8787 \
@@ -62,6 +72,7 @@ RUN pnpm install --prod --frozen-lockfile --ignore-scripts \
 COPY migrations ./migrations
 COPY --from=build /app/dist/node ./dist/node
 COPY --from=native /sendo.node ./native/sendo.node
+COPY --from=model /models/potion-multilingual-128m ./models/potion-multilingual-128m
 USER node
 VOLUME ["/data"]
 EXPOSE 8787

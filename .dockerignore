@@ -14,4 +14,8 @@ docs
 spec
 test
 scripts
+!scripts/prepare-embedding-model.mjs
+# 埋め込みのモデルは、イメージのビルドの段で取って変換する。手元で用意したものは送らない
+models/*
+!models/*.json
 *.log

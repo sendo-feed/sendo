@@ -8,7 +8,7 @@
  * 設定は環境変数で受ける（ALLOWED_EMAILS、PUBLIC_URL など。.env.example）。動かし方の設定は、
  * PORT（既定 8787）、HOST（既定 0.0.0.0）、DATA_DIR（既定 /data）、MIGRATIONS_DIR、NATIVE_MODULE。
  */
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -20,7 +20,12 @@ import { openDatabase } from "./database";
 import { startDiscordIngestion } from "./discord-ingestion";
 import { createNodePlatform, dataDirectory, type NodeEnv, withPublicOrigin } from "./index";
 import { createSqliteJobQueue } from "./job-queue";
-import { createLanguageDetector, createPageContentExtractor, loadNativeModule } from "./native";
+import {
+  createArticleAnalyzer,
+  createLanguageDetector,
+  createPageContentExtractor,
+  loadNativeModule,
+} from "./native";
 import { startScheduler } from "./scheduler";
 import { createNodeServer } from "./server";
 import { createNodeSyncUpdates } from "./sync-updates";
@@ -37,10 +42,37 @@ function nativeModulePath(env: NodeEnv): string {
 }
 
 /**
- * Rust の処理を読み込み、記事のページから本文を抜く実装と、言語を調べる実装を作る。イメージには
- * 必ず入っているので、読み込めなければ起動を止める（docs/decisions/container.md の 2）
+ * 埋め込みのモデル（pnpm model:prepare で用意する。イメージでは /app/models/...）の置き場。既定は、
+ * バンドル（dist/node/sendo.mjs）から見た ../../models/potion-multilingual-128m
  */
-function loadNativeFeatures(env: NodeEnv) {
+function embeddingModelDirectory(env: NodeEnv): string {
+  return (
+    env.EMBEDDING_MODEL_DIR?.trim() ||
+    fileURLToPath(new URL("../../models/potion-multilingual-128m", import.meta.url))
+  );
+}
+
+/** 埋め込みのモデルのファイルを読む。Rust の側はファイルを読まない（docs/decisions/article-analysis.md の 6） */
+async function readEmbeddingModel(env: NodeEnv) {
+  const directory = embeddingModelDirectory(env);
+  try {
+    const read = (name: string) => readFile(path.join(directory, name));
+    const [tokenizer, model, config] = await Promise.all([
+      read("tokenizer.json"),
+      read("model.safetensors"),
+      read("config.json"),
+    ]);
+    return { tokenizer, model, config };
+  } catch (error) {
+    throw new Error(`could not read the embedding model: ${directory}`, { cause: error });
+  }
+}
+
+/**
+ * Rust の処理を読み込み、記事のページから本文を抜く実装、言語を調べる実装、記事を解析する実装を
+ * 作る。イメージには必ず入っているので、読み込めなければ起動を止める（docs/decisions/container.md の 2）
+ */
+async function loadNativeFeatures(env: NodeEnv) {
   const file = nativeModulePath(env);
   let native: ReturnType<typeof loadNativeModule>;
   try {
@@ -48,9 +80,17 @@ function loadNativeFeatures(env: NodeEnv) {
   } catch (error) {
     throw new Error(`could not load the native module: ${file}`, { cause: error });
   }
+  const files = await readEmbeddingModel(env);
+  let articleAnalysis: Awaited<ReturnType<typeof createArticleAnalyzer>>;
+  try {
+    articleAnalysis = await createArticleAnalyzer(native, files);
+  } catch (error) {
+    throw new Error("could not load the embedding model", { cause: error });
+  }
   return {
     pageContent: createPageContentExtractor(native),
     languageDetection: createLanguageDetector(native),
+    articleAnalysis,
   };
 }
 
@@ -88,7 +128,7 @@ function readPublicOrigin(env: NodeEnv): string | null | undefined {
 
 async function runServer(env: NodeEnv): Promise<void> {
   const port = readPort(env);
-  const native = loadNativeFeatures(env);
+  const native = await loadNativeFeatures(env);
   const database = await prepareDatabase(env);
   const jobs = createSqliteJobQueue(database.db);
   const publicOrigin = readPublicOrigin(env);
