@@ -101,19 +101,28 @@ fn katakana_words() -> &'static Regex {
     WORDS.get_or_init(|| Regex::new(r"[\p{Katakana}ー]{2,}").expect("valid regex"))
 }
 
-/// 版だけの語（`8`、`3.13`、`v20`）。大文字の `V`（`V8`）は名前なので版にしない
+/// 版の後ろに付く印（`3.x`、`3.13.0-rc1`、`2.0beta`）
+const VERSION_SUFFIX: &str = r"(?:\.x|-?(?i:rc|alpha|beta|preview|pre)\.?\d*)?";
+
+/// 版だけの語（`8`、`3.13`、`v20`、`3.x`、`3.13.0-rc1`）。大文字の `V`（`V8`）は名前なので版にしない
 fn version_only() -> &'static Regex {
     static VERSION: OnceLock<Regex> = OnceLock::new();
-    VERSION.get_or_init(|| Regex::new(r"^v?\d+(?:\.\d+)*$").expect("valid regex"))
+    VERSION.get_or_init(|| {
+        Regex::new(&format!(r"^v?\d+(?:\.\d+)*{VERSION_SUFFIX}$")).expect("valid regex")
+    })
 }
 
 /// 語の末尾の、ハイフンのあとの版と、直結したドット付きの版（記事の解析の 9）。残す部分は英数字で
-/// 終わる（`OpenSSL_1.1` は `OpenSSL`）
+/// 終わる（`OpenSSL_1.1` は `OpenSSL`、`Kubernetes_v1.31` は `Kubernetes`）。`v` の付いたドット付きの版は、
+/// 記号で離れているときだけ版にする（`Dev1.2` の `v` は語の一部）
 fn trailing_version() -> &'static Regex {
     static VERSION: OnceLock<Regex> = OnceLock::new();
     VERSION.get_or_init(|| {
-        Regex::new(r"^(\.?[A-Za-z0-9]*?[A-Za-z][A-Za-z0-9._\-]*?[A-Za-z0-9])[._\-]*(?:-v?\d+(?:\.\d+)*|\d+\.\d+(?:\.\d+)*)$")
-            .expect("valid regex")
+        let dotted = r"\d+\.\d+(?:\.\d+)*";
+        Regex::new(&format!(
+            r"^(\.?[A-Za-z0-9]*?[A-Za-z][A-Za-z0-9._\-]*?[A-Za-z0-9])(?:[._\-]*-v?\d+(?:\.\d+)*|[._\-]*{dotted}|[._\-]+v{dotted}){VERSION_SUFFIX}$"
+        ))
+        .expect("valid regex")
     })
 }
 
@@ -219,9 +228,11 @@ fn ascii_candidates(text: &str, out: &mut Vec<(usize, String)>) {
 /// 並びの端の機能語を落としてから語の数を数え、2〜3 語なら 1 つの候補、4 語以上なら語ごとにする
 fn flush_run(run: &mut Vec<RunWord>, out: &mut Vec<(usize, String)>) {
     let mut words: Vec<RunWord> = std::mem::take(run);
-    while words.first().is_some_and(|w| is_function_word(&w.word)) {
-        words.remove(0);
-    }
+    let leading = words
+        .iter()
+        .take_while(|w| is_function_word(&w.word))
+        .count();
+    words.drain(..leading);
     while words.last().is_some_and(|w| is_function_word(&w.word)) {
         words.pop();
     }
@@ -437,6 +448,35 @@ mod tests {
         assert_eq!(surfaces("Xcode_15.2"), vec!["Xcode"]);
         assert_eq!(surfaces("Foo.1.2"), vec!["Foo"]);
         assert_eq!(surfaces("Bar--2"), vec!["Bar"]);
+        assert_eq!(surfaces("Kubernetes_v1.31"), vec!["Kubernetes"]);
+        assert_eq!(surfaces("Dev1.2"), vec!["Dev"]);
+        assert_eq!(surfaces("Python3.13.0-rc1"), vec!["Python"]);
+    }
+
+    #[test]
+    fn drops_versions_with_suffixes() {
+        assert_eq!(surfaces("Vue 3.x と Laravel 11.x"), vec!["Vue", "Laravel"]);
+        assert_eq!(surfaces("Node.js 22.x"), vec!["Node.js"]);
+        assert_eq!(
+            surfaces("Python 3.13.0-rc1 リリース"),
+            vec!["Python", "リリース"]
+        );
+        assert_eq!(surfaces("React 19 RC"), vec!["React", "RC"]);
+    }
+
+    #[test]
+    fn splits_table_cells_into_separate_candidates() {
+        let html = "<table><tr><td>Docker</td><td>Kubernetes</td><td>Helm</td></tr></table>";
+        assert_eq!(keys("", html), vec!["docker", "kubernetes", "helm"]);
+    }
+
+    #[test]
+    fn reads_long_runs_of_function_words_quickly() {
+        let title = "In ".repeat(170_000);
+        let started = std::time::Instant::now();
+        assert!(surfaces(&title).is_empty());
+        // 端の機能語を 1 つずつ前から消すと二乗になり、数十秒かかる
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

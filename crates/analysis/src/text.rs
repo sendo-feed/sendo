@@ -45,15 +45,35 @@ pub fn plain_text(html: &str) -> String {
     let doc = Document::from(html);
     doc.select("script,style,svg,math,pre,template,noscript")
         .remove();
+    // 表のセルと定義の並びは、ブロックの要素でなくても境目にする（隣のセルの語を 1 つの並びにしない）
+    doc.select("td,th,dt,dd,caption").after_html("<br>");
     let text = doc.formatted_text();
-    let text = urls().replace_all(&text, " ");
-    normalize(&text)
+    // 全角で書いた URL も除けるように、NFKC のあとで除く
+    let nfkc = nfkc_without_format_characters(&text);
+    let text = urls().replace_all(&nfkc, " ");
+    collapse_whitespace(&text)
 }
 
 /// NFKC で正規化し、行ごとに空白を 1 つにそろえ、空の行を除く
 pub fn normalize(text: &str) -> String {
-    let nfkc: String = text.nfkc().collect();
-    nfkc.lines()
+    collapse_whitespace(&nfkc_without_format_characters(text))
+}
+
+/// NFKC で正規化し、書式の文字（ソフトハイフン、ゼロ幅スペースなど）を除く。語の途中に入っていても、
+/// 語を割らないようにする
+fn nfkc_without_format_characters(text: &str) -> String {
+    format_characters()
+        .replace_all(&text.nfkc().collect::<String>(), "")
+        .into_owned()
+}
+
+fn format_characters() -> &'static Regex {
+    static FORMAT: OnceLock<Regex> = OnceLock::new();
+    FORMAT.get_or_init(|| Regex::new(r"\p{Cf}").expect("valid regex"))
+}
+
+fn collapse_whitespace(text: &str) -> String {
+    text.lines()
         .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
@@ -134,6 +154,26 @@ mod tests {
         let text = plain_text(html);
         assert!(!text.contains("github.com"), "{text}");
         assert!(text.contains("を参照。RustとKubernetesの話。"), "{text}");
+    }
+
+    #[test]
+    fn plain_text_breaks_table_cells_and_definition_lists() {
+        let html = "<table><tr><td>Docker</td><td>Kubernetes</td></tr></table><dl><dt>Rust</dt><dd>Fast</dd></dl>";
+        let text = plain_text(html);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines,
+            vec!["Docker", "Kubernetes", "Rust", "Fast"],
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn plain_text_drops_full_width_urls_and_format_characters() {
+        let text = plain_text(
+            "<p>ｈｔｔｐｓ：／／Example.com/Foo を見る。Kuber\u{AD}netes と コン\u{200B}テナ</p>",
+        );
+        assert_eq!(text, "を見る。Kubernetes と コンテナ");
     }
 
     #[test]

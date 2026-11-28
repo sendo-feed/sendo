@@ -371,3 +371,5 @@ Node.js の組み込みモジュール（`node:*`）と `process` を使って�
 ## ライセンス
 
 未定です。決まるまでは、すべての権利を留保します。
+
+イメージに入れる埋め込みのモデル（[minishlab/potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M)）は MIT ライセンスです。ライセンスを書いたモデルカード（`README.md`）を、イメージのモデルのディレクトリ（`models/potion-multilingual-128m/`）に一緒に入れています。
