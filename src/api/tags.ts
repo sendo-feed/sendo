@@ -47,7 +47,12 @@ const CreateBodySchema = z
   .openapi("CreateTagRequest");
 
 const UpdateBodySchema = z
-  .strictObject({ name: nameField, description: descriptionField.optional() })
+  .strictObject({
+    name: nameField,
+    description: descriptionField.optional().openapi({
+      description: `説明。前後の空白を除いて 0〜${MAX_TAG_DESCRIPTION_LENGTH} 文字（コードポイント）。省くと今の説明を残す。空文字を送ると消す`,
+    }),
+  })
   .openapi("UpdateTagRequest");
 
 const error = (description: string) => ({

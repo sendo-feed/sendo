@@ -27,7 +27,8 @@ export type ActiveTag = {
   createdAt: Date;
 };
 
-export type TagInput = { name: string; matchKey: string; description: string };
+/** 整えた名前と説明。description が null なら、変えるときに今の説明を残す（作るときは空にする） */
+export type TagInput = { name: string; matchKey: string; description: string | null };
 
 const CONTROL_OR_LONE_SURROGATE =
   /[\p{Cc}]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
@@ -42,16 +43,16 @@ export function parseTagInput(input: {
   description?: string | undefined;
 }): TagInput | string {
   const name = input.name.trim();
-  const description = (input.description ?? "").trim();
+  const description = input.description === undefined ? null : input.description.trim();
   const length = (text: string) => [...text].length;
   if (length(name) === 0) return "name must not be empty";
   if (length(name) > MAX_TAG_NAME_LENGTH) {
     return `name must be at most ${MAX_TAG_NAME_LENGTH} characters`;
   }
-  if (length(description) > MAX_TAG_DESCRIPTION_LENGTH) {
+  if (description !== null && length(description) > MAX_TAG_DESCRIPTION_LENGTH) {
     return `description must be at most ${MAX_TAG_DESCRIPTION_LENGTH} characters`;
   }
-  if (CONTROL_OR_LONE_SURROGATE.test(name) || CONTROL_OR_LONE_SURROGATE.test(description)) {
+  if (CONTROL_OR_LONE_SURROGATE.test(name) || CONTROL_OR_LONE_SURROGATE.test(description ?? "")) {
     return "name and description must not contain control characters";
   }
   return { name, matchKey: tagMatchKey(name), description };
@@ -62,25 +63,33 @@ export function parseTagInput(input: {
  * docs/decisions/article-analysis.md の 11）
  */
 export function tagMatchKey(name: string): string {
-  return name.normalize("NFKC").toLowerCase().split(/\s+/u).filter(Boolean).join(" ");
+  return name.normalize("NFKC").toLowerCase().split(WHITE_SPACE).filter(Boolean).join(" ");
 }
+
+/**
+ * Unicode の White_Space（Rust の split_whitespace と同じ）。JavaScript の \s は U+FEFF も含むので使わない
+ */
+const WHITE_SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/u;
 
 /**
  * その人の有効なタグを、作った順で返す。名前を変えると変更番号が変わるので、作った時刻と ID の順にする
  * （ベルは変えられないので変更番号の順）
  */
 export async function listTags(db: Database, userId: string): Promise<ActiveTag[]> {
-  return db
-    .select({
-      id: tags.id,
-      name: tags.name,
-      description: tags.description,
-      createdAt: tags.createdAt,
-    })
-    .from(tags)
-    .where(and(eq(tags.userId, userId), isNull(tags.deletedAt)))
-    .orderBy(asc(tags.createdAt), asc(tags.id))
-    .all();
+  return (
+    db
+      .select({
+        id: tags.id,
+        name: tags.name,
+        description: tags.description,
+        createdAt: tags.createdAt,
+      })
+      .from(tags)
+      .where(and(eq(tags.userId, userId), isNull(tags.deletedAt)))
+      // 同じミリ秒に作ったタグは、入れた順（rowid）にそろえる
+      .orderBy(asc(tags.createdAt), sql`${tags}.rowid`)
+      .all()
+  );
 }
 
 export type CreateTagResult =
@@ -103,7 +112,7 @@ export async function createTag(
     const inserted = await getRow<{ createdAt: number }>(
       db,
       sql`insert into ${tags} (id, user_id, name, match_key, description, created_at, seq)
-      select ${id}, ${userId}, ${name}, ${matchKey}, ${description}, ${DB_NOW_MS}, ${nextSeq(tags)}
+      select ${id}, ${userId}, ${name}, ${matchKey}, ${description ?? ""}, ${DB_NOW_MS}, ${nextSeq(tags)}
       where (select count(*) from ${tags} as counted
           where counted.user_id = ${userId} and counted.deleted_at is null) < ${MAX_TAGS}
       on conflict do nothing
@@ -112,7 +121,7 @@ export async function createTag(
     if (inserted) {
       return {
         created: true,
-        tag: { id, name, description, createdAt: new Date(inserted.createdAt) },
+        tag: { id, name, description: description ?? "", createdAt: new Date(inserted.createdAt) },
       };
     }
     const found = await getRow<{
@@ -153,7 +162,7 @@ export async function createTag(
 }
 
 /**
- * その人の有効なタグの名前と説明を変え、新しい変更番号を振る。変えた照合用の名前がほかの有効なタグと
+ * その人の有効なタグの名前と説明を変え、新しい変更番号を振る。説明を省いたら（null）、今の説明を残す。変えた照合用の名前がほかの有効なタグと
  * 同じなら変えない。確かめるのは同じ文の中で、重なって入ったものは一意索引が止める
  * （docs/decisions/tags.md の 6）
  */
@@ -162,25 +171,27 @@ export async function updateTag(
   input: { userId: string; id: string } & TagInput,
 ): Promise<{ tag: ActiveTag } | "not_found" | "tag_name_taken"> {
   const { userId, id, name, matchKey, description } = input;
-  let row: { createdAt: number } | undefined;
+  let row: { createdAt: number; description: string } | undefined;
   try {
-    row = await getRow<{ createdAt: number }>(
+    row = await getRow<{ createdAt: number; description: string }>(
       db,
       sql`update ${tags} set name = ${name}, match_key = ${matchKey},
-        description = ${description}, seq = ${nextSeq(tags)}
+        description = coalesce(${description}, description), seq = ${nextSeq(tags)}
       where id = ${id} and user_id = ${userId} and deleted_at is null
         and not exists (
           select 1 from ${tags} as other
           where other.user_id = ${userId} and other.deleted_at is null
             and other.match_key = ${matchKey} and other.id != ${id}
         )
-      returning created_at as "createdAt"`,
+      returning created_at as "createdAt", description`,
     );
   } catch (error) {
     if (isUniqueViolation(error)) return "tag_name_taken";
     throw error;
   }
-  if (row) return { tag: { id, name, description, createdAt: new Date(row.createdAt) } };
+  if (row) {
+    return { tag: { id, name, description: row.description, createdAt: new Date(row.createdAt) } };
+  }
   const exists = await getRow<{ found: number }>(
     db,
     sql`select 1 as found from ${tags}

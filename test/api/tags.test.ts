@@ -117,6 +117,37 @@ describe("タグの作成・変更・削除（REST API）", () => {
     ]);
   });
 
+  it("照合用の名前は、まとめの鍵と同じく Unicode の空白だけでそろえる（U+FEFF は空白にしない）", async () => {
+    const { created } = await setup();
+    const spaced = await created({ name: "Foo\u3000Bar" });
+    expect(await created({ name: "foo bar" }, 200)).toEqual(spaced);
+    const bom = await created({ name: "Foo\ufeffBar" });
+    expect(bom.id).not.toBe(spaced.id);
+  });
+
+  it("同じミリ秒に作ったタグも、作った順に並ぶ", async () => {
+    const { created, list } = await setup({ now: () => new Date("2026-11-01T00:00:00Z") });
+    const names = Array.from({ length: 10 }, (_, i) => `タグ ${i}`);
+    for (const name of names) await created({ name });
+    await testDb.exec("UPDATE tags SET created_at = 1700000000000");
+    expect((await list()).items.map((tag) => tag.name)).toEqual(names);
+  });
+
+  it("重なったら、400、同じ照合用の名前のタグ（200）、tag_limit_reached、tag_id_taken の順に返す", async () => {
+    const owner = await setup();
+    const other = client(owner.platform, (await createUser()).token);
+    const theirs = await other.created({ name: "ほかの人のタグ" });
+    const mine = await owner.created({ name: "Rust" });
+    // 同じ照合用の名前のタグがあれば、id がほかの人の行に使われていても 200
+    expect(await owner.created({ id: theirs.id, name: "rust" }, 200)).toEqual(mine);
+    // 名前が空なら、上限より先に 400
+    for (let i = 1; i < MAX_TAGS; i++) await owner.created({ name: `タグ ${i}` });
+    expect((await owner.create({ name: " " })).status).toBe(400);
+    expect(await errorCode(await owner.create({ id: theirs.id, name: "新しい" }))).toBe(
+      "tag_limit_reached",
+    );
+  });
+
   it("指定した id がほかの行（消したタグ、ほかの人のタグ）に使われていれば 409（tag_id_taken）", async () => {
     const owner = await setup();
     const removed = await owner.created({ name: "消すタグ" });
@@ -151,6 +182,11 @@ describe("タグの作成・変更・削除（REST API）", () => {
     // 自分と同じ照合用の名前への変更（表記だけを変える）はできる
     expect((await update(rust.id, { name: "RUST" })).status).toBe(200);
     expect((await update(go.id, { name: "" })).status).toBe(400);
+    // 説明を省くと今の説明を残し、空文字を送ると消す
+    const kept = await update(go.id, { name: "Go" });
+    expect(((await kept.json()) as { tag: Tag }).tag.description).toBe("プログラミング言語の Go");
+    const cleared = await update(go.id, { name: "Go", description: "" });
+    expect(((await cleared.json()) as { tag: Tag }).tag.description).toBe("");
     expect((await update(crypto.randomUUID(), { name: "X" })).status).toBe(404);
   });
 
@@ -249,6 +285,23 @@ describe("ほかの操作と重なる", () => {
     expect(hook.fired()).toBe(true);
     expect(response.status).toBe(409);
     expect(await errorCode(response)).toBe("tag_name_taken");
+  });
+});
+
+describe("消す文と変える文の重なり", () => {
+  it("名前を変える文の直前にタグが消されたら、変えずに 404", async () => {
+    const owner = await setup();
+    const go = await owner.created({ name: "Go" });
+    const hook = statementHook(/update "tags" set name/i, async () => {
+      await owner.remove(go.id);
+    });
+    const hooked = client({ ...owner.platform, db: hook.db }, owner.user.token);
+    const response = await hooked.update(go.id, { name: "Golang" });
+    expect(hook.fired()).toBe(true);
+    expect(response.status).toBe(404);
+    expect(
+      await testDb.prepare("SELECT name FROM tags WHERE id = ?").bind(go.id).first("name"),
+    ).toBe("Go");
   });
 });
 

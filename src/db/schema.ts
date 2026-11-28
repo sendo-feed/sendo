@@ -1046,10 +1046,6 @@ export const bells = sqliteTable(
 );
 
 /**
- * ベルの消した印の行を、人ごとにどこまで回収したか。行を消すトリガーが、消した行の番号まで
- * 引き上げる。その人のカーソルの位置がこれより前なら、最初から同期し直してもらう
- */
-/**
  * 人ごとのタグ（docs/decisions/tags.md の 4）。名前と説明で表す。match_key は照合用の名前（まとめの鍵と
  * 同じ作り方。docs/decisions/article-analysis.md の 11）。同じ人で照合用の名前が同じ有効なタグは 1 つ。
  * 消すときは消した印と新しい変更番号を付け、30 日たったら 1 日 1 回の片付けが消す
@@ -1090,6 +1086,10 @@ export const tagHorizons = sqliteTable("tag_horizons", {
   seq: integer("seq").notNull(),
 });
 
+/**
+ * ベルの消した印の行を、人ごとにどこまで回収したか。行を消すトリガーが、消した行の番号まで
+ * 引き上げる。その人のカーソルの位置がこれより前なら、最初から同期し直してもらう
+ */
 export const bellHorizons = sqliteTable("bell_horizons", {
   userId: text("user_id")
     .primaryKey()
